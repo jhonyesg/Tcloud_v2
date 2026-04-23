@@ -1,0 +1,86 @@
+services:
+  # Nginx - Servidor web y reverse proxy
+  nginx:
+    build:
+      context: ./docker/nginx
+      dockerfile: Dockerfile
+    container_name: tcloud_nginx
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    volumes:
+      - ./app:/var/www/html
+      - ./data/storage:/var/www/html/storage/app  # DATA PERSISTENTE
+      - ./docker/nginx/logs:/var/log/nginx
+    depends_on:
+      - php
+    networks:
+      - tcloud_network
+
+  # PHP - Procesador PHP-FPM
+  php:
+    build:
+      context: ./docker/php
+      dockerfile: Dockerfile
+    container_name: tcloud_php
+    restart: unless-stopped
+    volumes:
+      - ./app:/var/www/html
+      - ./data/storage:/var/www/html/storage/app  # DATA PERSISTENTE
+      - /media/jsuarez/mis-archivos/06_Multimedia:/media/jsuarez/mis-archivos/06_Multimedia:rw
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_DATABASE=tcloudstorage
+      - DB_USERNAME=cloud
+      - DB_PASSWORD=cloud123
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    networks:
+      - tcloud_network
+
+  # PostgreSQL - Base de datos
+  postgres:
+    image: postgres:17-alpine
+    container_name: tcloud_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: tcloudstorage
+      POSTGRES_USER: cloud
+      POSTGRES_PASSWORD: cloud123
+    volumes:
+      - ./data/postgres_data:/var/lib/postgresql/data  # DATA PERSISTENTE
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    networks:
+      - tcloud_network
+
+  # Node.js - Build de assets frontend (Vite + Tailwind)
+  # DESACTIVADO - No se usa Node/Vite en este proyecto
+  # node:
+  #   image: node:22-alpine
+  #   container_name: tcloud_node_builder
+  #   working_dir: /var/www/html
+  #   volumes:
+  #     - ./app:/var/www/html
+  #   command: sh -c "npm install && npm run build"
+  #   restart: "no"
+
+  # Redis - Caché y sesiones
+  redis:
+    image: redis:7-alpine
+    container_name: tcloud_redis
+    restart: unless-stopped
+    volumes:
+      - ./data/redis_data:/data  # DATA PERSISTENTE
+      - ./docker/redis/redis.conf:/usr/local/etc/redis/redis.conf
+    networks:
+      - tcloud_network
+
+networks:
+  tcloud_network:
+    driver: bridge
