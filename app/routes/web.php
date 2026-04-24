@@ -4,6 +4,10 @@ use Illuminate\Support\Facades\Route;
 use App\Modules\Correo\Http\Controllers\CorreoConfigController;
 use App\Modules\Correo\Http\Controllers\CorreoPlantillaController;
 use App\Modules\Correo\Http\Controllers\CorreoLogController;
+use App\Http\Controllers\Admin\FileToolPluginController;
+use App\Http\Controllers\Admin\UserFileToolController;
+use App\Http\Controllers\FileToolController;
+use App\Http\Controllers\FileToolsAdminController;
 
 Route::get('/', fn() => redirect('/login'));
 
@@ -49,10 +53,30 @@ Route::middleware(['auth', 'admin'])->prefix('admin')->group(function () {
     Route::get('/correo/logs', [CorreoLogController::class, 'index']);
     Route::post('/correo/plantillas/{plantilla}/preview', [CorreoPlantillaController::class, 'preview']);
     Route::post('/correo/plantillas/{plantilla}/send-test', [CorreoPlantillaController::class, 'sendTest']);
+
+    Route::get('/file-tools/plugins', [FileToolPluginController::class, 'index']);
+    Route::post('/file-tools/plugins', [FileToolPluginController::class, 'store']);
+    Route::get('/file-tools/plugins/{id}', [FileToolPluginController::class, 'show']);
+    Route::put('/file-tools/plugins/{id}', [FileToolPluginController::class, 'update']);
+    Route::delete('/file-tools/plugins/{id}', [FileToolPluginController::class, 'destroy']);
+    Route::get('/file-tools/plugins/{id}/validate', [FileToolPluginController::class, 'validateResources']);
+
+    Route::get('/file-tools/user/{userId}/plugins', [UserFileToolController::class, 'userPlugins']);
+    Route::post('/file-tools/user/{userId}/plugins', [UserFileToolController::class, 'assign']);
+    Route::delete('/file-tools/user/{userId}/plugins/{pluginId}', [UserFileToolController::class, 'revoke']);
+    Route::get('/file-tools/assignments', [UserFileToolController::class, 'allAssignments']);
 });
 
 Route::middleware(['auth', 'admin'])->group(function () {
     Route::get('/correo', [App\Http\Controllers\CorreoAdminController::class, 'index']);
+    Route::get('/admin/file-tools', [FileToolsAdminController::class, 'index']);
+    Route::get('/admin/file-tools/users', [FileToolsAdminController::class, 'users']);
+    Route::get('/admin/file-tools/plugins', [FileToolPluginController::class, 'index']);
+    Route::post('/admin/file-tools/plugins', [FileToolPluginController::class, 'store']);
+    Route::get('/admin/file-tools/plugins/{id}', [FileToolPluginController::class, 'show']);
+    Route::put('/admin/file-tools/plugins/{id}', [FileToolPluginController::class, 'update']);
+    Route::delete('/admin/file-tools/plugins/{id}', [FileToolPluginController::class, 'destroy']);
+    Route::get('/admin/file-tools/plugins/{id}/validate', [FileToolPluginController::class, 'validateResources']);
 });
 
 Route::middleware('auth')->group(function () {
@@ -72,6 +96,8 @@ Route::middleware('auth')->group(function () {
     Route::get('/media/{file}/thumbnail', [App\Http\Controllers\MediaPreviewController::class, 'thumbnail']);
 
     Route::resource('shares', App\Http\Controllers\ShareController::class)->only(['index', 'store', 'show', 'update', 'destroy']);
+
+    Route::get('/file-tools/available', [FileToolController::class, 'available']);
 });
 
 Route::get('/s/{token}', [App\Http\Controllers\PublicShareController::class, 'show']);

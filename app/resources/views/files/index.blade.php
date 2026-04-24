@@ -27,6 +27,9 @@
         expires_at: ''
     },
     shareFeedback: { type: '', message: '' },
+    availableTools: [],
+    selectedTool: null,
+    toolModal: { open: false, loading: false },
 
     async init() {
         await this.loadStorages();
@@ -200,7 +203,105 @@
         this.editingShareId = null;
         this.shareForm = { permissions: 'read', password: '', expires_at: '' };
         this.shareFeedback = { type: '', message: '' };
+        this.availableTools = [];
+        this.selectedTool = null;
         await this.loadFileShares(file.id);
+        await this.loadAvailableTools(file);
+    },
+
+    async loadAvailableTools(file) {
+        if (file.is_folder) {
+            this.availableTools = [];
+            return;
+        }
+        try {
+            const mime = file.mime_type || '';
+            const res = await fetch('/file-tools/available?mime=' + encodeURIComponent(mime), {
+                credentials: 'include',
+                headers: {
+                    'Accept': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest'
+                }
+            });
+            if (res.ok) {
+                const data = await res.json();
+                this.availableTools = data.data || [];
+            }
+        } catch (e) {
+            console.error('Error loading available tools:', e);
+            this.availableTools = [];
+        }
+    },
+
+    async launchTool(tool) {
+        this.selectedTool = tool;
+        this.toolModal = { open: true, loading: true };
+        try {
+            await this.loadPluginResources(tool);
+        } catch (e) {
+            console.error('Error loading tool:', e);
+            this.toolModal.loading = false;
+        }
+    },
+
+    async loadPluginResources(tool) {
+        const resources = tool.resources || {};
+        const self = this;
+
+        for (const js of resources.js || []) {
+            const existing = document.querySelector('script[src="' + js + '"]');
+            if (!existing) {
+                await new Promise(function(resolve, reject) {
+                    const script = document.createElement('script');
+                    script.src = js;
+                    script.onload = function() { resolve(); };
+                    script.onerror = function() { reject(new Error('Failed to load: ' + js)); };
+                    document.head.appendChild(script);
+                });
+            }
+        }
+
+        for (const css of resources.css || []) {
+            const existing = document.querySelector('link[href="' + css + '"]');
+            if (!existing) {
+                await new Promise(function(resolve, reject) {
+                    const link = document.createElement('link');
+                    link.rel = 'stylesheet';
+                    link.href = css;
+                    link.onload = function() { resolve(); };
+                    link.onerror = function() { reject(new Error('Failed to load: ' + css)); };
+                    document.head.appendChild(link);
+                });
+            }
+        }
+
+        this.toolModal.loading = false;
+        this.initializePlugin(tool);
+    },
+
+    initializePlugin(tool) {
+        const container = document.getElementById('tool-plugin-container');
+        if (!container || !this.selectedFile) return;
+
+        container.innerHTML = '<div class="p-4 text-center">Inicializando plugin...</div>';
+
+        const initFn = window[tool.slug + '_init'];
+        if (typeof initFn === 'function') {
+            initFn({
+                file: this.selectedFile,
+                container: container,
+                config: tool.config || {}
+            });
+        } else {
+            container.innerHTML = '<div class="p-4 text-center text-gray-500">Plugin no implementado correctamente</div>';
+        }
+    },
+
+    closeToolModal() {
+        this.toolModal.open = false;
+        this.selectedTool = null;
+        const container = document.getElementById('tool-plugin-container');
+        if (container) container.innerHTML = '';
     },
 
     async loadFileShares(fileId) {
@@ -768,6 +869,20 @@
                                 Descargar
                             </a>
                         </div>
+                        <div class="mt-3" x-show="!selectedFile.is_folder && availableTools.length > 0">
+                            <p class="text-sm font-medium text-slate-600 mb-2">Herramientas disponibles:</p>
+                            <div class="flex flex-wrap gap-2">
+                                <template x-for="tool in availableTools" :key="tool.id">
+                                    <button @click="launchTool(tool)" class="flex items-center gap-2 bg-purple-100 hover:bg-purple-200 text-purple-700 px-3 py-1.5 rounded-lg text-sm transition-colors">
+                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+                                        </svg>
+                                        <span x-text="tool.name"></span>
+                                    </button>
+                                </template>
+                            </div>
+                        </div>
                     </div>
 
                     <div class="border-t border-slate-200 pt-4">
@@ -867,6 +982,36 @@
                     </div>
                 </div>
             </template>
+        </div>
+    </div>
+
+    <div x-cloak x-show="toolModal.open" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" x-transition>
+        <div class="bg-white rounded-xl p-6 w-full max-w-4xl shadow-xl max-h-[90vh] overflow-hidden flex flex-col" @click.away="closeToolModal()">
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-xl font-bold text-slate-800 flex items-center gap-2">
+                    <svg class="w-6 h-6 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+                    </svg>
+                    <span x-text="selectedTool ? selectedTool.name : 'Herramienta'"></span>
+                </h2>
+                <button @click="closeToolModal()" class="text-slate-400 hover:text-slate-600">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="flex-1 overflow-auto bg-slate-50 rounded-lg min-h-[400px]" id="tool-plugin-container">
+                <div x-show="toolModal.loading" class="flex items-center justify-center h-full">
+                    <div class="text-center">
+                        <svg class="animate-spin h-8 w-8 text-purple-600 mx-auto mb-2" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        <p class="text-slate-500">Cargando herramienta...</p>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 </div>

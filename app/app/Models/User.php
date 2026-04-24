@@ -54,4 +54,9 @@ class User extends Model
     {
         return $this->role === 'admin';
     }
+
+    public function fileToolPlugins(): HasMany
+    {
+        return $this->hasMany(UserFileToolPlugin::class);
+    }
 }
