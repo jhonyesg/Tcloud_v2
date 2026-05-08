@@ -9,7 +9,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 class User extends Model
 {
     protected $table = 'users';
-    protected $fillable = ['email', 'password_hash', 'role', 'personal_quota_bytes', 'personal_used_bytes'];
+    protected $fillable = ['email', 'username', 'password_hash', 'role', 'personal_quota_bytes', 'personal_used_bytes'];
     protected $hidden = ['password_hash'];
 
     public function files(): HasMany

@@ -328,12 +328,12 @@
         <form action="/login" method="POST" class="space-y-5">
             @csrf
             <div>
-                <label for="email" class="block text-xs font-medium mb-2 uppercase tracking-widest" style="color: rgba(255, 255, 255, 0.6); font-size: 0.7rem;">
-                    Correo Electrónico
+                <label for="login" class="block text-xs font-medium mb-2 uppercase tracking-widest" style="color: rgba(255, 255, 255, 0.6); font-size: 0.7rem;">
+                    Email o nombre de usuario
                 </label>
-                <input type="email" id="email" name="email" required
+                <input type="text" id="login" name="login" required autocomplete="username"
                        class="glass-input block w-full border rounded-xl transition-all duration-200"
-                       placeholder="tu@ejemplo.com">
+                       placeholder="tu@ejemplo.com o jsuarez">
             </div>
 
             <div>

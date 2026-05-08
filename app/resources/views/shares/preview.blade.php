@@ -7,7 +7,7 @@ $availableTools = $availableTools ?? collect();
 @endphp
 
 @section('content')
-<div class="min-h-screen bg-[#03153C] p-4" x-data="sharePreview()">
+<div class="min-h-screen bg-[#03153C] p-4" x-data="sharePreview()" x-cloak>
     <div class="w-full max-w-4xl mx-auto">
         <div class="bg-white rounded-2xl shadow-2xl overflow-hidden">
             <div class="bg-[#0A1F4D] p-4 flex items-center justify-between">

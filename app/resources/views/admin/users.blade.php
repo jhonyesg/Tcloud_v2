@@ -103,6 +103,7 @@
                 <tr>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ID</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Email</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Username</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Rol</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Quota</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Usado</th>
@@ -114,6 +115,7 @@
                     <tr class="hover:bg-gray-50">
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900" x-text="user.id"></td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900" x-text="user.email"></td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500" x-text="user.username || '—'"></td>
                         <td class="px-6 py-4 whitespace-nowrap">
                             <span class="px-2 py-1 text-xs font-semibold rounded-full"
                                   :class="user.role === 'admin' ? 'bg-purple-100 text-purple-800' : 'bg-green-100 text-green-800'"
@@ -147,6 +149,10 @@
                     <input type="email" name="email" required class="w-full border p-2 rounded">
                 </div>
                 <div class="mb-4">
+                    <label class="block text-sm font-medium mb-1">Username <span class="text-gray-400 font-normal">(opcional)</span></label>
+                    <input type="text" name="username" class="w-full border p-2 rounded" placeholder="ej. jsuarez">
+                </div>
+                <div class="mb-4">
                     <label class="block text-sm font-medium mb-1">Contraseña</label>
                     <input type="password" name="password" required class="w-full border p-2 rounded">
                 </div>
@@ -175,14 +181,22 @@
             <h2 class="text-xl font-bold mb-4">Editar Usuario</h2>
             <template x-if="editingUser">
                 <form @submit.prevent="updateUser(new FormData($event.target), editingUser.id)">
-                    <input type="hidden" name="email" :value="editingUser.email">
                     <div class="mb-4">
-                        <label class="block text-sm font-medium mb-1">Nueva Contraseña (opcional)</label>
+                        <label class="block text-sm font-medium mb-1">Email</label>
+                        <input type="email" name="email" :value="editingUser.email" required class="w-full border p-2 rounded">
+                    </div>
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium mb-1">Username <span class="text-gray-400 font-normal">(opcional)</span></label>
+                        <input type="text" name="username" :value="editingUser.username || ''" class="w-full border p-2 rounded" placeholder="ej. jsuarez">
+                    </div>
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium mb-1">Nueva Contraseña <span class="text-gray-400 font-normal">(dejar vacío para no cambiar)</span></label>
                         <input type="password" name="password" class="w-full border p-2 rounded">
                     </div>
                     <div class="mb-4">
                         <label class="block text-sm font-medium mb-1">Rol</label>
-                        <select name="role" :value="editingUser.role" class="w-full border p-2 rounded">
+                        <select name="role" class="w-full border p-2 rounded"
+                                x-init="$el.value = editingUser.role">
                             <option value="user">Usuario</option>
                             <option value="admin">Administrador</option>
                         </select>

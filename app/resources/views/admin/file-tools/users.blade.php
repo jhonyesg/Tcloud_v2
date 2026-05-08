@@ -3,7 +3,7 @@
 @section('title', 'Asignar Plugins a Usuario - Tcloud')
 
 @section('content')
-<div class="p-6" x-data="userFileTools()">
+<div class="p-6" x-data="userFileTools()" x-cloak>
     <div class="flex justify-between items-center mb-6">
         <div>
             <h1 class="text-2xl font-bold text-gray-800">Plugins por Usuario</h1>

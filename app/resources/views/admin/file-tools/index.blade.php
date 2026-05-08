@@ -3,7 +3,7 @@
 @section('title', 'Herramientas de Archivo - Tcloud')
 
 @section('content')
-<div class="p-6" x-data="fileToolsAdmin()">
+<div class="p-6" x-data="fileToolsAdmin()" x-cloak>
     <div class="flex justify-between items-center mb-6">
         <div>
             <h1 class="text-2xl font-bold text-gray-800">Herramientas de Archivo</h1>

@@ -30,6 +30,7 @@ class UserController extends Controller
     {
         $request->validate([
             'email' => 'required|email|unique:users,email',
+            'username' => 'nullable|string|min:3|unique:users,username',
             'password' => 'required|min:8',
             'role' => 'required|in:admin,user',
             'personal_quota_bytes' => 'nullable|integer|min:0',
@@ -38,6 +39,7 @@ class UserController extends Controller
 
         $user = User::create([
             'email' => $request->email,
+            'username' => $request->username ?: null,
             'password_hash' => Hash::make($request->password),
             'role' => $request->role,
             'personal_quota_bytes' => $request->personal_quota_bytes ?? 0,
@@ -69,6 +71,7 @@ class UserController extends Controller
 
         $rules = [
             'email' => 'sometimes|email|unique:users,email,' . $id,
+            'username' => 'nullable|string|min:3|unique:users,username,' . $id,
             'role' => 'sometimes|in:admin,user',
             'personal_quota_bytes' => 'sometimes|integer|min:0',
         ];
@@ -79,7 +82,10 @@ class UserController extends Controller
 
         $request->validate($rules);
 
-        $data = $request->only(['email', 'role', 'personal_quota_bytes']);
+        $data = $request->only(['email', 'username', 'role', 'personal_quota_bytes']);
+        if (array_key_exists('username', $data) && $data['username'] === '') {
+            $data['username'] = null;
+        }
 
         if ($request->has('password')) {
             $data['password_hash'] = Hash::make($request->password);

@@ -6,7 +6,7 @@
     <meta name="csrf-token" content="{{ csrf_token() }}">
     <title>@yield('title', 'Tcloud')</title>
     <link rel="icon" type="image/png" href="/logo.png">
-    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="/js/tailwind.js"></script>
     <script>
         tailwind.config = {
             theme: {
@@ -29,8 +29,8 @@
             }
         }
     </script>
-    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <script defer src="/js/alpine.min.js"></script>
+    <link rel="stylesheet" href="/css/fontawesome.min.css">
     <style>
         [x-cloak] { display: none !important; }
         .glass-card {
@@ -155,33 +155,18 @@
                         <span class="text-xs font-semibold text-brand-400 uppercase tracking-wider">Navegación</span>
                     </div>
 
-                    <a href="/dashboard"
-                       class="flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg transition-colors
-                              {{ request()->is('dashboard')
-                                  ? 'bg-brand-700 text-white'
-                                  : 'text-brand-200 hover:bg-brand-800 hover:text-white' }}">
-                        <i class="fas fa-home w-5 text-center
-                                  {{ request()->is('dashboard') ? 'text-white' : 'text-brand-300' }}"></i>
+                    <a href="/dashboard" data-nav-path="/dashboard"                       class="nav-link flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg transition-colors text-brand-200 hover:bg-brand-800 hover:text-white">
+                        <i class="nav-icon fas fa-home w-5 text-center text-brand-300"></i>
                         <span x-show="sidebarOpen" x-transition class="font-medium text-sm">Dashboard</span>
                     </a>
 
-                    <a href="/files"
-                       class="flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg transition-colors
-                              {{ request()->is('files*')
-                                  ? 'bg-brand-700 text-white'
-                                  : 'text-brand-200 hover:bg-brand-800 hover:text-white' }}">
-                        <i class="fas fa-folder w-5 text-center
-                                  {{ request()->is('files*') ? 'text-white' : 'text-brand-300' }}"></i>
+                    <a href="/files" data-nav-path="/files"                       class="nav-link flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg transition-colors text-brand-200 hover:bg-brand-800 hover:text-white">
+                        <i class="nav-icon fas fa-folder w-5 text-center text-brand-300"></i>
                         <span x-show="sidebarOpen" x-transition class="font-medium text-sm">Mis Archivos</span>
                     </a>
 
-                    <a href="/shares"
-                       class="flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg transition-colors
-                              {{ request()->is('shares*')
-                                  ? 'bg-brand-700 text-white'
-                                  : 'text-brand-200 hover:bg-brand-800 hover:text-white' }}">
-                        <i class="fas fa-link w-5 text-center
-                                  {{ request()->is('shares*') ? 'text-white' : 'text-brand-300' }}"></i>
+                    <a href="/shares" data-nav-path="/shares"                       class="nav-link flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg transition-colors text-brand-200 hover:bg-brand-800 hover:text-white">
+                        <i class="nav-icon fas fa-link w-5 text-center text-brand-300"></i>
                         <span x-show="sidebarOpen" x-transition class="font-medium text-sm">Compartidos</span>
                     </a>
 
@@ -191,53 +176,28 @@
                     </div>
                     <div x-show="!sidebarOpen" class="mx-2 my-3 border-t border-brand-800"></div>
 
-                    <a href="/admin/users"
-                       class="flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg transition-colors
-                              {{ request()->is('admin/users*')
-                                  ? 'bg-brand-700 text-white'
-                                  : 'text-brand-200 hover:bg-brand-800 hover:text-white' }}">
-                        <i class="fas fa-users w-5 text-center
-                                  {{ request()->is('admin/users*') ? 'text-white' : 'text-brand-300' }}"></i>
+                    <a href="/admin/users" data-nav-path="/admin/users"                       class="nav-link flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg transition-colors text-brand-200 hover:bg-brand-800 hover:text-white">
+                        <i class="nav-icon fas fa-users w-5 text-center text-brand-300"></i>
                         <span x-show="sidebarOpen" x-transition class="font-medium text-sm">Usuarios</span>
                     </a>
 
-                    <a href="/admin/storages"
-                       class="flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg transition-colors
-                              {{ request()->is('admin/storages*')
-                                  ? 'bg-brand-700 text-white'
-                                  : 'text-brand-200 hover:bg-brand-800 hover:text-white' }}">
-                        <i class="fas fa-database w-5 text-center
-                                  {{ request()->is('admin/storages*') ? 'text-white' : 'text-brand-300' }}"></i>
+                    <a href="/admin/storages" data-nav-path="/admin/storages"                       class="nav-link flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg transition-colors text-brand-200 hover:bg-brand-800 hover:text-white">
+                        <i class="nav-icon fas fa-database w-5 text-center text-brand-300"></i>
                         <span x-show="sidebarOpen" x-transition class="font-medium text-sm">Storages</span>
                     </a>
 
-                    <a href="/admin/postgres"
-                       class="flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg transition-colors
-                              {{ request()->is('admin/postgres*')
-                                  ? 'bg-brand-700 text-white'
-                                  : 'text-brand-200 hover:bg-brand-800 hover:text-white' }}">
-                        <i class="fas fa-server w-5 text-center
-                                  {{ request()->is('admin/postgres*') ? 'text-white' : 'text-brand-300' }}"></i>
+                    <a href="/admin/postgres" data-nav-path="/admin/postgres"                       class="nav-link flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg transition-colors text-brand-200 hover:bg-brand-800 hover:text-white">
+                        <i class="nav-icon fas fa-server w-5 text-center text-brand-300"></i>
                         <span x-show="sidebarOpen" x-transition class="font-medium text-sm">PostgreSQL</span>
                     </a>
 
-                    <a href="/correo"
-                       class="flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg transition-colors
-                              {{ request()->is('correo*')
-                                  ? 'bg-brand-700 text-white'
-                                  : 'text-brand-200 hover:bg-brand-800 hover:text-white' }}">
-                        <i class="fas fa-envelope w-5 text-center
-                                  {{ request()->is('correo*') ? 'text-white' : 'text-brand-300' }}"></i>
+                    <a href="/correo" data-nav-path="/correo"                       class="nav-link flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg transition-colors text-brand-200 hover:bg-brand-800 hover:text-white">
+                        <i class="nav-icon fas fa-envelope w-5 text-center text-brand-300"></i>
                         <span x-show="sidebarOpen" x-transition class="font-medium text-sm">Correo</span>
                     </a>
 
-                    <a href="/admin/file-tools"
-                       class="flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg transition-colors
-                              {{ request()->is('admin/file-tools*')
-                                  ? 'bg-brand-700 text-white'
-                                  : 'text-brand-200 hover:bg-brand-800 hover:text-white' }}">
-                        <i class="fas fa-tools w-5 text-center
-                                  {{ request()->is('admin/file-tools*') ? 'text-white' : 'text-brand-300' }}"></i>
+                    <a href="/admin/file-tools" data-nav-path="/admin/file-tools"                       class="nav-link flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg transition-colors text-brand-200 hover:bg-brand-800 hover:text-white">
+                        <i class="nav-icon fas fa-tools w-5 text-center text-brand-300"></i>
                         <span x-show="sidebarOpen" x-transition class="font-medium text-sm">Herramientas</span>
                     </a>
                     @endif
@@ -401,5 +361,25 @@
     @endif
 
     @stack('scripts')
+    <script>
+    document.addEventListener('DOMContentLoaded', function () {
+        var path = window.location.pathname;
+        document.querySelectorAll('[data-nav-path]').forEach(function (link) {
+            var navPath = link.getAttribute('data-nav-path');
+            var isActive = path === navPath || (navPath !== '/dashboard' && path.startsWith(navPath));
+            if (isActive) {
+                link.classList.add('bg-brand-700', 'text-white');
+                link.classList.remove('text-brand-200');
+                var icon = link.querySelector('.nav-icon');
+                if (icon) { icon.classList.add('text-white'); icon.classList.remove('text-brand-300'); }
+            } else {
+                link.classList.remove('bg-brand-700', 'text-white');
+                link.classList.add('text-brand-200');
+                var icon = link.querySelector('.nav-icon');
+                if (icon) { icon.classList.remove('text-white'); icon.classList.add('text-brand-300'); }
+            }
+        });
+    });
+    </script>
 </body>
 </html>
