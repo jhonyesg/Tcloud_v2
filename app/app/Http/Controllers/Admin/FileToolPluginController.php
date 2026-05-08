@@ -32,6 +32,7 @@ class FileToolPluginController extends Controller
             'supported_mimes' => 'required|array',
             'resources' => 'required|array',
             'config' => 'nullable|array',
+            'is_default' => 'sometimes|boolean',
         ]);
 
         $plugin = $this->pluginService->createPlugin($validated);
@@ -62,6 +63,7 @@ class FileToolPluginController extends Controller
             'resources' => 'sometimes|array',
             'config' => 'nullable|array',
             'is_active' => 'sometimes|boolean',
+            'is_default' => 'sometimes|boolean',
         ]);
 
         $plugin = $this->pluginService->updatePlugin($plugin, $validated);

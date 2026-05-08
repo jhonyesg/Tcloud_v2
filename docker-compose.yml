@@ -12,6 +12,7 @@ services:
       - ./app:/var/www/html
       - ./data/storage:/var/www/html/storage/app  # DATA PERSISTENTE
       - ./docker/nginx/logs:/var/log/nginx
+      - /media/jsuarez/mis-archivos/06_Multimedia:/media/jsuarez/mis-archivos/06_Multimedia:ro
     depends_on:
       - php
     networks:

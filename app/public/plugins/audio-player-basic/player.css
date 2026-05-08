@@ -1,0 +1,60 @@
+.audio-player-basic {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 40px 20px;
+    background: #f8f9fa;
+    border-radius: 6px;
+}
+
+.audio-player-basic-icon {
+    color: #3b82f6;
+    margin-bottom: 16px;
+}
+
+.audio-player-basic-header {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    margin-bottom: 20px;
+}
+
+.audio-player-basic-filename {
+    font-size: 16px;
+    font-weight: 500;
+    color: #1f2937;
+    text-align: center;
+    word-break: break-word;
+    max-width: 400px;
+}
+
+.audio-player-basic-filesize {
+    font-size: 13px;
+    color: #6b7280;
+}
+
+.audio-player-basic-controls {
+    width: 100%;
+    max-width: 500px;
+}
+
+.audio-player-basic-audio {
+    width: 100%;
+}
+
+.audio-player-basic-footer {
+    margin-top: 16px;
+}
+
+.audio-player-basic-download {
+    color: #3b82f6;
+    font-size: 13px;
+    text-decoration: none;
+}
+
+.audio-player-basic-download:hover {
+    color: #2563eb;
+}

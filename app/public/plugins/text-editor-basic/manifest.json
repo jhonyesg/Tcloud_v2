@@ -1,0 +1,17 @@
+{
+    "name": "Editor de Texto",
+    "slug": "text-editor-basic",
+    "version": "1.0.0",
+    "type": "editor",
+    "description": "Editor/visor de texto con resaltado de sintaxis básico",
+    "author": "Tcloud",
+    "supported_mimes": ["text/plain", "text/html", "text/css", "text/javascript", "application/json"],
+    "resources": {
+        "js": ["/plugins/text-editor-basic/editor.js"],
+        "css": ["/plugins/text-editor-basic/editor.css"]
+    },
+    "config": {
+        "theme": "light",
+        "lineNumbers": true
+    }
+}

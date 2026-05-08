@@ -196,11 +196,15 @@ class PublicShareController extends Controller
 
         $this->logAccess($share->id, $request->ip());
 
+        $pluginService = app(\App\Services\FileToolPluginService::class);
+        $defaultPlugins = $pluginService->getDefaultPluginsForMime($mimeType);
+
         return view('shares.preview', [
             'share' => $share,
             'file' => $file,
             'mimeType' => $mimeType,
             'previewUrl' => "/s/{$token}/download/{$file->id}",
+            'availableTools' => $defaultPlugins,
         ]);
     }
 

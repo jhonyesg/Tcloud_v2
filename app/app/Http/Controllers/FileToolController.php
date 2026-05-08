@@ -31,4 +31,15 @@ class FileToolController extends Controller
 
         return response()->json(['data' => $plugins]);
     }
+
+    public function defaultForMime(Request $request): JsonResponse
+    {
+        $mime = $request->query('mime');
+        if (!$mime) {
+            return response()->json(['data' => []]);
+        }
+
+        $plugins = $this->pluginService->getDefaultPluginsForMime($mime);
+        return response()->json(['data' => $plugins]);
+    }
 }

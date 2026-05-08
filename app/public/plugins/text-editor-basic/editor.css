@@ -1,0 +1,119 @@
+.text-editor-basic {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    background: #fff;
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.text-editor-basic-toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    background: #f8f9fa;
+    border-bottom: 1px solid #e0e0e0;
+    flex-shrink: 0;
+}
+
+.text-editor-basic-filename {
+    font-weight: 500;
+    color: #1f2937;
+    font-size: 14px;
+}
+
+.text-editor-basic-meta {
+    color: #6b7280;
+    font-size: 12px;
+}
+
+.text-editor-basic-download {
+    color: #3b82f6;
+    font-size: 12px;
+    text-decoration: none;
+    padding: 3px 8px;
+    border: 1px solid #93c5fd;
+    border-radius: 4px;
+    white-space: nowrap;
+}
+
+.text-editor-basic-download:hover {
+    background: #eff6ff;
+    color: #2563eb;
+}
+
+.text-editor-basic-content {
+    flex: 1;
+    overflow: hidden;
+    position: relative;
+}
+
+.text-editor-basic-scroll {
+    height: 100%;
+    overflow: auto;
+    background: #fafafa;
+}
+
+.text-editor-basic-table {
+    border-collapse: collapse;
+    width: 100%;
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.text-editor-basic-line-num {
+    padding: 0 12px 0 8px;
+    text-align: right;
+    color: #9ca3af;
+    background: #f3f4f6;
+    border-right: 1px solid #e5e7eb;
+    user-select: none;
+    white-space: nowrap;
+    vertical-align: top;
+    width: 1%;
+}
+
+.text-editor-basic-line-code {
+    padding: 0 12px;
+    white-space: pre-wrap;
+    word-break: break-all;
+    color: #1f2937;
+}
+
+.text-editor-basic-pre {
+    margin: 0;
+    padding: 12px;
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    color: #1f2937;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+.text-editor-basic-loading {
+    padding: 40px;
+    text-align: center;
+    color: #6b7280;
+}
+
+.text-editor-basic-error {
+    padding: 40px;
+    text-align: center;
+    color: #dc2626;
+    background: #fef2f2;
+}
+
+.teb-key { color: #7c3aed; }
+.teb-string { color: #059669; }
+.teb-number { color: #d97706; }
+.teb-keyword { color: #dc2626; }
+.teb-tag { color: #2563eb; }
+.teb-attr { color: #7c3aed; }
+.teb-selector { color: #dc2626; }
+.teb-value { color: #059669; }
+.teb-comment { color: #6b7280; font-style: italic; }

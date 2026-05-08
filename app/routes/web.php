@@ -91,6 +91,7 @@ Route::middleware('auth')->group(function () {
     Route::get('/files/{file}/download', [App\Http\Controllers\FileController::class, 'download']);
     Route::get('/files/{file}/preview', [App\Http\Controllers\FileController::class, 'preview']);
     Route::get('/files/{file}/view', [App\Http\Controllers\FileController::class, 'view']);
+    Route::post('/files/{file}/rotate', [App\Http\Controllers\FileController::class, 'rotate']);
 
     Route::get('/media/{file}/preview', [App\Http\Controllers\MediaPreviewController::class, 'preview']);
     Route::get('/media/{file}/thumbnail', [App\Http\Controllers\MediaPreviewController::class, 'thumbnail']);
@@ -98,6 +99,7 @@ Route::middleware('auth')->group(function () {
     Route::resource('shares', App\Http\Controllers\ShareController::class)->only(['index', 'store', 'show', 'update', 'destroy']);
 
     Route::get('/file-tools/available', [FileToolController::class, 'available']);
+    Route::get('/file-tools/default', [FileToolController::class, 'defaultForMime']);
 });
 
 Route::get('/s/{token}', [App\Http\Controllers\PublicShareController::class, 'show']);

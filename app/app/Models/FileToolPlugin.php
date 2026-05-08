@@ -17,6 +17,7 @@ class FileToolPlugin extends Model
         'resources',
         'config',
         'is_active',
+        'is_default',
     ];
 
     protected $casts = [
@@ -24,7 +25,13 @@ class FileToolPlugin extends Model
         'resources' => 'array',
         'config' => 'array',
         'is_active' => 'boolean',
+        'is_default' => 'boolean',
     ];
+
+    public function scopeDefault($query)
+    {
+        return $query->where('is_default', true);
+    }
 
     public function userPlugins(): HasMany
     {

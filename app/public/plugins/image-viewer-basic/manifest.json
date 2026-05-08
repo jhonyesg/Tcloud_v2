@@ -1,0 +1,17 @@
+{
+    "name": "Visor de Imágenes",
+    "slug": "image-viewer-basic",
+    "version": "1.0.0",
+    "type": "viewer",
+    "description": "Visor de imágenes con zoom, rotación y descarga",
+    "author": "Tcloud",
+    "supported_mimes": ["image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml"],
+    "resources": {
+        "js": ["/plugins/image-viewer-basic/viewer.js"],
+        "css": ["/plugins/image-viewer-basic/viewer.css"]
+    },
+    "config": {
+        "zoomEnabled": true,
+        "panEnabled": true
+    }
+}

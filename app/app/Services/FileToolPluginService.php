@@ -21,7 +21,7 @@ class FileToolPluginService
 
     public function getPluginsForUser(int $userId): Collection
     {
-        return UserFileToolPlugin::where('user_id', $userId)
+        $userPlugins = UserFileToolPlugin::where('user_id', $userId)
             ->where('is_active', true)
             ->where(function ($query) {
                 $query->whereNull('expires_at')
@@ -33,6 +33,27 @@ class FileToolPluginService
             ->with('plugin')
             ->get()
             ->pluck('plugin');
+
+        if ($userPlugins->isEmpty()) {
+            return $this->getDefaultPlugins();
+        }
+
+        return $userPlugins;
+    }
+
+    public function getDefaultPlugins(): Collection
+    {
+        return FileToolPlugin::where('is_active', true)
+            ->where('is_default', true)
+            ->get();
+    }
+
+    public function getDefaultPluginsForMime(string $mime): Collection
+    {
+        $plugins = $this->getDefaultPlugins();
+        return $plugins->filter(function ($plugin) use ($mime) {
+            return $plugin->supportsMime($mime);
+        });
     }
 
     public function getPluginsForMime(int $userId, string $mime): Collection

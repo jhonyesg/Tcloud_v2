@@ -9,6 +9,8 @@ use App\Services\StorageSyncService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Session;
+use Symfony\Component\HttpFoundation\BinaryFileResponse;
+use Symfony\Component\HttpFoundation\ResponseHeaderBag;
 
 class FileController extends Controller
 {
@@ -247,6 +249,17 @@ class FileController extends Controller
         }
 
         $path = $this->generatePath($parentId, $filename, $storage);
+        $destDir = dirname(rtrim($storage->base_path, '/') . '/' . $path);
+
+        if (!is_dir($destDir)) {
+            mkdir($destDir, 0755, true);
+        }
+
+        if (!is_writable($destDir)) {
+            return response()->json(['error' => 'El directorio de destino no tiene permisos de escritura'], 500);
+        }
+
+        $file->move($destDir, $filename);
 
         $storedFile = File::create([
             'name' => $filename,
@@ -267,7 +280,78 @@ class FileController extends Controller
         return response()->json($storedFile, 201);
     }
 
-    public function download(int $id)
+    public function rotate(Request $request, int $file)
+    {
+        $user = $this->getUser();
+        if (!$user) return response()->json(['error' => 'Unauthorized'], 401);
+
+        $request->validate(['degrees' => 'required|integer|in:90,180,270']);
+
+        $fileModel = File::findOrFail($file);
+
+        if (!$this->checkFilePermission($fileModel, 'write')) {
+            return response()->json(['error' => 'Sin permisos de escritura'], 403);
+        }
+
+        if (!str_starts_with($fileModel->mime_type ?? '', 'image/')) {
+            return response()->json(['error' => 'Solo se pueden rotar imágenes'], 400);
+        }
+
+        $storage = $fileModel->storageProvider;
+        if (!$storage || $storage->type !== 'local') {
+            return response()->json(['error' => 'Operación no soportada para este storage'], 400);
+        }
+
+        $fullPath = rtrim($storage->base_path, '/') . '/' . $fileModel->path;
+        if (!file_exists($fullPath)) {
+            return response()->json(['error' => 'Archivo no encontrado en disco'], 404);
+        }
+
+        $degrees = (int) $request->degrees;
+        // GD rota en sentido antihorario; negamos para obtener sentido horario (igual que CSS)
+        $gdDegrees = (360 - $degrees) % 360;
+
+        $img = imagecreatefromstring(file_get_contents($fullPath));
+        if (!$img) {
+            return response()->json(['error' => 'No se pudo leer la imagen'], 500);
+        }
+
+        $rotated = imagerotate($img, $gdDegrees, 0);
+        imagedestroy($img);
+
+        if (!$rotated) {
+            return response()->json(['error' => 'Error al rotar la imagen'], 500);
+        }
+
+        $mime = $fileModel->mime_type;
+        $saved = false;
+        if ($mime === 'image/jpeg' || $mime === 'image/jpg') {
+            $saved = imagejpeg($rotated, $fullPath, 92);
+        } elseif ($mime === 'image/png') {
+            imagesavealpha($rotated, true);
+            $saved = imagepng($rotated, $fullPath, 6);
+        } elseif ($mime === 'image/webp') {
+            $saved = imagewebp($rotated, $fullPath, 92);
+        } elseif ($mime === 'image/gif') {
+            $saved = imagegif($rotated, $fullPath);
+        } else {
+            imagedestroy($rotated);
+            return response()->json(['error' => 'Formato de imagen no soportado para guardar'], 400);
+        }
+
+        imagedestroy($rotated);
+
+        if (!$saved) {
+            return response()->json(['error' => 'No se pudo guardar la imagen rotada'], 500);
+        }
+
+        $newSize = filesize($fullPath);
+        $fileModel->update(['size' => $newSize]);
+
+        return response()->json(['ok' => true, 'size' => $newSize]);
+    }
+
+    public function download(Request $request, int $id)
     {
         $file = File::findOrFail($id);
 
@@ -280,7 +364,6 @@ class FileController extends Controller
             return response()->json(['error' => 'Download not supported for this storage type'], 400);
         }
 
-        $fullPath = $storage->base_path . '/' . $file->path;
         $realBasePath = realpath($storage->base_path);
         $realFullPath = realpath($storage->base_path . '/' . $file->path);
 
@@ -292,9 +375,12 @@ class FileController extends Controller
             return response()->json(['error' => 'File not found'], 404);
         }
 
-        return response()->download($fullPath, $file->name, [
-            'X-Accel-Redirect' => '/protected-files/' . $file->path,
-        ]);
+        $response = new BinaryFileResponse($realFullPath);
+        $response->headers->set('Content-Type', 'application/octet-stream');
+        $response->headers->set('X-Accel-Buffering', 'no');
+        $response->setContentDisposition(ResponseHeaderBag::DISPOSITION_ATTACHMENT, $file->name);
+        $response->prepare($request);
+        return $response;
     }
 
     public function preview(int $id)

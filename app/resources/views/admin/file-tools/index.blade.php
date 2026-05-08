@@ -122,6 +122,13 @@
                         <span class="text-sm font-medium text-gray-700">Activo</span>
                     </label>
                 </div>
+                <div>
+                    <label class="flex items-center gap-2">
+                        <input type="checkbox" x-model="modal.data.is_default" class="rounded">
+                        <span class="text-sm font-medium text-gray-700">Default (disponible para todos)</span>
+                    </label>
+                    <p class="text-xs text-gray-500 mt-1">Los plugins default se muestran a usuarios sin plugins asignados explícitamente</p>
+                </div>
             </div>
             <div class="flex justify-end gap-3 p-4 border-t">
                 <button @click="closeModal()" class="px-4 py-2 border rounded hover:bg-gray-50 text-sm">Cancelar</button>
@@ -151,7 +158,7 @@ function fileToolsAdmin() {
             isEdit: false,
             saving: false,
             errors: {},
-            data: { name: '', slug: '', type: '', mimesInput: '', jsInput: '', cssInput: '', is_active: true }
+            data: { name: '', slug: '', type: '', mimesInput: '', jsInput: '', cssInput: '', is_active: true, is_default: false }
         },
         toast: { show: false, message: '', success: true },
 
@@ -187,7 +194,8 @@ function fileToolsAdmin() {
                 mimesInput: (plugin.supported_mimes || []).join(', '),
                 jsInput: (plugin.resources?.js || []).join(', '),
                 cssInput: (plugin.resources?.css || []).join(', '),
-                is_active: plugin.is_active
+                is_active: plugin.is_active,
+                is_default: plugin.is_default || false
             };
             this.modal.open = true;
         },
@@ -218,7 +226,8 @@ function fileToolsAdmin() {
                 type: this.modal.data.type,
                 supported_mimes: mimes,
                 resources: { js: jsFiles, css: cssFiles },
-                is_active: this.modal.data.is_active
+                is_active: this.modal.data.is_active,
+                is_default: this.modal.data.is_default
             };
 
             if (!this.modal.isEdit) {

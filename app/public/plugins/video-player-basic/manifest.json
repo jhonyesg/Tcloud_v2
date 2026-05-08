@@ -1,0 +1,17 @@
+{
+    "name": "Reproductor de Video",
+    "slug": "video-player-basic",
+    "version": "1.0.0",
+    "type": "player",
+    "description": "Reproductor de video con controles nativos y descarga",
+    "author": "Tcloud",
+    "supported_mimes": ["video/mp4", "video/webm", "video/ogg"],
+    "resources": {
+        "js": ["/plugins/video-player-basic/player.js"],
+        "css": ["/plugins/video-player-basic/player.css"]
+    },
+    "config": {
+        "autoplay": false,
+        "controls": true
+    }
+}

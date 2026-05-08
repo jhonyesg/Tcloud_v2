@@ -230,6 +230,16 @@
                                   <?php echo e(request()->is('correo*') ? 'text-white' : 'text-brand-300'); ?>"></i>
                         <span x-show="sidebarOpen" x-transition class="font-medium text-sm">Correo</span>
                     </a>
+
+                    <a href="/admin/file-tools"
+                       class="flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg transition-colors
+                              <?php echo e(request()->is('admin/file-tools*')
+                                  ? 'bg-brand-700 text-white'
+                                  : 'text-brand-200 hover:bg-brand-800 hover:text-white'); ?>">
+                        <i class="fas fa-tools w-5 text-center
+                                  <?php echo e(request()->is('admin/file-tools*') ? 'text-white' : 'text-brand-300'); ?>"></i>
+                        <span x-show="sidebarOpen" x-transition class="font-medium text-sm">Herramientas</span>
+                    </a>
                     <?php endif; ?>
                 </nav>
 

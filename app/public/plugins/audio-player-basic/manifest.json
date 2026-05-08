@@ -1,0 +1,16 @@
+{
+    "name": "Reproductor de Audio",
+    "slug": "audio-player-basic",
+    "version": "1.0.0",
+    "type": "player",
+    "description": "Reproductor de audio con controles nativos y descarga",
+    "author": "Tcloud",
+    "supported_mimes": ["audio/mpeg", "audio/wav", "audio/ogg", "audio/flac", "audio/mp4"],
+    "resources": {
+        "js": ["/plugins/audio-player-basic/player.js"],
+        "css": ["/plugins/audio-player-basic/player.css"]
+    },
+    "config": {
+        "autoplay": false
+    }
+}

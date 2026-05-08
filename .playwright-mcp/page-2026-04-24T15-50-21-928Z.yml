@@ -1,0 +1,241 @@
+- generic [ref=e5]:
+  - generic [ref=e7]:
+    - generic [ref=e8]:
+      - img [ref=e10]
+      - generic [ref=e12]:
+        - heading "Temporada 1" [level=1] [ref=e13]
+        - paragraph [ref=e14]: Carpeta compartida por jsuarez@mediaclouding.com
+    - generic [ref=e16]: Write
+  - generic [ref=e17]:
+    - navigation [ref=e18]:
+      - link "Albertano contra los mostros" [ref=e19] [cursor=pointer]:
+        - /url: http://localhost:8080/s/Ae3cUnBw7FhaZXLgrV3qLBGTD1RTRWHn/folder/1279
+      - img [ref=e20]
+      - generic [ref=e22]: Temporada 1
+    - generic [ref=e23]:
+      - heading "Contenido" [level=2] [ref=e24]
+      - button "Subir archivo" [ref=e25] [cursor=pointer]:
+        - img [ref=e26]
+        - text: Subir archivo
+    - generic [ref=e28]:
+      - button "Nombre" [ref=e29] [cursor=pointer]:
+        - text: Nombre
+        - img [ref=e30]
+      - button "Tamaño" [ref=e32] [cursor=pointer]
+    - generic [ref=e33]:
+      - generic [ref=e34]:
+        - generic [ref=e35]:
+          - img [ref=e37]
+          - generic [ref=e40]:
+            - paragraph [ref=e41]: Capitulo 02.mp4
+            - paragraph [ref=e42]: 655,069.1 KB
+        - generic [ref=e43]:
+          - button "Ver" [ref=e44] [cursor=pointer]:
+            - img [ref=e45]
+          - link "Descargar" [ref=e48] [cursor=pointer]:
+            - /url: http://localhost:8080/s/Ae3cUnBw7FhaZXLgrV3qLBGTD1RTRWHn/download/1313
+            - img [ref=e49]
+          - generic [ref=e51]:
+            - textbox [ref=e52]: Capitulo 02.mp4
+            - button "Renombrar" [ref=e53] [cursor=pointer]:
+              - img [ref=e54]
+          - button "Eliminar" [ref=e56] [cursor=pointer]:
+            - img [ref=e57]
+      - generic [ref=e59]:
+        - generic [ref=e60]:
+          - img [ref=e62]
+          - generic [ref=e65]:
+            - paragraph [ref=e66]: Capitulo 1.mp4
+            - paragraph [ref=e67]: 655,212.4 KB
+        - generic [ref=e68]:
+          - button "Ver" [ref=e69] [cursor=pointer]:
+            - img [ref=e70]
+          - link "Descargar" [ref=e73] [cursor=pointer]:
+            - /url: http://localhost:8080/s/Ae3cUnBw7FhaZXLgrV3qLBGTD1RTRWHn/download/1314
+            - img [ref=e74]
+          - generic [ref=e76]:
+            - textbox [ref=e77]: Capitulo 1.mp4
+            - button "Renombrar" [ref=e78] [cursor=pointer]:
+              - img [ref=e79]
+          - button "Eliminar" [ref=e81] [cursor=pointer]:
+            - img [ref=e82]
+      - generic [ref=e84]:
+        - generic [ref=e85]:
+          - img [ref=e87]
+          - generic [ref=e90]:
+            - paragraph [ref=e91]: Capitulo 10.mkv
+            - paragraph [ref=e92]: 963,983.6 KB
+        - generic [ref=e93]:
+          - button "Ver" [ref=e94] [cursor=pointer]:
+            - img [ref=e95]
+          - link "Descargar" [ref=e98] [cursor=pointer]:
+            - /url: http://localhost:8080/s/Ae3cUnBw7FhaZXLgrV3qLBGTD1RTRWHn/download/1315
+            - img [ref=e99]
+          - generic [ref=e101]:
+            - textbox [ref=e102]: Capitulo 10.mkv
+            - button "Renombrar" [ref=e103] [cursor=pointer]:
+              - img [ref=e104]
+          - button "Eliminar" [ref=e106] [cursor=pointer]:
+            - img [ref=e107]
+      - generic [ref=e109]:
+        - generic [ref=e110]:
+          - img [ref=e112]
+          - generic [ref=e115]:
+            - paragraph [ref=e116]: Capitulo 11.mkv
+            - paragraph [ref=e117]: 964,168.4 KB
+        - generic [ref=e118]:
+          - button "Ver" [ref=e119] [cursor=pointer]:
+            - img [ref=e120]
+          - link "Descargar" [ref=e123] [cursor=pointer]:
+            - /url: http://localhost:8080/s/Ae3cUnBw7FhaZXLgrV3qLBGTD1RTRWHn/download/1316
+            - img [ref=e124]
+          - generic [ref=e126]:
+            - textbox [ref=e127]: Capitulo 11.mkv
+            - button "Renombrar" [ref=e128] [cursor=pointer]:
+              - img [ref=e129]
+          - button "Eliminar" [ref=e131] [cursor=pointer]:
+            - img [ref=e132]
+      - generic [ref=e134]:
+        - generic [ref=e135]:
+          - img [ref=e137]
+          - generic [ref=e140]:
+            - paragraph [ref=e141]: Capitulo 12.mkv
+            - paragraph [ref=e142]: 969,873.5 KB
+        - generic [ref=e143]:
+          - button "Ver" [ref=e144] [cursor=pointer]:
+            - img [ref=e145]
+          - link "Descargar" [ref=e148] [cursor=pointer]:
+            - /url: http://localhost:8080/s/Ae3cUnBw7FhaZXLgrV3qLBGTD1RTRWHn/download/1317
+            - img [ref=e149]
+          - generic [ref=e151]:
+            - textbox [ref=e152]: Capitulo 12.mkv
+            - button "Renombrar" [ref=e153] [cursor=pointer]:
+              - img [ref=e154]
+          - button "Eliminar" [ref=e156] [cursor=pointer]:
+            - img [ref=e157]
+      - generic [ref=e159]:
+        - generic [ref=e160]:
+          - img [ref=e162]
+          - generic [ref=e165]:
+            - paragraph [ref=e166]: Capitulo 3.mkv
+            - paragraph [ref=e167]: 966,138.6 KB
+        - generic [ref=e168]:
+          - button "Ver" [ref=e169] [cursor=pointer]:
+            - img [ref=e170]
+          - link "Descargar" [ref=e173] [cursor=pointer]:
+            - /url: http://localhost:8080/s/Ae3cUnBw7FhaZXLgrV3qLBGTD1RTRWHn/download/1318
+            - img [ref=e174]
+          - generic [ref=e176]:
+            - textbox [ref=e177]: Capitulo 3.mkv
+            - button "Renombrar" [ref=e178] [cursor=pointer]:
+              - img [ref=e179]
+          - button "Eliminar" [ref=e181] [cursor=pointer]:
+            - img [ref=e182]
+      - generic [ref=e184]:
+        - generic [ref=e185]:
+          - img [ref=e187]
+          - generic [ref=e190]:
+            - paragraph [ref=e191]: Capitulo 4.mkv
+            - paragraph [ref=e192]: 966,824.3 KB
+        - generic [ref=e193]:
+          - button "Ver" [ref=e194] [cursor=pointer]:
+            - img [ref=e195]
+          - link "Descargar" [ref=e198] [cursor=pointer]:
+            - /url: http://localhost:8080/s/Ae3cUnBw7FhaZXLgrV3qLBGTD1RTRWHn/download/1319
+            - img [ref=e199]
+          - generic [ref=e201]:
+            - textbox [ref=e202]: Capitulo 4.mkv
+            - button "Renombrar" [ref=e203] [cursor=pointer]:
+              - img [ref=e204]
+          - button "Eliminar" [ref=e206] [cursor=pointer]:
+            - img [ref=e207]
+      - generic [ref=e209]:
+        - generic [ref=e210]:
+          - img [ref=e212]
+          - generic [ref=e215]:
+            - paragraph [ref=e216]: Capitulo 5.mkv
+            - paragraph [ref=e217]: 968,784.7 KB
+        - generic [ref=e218]:
+          - button "Ver" [ref=e219] [cursor=pointer]:
+            - img [ref=e220]
+          - link "Descargar" [ref=e223] [cursor=pointer]:
+            - /url: http://localhost:8080/s/Ae3cUnBw7FhaZXLgrV3qLBGTD1RTRWHn/download/1320
+            - img [ref=e224]
+          - generic [ref=e226]:
+            - textbox [ref=e227]: Capitulo 5.mkv
+            - button "Renombrar" [ref=e228] [cursor=pointer]:
+              - img [ref=e229]
+          - button "Eliminar" [ref=e231] [cursor=pointer]:
+            - img [ref=e232]
+      - generic [ref=e234]:
+        - generic [ref=e235]:
+          - img [ref=e237]
+          - generic [ref=e240]:
+            - paragraph [ref=e241]: Capitulo 6.mp4
+            - paragraph [ref=e242]: 694,623.1 KB
+        - generic [ref=e243]:
+          - button "Ver" [ref=e244] [cursor=pointer]:
+            - img [ref=e245]
+          - link "Descargar" [ref=e248] [cursor=pointer]:
+            - /url: http://localhost:8080/s/Ae3cUnBw7FhaZXLgrV3qLBGTD1RTRWHn/download/1321
+            - img [ref=e249]
+          - generic [ref=e251]:
+            - textbox [ref=e252]: Capitulo 6.mp4
+            - button "Renombrar" [ref=e253] [cursor=pointer]:
+              - img [ref=e254]
+          - button "Eliminar" [ref=e256] [cursor=pointer]:
+            - img [ref=e257]
+      - generic [ref=e259]:
+        - generic [ref=e260]:
+          - img [ref=e262]
+          - generic [ref=e265]:
+            - paragraph [ref=e266]: Capitulo 7.mkv
+            - paragraph [ref=e267]: 962,372.5 KB
+        - generic [ref=e268]:
+          - button "Ver" [ref=e269] [cursor=pointer]:
+            - img [ref=e270]
+          - link "Descargar" [ref=e273] [cursor=pointer]:
+            - /url: http://localhost:8080/s/Ae3cUnBw7FhaZXLgrV3qLBGTD1RTRWHn/download/1322
+            - img [ref=e274]
+          - generic [ref=e276]:
+            - textbox [ref=e277]: Capitulo 7.mkv
+            - button "Renombrar" [ref=e278] [cursor=pointer]:
+              - img [ref=e279]
+          - button "Eliminar" [ref=e281] [cursor=pointer]:
+            - img [ref=e282]
+      - generic [ref=e284]:
+        - generic [ref=e285]:
+          - img [ref=e287]
+          - generic [ref=e290]:
+            - paragraph [ref=e291]: Capitulo 8.mkv
+            - paragraph [ref=e292]: 968,023.0 KB
+        - generic [ref=e293]:
+          - button "Ver" [ref=e294] [cursor=pointer]:
+            - img [ref=e295]
+          - link "Descargar" [ref=e298] [cursor=pointer]:
+            - /url: http://localhost:8080/s/Ae3cUnBw7FhaZXLgrV3qLBGTD1RTRWHn/download/1323
+            - img [ref=e299]
+          - generic [ref=e301]:
+            - textbox [ref=e302]: Capitulo 8.mkv
+            - button "Renombrar" [ref=e303] [cursor=pointer]:
+              - img [ref=e304]
+          - button "Eliminar" [ref=e306] [cursor=pointer]:
+            - img [ref=e307]
+      - generic [ref=e309]:
+        - generic [ref=e310]:
+          - img [ref=e312]
+          - generic [ref=e315]:
+            - paragraph [ref=e316]: Capitulo 9.mkv
+            - paragraph [ref=e317]: 966,496.5 KB
+        - generic [ref=e318]:
+          - button "Ver" [ref=e319] [cursor=pointer]:
+            - img [ref=e320]
+          - link "Descargar" [ref=e323] [cursor=pointer]:
+            - /url: http://localhost:8080/s/Ae3cUnBw7FhaZXLgrV3qLBGTD1RTRWHn/download/1324
+            - img [ref=e324]
+          - generic [ref=e326]:
+            - textbox [ref=e327]: Capitulo 9.mkv
+            - button "Renombrar" [ref=e328] [cursor=pointer]:
+              - img [ref=e329]
+          - button "Eliminar" [ref=e331] [cursor=pointer]:
+            - img [ref=e332]
