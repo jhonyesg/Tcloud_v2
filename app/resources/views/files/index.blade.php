@@ -47,12 +47,14 @@ document.addEventListener('alpine:init', () => {
     viewerFiles: [],
     renamingFileId: null,
     renamingFileName: '',
-    deleteConfirmFile: null,
+deleteConfirmFile: null,
+        ready: false,
 
-    async init() {
-        await this.loadStorages();
-        await this.restoreNavState();
-    },
+        async init() {
+            await this.loadStorages();
+            await this.restoreNavState();
+            this.ready = true;
+        },
 
     saveNavState() {
         localStorage.setItem('tcloud_files_nav', JSON.stringify({
@@ -144,6 +146,9 @@ document.addEventListener('alpine:init', () => {
         if (res.ok) {
             const data = await res.json();
             this.availableStorages = data.storages || [];
+            if (this.availableStorages.length === 1) {
+                this.enterStorage(this.availableStorages[0].id, this.availableStorages[0].name);
+            }
         }
     },
 
@@ -652,7 +657,7 @@ document.addEventListener('alpine:init', () => {
     }));
 });
 </script>
-<div class="min-h-screen bg-slate-100" x-data="fileManager()" x-init="init()">
+<div class="min-h-screen bg-slate-100" x-data="fileManager()" x-init="init()" x-show="ready" x-cloak>
     <header class="bg-white shadow-sm border-b border-slate-200">
         <div class="px-6 py-4 flex items-center justify-between">
             <div class="flex items-center gap-3">
