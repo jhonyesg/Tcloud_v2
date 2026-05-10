@@ -109,6 +109,13 @@ class UserController extends Controller
         return response()->json(['message' => 'User deleted']);
     }
 
+    public function toggleMediaEditor(int $id)
+    {
+        $user = User::findOrFail($id);
+        $user->update(['media_editor_enabled' => !$user->media_editor_enabled]);
+        return response()->json(['media_editor_enabled' => $user->media_editor_enabled]);
+    }
+
     public function profile(Request $request)
     {
         $userId = Session::get('user_id');

@@ -45,6 +45,29 @@ class FileController extends Controller
         }
 
         if ($request->ajax() || $request->wantsJson()) {
+            $searchTerm = $request->has('q') && strlen(trim($request->q)) >= 2 ? trim($request->q) : null;
+
+            if ($searchTerm !== null) {
+                $storageId = $request->has('storage_id') ? $request->storage_id : null;
+
+                $query = File::query()->where('name', 'ilike', '%' . $searchTerm . '%');
+
+                if ($storageId !== null) {
+                    $query->where('storage_provider_id', $storageId);
+                }
+
+                if (!$user->isAdmin()) {
+                    $userStorageIds = $user->userStorages()->pluck('storage_provider_id')->toArray();
+                    $query->where(function ($q) use ($user, $userStorageIds) {
+                        $q->where('owner_id', $user->id)
+                          ->orWhereIn('storage_provider_id', $userStorageIds);
+                    });
+                }
+
+                $files = $query->orderBy('is_folder', 'desc')->orderBy('name')->get();
+                return response()->json($files);
+            }
+
             $parentId = $request->has('parent_id') ? $request->parent_id : null;
             $storageId = $request->has('storage_id') ? $request->storage_id : null;
 

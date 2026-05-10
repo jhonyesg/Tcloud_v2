@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\User;
 use App\Models\StorageProvider;
 use Aws\S3\S3Client;
 use Illuminate\Http\Request;
@@ -157,6 +158,24 @@ class StorageProviderController extends Controller
         ]);
     }
 
+    public function searchUsers(Request $request)
+    {
+        $query = $request->input('q', '');
+
+        $users = User::orderBy('username');
+
+        if (strlen($query) >= 1) {
+            $users->where(function ($q) use ($query) {
+                $q->where('username', 'like', '%' . $query . '%')
+                  ->orWhere('email', 'like', '%' . $query . '%');
+            })->limit(20);
+        }
+
+        return response()->json(
+            $users->get(['id', 'username', 'email'])
+        );
+    }
+
     public function users(int $id, Request $request)
     {
         $storage = StorageProvider::findOrFail($id);
@@ -168,6 +187,7 @@ class StorageProviderController extends Controller
                 ->map(function ($us) {
                     return [
                         'user_id' => $us->user_id,
+                        'user_username' => $us->user->username,
                         'user_email' => $us->user->email,
                         'storage_provider_id' => $us->storage_provider_id,
                         'permissions' => $us->permissions,
@@ -182,6 +202,7 @@ class StorageProviderController extends Controller
         $userStorages = $storage->userStorages()->with('user')->get()->map(function ($us) {
             return [
                 'user_id' => $us->user_id,
+                'user_username' => $us->user->username,
                 'user_email' => $us->user->email,
                 'permissions' => $us->permissions,
                 'can_create_shares' => $us->can_create_shares,
@@ -225,6 +246,7 @@ class StorageProviderController extends Controller
 
         return response()->json([
             'user_id' => $userStorage->user_id,
+            'user_username' => $userStorage->user->username,
             'user_email' => $userStorage->user->email,
             'storage_provider_id' => $userStorage->storage_provider_id,
             'permissions' => $userStorage->permissions,
@@ -250,6 +272,7 @@ class StorageProviderController extends Controller
 
         return response()->json([
             'user_id' => $userStorage->user_id,
+            'user_username' => $userStorage->user->username,
             'user_email' => $userStorage->user->email,
             'storage_provider_id' => $userStorage->storage_provider_id,
             'permissions' => $userStorage->permissions,
@@ -275,5 +298,34 @@ class StorageProviderController extends Controller
         $userStorage->delete();
 
         return response()->json(['message' => 'User assignment removed']);
+    }
+
+    public function assignAll(int $id)
+    {
+        $storage = StorageProvider::findOrFail($id);
+
+        $assignedIds = $storage->userStorages()->pluck('user_id')->toArray();
+
+        $users = User::whereNotIn('id', $assignedIds)->get();
+
+        foreach ($users as $user) {
+            \App\Models\UserStorage::create([
+                'user_id'              => $user->id,
+                'storage_provider_id'  => $id,
+                'permissions'          => 'read',
+                'can_create_shares'    => false,
+            ]);
+        }
+
+        return response()->json(['message' => 'All users assigned', 'count' => $users->count()]);
+    }
+
+    public function removeAll(int $id)
+    {
+        StorageProvider::findOrFail($id);
+
+        \App\Models\UserStorage::where('storage_provider_id', $id)->delete();
+
+        return response()->json(['message' => 'All user assignments removed']);
     }
 }

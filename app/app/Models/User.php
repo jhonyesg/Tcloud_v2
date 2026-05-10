@@ -9,7 +9,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 class User extends Model
 {
     protected $table = 'users';
-    protected $fillable = ['email', 'username', 'password_hash', 'role', 'personal_quota_bytes', 'personal_used_bytes'];
+    protected $fillable = ['email', 'username', 'password_hash', 'role', 'personal_quota_bytes', 'personal_used_bytes', 'media_editor_enabled', 'media_editor_clip_limit'];
     protected $hidden = ['password_hash'];
 
     public function files(): HasMany
@@ -55,8 +55,25 @@ class User extends Model
         return $this->role === 'admin';
     }
 
-    public function fileToolPlugins(): HasMany
+    public function canUseMediaEditor(): bool
     {
-        return $this->hasMany(UserFileToolPlugin::class);
+        return $this->isAdmin() || (bool) $this->media_editor_enabled;
+    }
+
+    public function mediaEditorClipsThisMonth(): int
+    {
+        return \App\Models\MediaEditJob::where('user_id', $this->id)
+            ->where('status', 'done')
+            ->whereMonth('created_at', now()->month)
+            ->whereYear('created_at', now()->year)
+            ->count();
+    }
+
+    public function hasReachedClipLimit(): bool
+    {
+        if ($this->isAdmin()) return false;
+        $limit = (int) $this->media_editor_clip_limit;
+        if ($limit === 0) return false;
+        return $this->mediaEditorClipsThisMonth() >= $limit;
     }
 }

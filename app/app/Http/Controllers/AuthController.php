@@ -44,6 +44,8 @@ class AuthController extends Controller
 
         Session::put('user_id', $user->id);
         Session::put('user_role', $user->role);
+        Session::put('user_email', $user->email);
+        Session::put('user_username', $user->username);
 
         return redirect('/dashboard');
     }
@@ -66,7 +68,9 @@ class AuthController extends Controller
         return response()->json([
             'id' => $user->id,
             'email' => $user->email,
+            'username' => $user->username,
             'role' => $user->role,
+            'can_use_media_editor' => $user->canUseMediaEditor(),
         ]);
     }
 
