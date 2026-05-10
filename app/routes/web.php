@@ -83,6 +83,19 @@ Route::middleware('auth')->group(function () {
 
     Route::resource('shares', App\Http\Controllers\ShareController::class)->only(['index', 'store', 'show', 'update', 'destroy']);
     Route::post('/files/{file}/clip', [App\Http\Controllers\MediaClipController::class, 'clip']);
+
+    // Grabaciones Puntuales
+    Route::prefix('grabaciones-puntuales')->middleware(['auth'])->group(function () {
+        Route::resource('grabadores', App\Http\Controllers\GrabacionesPuntuales\GrabadorController::class);
+        Route::post('/grabadores/{grabador}/asignar-usuario', [App\Http\Controllers\GrabacionesPuntuales\GrabadorController::class, 'asignarUsuario'])->name('grabadores.asignar-usuario');
+        Route::post('/grabadores/{grabador}/actualizar-asignacion/{user}', [App\Http\Controllers\GrabacionesPuntuales\GrabadorController::class, 'actualizarAsignacion'])->name('grabadores.actualizar-asignacion');
+        Route::post('/grabadores/{grabador}/remover-usuario/{user}', [App\Http\Controllers\GrabacionesPuntuales\GrabadorController::class, 'removerUsuario'])->name('grabadores.remover-usuario');
+        Route::get('/grabadores/{grabador}/probar', [App\Http\Controllers\GrabacionesPuntuales\GrabadorController::class, 'probarConexion'])->name('grabadores.probar');
+
+        Route::resource('canales', App\Http\Controllers\GrabacionesPuntuales\CanalController::class);
+        Route::post('/canales/{canal}/ejecutar', [App\Http\Controllers\GrabacionesPuntuales\CanalController::class, 'ejecutar'])->name('canales.ejecutar');
+        Route::get('/estado-grabaciones', [App\Http\Controllers\GrabacionesPuntuales\CanalController::class, 'estado'])->name('grabaciones.estado');
+    });
 });
 
 Route::get('/s/{token}', [App\Http\Controllers\PublicShareController::class, 'show']);

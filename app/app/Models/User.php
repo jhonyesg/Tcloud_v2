@@ -76,4 +76,16 @@ class User extends Model
         if ($limit === 0) return false;
         return $this->mediaEditorClipsThisMonth() >= $limit;
     }
+
+    public function grabadores(): BelongsToMany
+    {
+        return $this->belongsToMany(Grabador::class, 'grabador_usuario')
+            ->withPivot('limite_canales')
+            ->withTimestamps();
+    }
+
+    public function canales(): HasMany
+    {
+        return $this->hasMany(Canal::class, 'usuario_id');
+    }
 }
