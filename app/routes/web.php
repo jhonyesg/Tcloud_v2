@@ -89,14 +89,18 @@ Route::middleware('auth')->group(function () {
 
     // Grabaciones Puntuales
     Route::prefix('grabaciones-puntuales')->middleware(['auth'])->group(function () {
-        Route::resource('grabadores', App\Http\Controllers\GrabacionesPuntuales\GrabadorController::class);
+        Route::get('/grabadores/users', [App\Http\Controllers\GrabacionesPuntuales\GrabadorController::class, 'getUsers'])->name('grabadores.users');
+        Route::get('/grabadores/{grabador}/probar', [App\Http\Controllers\GrabacionesPuntuales\GrabadorController::class, 'probarConexion'])->name('grabadores.probar');
         Route::post('/grabadores/{grabador}/asignar-usuario', [App\Http\Controllers\GrabacionesPuntuales\GrabadorController::class, 'asignarUsuario'])->name('grabadores.asignar-usuario');
         Route::post('/grabadores/{grabador}/actualizar-asignacion/{user}', [App\Http\Controllers\GrabacionesPuntuales\GrabadorController::class, 'actualizarAsignacion'])->name('grabadores.actualizar-asignacion');
         Route::post('/grabadores/{grabador}/remover-usuario/{user}', [App\Http\Controllers\GrabacionesPuntuales\GrabadorController::class, 'removerUsuario'])->name('grabadores.remover-usuario');
-        Route::get('/grabadores/{grabador}/probar', [App\Http\Controllers\GrabacionesPuntuales\GrabadorController::class, 'probarConexion'])->name('grabadores.probar');
+        Route::resource('grabadores', App\Http\Controllers\GrabacionesPuntuales\GrabadorController::class);
 
-        Route::resource('canales', App\Http\Controllers\GrabacionesPuntuales\CanalController::class);
+        Route::resource('canales', App\Http\Controllers\GrabacionesPuntuales\CanalController::class)->parameters([
+            'canales' => 'canal',
+        ]);
         Route::post('/canales/{canal}/ejecutar', [App\Http\Controllers\GrabacionesPuntuales\CanalController::class, 'ejecutar'])->name('canales.ejecutar');
+        Route::get('/canales/{canal}/detalle', [App\Http\Controllers\GrabacionesPuntuales\CanalController::class, 'detalle'])->name('canales.detalle');
         Route::get('/estado-grabaciones', [App\Http\Controllers\GrabacionesPuntuales\CanalController::class, 'estado'])->name('grabaciones.estado');
     });
 });

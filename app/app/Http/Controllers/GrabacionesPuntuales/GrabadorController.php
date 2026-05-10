@@ -4,17 +4,27 @@ namespace App\Http\Controllers\GrabacionesPuntuales;
 
 use App\Http\Controllers\Controller;
 use App\Models\Grabador;
+use App\Models\Canal;
 use App\Models\User;
+use App\Services\GrabacionesPuntuales\TcloudApiService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Session;
 
 class GrabadorController extends Controller
 {
-    private function getUser(): ?\App\Models\User
+    private TcloudApiService $apiService;
+
+    public function __construct(TcloudApiService $apiService)
+    {
+        $this->apiService = $apiService;
+    }
+
+    private function getUser(): ?User
     {
         $userId = Session::get('user_id');
-        return $userId ? \App\Models\User::find($userId) : null;
+        return $userId ? User::find($userId) : null;
     }
 
     private function requireAdmin(): void
@@ -25,24 +35,33 @@ class GrabadorController extends Controller
         }
     }
 
-    public function index()
+    public function index(Request $request)
     {
-        $this->requireAdmin();
-        $grabadores = Grabador::with('usuarios')->get();
-        return view('grabaciones_puntuales.grabadores.index', compact('grabadores'));
-    }
+        $user = $this->getUser();
+        if (!$user) return redirect('/login');
 
-    public function create()
-    {
+        if ($request->ajax()) {
+            if ($user->isAdmin()) {
+                $grabadores = Grabador::with(['usuarios', 'canales.usuario'])->withCount('canales')->get();
+            } else {
+                $grabadores = $user->grabadores()->with(['canales' => function ($q) use ($user) {
+                    $q->where('usuario_id', $user->id)->orWhereNull('usuario_id');
+                }, 'canales.usuario'])->withCount('canales')->get();
+            }
+            return response()->json($grabadores);
+        }
+
         $this->requireAdmin();
-        return view('grabaciones_puntuales.grabadores.create');
+        return view('grabaciones_puntuales.grabadores.index');
     }
 
     public function store(Request $request)
     {
         $this->requireAdmin();
+
         $request->validate([
             'nombre' => 'required|string|max:100',
+            'tipo' => 'required|in:radio,tv',
             'ip' => 'required|ip',
             'puerto' => 'required|integer|min:1|max:65535',
             'token' => 'nullable|string',
@@ -53,6 +72,7 @@ class GrabadorController extends Controller
 
         $grabador = Grabador::create([
             'nombre' => $request->nombre,
+            'tipo' => $request->tipo,
             'ip' => $request->ip,
             'puerto' => $request->puerto,
             'base_url' => $baseUrl,
@@ -61,12 +81,21 @@ class GrabadorController extends Controller
             'observaciones' => $request->observaciones,
         ]);
 
-        return redirect()->route('grabadores.index')
-            ->with('success', 'Grabador creado exitosamente');
+        $grabador->load(['usuarios', 'canales.usuario'])->loadCount('canales');
+
+        return response()->json($grabador, 201);
     }
 
-    public function show(Grabador $grabador)
+    public function show(Request $request, Grabador $grabador)
     {
+        $user = $this->getUser();
+        if (!$user) return redirect('/login');
+
+        if ($request->ajax()) {
+            $grabador->load(['usuarios', 'canales.usuario'])->loadCount('canales');
+            return response()->json($grabador);
+        }
+
         $this->requireAdmin();
         $grabador->load('usuarios');
         $usuarios = User::where('role', '!=', 'admin')->get();
@@ -76,101 +105,205 @@ class GrabadorController extends Controller
     public function update(Request $request, Grabador $grabador)
     {
         $this->requireAdmin();
+
         $request->validate([
             'nombre' => 'required|string|max:100',
+            'tipo' => 'required|in:radio,tv',
             'ip' => 'required|ip',
             'puerto' => 'required|integer|min:1|max:65535',
             'activo' => 'boolean',
             'observaciones' => 'nullable|string',
         ]);
 
-        $grabador->update($request->only(['nombre', 'ip', 'puerto', 'activo', 'observaciones']));
+        $grabador->update([
+            'nombre' => $request->nombre,
+            'tipo' => $request->tipo,
+            'ip' => $request->ip,
+            'puerto' => $request->puerto,
+            'base_url' => "http://{$request->ip}:{$request->puerto}/api",
+            'activo' => $request->boolean('activo'),
+            'observaciones' => $request->observaciones,
+        ]);
 
-        $baseUrl = "http://{$request->ip}:{$request->puerto}/api";
-        $grabador->update(['base_url' => $baseUrl]);
-
-        return redirect()->route('grabadores.show', $grabador)
-            ->with('success', 'Grabador actualizado');
+        $grabador->load(['usuarios', 'canales.usuario'])->loadCount('canales');
+        return response()->json($grabador);
     }
 
     public function destroy(Grabador $grabador)
     {
         $this->requireAdmin();
         $grabador->delete();
-        return redirect()->route('grabadores.index')
-            ->with('success', 'Grabador eliminado');
+        return response()->json(['success' => true]);
     }
 
     public function asignarUsuario(Request $request, Grabador $grabador)
     {
         $this->requireAdmin();
+
         $request->validate([
             'user_id' => 'required|exists:users,id',
-            'limite_canales' => 'required|integer|min:1|max:100',
+            'nombre_base' => 'required|string|max:50|regex:/^[a-zA-Z0-9_]+$/',
+            'ruta_base' => 'required|string|max:500',
         ]);
 
         $user = User::find($request->user_id);
 
         if ($user->isAdmin()) {
-            return back()->with('error', 'No se puede asignar a un administrador');
+            return response()->json(['error' => 'No se puede asignar a un administrador'], 422);
         }
 
-        $yaExiste = \DB::table('grabador_usuario')
+        $yaExiste = DB::table('grabador_usuario')
             ->where('grabador_id', $grabador->id)
             ->where('user_id', $request->user_id)
             ->exists();
 
         if ($yaExiste) {
-            return back()->with('error', 'El usuario ya tiene acceso a este grabador');
+            return response()->json(['error' => 'El usuario ya tiene acceso a este grabador'], 422);
         }
 
-        \DB::table('grabador_usuario')->insert([
+        $nombreBase = $request->nombre_base;
+        $rutaBase = rtrim($request->ruta_base, '/');
+
+        $canalesNombres = [];
+        for ($i = 1; $i <= 10; $i++) {
+            $canalesNombres[] = $nombreBase . '_' . str_pad($i, 2, '0', STR_PAD_LEFT);
+        }
+
+        foreach ($canalesNombres as $nombre) {
+            $existe = Canal::where('grabador_id', $grabador->id)
+                ->where('slot_nombre', $nombre)
+                ->exists();
+            if ($existe) {
+                return response()->json([
+                    'error' => "Ya existe un canal con el nombre '{$nombre}' en este grabador"
+                ], 422);
+            }
+        }
+
+        DB::table('grabador_usuario')->insert([
             'grabador_id' => $grabador->id,
             'user_id' => $request->user_id,
-            'limite_canales' => $request->limite_canales,
+            'limite_canales' => 10,
             'created_at' => now(),
             'updated_at' => now(),
         ]);
 
-        return back()->with('success', 'Usuario asignado exitosamente');
+        $canalesCreados = [];
+        $errores = [];
+
+        for ($i = 1; $i <= 10; $i++) {
+            $slotNombre = $nombreBase . '_' . str_pad($i, 2, '0', STR_PAD_LEFT);
+            $rutaDestino = $rutaBase . '/' . $slotNombre;
+            $esRadio = $grabador->tipo === 'radio';
+
+            $canal = Canal::create([
+                'grabador_id' => $grabador->id,
+                'usuario_id' => $request->user_id,
+                'slot_nombre' => $slotNombre,
+                'ruta_destino' => $rutaDestino,
+                'duracion_grabacion' => '00:21:00',
+                'formato_salida' => $esRadio ? '.mp3' : '.mp4',
+                'ffmpeg_args_pre' => '-re',
+                'ffmpeg_args_post' => $esRadio ? '-acodec libmp3lame' : '-c copy',
+                'activo' => true,
+            ]);
+
+            $resultado = $this->apiService->crearCanal($grabador, $canal);
+
+            if ($resultado['success'] && !empty($resultado['api_canal_id'])) {
+                $canal->update(['api_canal_id' => $resultado['api_canal_id']]);
+            } else {
+                $errores[] = "Canal {$slotNombre}: " . ($resultado['error'] ?? 'Error en API');
+            }
+
+            $canalesCreados[] = $canal;
+        }
+
+        $grabador->load('usuarios');
+
+        if (!empty($errores)) {
+            return response()->json([
+                'warning' => 'Canales creados pero algunos no se registraron en el grabador',
+                'errores' => $errores,
+                'usuarios' => $grabador->usuarios
+            ]);
+        }
+
+        return response()->json($grabador->usuarios);
     }
 
     public function actualizarAsignacion(Request $request, Grabador $grabador, int $userId)
     {
         $this->requireAdmin();
+
         $request->validate([
             'limite_canales' => 'required|integer|min:1|max:100',
         ]);
 
-        \DB::table('grabador_usuario')
+        DB::table('grabador_usuario')
             ->where('grabador_id', $grabador->id)
             ->where('user_id', $userId)
-            ->update(['limite_canales' => $request->limite_canales]);
+            ->update(['limite_canales' => $request->limite_canales, 'updated_at' => now()]);
 
-        return back()->with('success', 'Límite actualizado');
+        $grabador->load('usuarios');
+        return response()->json($grabador->usuarios);
     }
 
     public function removerUsuario(Grabador $grabador, int $userId)
     {
         $this->requireAdmin();
-        \DB::table('grabador_usuario')
+
+        $canalesDelUsuario = Canal::where('grabador_id', $grabador->id)
+            ->where('usuario_id', $userId)
+            ->get();
+
+        foreach ($canalesDelUsuario as $canal) {
+            if ($canal->api_canal_id) {
+                $this->apiService->eliminarCanal($grabador, $canal->api_canal_id);
+            }
+            $canal->delete();
+        }
+
+        DB::table('grabador_usuario')
             ->where('grabador_id', $grabador->id)
             ->where('user_id', $userId)
             ->delete();
 
-        return back()->with('success', 'Usuario removido del grabador');
+        $grabador->load('usuarios');
+        return response()->json($grabador->usuarios);
     }
 
     public function probarConexion(Grabador $grabador)
     {
         try {
-            $response = Http::get("{$grabador->base_url}/canales");
+            $response = Http::timeout(5)->get("{$grabador->base_url}/canales");
             if ($response->successful()) {
-                return response()->json(['success' => true, 'message' => 'Conexión exitosa']);
+                $canales = $response->json('data') ?? [];
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Conexión exitosa',
+                    'canales_remotos' => count($canales),
+                    'endpoints' => [
+                        'GET /canales' => 'OK',
+                        'Base URL' => $grabador->base_url,
+                    ],
+                ]);
             }
-            return response()->json(['success' => false, 'message' => 'Error: ' . $response->status()]);
+            return response()->json([
+                'success' => false,
+                'message' => 'Error HTTP: ' . $response->status(),
+            ]);
         } catch (\Exception $e) {
-            return response()->json(['success' => false, 'message' => $e->getMessage()]);
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ]);
         }
+    }
+
+    public function getUsers()
+    {
+        $this->requireAdmin();
+        return response()->json(User::where('role', '!=', 'admin')->get());
     }
 }

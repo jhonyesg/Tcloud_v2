@@ -15,6 +15,7 @@ class Grabador extends Model
 
     protected $fillable = [
         'nombre',
+        'tipo',
         'ip',
         'puerto',
         'base_url',

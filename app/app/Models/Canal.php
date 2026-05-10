@@ -17,6 +17,13 @@ class Canal extends Model
         'usuario_id',
         'slot_nombre',
         'api_canal_id',
+        'link_origen',
+        'ruta_destino',
+        'detalle',
+        'duracion_grabacion',
+        'ffmpeg_args_pre',
+        'ffmpeg_args_post',
+        'formato_salida',
         'activo',
     ];
 
