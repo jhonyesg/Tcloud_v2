@@ -191,12 +191,29 @@
                         <span x-show="sidebarOpen" x-transition class="font-medium text-sm">Editor de Medios</span>
                     </a>
 
+                    <a href="/grabaciones-puntuales/grabadores" data-nav-path="/grabaciones-puntuales/grabadores"                       class="nav-link flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg transition-colors text-brand-200 hover:bg-brand-800 hover:text-white">
+                        <i class="nav-icon fas fa-satellite-dish w-5 text-center text-brand-300"></i>
+                        <span x-show="sidebarOpen" x-transition class="font-medium text-sm">Grabadores</span>
+                    </a>
+
                     <a href="/correo" data-nav-path="/correo"                       class="nav-link flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg transition-colors text-brand-200 hover:bg-brand-800 hover:text-white">
                         <i class="nav-icon fas fa-envelope w-5 text-center text-brand-300"></i>
                         <span x-show="sidebarOpen" x-transition class="font-medium text-sm">Correo</span>
                     </a>
 
                     @endif
+
+                    <!-- Medios Puntuales - Visible para todos los usuarios autenticados -->
+                    <div class="px-3 mt-6 mb-2" x-show="sidebarOpen">
+                        <span class="text-xs font-semibold text-brand-400 uppercase tracking-wider">Multimedia</span>
+                    </div>
+                    <div x-show="!sidebarOpen" class="mx-2 my-3 border-t border-brand-800"></div>
+
+                    <a href="/grabaciones-puntuales/canales" data-nav-path="/grabaciones-puntuales"                       class="nav-link flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg transition-colors text-brand-200 hover:bg-brand-800 hover:text-white">
+                        <i class="nav-icon fas fa-broadcast-tower w-5 text-center text-brand-300"></i>
+                        <span x-show="sidebarOpen" x-transition class="font-medium text-sm">Medios Puntuales</span>
+                    </a>
+
                 </nav>
 
                 <!-- Sidebar Footer -->
