@@ -15,7 +15,7 @@ Route::post('/auth/forgot-password', [App\Http\Controllers\AuthController::class
 Route::get('/auth/reset-password/{token}', [App\Http\Controllers\AuthController::class, 'showResetPassword'])->name('reset-password');
 Route::post('/auth/reset-password', [App\Http\Controllers\AuthController::class, 'resetPassword']);
 
-Route::get('/dashboard', [App\Http\Controllers\DashboardController::class, 'index'])->middleware('auth');
+Route::get('/dashboard', [App\Http\Controllers\DashboardController::class, 'index'])->middleware('auth')->name('dashboard');
 
 Route::middleware(['auth', 'admin'])->prefix('admin')->group(function () {
     Route::get('/users/search', [App\Http\Controllers\StorageProviderController::class, 'searchUsers']);
