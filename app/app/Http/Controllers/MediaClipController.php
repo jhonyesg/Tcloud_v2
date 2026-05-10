@@ -17,23 +17,82 @@ class MediaClipController extends Controller
         return $userId ? User::find($userId) : null;
     }
 
+    public function history(Request $request)
+    {
+        $user = $this->getUser();
+        if (!$user) return response()->json(['error' => 'Unauthorized'], 401);
+
+        $jobs = MediaEditJob::where('user_id', $user->id)
+            ->orderByDesc('created_at')
+            ->limit(50)
+            ->get()
+            ->map(fn($j) => [
+                'id'              => $j->id,
+                'source_file_id'  => $j->source_file_id,
+                'source_file_name'=> $j->source_file_name,
+                'output_filename' => $j->output_filename,
+                'segments'        => $j->segments_json,
+                'status'          => $j->status,
+                'error_message'   => $j->error_message,
+                'created_at'      => $j->created_at->toIso8601String(),
+            ]);
+
+        return response()->json($jobs);
+    }
+
+    public function reclip(Request $request, int $jobId)
+    {
+        $user = $this->getUser();
+        if (!$user) return response()->json(['error' => 'Unauthorized'], 401);
+
+        $job = MediaEditJob::where('id', $jobId)->where('user_id', $user->id)->first();
+        if (!$job) return response()->json(['error' => 'Job no encontrado'], 404);
+
+        return response()->json([
+            'source_file_id'   => $job->source_file_id,
+            'source_file_name' => $job->source_file_name,
+            'segments'         => $job->segments_json,
+        ]);
+    }
+
     public function clip(Request $request, int $id)
     {
         $user = $this->getUser();
         if (!$user) return response()->json(['error' => 'Unauthorized'], 401);
         if (!$user->canUseMediaEditor()) return response()->json(['error' => 'Editor de medios no habilitado para tu cuenta'], 403);
-        if ($user->hasReachedClipLimit()) {
+
+        $isPreview = $request->boolean('preview', false);
+
+        if (!$isPreview && $user->hasReachedClipLimit()) {
             $limit = $user->media_editor_clip_limit;
             return response()->json(['error' => "Límite mensual alcanzado ({$limit} cortes/mes). Contacta al administrador."], 403);
         }
 
-        // New format: sequence of {fileId, start?, end?}
         if ($request->has('sequence')) {
-            return $this->processSequence($request, $id, $user);
+            return $isPreview
+                ? $this->previewSequence($request, $id, $user)
+                : $this->processSequence($request, $id, $user);
         }
 
-        // Legacy format: segments from single file
-        return $this->processLegacySegments($request, $id, $user);
+        return $isPreview
+            ? $this->previewLegacySegments($request, $id, $user)
+            : $this->processLegacySegments($request, $id, $user);
+    }
+
+    public function serveTemp(string $token)
+    {
+        $path = sys_get_temp_dir() . '/clippreview_' . $token;
+        if (!file_exists($path)) return response()->json(['error' => 'Preview no encontrado o expirado'], 404);
+
+        $ext  = strtolower(pathinfo($path, PATHINFO_EXTENSION));
+        $mimeMap = ['mp4' => 'video/mp4', 'mp3' => 'audio/mpeg', 'm4a' => 'audio/mp4'];
+        $mime = $mimeMap[$ext] ?? 'application/octet-stream';
+
+        return response()->file($path, [
+            'Content-Type'        => $mime,
+            'Content-Disposition' => 'inline',
+            'Cache-Control'       => 'no-store',
+        ]);
     }
 
     // ── New sequence mode ──────────────────────────────────────────
@@ -135,6 +194,12 @@ class MediaClipController extends Controller
         $filterParts = [];
         $n           = count($sequence);
 
+        // Detect audio per input
+        $inputHasAudio = [];
+        foreach ($inputs as $idx => $path) {
+            $inputHasAudio[$idx] = $isAudio || $this->fileHasAudioStream($path);
+        }
+
         foreach ($sequence as $i => $item) {
             $idx      = $inputIndex[(int) $item['fileId']];
             $hasStart = isset($item['start']);
@@ -144,7 +209,7 @@ class MediaClipController extends Controller
                 $trimArg = ($hasStart ? 'start=' . $item['start'] : '') . ($hasStart && $hasEnd ? ':' : '') . ($hasEnd ? 'end=' . $item['end'] : '');
             }
 
-            if ($isAudio) {
+            if ($isAudio || !$inputHasAudio[$idx]) {
                 if ($trimArg !== '') {
                     $filterParts[] = "[{$idx}:a]atrim={$trimArg},asetpts=PTS-STARTPTS[a{$i}]";
                 } else {
@@ -164,6 +229,9 @@ class MediaClipController extends Controller
         $cmd = ['ffmpeg', '-y'];
         foreach ($inputs as $p) { $cmd[] = '-i'; $cmd[] = $p; }
 
+        // Determine if all inputs have audio
+        $allHaveAudio = !in_array(false, $inputHasAudio, true);
+
         if ($isAudio) {
             $joined = implode('', array_map(fn($i) => "[a{$i}]", range(0, $n - 1)));
             $filterParts[] = "{$joined}concat=n={$n}:v=0:a=1[aout]";
@@ -177,20 +245,134 @@ class MediaClipController extends Controller
             }
         } else {
             $vj = implode('', array_map(fn($i) => "[v{$i}]", range(0, $n - 1)));
-            $aj = implode('', array_map(fn($i) => "[a{$i}]", range(0, $n - 1)));
-            $filterParts[] = "{$vj}{$aj}concat=n={$n}:v=1:a=1[vout][aout]";
-            $cmd[] = '-filter_complex';
-            $cmd[] = implode(';', $filterParts);
-            array_push($cmd, '-map', '[vout]', '-map', '[aout]',
-                '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
-                '-c:a', 'aac', '-b:a', '192k');
+            if ($allHaveAudio) {
+                $aj = implode('', array_map(fn($i) => "[a{$i}]", range(0, $n - 1)));
+                $filterParts[] = "{$vj}{$aj}concat=n={$n}:v=1:a=1[vout][aout]";
+                $cmd[] = '-filter_complex';
+                $cmd[] = implode(';', $filterParts);
+                array_push($cmd, '-map', '[vout]', '-map', '[aout]',
+                    '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+                    '-c:a', 'aac', '-b:a', '192k');
+            } else {
+                $filterParts[] = "{$vj}concat=n={$n}:v=1:a=0[vout]";
+                $cmd[] = '-filter_complex';
+                $cmd[] = implode(';', $filterParts);
+                array_push($cmd, '-map', '[vout]',
+                    '-c:v', 'libx264', '-preset', 'fast', '-crf', '23');
+            }
         }
 
         $cmd[] = $outputPath;
         return $cmd;
     }
 
-    // ── Legacy segments mode (kept for compatibility) ──────────────
+    // ── Preview mode (same FFmpeg logic, keeps temp file) ──────────
+
+    private function previewSequence(Request $request, int $primaryFileId, User $user): \Illuminate\Http\JsonResponse
+    {
+        $sequence = $request->input('sequence', []);
+        if (empty($sequence)) return response()->json(['error' => 'Secuencia vacía'], 422);
+
+        $fileMap = [];
+        foreach ($sequence as $item) {
+            $fid = (int) ($item['fileId'] ?? 0);
+            if (!$fid) return response()->json(['error' => 'ID inválido'], 422);
+            if (!isset($fileMap[$fid])) {
+                $file = File::find($fid);
+                $storage = $file?->storageProvider;
+                if (!$file || !$storage || $storage->type !== 'local') {
+                    return response()->json(['error' => "Archivo {$fid} no encontrado o no local"], 404);
+                }
+                $path = rtrim($storage->base_path, '/') . '/' . ltrim($file->path, '/');
+                if (!file_exists($path)) return response()->json(['error' => "Archivo físico no encontrado"], 404);
+                $fileMap[$fid] = ['file' => $file, 'path' => $path];
+            }
+        }
+
+        $primaryFile = $fileMap[$primaryFileId]['file'] ?? File::find($primaryFileId);
+        $ext = strtolower(pathinfo($primaryFile->name, PATHINFO_EXTENSION));
+        $previewToken = uniqid('prev_', true);
+        $tmpOutput = sys_get_temp_dir() . '/clippreview_' . $previewToken . '.' . $ext;
+
+        try {
+            $cmd = $this->buildSequenceCommand($sequence, $fileMap, $tmpOutput, $ext);
+            $process = new Process($cmd);
+            $process->setTimeout(120);
+            $process->run();
+
+            if (!$process->isSuccessful() || !file_exists($tmpOutput)) {
+                @unlink($tmpOutput);
+                $err = $process->getErrorOutput() ?: $process->getOutput();
+                return response()->json(['error' => 'Error FFmpeg: ' . substr($err, -300)], 500);
+            }
+
+            $this->scheduleCleanup($tmpOutput, 300);
+
+            $mimeMap = ['mp4' => 'video/mp4', 'mp3' => 'audio/mpeg', 'm4a' => 'audio/mp4'];
+            return response()->json([
+                'preview_url' => '/media/clip-preview/' . $previewToken,
+                'mime'        => $mimeMap[$ext] ?? 'application/octet-stream',
+                'size'        => filesize($tmpOutput),
+            ]);
+        } catch (\Exception $e) {
+            @unlink($tmpOutput);
+            return response()->json(['error' => $e->getMessage()], 500);
+        }
+    }
+
+    private function previewLegacySegments(Request $request, int $id, User $user): \Illuminate\Http\JsonResponse
+    {
+        $file = File::find($id);
+        if (!$file) return response()->json(['error' => 'File not found'], 404);
+
+        $segments = $request->input('segments', []);
+        if (empty($segments)) return response()->json(['error' => 'Segments required'], 422);
+
+        $storage = $file->storageProvider;
+        if (!$storage || $storage->type !== 'local') {
+            return response()->json(['error' => 'Solo storage local'], 422);
+        }
+
+        $filePath = rtrim($storage->base_path, '/') . '/' . ltrim($file->path, '/');
+        if (!file_exists($filePath)) return response()->json(['error' => 'Archivo no encontrado'], 422);
+
+        $ext = strtolower(pathinfo($file->name, PATHINFO_EXTENSION));
+        $previewToken = uniqid('prev_', true);
+        $tmpOutput = sys_get_temp_dir() . '/clippreview_' . $previewToken . '.' . $ext;
+
+        try {
+            $cmd = count($segments) === 1
+                ? $this->buildSingleSegmentCommand($filePath, $segments[0], $tmpOutput)
+                : $this->buildMultiSegmentCommand($filePath, $segments, $tmpOutput, $ext);
+
+            $process = new Process($cmd);
+            $process->setTimeout(120);
+            $process->run();
+
+            if (!$process->isSuccessful()) {
+                @unlink($tmpOutput);
+                return response()->json(['error' => 'FFmpeg error'], 500);
+            }
+
+            $this->scheduleCleanup($tmpOutput, 300);
+
+            $mimeMap = ['mp4' => 'video/mp4', 'mp3' => 'audio/mpeg', 'm4a' => 'audio/mp4'];
+            return response()->json([
+                'preview_url' => '/media/clip-preview/' . $previewToken,
+                'mime'        => $mimeMap[$ext] ?? 'application/octet-stream',
+                'size'        => filesize($tmpOutput),
+            ]);
+        } catch (\Exception $e) {
+            @unlink($tmpOutput);
+            return response()->json(['error' => $e->getMessage()], 500);
+        }
+    }
+
+    private function scheduleCleanup(string $path, int $seconds): void
+    {
+        $cmd = sprintf('(sleep %d && rm -f %s) &', $seconds, escapeshellarg($path));
+        exec($cmd);
+    }
 
     private function processLegacySegments(Request $request, int $id, User $user)
     {
@@ -304,6 +486,15 @@ class MediaClipController extends Controller
         return ['ffmpeg', '-y', '-i', $input, '-filter_complex', $filter,
             '-map', '[outv]',
             '-c:v', 'libx264', '-preset', 'fast', $output];
+    }
+
+    private function fileHasAudioStream(string $path): bool
+    {
+        $cmd = ['ffprobe', '-v', 'error', '-select_streams', 'a', '-show_entries', 'stream=index', '-of', 'csv=p=0', $path];
+        $process = new Process($cmd);
+        $process->setTimeout(10);
+        $process->run();
+        return trim($process->getOutput()) !== '';
     }
 
     private function buildMultiSegmentAudioCommand(string $input, array $segments, string $output): array

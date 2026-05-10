@@ -70,6 +70,13 @@ deleteConfirmFile: null,
         clipShowAddFile: false,
         clipAddFileList: [],
         clipAddFileLoading: false,
+        clipUndoStack: [],
+        clipPreviewing: false,
+        clipPreviewUrl: '',
+        clipPreviewMime: '',
+        showClipHistory: false,
+        clipHistory: [],
+        clipHistoryLoading: false,
 
         async init() {
             await Promise.all([
@@ -879,17 +886,19 @@ deleteConfirmFile: null,
         const start = +Math.min(this.clipSelStart, this.clipSelEnd).toFixed(3);
         const end   = +Math.max(this.clipSelStart, this.clipSelEnd).toFixed(3);
         if (end - start < 0.05) return;
+        this.clipPushUndo();
         this.clipSequence.push({ id: Date.now() + Math.random(), type: 'segment',
             fileId: this.clipFile.id, fileName: this.clipFile.name, start, end });
         this.clipSelStart = null;
         this.clipSelEnd   = null;
     },
 
-    clipRemoveSeq(idx) { this.clipSequence.splice(idx, 1); },
+    clipRemoveSeq(idx) { this.clipPushUndo(); this.clipSequence.splice(idx, 1); },
 
     clipMoveSeq(idx, dir) {
         const ni = idx + dir;
         if (ni < 0 || ni >= this.clipSequence.length) return;
+        this.clipPushUndo();
         [this.clipSequence[idx], this.clipSequence[ni]] = [this.clipSequence[ni], this.clipSequence[idx]];
     },
 
@@ -977,6 +986,108 @@ deleteConfirmFile: null,
         } finally {
             this.clipProcessing = false;
         }
+    },
+
+    // ── Preview before export ──────────────────────────────────────
+    async clipPreview() {
+        this.clipError = '';
+        this.clipPreviewing = true;
+        this.clipPreviewUrl = '';
+        const el = document.getElementById('clip-media-el');
+        if (el) el.pause();
+        try {
+            const sequence = this.clipSequence.map(item =>
+                item.type === 'segment'
+                    ? { fileId: item.fileId, start: item.start, end: item.end }
+                    : { fileId: item.fileId });
+            const res = await fetch('/files/' + this.clipFile.id + '/clip?preview=1', {
+                method: 'POST',
+                credentials: 'include',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
+                    'Accept': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                },
+                body: JSON.stringify({ sequence }),
+            });
+            if (!res.ok) {
+                const data = await res.json();
+                this.clipError = data.error || 'Error al generar preview.';
+                return;
+            }
+            const data = await res.json();
+            this.clipPreviewUrl = data.preview_url;
+            this.clipPreviewMime = data.mime || 'video/mp4';
+        } catch (e) {
+            this.clipError = 'Error de red: ' + e.message;
+        } finally {
+            this.clipPreviewing = false;
+        }
+    },
+
+    clipClosePreview() {
+        this.clipPreviewUrl = '';
+        this.clipPreviewMime = '';
+    },
+
+    // ── Undo / Revert ─────────────────────────────────────────────
+    clipPushUndo() {
+        this.clipUndoStack.push(JSON.stringify(this.clipSequence));
+        if (this.clipUndoStack.length > 30) this.clipUndoStack.shift();
+    },
+
+    clipUndo() {
+        if (this.clipUndoStack.length === 0) return;
+        this.clipSequence = JSON.parse(this.clipUndoStack.pop());
+    },
+
+    // ── History ────────────────────────────────────────────────────
+    async clipLoadHistory() {
+        this.clipHistoryLoading = true;
+        this.showClipHistory = true;
+        this.clipHistory = [];
+        try {
+            const res = await fetch('/media-clip/history', {
+                credentials: 'include',
+                headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+            });
+            if (res.ok) this.clipHistory = await res.json();
+        } catch (e) { /* ignore */ }
+        finally { this.clipHistoryLoading = false; }
+    },
+
+    async clipReclip(jobId) {
+        try {
+            const res = await fetch('/media-clip/' + jobId + '/reclip', {
+                credentials: 'include',
+                headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+            });
+            if (!res.ok) return;
+            const data = await res.json();
+            const sourceFile = (this.files || []).find(f => f.id === data.source_file_id);
+            if (sourceFile) {
+                this.clipFile = sourceFile;
+                this.clipSequence = [];
+                this.clipUndoStack = [];
+                for (const seg of (data.segments || [])) {
+                    if (seg.fileId && seg.start !== undefined && seg.end !== undefined) {
+                        const segFile = (this.files || []).find(f => f.id === seg.fileId) || sourceFile;
+                        this.clipSequence.push({
+                            id: Date.now() + Math.random(),
+                            type: 'segment',
+                            fileId: seg.fileId || data.source_file_id,
+                            fileName: segFile.name || data.source_file_name,
+                            start: seg.start,
+                            end: seg.end
+                        });
+                    }
+                }
+                this.showClipHistory = false;
+                this.showClipModal = true;
+                this.$nextTick(() => this.initClipPlayer(sourceFile));
+            }
+        } catch (e) { /* ignore */ }
     }
     }));
 });
@@ -1873,15 +1984,23 @@ deleteConfirmFile: null,
                 </button>
                 <div class="flex items-center gap-2">
                     <svg class="w-4 h-4 text-violet-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.121 14.121L19 19m-7-7l7-7m-7 7l-2.879 2.879M12 12L9.121 9.121m0 5.758a3 3 0 10-4.243-4.243 3 3 0 004.243 4.243z"/>
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.121 14.121L19 19m-7-7l7-7m-7 7l-2.879 2.879M12 12L9.121 9.121m0 5.758a3 3 0 10-4.243-4.243 3 3 0 004.243-4.243z"/>
                     </svg>
                     <p class="text-sm font-medium text-white/70 truncate max-w-xs" x-text="clipFile ? clipFile.name : ''"></p>
                 </div>
-                <button @click="closeClipModal()" class="text-white/40 hover:text-white/70 p-1 rounded-lg transition-colors">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
-                    </svg>
-                </button>
+                <div class="flex items-center gap-1">
+                    <button @click="clipLoadHistory()" title="Historial de cortes"
+                            class="text-white/40 hover:text-amber-400 p-1.5 rounded-lg transition-colors">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                        </svg>
+                    </button>
+                    <button @click="closeClipModal()" class="text-white/40 hover:text-white/70 p-1 rounded-lg transition-colors">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                        </svg>
+                    </button>
+                </div>
             </div>
 
             <!-- Body -->

@@ -86,6 +86,21 @@
         const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
         const i = Math.floor(Math.log(bytes) / Math.log(k));
         return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    },
+
+    async toggleMediaEditor(user) {
+        const res = await fetch('/admin/users/' + user.id + '/toggle-media-editor', {
+            method: 'POST',
+            credentials: 'include',
+            headers: {
+                'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
+                'Accept': 'application/json'
+            }
+        });
+        if (res.ok) {
+            const data = await res.json();
+            user.media_editor_enabled = data.media_editor_enabled;
+        }
     }
 }" x-init="loadUsers()">
     <div class="flex justify-between items-center mb-6">
@@ -105,6 +120,7 @@
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Rol</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Quota</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Usado</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Editor Medios</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Acciones</th>
                 </tr>
             </thead>
@@ -123,6 +139,18 @@
                             x-text="user.personal_quota_bytes === 0 ? 'Ilimitado' : formatBytes(user.personal_quota_bytes)"></td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500" 
                             x-text="formatBytes(user.personal_used_bytes)"></td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm">
+                            <template x-if="user.role === 'admin'">
+                                <span class="text-xs text-gray-400">Siempre activo</span>
+                            </template>
+                            <template x-if="user.role !== 'admin'">
+                                <button @click="toggleMediaEditor(user)"
+                                    :class="user.media_editor_enabled ? 'bg-indigo-600 text-white' : 'bg-gray-200 text-gray-600'"
+                                    class="px-3 py-1 rounded-full text-xs font-medium transition-colors"
+                                    x-text="user.media_editor_enabled ? 'Activo' : 'Inactivo'">
+                                </button>
+                            </template>
+                        </td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
                             <a :href="'/admin/users/' + user.id + '/storages'" class="text-green-600 hover:text-green-900 mr-3">Storages</a>
                             <button @click="editingUser = user; showEditModal = true" class="text-indigo-600 hover:text-indigo-900 mr-3">Editar</button>

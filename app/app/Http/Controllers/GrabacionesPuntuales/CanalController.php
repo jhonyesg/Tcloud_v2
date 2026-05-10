@@ -7,6 +7,7 @@ use App\Models\Grabador;
 use App\Models\Canal;
 use App\Services\GrabacionesPuntuales\TcloudApiService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Session;
 
 class CanalController extends Controller
 {
@@ -17,9 +18,16 @@ class CanalController extends Controller
         $this->apiService = $apiService;
     }
 
+    private function getUser(): ?\App\Models\User
+    {
+        $userId = Session::get('user_id');
+        return $userId ? \App\Models\User::find($userId) : null;
+    }
+
     public function index()
     {
-        $user = auth()->user();
+        $user = $this->getUser();
+        if (!$user) return redirect('/login');
 
         if ($user->isAdmin()) {
             $canales = Canal::with(['grabador', 'usuario'])->get();
@@ -35,7 +43,9 @@ class CanalController extends Controller
 
     public function create()
     {
-        $user = auth()->user();
+        $user = $this->getUser();
+        if (!$user) return redirect('/login');
+
         $grabadores = $user->isAdmin()
             ? Grabador::where('activo', true)->get()
             : $user->grabadores()->where('activo', true)->get();
@@ -62,7 +72,9 @@ class CanalController extends Controller
 
     public function store(Request $request)
     {
-        $user = auth()->user();
+        $user = $this->getUser();
+        if (!$user) return redirect('/login');
+
         $request->validate([
             'grabador_id' => 'required|exists:grabadores,id',
             'slot_nombre' => 'required|string|max:50',
@@ -108,7 +120,8 @@ class CanalController extends Controller
 
     public function edit(Canal $canal)
     {
-        $user = auth()->user();
+        $user = $this->getUser();
+        if (!$user) return redirect('/login');
 
         if (!$user->isAdmin() && $canal->usuario_id !== $user->id) {
             abort(403);
@@ -119,7 +132,8 @@ class CanalController extends Controller
 
     public function update(Request $request, Canal $canal)
     {
-        $user = auth()->user();
+        $user = $this->getUser();
+        if (!$user) return redirect('/login');
 
         if (!$user->isAdmin() && $canal->usuario_id !== $user->id) {
             abort(403);
@@ -145,7 +159,8 @@ class CanalController extends Controller
 
     public function destroy(Canal $canal)
     {
-        $user = auth()->user();
+        $user = $this->getUser();
+        if (!$user) return redirect('/login');
 
         if (!$user->isAdmin() && $canal->usuario_id !== $user->id) {
             abort(403);
@@ -163,7 +178,8 @@ class CanalController extends Controller
 
     public function ejecutar(Canal $canal)
     {
-        $user = auth()->user();
+        $user = $this->getUser();
+        if (!$user) return redirect('/login');
 
         if (!$user->isAdmin() && $canal->usuario_id !== $user->id) {
             abort(403);
@@ -188,7 +204,9 @@ class CanalController extends Controller
 
     public function estado()
     {
-        $user = auth()->user();
+        $user = $this->getUser();
+        if (!$user) return redirect('/login');
+
         $grabadores = $user->isAdmin()
             ? Grabador::where('activo', true)->get()
             : $user->grabadores()->where('activo', true)->get();

@@ -10,6 +10,7 @@ document.addEventListener('alpine:init', () => {
     currentFolderName: null,
     currentStorage: null,
     currentStorageName: null,
+    currentStoragePermission: 'read',
     viewMode: 'storages',
     filesViewMode: localStorage.getItem('files_view_mode') || 'grid',
     selectedFiles: [],
@@ -47,17 +48,59 @@ document.addEventListener('alpine:init', () => {
     renamingFileName: '',
 deleteConfirmFile: null,
         ready: false,
+        searchQuery: '',
+        searchMode: false,
+        searchTimer: null,
+        canUseMediaEditor: false,
+        showClipModal: false,
+        clipFile: null,
+        clipProcessing: false,
+        clipError: '',
+        clipDuration: 0,
+        clipCurrentTime: 0,
+        clipPlaying: false,
+        clipReady: false,
+        clipSelStart: null,
+        clipSelEnd: null,
+        clipDragging: false,
+        clipDragType: null,
+        clipSequence: [],
+        clipShowAddFile: false,
+        clipAddFileList: [],
+        clipAddFileLoading: false,
 
         async init() {
-            await this.loadStorages();
+            await Promise.all([
+                this.loadStorages(),
+                fetch('/auth/me', { credentials: 'include', headers: { 'Accept': 'application/json' } })
+                    .then(r => r.ok ? r.json() : null)
+                    .then(d => { if (d) this.canUseMediaEditor = !!d.can_use_media_editor; })
+            ]);
             await this.restoreNavState();
             this.ready = true;
+            this.$watch('searchQuery', (val) => {
+                clearTimeout(this.searchTimer);
+                if (val.length >= 2) {
+                    this.searchTimer = setTimeout(() => this.searchFiles(), 350);
+                } else if (val.length === 0) {
+                    this.clearSearch();
+                }
+            });
         },
+
+    canUpload() {
+        return ['write', 'upload', 'full'].includes(this.currentStoragePermission);
+    },
+
+    canCreateFolders() {
+        return ['write', 'full'].includes(this.currentStoragePermission);
+    },
 
     saveNavState() {
         localStorage.setItem('tcloud_files_nav', JSON.stringify({
             storageId: this.currentStorage,
             storageName: this.currentStorageName,
+            storagePermission: this.currentStoragePermission,
             folderId: this.currentFolder,
             folderName: this.currentFolderName,
             breadcrumbs: this.breadcrumbs,
@@ -77,6 +120,8 @@ deleteConfirmFile: null,
             if (!state.storageId) return;
             this.currentStorage = state.storageId;
             this.currentStorageName = state.storageName;
+            const storage = this.availableStorages.find(s => s.id === state.storageId);
+            this.currentStoragePermission = storage ? storage.permissions : 'read';
             this.currentFolder = state.folderId || null;
             this.currentFolderName = state.folderName || null;
             this.breadcrumbs = state.breadcrumbs || [];
@@ -153,6 +198,8 @@ deleteConfirmFile: null,
     enterStorage(storageId, storageName) {
         this.currentStorage = storageId;
         this.currentStorageName = storageName;
+        const storage = this.availableStorages.find(s => s.id === storageId);
+        this.currentStoragePermission = storage ? storage.permissions : 'read';
         this.currentFolder = null;
         this.currentFolderName = null;
         this.breadcrumbs = [];
@@ -651,6 +698,283 @@ deleteConfirmFile: null,
         if (!url) return '';
         if (url.length <= maxLength) return url;
         return url.substring(0, maxLength) + '...';
+    },
+
+    async searchFiles() {
+        if (!this.currentStorage || this.searchQuery.length < 2) return;
+        let url = '/files?q=' + encodeURIComponent(this.searchQuery) + '&storage_id=' + this.currentStorage;
+        const res = await fetch(url, {
+            credentials: 'include',
+            headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+        });
+        if (res.ok) {
+            this.files = await res.json();
+            this.searchMode = true;
+        }
+    },
+
+    clearSearch() {
+        clearTimeout(this.searchTimer);
+        this.searchQuery = '';
+        this.searchMode = false;
+        this.loadFiles();
+    },
+
+    isClippable(file) {
+        if (file.is_folder || !this.canUseMediaEditor) return false;
+        const ext = (file.name || '').split('.').pop().toLowerCase();
+        if (!['mp4', 'mp3', 'm4a'].includes(ext)) return false;
+        const storage = this.availableStorages.find(s => s.id === this.currentStorage);
+        return storage && storage.type === 'local';
+    },
+
+    openClipEditor(file) {
+        this.clipFile = file;
+        this.clipError = '';
+        this.clipProcessing = false;
+        this.clipDuration = 0;
+        this.clipCurrentTime = 0;
+        this.clipPlaying = false;
+        this.clipReady = false;
+        this.clipSelStart = null;
+        this.clipSelEnd = null;
+        this.clipDragging = false;
+        this.clipDragType = null;
+        this.clipSequence = [];
+        this.clipShowAddFile = false;
+        this.clipAddFileList = [];
+        this.showClipModal = true;
+        this.$nextTick(() => this.initClipPlayer(file));
+    },
+
+    closeClipModal() {
+        const el = document.getElementById('clip-media-el');
+        if (el) { try { el.pause(); el.removeAttribute('src'); el.load(); } catch(e) {} }
+        this.clipPlaying = false;
+        this.clipDragging = false;
+        this.showClipModal = false;
+    },
+
+    initClipPlayer(file) {
+        const el = document.getElementById('clip-media-el');
+        if (!el) return;
+        const self = this;
+        el.onloadedmetadata = () => {
+            self.clipDuration = el.duration;
+            self.clipReady = true;
+            if (el.tagName === 'VIDEO') el.currentTime = 0.5;
+        };
+        el.ontimeupdate  = () => { self.clipCurrentTime = el.currentTime; };
+        el.onplay        = () => { self.clipPlaying = true; };
+        el.onpause       = () => { self.clipPlaying = false; };
+        el.onended       = () => { self.clipPlaying = false; };
+        el.onerror       = () => { self.clipError = 'Error cargando el archivo de medios.'; };
+        el.src = '/media/' + file.id + '/preview';
+        el.load();
+    },
+
+    clipTogglePlay() {
+        const el = document.getElementById('clip-media-el');
+        if (!el || !this.clipReady) return;
+        if (el.paused) el.play(); else el.pause();
+    },
+
+    clipPlaySelection() {
+        if (this.clipSelStart === null || !this.clipReady) return;
+        const el = document.getElementById('clip-media-el');
+        if (!el) return;
+        const start = Math.min(this.clipSelStart, this.clipSelEnd ?? this.clipSelStart);
+        const end   = Math.max(this.clipSelStart, this.clipSelEnd ?? this.clipSelStart);
+        el.currentTime = start;
+        el.play();
+        const stop = () => { if (el.currentTime >= end) { el.pause(); el.removeEventListener('timeupdate', stop); } };
+        el.addEventListener('timeupdate', stop);
+    },
+
+    // ── Timeline interaction ───────────────────────────────────────
+    _clipTlPct(e) {
+        const tl = this.$refs.clipTimeline;
+        if (!tl || !this.clipDuration) return 0;
+        const rect = tl.getBoundingClientRect();
+        return Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    },
+
+    clipTimelineMd(e) {
+        if (!this.clipReady || !this.clipDuration) return;
+        const pct = this._clipTlPct(e);
+        const t   = pct * this.clipDuration;
+        // Check proximity to existing handle (within ~10px)
+        if (this.clipSelStart !== null && this.clipSelEnd !== null) {
+            const tl = this.$refs.clipTimeline;
+            const w  = tl ? tl.getBoundingClientRect().width : 1;
+            if (Math.abs((this.clipSelStart / this.clipDuration) - pct) * w < 12) {
+                this.clipDragging = true; this.clipDragType = 'sel-start'; return;
+            }
+            if (Math.abs((this.clipSelEnd / this.clipDuration) - pct) * w < 12) {
+                this.clipDragging = true; this.clipDragType = 'sel-end'; return;
+            }
+        }
+        // New selection
+        this.clipDragging  = true;
+        this.clipDragType  = 'new-sel';
+        this.clipSelStart  = t;
+        this.clipSelEnd    = t;
+        const el = document.getElementById('clip-media-el');
+        if (el) el.currentTime = t;
+    },
+
+    clipHandleMd(type, e) {
+        e.stopPropagation();
+        this.clipDragging = true;
+        this.clipDragType = type === 'start' ? 'sel-start' : 'sel-end';
+    },
+
+    clipTimelineMm(e) {
+        if (!this.clipDragging || !this.clipDuration) return;
+        const t = this._clipTlPct(e) * this.clipDuration;
+        if (this.clipDragType === 'new-sel') {
+            if (t >= this.clipSelStart) { this.clipSelEnd = t; }
+            else { this.clipSelEnd = this.clipSelStart; this.clipSelStart = t; }
+        } else if (this.clipDragType === 'sel-start') {
+            this.clipSelStart = Math.min(t, this.clipSelEnd - 0.05);
+        } else if (this.clipDragType === 'sel-end') {
+            this.clipSelEnd = Math.max(t, this.clipSelStart + 0.05);
+        }
+    },
+
+    clipTimelineMu() {
+        this.clipDragging = false;
+        this.clipDragType = null;
+        // snap: seek player to selection start
+        if (this.clipSelStart !== null) {
+            const el = document.getElementById('clip-media-el');
+            if (el) el.currentTime = Math.min(this.clipSelStart, this.clipSelEnd ?? this.clipSelStart);
+        }
+    },
+
+    clipSelStyle() {
+        if (this.clipSelStart === null || this.clipSelEnd === null || !this.clipDuration) return 'display:none';
+        const l = (Math.min(this.clipSelStart, this.clipSelEnd) / this.clipDuration * 100).toFixed(3);
+        const w = (Math.abs(this.clipSelEnd - this.clipSelStart) / this.clipDuration * 100).toFixed(3);
+        return `left:${l}%; width:${w}%`;
+    },
+
+    clipTimelineTicks() {
+        if (!this.clipDuration || this.clipDuration <= 0) return [];
+        const d = this.clipDuration;
+        let iv = d < 60 ? 5 : d < 180 ? 15 : d < 600 ? 30 : d < 3600 ? 300 : 600;
+        const ticks = [];
+        for (let t = 0; t <= d; t += iv) {
+            const m = Math.floor(t / 60), s = Math.floor(t % 60);
+            ticks.push({ t, pct: (t / d * 100).toFixed(2), label: m + ':' + String(s).padStart(2,'0') });
+        }
+        return ticks;
+    },
+
+    // ── Sequence management ───────────────────────────────────────
+    clipAddToSequence() {
+        if (this.clipSelStart === null || this.clipSelEnd === null) return;
+        const start = +Math.min(this.clipSelStart, this.clipSelEnd).toFixed(3);
+        const end   = +Math.max(this.clipSelStart, this.clipSelEnd).toFixed(3);
+        if (end - start < 0.05) return;
+        this.clipSequence.push({ id: Date.now() + Math.random(), type: 'segment',
+            fileId: this.clipFile.id, fileName: this.clipFile.name, start, end });
+        this.clipSelStart = null;
+        this.clipSelEnd   = null;
+    },
+
+    clipRemoveSeq(idx) { this.clipSequence.splice(idx, 1); },
+
+    clipMoveSeq(idx, dir) {
+        const ni = idx + dir;
+        if (ni < 0 || ni >= this.clipSequence.length) return;
+        [this.clipSequence[idx], this.clipSequence[ni]] = [this.clipSequence[ni], this.clipSequence[idx]];
+    },
+
+    clipSeqTotalDuration() {
+        return this.clipSequence.reduce((s, item) =>
+            s + (item.type === 'segment' ? (item.end - item.start) : (item.duration || 0)), 0);
+    },
+
+    async clipLoadAddFiles() {
+        this.clipAddFileLoading = true;
+        try {
+            const res  = await fetch('/files?storage=' + this.currentStorage + '&per_page=200',
+                { credentials: 'include', headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' } });
+            const data = await res.json();
+            const ok   = ['mp4', 'mp3', 'm4a'];
+            this.clipAddFileList = (data.files || data.data || []).filter(f => {
+                if (f.is_folder || f.id === this.clipFile.id) return false;
+                return ok.includes((f.name || '').split('.').pop().toLowerCase());
+            });
+        } catch(e) { this.clipAddFileList = []; }
+        finally    { this.clipAddFileLoading = false; }
+    },
+
+    clipAddFileToSeq(file, position) {
+        const item = { id: Date.now() + Math.random(), type: 'full',
+            fileId: file.id, fileName: file.name, duration: 0 };
+        if (position === 'start') this.clipSequence.unshift(item);
+        else this.clipSequence.push(item);
+        this.clipShowAddFile = false;
+    },
+
+    // ── Shared helpers ────────────────────────────────────────────
+    formatClipTime(s) {
+        if (!s && s !== 0) return '0:00';
+        const h  = Math.floor(s / 3600);
+        const m  = Math.floor((s % 3600) / 60);
+        const sc = Math.floor(s % 60);
+        const ms = Math.floor((s % 1) * 10);
+        if (h > 0) return `${h}:${String(m).padStart(2,'0')}:${String(sc).padStart(2,'0')}`;
+        return `${m}:${String(sc).padStart(2,'0')}.${ms}`;
+    },
+
+    async generateClip() {
+        this.clipError = '';
+        if (this.clipSequence.length === 0) {
+            this.clipError = 'Agrega al menos un segmento a la secuencia.';
+            return;
+        }
+        this.clipProcessing = true;
+        const el = document.getElementById('clip-media-el');
+        if (el) el.pause();
+        try {
+            const sequence = this.clipSequence.map(item =>
+                item.type === 'segment'
+                    ? { fileId: item.fileId, start: item.start, end: item.end }
+                    : { fileId: item.fileId });
+            const res = await fetch('/files/' + this.clipFile.id + '/clip', {
+                method: 'POST',
+                credentials: 'include',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
+                    'Accept': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                },
+                body: JSON.stringify({ sequence }),
+            });
+            if (!res.ok) {
+                const data = await res.json();
+                this.clipError = data.error || 'Error al generar el corte.';
+                return;
+            }
+            const blob = await res.blob();
+            const ext      = (this.clipFile.name || '').split('.').pop().toLowerCase();
+            const filename = this.clipFile.name.replace(/\.[^.]+$/, '') + '_corte.' + ext;
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = filename;
+            document.body.appendChild(a); a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            this.closeClipModal();
+        } catch (e) {
+            this.clipError = 'Error de red: ' + e.message;
+        } finally {
+            this.clipProcessing = false;
+        }
     }
     }));
 });
@@ -706,13 +1030,13 @@ deleteConfirmFile: null,
                         </button>
                     </div>
                 </template>
-                <button @click="showNewFolderModal = true" x-show="viewMode === 'files'" class="flex items-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-700 px-4 py-2 rounded-lg transition-colors">
+                <button @click="showNewFolderModal = true" x-show="viewMode === 'files' && canCreateFolders()" class="flex items-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-700 px-4 py-2 rounded-lg transition-colors">
                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 13h6m-3-3v6m-9 1V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>
                     </svg>
                     Nueva Carpeta
                 </button>
-                <button @click="uploadQueue = []; showUploadModal = true" x-show="viewMode === 'files'" class="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors">
+                <button @click="uploadQueue = []; showUploadModal = true" x-show="viewMode === 'files' && canUpload()" class="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors">
                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/>
                     </svg>
@@ -724,11 +1048,11 @@ deleteConfirmFile: null,
 
     <main class="p-6">
         <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden relative"
-             @dragenter.prevent="if(viewMode === 'files') { dragDepth++; dragOverMain = true; }"
+             @dragenter.prevent="if(viewMode === 'files' && canUpload()) { dragDepth++; dragOverMain = true; }"
              @dragleave.prevent="dragDepth--; if(dragDepth <= 0) { dragDepth = 0; dragOverMain = false; }"
              @dragover.prevent
-             @drop.prevent="dragDepth = 0; dragOverMain = false; if(viewMode === 'files') uploadFiles($event.dataTransfer.files)">
-            <div x-show="dragOverMain && viewMode === 'files'"
+             @drop.prevent="dragDepth = 0; dragOverMain = false; if(viewMode === 'files' && canUpload()) uploadFiles($event.dataTransfer.files)">
+            <div x-show="dragOverMain && viewMode === 'files' && canUpload()"
                  class="absolute inset-0 z-40 bg-blue-500/20 border-4 border-dashed border-blue-500 rounded-xl flex items-center justify-center pointer-events-none">
                 <div class="bg-white rounded-xl px-8 py-6 shadow-xl text-center">
                     <svg class="w-12 h-12 text-blue-500 mx-auto mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -739,30 +1063,58 @@ deleteConfirmFile: null,
                 </div>
             </div>
             <div class="p-4 border-b border-slate-200 bg-slate-50" x-show="viewMode === 'files'">
-                <nav class="flex items-center gap-2 text-sm">
-                    <button @click="navigateToRoot()" class="flex items-center gap-1 text-blue-600 hover:text-blue-700 font-medium">
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/>
+                <div class="flex items-center justify-between gap-4 flex-wrap">
+                    <!-- Breadcrumb normal -->
+                    <nav x-show="!searchMode" class="flex items-center gap-2 text-sm flex-1 min-w-0">
+                        <button @click="navigateToRoot()" class="flex items-center gap-1 text-blue-600 hover:text-blue-700 font-medium whitespace-nowrap">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/>
+                            </svg>
+                            Raíz
+                        </button>
+                        <template x-for="(crumb, index) in breadcrumbs" :key="index">
+                            <div class="flex items-center gap-2">
+                                <svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                                </svg>
+                                <button @click="navigateToBreadcrumb(crumb)" class="text-blue-600 hover:text-blue-700" x-text="crumb.name"></button>
+                            </div>
+                        </template>
+                        <template x-if="currentFolderName">
+                            <div class="flex items-center gap-2">
+                                <svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                                </svg>
+                                <span class="text-slate-600 font-medium" x-text="currentFolderName"></span>
+                            </div>
+                        </template>
+                    </nav>
+                    <!-- Indicador de modo búsqueda -->
+                    <div x-show="searchMode" class="flex items-center gap-2 flex-1 min-w-0">
+                        <svg class="w-4 h-4 text-blue-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0"/>
                         </svg>
-                        Raíz
-                    </button>
-                    <template x-for="(crumb, index) in breadcrumbs" :key="index">
-                        <div class="flex items-center gap-2">
-                            <svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
-                            </svg>
-                            <button @click="navigateToBreadcrumb(crumb)" class="text-blue-600 hover:text-blue-700" x-text="crumb.name"></button>
-                        </div>
-                    </template>
-                    <template x-if="currentFolderName">
-                        <div class="flex items-center gap-2">
-                            <svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
-                            </svg>
-                            <span class="text-slate-600 font-medium" x-text="currentFolderName"></span>
-                        </div>
-                    </template>
-                </nav>
+                        <span class="text-sm text-slate-600">Resultados para:</span>
+                        <span class="text-sm font-semibold text-blue-700 truncate" x-text="'«' + searchQuery + '»'"></span>
+                        <span class="text-xs text-slate-400" x-text="'(' + files.length + ' resultado' + (files.length !== 1 ? 's' : '') + ')'"></span>
+                        <button @click="clearSearch()" class="ml-1 flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 hover:underline whitespace-nowrap">
+                            ← Volver a carpeta
+                        </button>
+                    </div>
+                    <!-- Cuadro de búsqueda -->
+                    <div class="relative w-72 flex-shrink-0">
+                        <input type="text" x-model="searchQuery"
+                               :disabled="!currentStorage"
+                               placeholder="Buscar archivos..."
+                               :class="!currentStorage ? 'opacity-50 cursor-not-allowed bg-slate-100' : 'bg-white'"
+                               class="w-full border border-slate-300 rounded-lg pl-9 pr-8 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-colors">
+                        <svg class="absolute left-3 top-2.5 w-4 h-4 text-slate-400 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0"/>
+                        </svg>
+                        <button x-show="searchQuery" @click="clearSearch()"
+                                class="absolute right-2.5 top-2 text-slate-400 hover:text-slate-700 text-lg leading-none font-medium">×</button>
+                    </div>
+                </div>
             </div>
 
             <div class="p-6">
@@ -889,6 +1241,11 @@ deleteConfirmFile: null,
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z"/>
                                     </svg>
                                 </button>
+                                <button x-show="isClippable(file)" @click.stop="openClipEditor(file)" class="p-2 bg-white hover:bg-violet-100 rounded-lg shadow-sm transition-colors" title="Editor de corte">
+                                    <svg class="w-4 h-4 text-violet-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.121 14.121L19 19m-7-7l7-7m-7 7l-2.879 2.879M12 12L9.121 9.121m0 5.758a3 3 0 10-4.243 4.243 3 3 0 004.243-4.243zm0-5.758a3 3 0 10-4.243-4.243 3 3 0 004.243 4.243z"/>
+                                    </svg>
+                                </button>
                                 <button @click.stop="startRename(file)" class="p-2 bg-white hover:bg-amber-100 rounded-lg shadow-sm transition-colors" title="Renombrar">
                                     <svg class="w-4 h-4 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
@@ -1011,6 +1368,11 @@ deleteConfirmFile: null,
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z"/>
                                                 </svg>
                                             </button>
+                                            <button x-show="isClippable(file)" @click.stop="openClipEditor(file)" class="p-2 bg-violet-100 hover:bg-violet-200 text-violet-600 rounded-lg transition-colors" title="Editor de corte">
+                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.121 14.121L19 19m-7-7l7-7m-7 7l-2.879 2.879M12 12L9.121 9.121m0 5.758a3 3 0 10-4.243 4.243 3 3 0 004.243-4.243zm0-5.758a3 3 0 10-4.243-4.243 3 3 0 004.243 4.243z"/>
+                                                </svg>
+                                            </button>
                                             <button @click.stop="startRename(file)" class="p-2 bg-amber-100 hover:bg-amber-200 text-amber-600 rounded-lg transition-colors" title="Renombrar">
                                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
@@ -1039,15 +1401,30 @@ deleteConfirmFile: null,
                     <p class="text-slate-500">Contacta al administrador para que te asigne storages.</p>
                 </div>
 
-                <div x-show="viewMode === 'files' && files.length === 0" class="text-center py-16">
+                <!-- Sin resultados de búsqueda -->
+                <div x-show="viewMode === 'files' && searchMode && files.length === 0" class="text-center py-16">
+                    <div class="w-20 h-20 bg-slate-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                        <svg class="w-10 h-10 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0"/>
+                        </svg>
+                    </div>
+                    <h3 class="text-lg font-medium text-slate-700 mb-2">No se encontraron archivos</h3>
+                    <p class="text-slate-500 mb-4">No hay resultados para <span class="font-semibold" x-text="'«' + searchQuery + '»'"></span></p>
+                    <button @click="clearSearch()" class="inline-flex items-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-700 px-4 py-2 rounded-lg transition-colors">
+                        ← Volver a carpeta
+                    </button>
+                </div>
+                <!-- Carpeta vacía (sin búsqueda activa) -->
+                <div x-show="viewMode === 'files' && !searchMode && files.length === 0" class="text-center py-16">
                     <div class="w-20 h-20 bg-slate-100 rounded-full flex items-center justify-center mx-auto mb-4">
                         <svg class="w-10 h-10 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
                         </svg>
                     </div>
                     <h3 class="text-lg font-medium text-slate-700 mb-2">No hay archivos</h3>
-                    <p class="text-slate-500 mb-4">Sube un archivo o crea una carpeta para comenzar</p>
-                    <button @click="uploadQueue = []; showUploadModal = true" class="inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors">
+                    <p class="text-slate-500 mb-4" x-show="canUpload()">Sube un archivo o crea una carpeta para comenzar</p>
+                    <p class="text-slate-500 mb-4" x-show="!canUpload()">No hay archivos en este storage</p>
+                    <button @click="uploadQueue = []; showUploadModal = true" x-show="canUpload()" class="inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors">
                         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/>
                         </svg>
@@ -1058,7 +1435,7 @@ deleteConfirmFile: null,
         </div>
     </main>
 
-    <div x-cloak x-show="showUploadModal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" x-transition>
+    <div x-cloak x-show="showUploadModal && canUpload()" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" x-transition>
         <div class="bg-white rounded-xl p-6 w-full max-w-lg shadow-xl">
             <h2 class="text-xl font-bold text-slate-800 mb-4 flex items-center gap-2">
                 <svg class="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1470,6 +1847,358 @@ deleteConfirmFile: null,
                 <button @click="executeDeleteFile()" class="flex-1 px-4 py-3 bg-red-600 hover:bg-red-700 text-white font-medium rounded-xl transition-colors">
                     Eliminar
                 </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal Editor de Corte -->
+    <div x-cloak x-show="showClipModal"
+         x-transition:enter="transition ease-out duration-200" x-transition:enter-start="opacity-0"
+         x-transition:enter-end="opacity-100" x-transition:leave="transition ease-in duration-150"
+         x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"
+         class="fixed inset-0 z-[70] bg-black/80 flex items-center justify-center p-3"
+         @keydown.escape.window="closeClipModal()">
+        <div class="w-full max-w-5xl flex flex-col rounded-2xl overflow-hidden shadow-2xl"
+             style="background:#12122a; max-height:96vh;" @click.stop>
+
+            <!-- Header -->
+            <div class="flex items-center justify-between px-5 py-3 border-b flex-shrink-0" style="border-color:rgba(255,255,255,0.08);">
+                <button @click="closeClipModal()" class="flex items-center gap-2 text-sm text-white/50 hover:text-white/80 transition-colors">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+                    </svg>
+                    Volver
+                </button>
+                <div class="flex items-center gap-2">
+                    <svg class="w-4 h-4 text-violet-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.121 14.121L19 19m-7-7l7-7m-7 7l-2.879 2.879M12 12L9.121 9.121m0 5.758a3 3 0 10-4.243-4.243 3 3 0 004.243 4.243z"/>
+                    </svg>
+                    <p class="text-sm font-medium text-white/70 truncate max-w-xs" x-text="clipFile ? clipFile.name : ''"></p>
+                </div>
+                <button @click="closeClipModal()" class="text-white/40 hover:text-white/70 p-1 rounded-lg transition-colors">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                </button>
+            </div>
+
+            <!-- Body -->
+            <div class="flex flex-1 overflow-hidden min-h-0">
+
+                <!-- ── Left: player + timeline ── -->
+                <div class="flex-1 flex flex-col min-w-0 overflow-hidden" style="background:#0b0b1a;">
+
+                    <!-- Single media element (video tag works for audio too) -->
+                    <!-- Visible as video only when the file is video -->
+                    <div class="relative bg-black flex-shrink-0"
+                         :style="clipFile && clipFile.mime_type && clipFile.mime_type.startsWith('video/') ? 'max-height:210px;min-height:80px;' : 'height:0;overflow:hidden;'">
+                        <video id="clip-media-el" class="w-full h-full object-contain" style="max-height:210px;"
+                               preload="metadata" playsinline></video>
+                    </div>
+
+                    <!-- Audio file info card (visual only) -->
+                    <div x-show="clipFile && clipFile.mime_type && !clipFile.mime_type.startsWith('video/')"
+                         class="flex-shrink-0 flex items-center gap-4 px-6 py-5" style="background:#0a0a18;">
+                        <div class="w-14 h-14 rounded-2xl flex items-center justify-center flex-shrink-0"
+                             style="background:rgba(124,58,237,0.18);">
+                            <svg class="w-7 h-7 text-violet-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3"/>
+                            </svg>
+                        </div>
+                        <div>
+                            <p class="text-white/60 text-sm font-medium" x-text="clipFile ? clipFile.name : ''"></p>
+                            <p class="text-white/30 text-xs mt-0.5"
+                               x-text="clipReady ? formatClipTime(clipDuration) + ' de duración' : 'Cargando...'"></p>
+                        </div>
+                    </div>
+
+                    <!-- Timeline area -->
+                    <div class="px-4 pt-4 pb-2 flex-shrink-0">
+
+                        <!-- Loading -->
+                        <div x-show="!clipReady" class="flex items-center justify-center gap-3 py-8">
+                            <svg class="w-5 h-5 animate-spin text-violet-400" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                            </svg>
+                            <p class="text-white/40 text-sm">Cargando archivo...</p>
+                        </div>
+
+                        <div x-show="clipReady">
+                            <!-- Selection info bar -->
+                            <div class="flex items-center gap-2 mb-2 min-h-[24px]">
+                                <template x-if="clipSelStart !== null && clipSelEnd !== null && Math.abs(clipSelEnd - clipSelStart) > 0.05">
+                                    <div class="flex items-center gap-2 flex-1">
+                                        <span class="text-xs font-mono text-amber-300"
+                                              x-text="formatClipTime(Math.min(clipSelStart,clipSelEnd)) + ' → ' + formatClipTime(Math.max(clipSelStart,clipSelEnd))"></span>
+                                        <span class="text-xs text-white/30"
+                                              x-text="'(' + formatClipTime(Math.abs(clipSelEnd-clipSelStart)) + ')'"></span>
+                                        <button @click="clipAddToSequence()"
+                                                class="ml-auto flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg font-medium transition-colors"
+                                                style="background:rgba(251,191,36,0.15); color:rgba(251,191,36,0.9);"
+                                                onmouseover="this.style.background='rgba(251,191,36,0.25)'"
+                                                onmouseout="this.style.background='rgba(251,191,36,0.15)'">
+                                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                                            </svg>
+                                            Agregar a secuencia
+                                        </button>
+                                    </div>
+                                </template>
+                                <template x-if="clipSelStart === null || clipSelEnd === null || Math.abs(clipSelEnd - clipSelStart) <= 0.05">
+                                    <p class="text-xs text-white/25">Arrastra sobre el timeline para marcar un segmento</p>
+                                </template>
+                            </div>
+
+                            <!-- The timeline bar -->
+                            <div class="relative rounded-xl overflow-hidden select-none"
+                                 style="height:60px; background:linear-gradient(180deg,#1c1c38 0%,#131325 100%); cursor:crosshair;"
+                                 x-ref="clipTimeline"
+                                 @mousedown="clipTimelineMd($event)"
+                                 @mousemove.window="clipTimelineMm($event)"
+                                 @mouseup.window="clipTimelineMu()">
+
+                                <!-- Purple: already-added segments from this file -->
+                                <template x-for="item in clipSequence" :key="item.id">
+                                    <div x-show="item.type === 'segment' && item.fileId === (clipFile ? clipFile.id : -1)"
+                                         class="absolute top-1.5 bottom-5 rounded pointer-events-none"
+                                         style="background:rgba(124,58,237,0.35);"
+                                         :style="'left:' + (item.start/clipDuration*100).toFixed(2) + '%; width:' + ((item.end-item.start)/clipDuration*100).toFixed(2) + '%'">
+                                    </div>
+                                </template>
+
+                                <!-- Amber: current selection -->
+                                <template x-if="clipSelStart !== null && clipSelEnd !== null && clipDuration > 0">
+                                    <div class="absolute top-1.5 bottom-5 rounded"
+                                         style="background:rgba(251,191,36,0.18); border:1px solid rgba(251,191,36,0.65);"
+                                         :style="clipSelStyle()">
+                                        <!-- Left handle -->
+                                        <div class="absolute left-0 top-0 bottom-0 w-3 flex items-center justify-center cursor-ew-resize z-10"
+                                             style="background:rgba(251,191,36,0.85); border-radius:3px 0 0 3px;"
+                                             @mousedown.stop="clipHandleMd('start', $event)">
+                                            <div class="flex gap-px"><div class="w-px h-3" style="background:rgba(0,0,0,0.4)"></div><div class="w-px h-3" style="background:rgba(0,0,0,0.4)"></div></div>
+                                        </div>
+                                        <!-- Right handle -->
+                                        <div class="absolute right-0 top-0 bottom-0 w-3 flex items-center justify-center cursor-ew-resize z-10"
+                                             style="background:rgba(251,191,36,0.85); border-radius:0 3px 3px 0;"
+                                             @mousedown.stop="clipHandleMd('end', $event)">
+                                            <div class="flex gap-px"><div class="w-px h-3" style="background:rgba(0,0,0,0.4)"></div><div class="w-px h-3" style="background:rgba(0,0,0,0.4)"></div></div>
+                                        </div>
+                                    </div>
+                                </template>
+
+                                <!-- Playhead -->
+                                <div class="absolute top-0 bottom-5 w-px pointer-events-none z-20"
+                                     style="background:rgba(255,255,255,0.9); box-shadow:0 0 3px rgba(255,255,255,0.4);"
+                                     :style="'left:' + (clipDuration > 0 ? (clipCurrentTime/clipDuration*100).toFixed(3) : 0) + '%'">
+                                    <div class="absolute -top-0 left-1/2 -translate-x-1/2 w-2.5 h-2.5 bg-white rounded-sm" style="clip-path:polygon(0 0,100% 0,50% 100%)"></div>
+                                </div>
+
+                                <!-- Time ruler -->
+                                <div class="absolute bottom-0 left-0 right-0 h-5 pointer-events-none"
+                                     style="border-top:1px solid rgba(255,255,255,0.06);">
+                                    <template x-for="tick in clipTimelineTicks()" :key="tick.t">
+                                        <div class="absolute bottom-0 flex flex-col items-center" :style="'left:' + tick.pct + '%'">
+                                            <div class="w-px h-2" style="background:rgba(255,255,255,0.12)"></div>
+                                            <span class="text-white/30 leading-none" style="font-size:9px; transform:translateX(-50%);" x-text="tick.label"></span>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Playback controls -->
+                    <div class="flex items-center gap-3 px-4 py-3 border-t flex-shrink-0" style="border-color:rgba(255,255,255,0.07);">
+                        <button @click="clipTogglePlay()" :disabled="!clipReady"
+                                class="w-9 h-9 rounded-full flex items-center justify-center transition-colors flex-shrink-0"
+                                :class="clipReady ? 'bg-violet-600 hover:bg-violet-500' : 'bg-white/10 cursor-not-allowed'">
+                            <svg x-show="!clipPlaying" class="w-4 h-4 text-white ml-0.5" fill="currentColor" viewBox="0 0 20 20">
+                                <path d="M6.3 2.841A1.5 1.5 0 004 4.11v11.78a1.5 1.5 0 002.3 1.269l9.344-5.89a1.5 1.5 0 000-2.538L6.3 2.84z"/>
+                            </svg>
+                            <svg x-show="clipPlaying" class="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 20 20">
+                                <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zM7 8a1 1 0 012 0v4a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v4a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd"/>
+                            </svg>
+                        </button>
+                        <div class="font-mono text-sm">
+                            <span class="text-white" x-text="formatClipTime(clipCurrentTime)"></span>
+                            <span class="text-white/30"> / </span>
+                            <span class="text-white/50" x-text="formatClipTime(clipDuration)"></span>
+                        </div>
+                        <button x-show="clipSelStart !== null && clipSelEnd !== null && Math.abs(clipSelEnd - clipSelStart) > 0.05"
+                                @click="clipPlaySelection()" :disabled="!clipReady"
+                                class="ml-auto flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg transition-colors"
+                                style="background:rgba(251,191,36,0.1); color:rgba(251,191,36,0.75);"
+                                onmouseover="this.style.background='rgba(251,191,36,0.18)'"
+                                onmouseout="this.style.background='rgba(251,191,36,0.1)'">
+                            <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
+                                <path d="M6.3 2.841A1.5 1.5 0 004 4.11v11.78a1.5 1.5 0 002.3 1.269l9.344-5.89a1.5 1.5 0 000-2.538L6.3 2.84z"/>
+                            </svg>
+                            Ver selección
+                        </button>
+                    </div>
+                </div>
+
+                <!-- ── Right: sequence ── -->
+                <div class="w-72 flex-shrink-0 flex flex-col border-l" style="border-color:rgba(255,255,255,0.08); background:#12122a;">
+
+                    <!-- Header -->
+                    <div class="px-5 pt-4 pb-3 border-b flex-shrink-0 flex items-center justify-between" style="border-color:rgba(255,255,255,0.08);">
+                        <p class="text-xs text-white/40 uppercase tracking-wider font-medium">Secuencia</p>
+                        <span x-show="clipSequence.length > 0"
+                              class="text-xs text-white/25 font-mono"
+                              x-text="clipSequence.length + (clipSequence.length === 1 ? ' clip' : ' clips')"></span>
+                    </div>
+
+                    <!-- Sequence list -->
+                    <div class="flex-1 overflow-y-auto px-3 py-3 space-y-1.5">
+
+                        <!-- Empty state -->
+                        <div x-show="clipSequence.length === 0"
+                             class="flex flex-col items-center justify-center py-12 text-center">
+                            <div class="w-12 h-12 rounded-2xl mb-3 flex items-center justify-center"
+                                 style="background:rgba(124,58,237,0.1);">
+                                <svg class="w-6 h-6 text-violet-400/35" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 4v16M17 4v16M3 8h4m10 0h4M3 16h4m10 0h4M4 20h16a1 1 0 001-1V5a1 1 0 00-1-1H4a1 1 0 00-1 1v14a1 1 0 001 1z"/>
+                                </svg>
+                            </div>
+                            <p class="text-xs text-white/25 leading-relaxed">Marca un segmento en el<br>timeline y agrégalo aquí</p>
+                        </div>
+
+                        <!-- Items -->
+                        <template x-for="(item, i) in clipSequence" :key="item.id">
+                            <div class="rounded-xl px-3 py-2.5 group"
+                                 :style="item.type === 'segment'
+                                    ? 'background:rgba(251,191,36,0.07);border:1px solid rgba(251,191,36,0.18)'
+                                    : 'background:rgba(124,58,237,0.1);border:1px solid rgba(124,58,237,0.25)'">
+                                <div class="flex items-start gap-2">
+                                    <span class="text-xs font-bold mt-0.5 flex-shrink-0 tabular-nums"
+                                          :class="item.type === 'segment' ? 'text-amber-400/60' : 'text-violet-400/60'"
+                                          x-text="(i+1) + '.'"></span>
+                                    <div class="flex-1 min-w-0">
+                                        <p class="text-xs text-white/55 truncate" x-text="item.fileName"></p>
+                                        <template x-if="item.type === 'segment'">
+                                            <p class="font-mono text-xs text-amber-300/80 mt-0.5"
+                                               x-text="formatClipTime(item.start) + ' → ' + formatClipTime(item.end)"></p>
+                                        </template>
+                                        <template x-if="item.type === 'full'">
+                                            <p class="text-xs text-violet-300/60 mt-0.5">Archivo completo</p>
+                                        </template>
+                                        <p x-show="item.type === 'segment'"
+                                           class="text-xs text-white/25 mt-0.5"
+                                           x-text="formatClipTime(item.end - item.start)"></p>
+                                    </div>
+                                    <!-- Order + remove controls -->
+                                    <div class="flex flex-col gap-0.5 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                                        <button @click="clipMoveSeq(i, -1)" :disabled="i === 0"
+                                                class="p-0.5 rounded text-white/30 hover:text-white/70 disabled:opacity-20 disabled:cursor-not-allowed transition-colors">
+                                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7"/>
+                                            </svg>
+                                        </button>
+                                        <button @click="clipMoveSeq(i, 1)" :disabled="i === clipSequence.length - 1"
+                                                class="p-0.5 rounded text-white/30 hover:text-white/70 disabled:opacity-20 disabled:cursor-not-allowed transition-colors">
+                                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+                                            </svg>
+                                        </button>
+                                        <button @click="clipRemoveSeq(i)"
+                                                class="p-0.5 rounded text-white/20 hover:text-red-400 transition-colors">
+                                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                                            </svg>
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+
+                    <!-- Add other file panel -->
+                    <div x-show="clipShowAddFile"
+                         class="border-t overflow-y-auto flex-shrink-0" style="border-color:rgba(255,255,255,0.08); max-height:180px;">
+                        <div class="px-3 pt-2 pb-2">
+                            <p class="text-xs text-white/35 mb-1.5">Archivos compatibles en este storage</p>
+                            <div x-show="clipAddFileLoading" class="text-center py-4 text-xs text-white/30">Cargando...</div>
+                            <div x-show="!clipAddFileLoading && clipAddFileList.length === 0"
+                                 class="text-center py-4 text-xs text-white/25">Sin otros archivos mp4 / mp3 / m4a</div>
+                            <template x-for="f in clipAddFileList" :key="f.id">
+                                <div class="flex items-center gap-2 py-1.5 px-2 rounded-lg group"
+                                     style="cursor:default"
+                                     onmouseover="this.style.background='rgba(255,255,255,0.04)'"
+                                     onmouseout="this.style.background=''">
+                                    <p class="flex-1 text-xs text-white/55 truncate" x-text="f.name"></p>
+                                    <div class="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                        <button @click="clipAddFileToSeq(f, 'start')"
+                                                class="text-xs px-2 py-0.5 rounded transition-colors"
+                                                style="background:rgba(124,58,237,0.25); color:rgba(167,139,250,0.9);"
+                                                title="Insertar al inicio">↑</button>
+                                        <button @click="clipAddFileToSeq(f, 'end')"
+                                                class="text-xs px-2 py-0.5 rounded transition-colors"
+                                                style="background:rgba(124,58,237,0.25); color:rgba(167,139,250,0.9);"
+                                                title="Agregar al final">↓</button>
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+
+                    <!-- Footer -->
+                    <div class="px-4 pb-5 pt-3 border-t flex-shrink-0 space-y-2" style="border-color:rgba(255,255,255,0.08);">
+
+                        <!-- Add current selection -->
+                        <button @click="clipAddToSequence()"
+                                :disabled="clipSelStart === null || clipSelEnd === null || Math.abs((clipSelEnd||0)-(clipSelStart||0)) < 0.05"
+                                class="w-full py-2 rounded-xl border text-xs font-medium transition-colors flex items-center justify-center gap-1.5"
+                                :class="(clipSelStart !== null && clipSelEnd !== null && Math.abs(clipSelEnd-clipSelStart) >= 0.05)
+                                    ? 'border-amber-500/40 text-amber-300/80 hover:bg-amber-500/10'
+                                    : 'border-white/10 text-white/20 cursor-not-allowed'">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                            </svg>
+                            Agregar selección
+                        </button>
+
+                        <!-- Add other file -->
+                        <button @click="clipShowAddFile = !clipShowAddFile; if(clipShowAddFile && clipAddFileList.length === 0) clipLoadAddFiles();"
+                                class="w-full py-2 rounded-xl border text-xs font-medium transition-colors flex items-center justify-center gap-1.5"
+                                :class="clipShowAddFile
+                                    ? 'border-violet-500/50 text-violet-300'
+                                    : 'border-white/10 text-white/30 hover:border-violet-500/30 hover:text-violet-300/60'">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/>
+                            </svg>
+                            <span x-text="clipShowAddFile ? 'Ocultar archivos' : 'Agregar otro archivo'"></span>
+                        </button>
+
+                        <!-- Total duration -->
+                        <div x-show="clipSequence.length > 0"
+                             class="flex justify-between items-center px-1 text-xs">
+                            <span class="text-white/30">Duración total</span>
+                            <span class="font-mono text-white/55" x-text="formatClipTime(clipSeqTotalDuration())"></span>
+                        </div>
+
+                        <!-- Error -->
+                        <div x-show="clipError" class="text-xs text-red-400 rounded-xl px-3 py-2"
+                             style="background:rgba(239,68,68,0.1);" x-text="clipError"></div>
+
+                        <!-- Export -->
+                        <button @click="generateClip()"
+                                :disabled="clipProcessing || clipSequence.length === 0"
+                                :class="(!clipProcessing && clipSequence.length > 0)
+                                    ? 'bg-blue-600 hover:bg-blue-500'
+                                    : 'opacity-40 cursor-not-allowed bg-blue-600'"
+                                class="w-full flex items-center justify-center gap-2 py-3 rounded-xl font-semibold text-white text-sm transition-colors">
+                            <template x-if="clipProcessing">
+                                <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                                </svg>
+                            </template>
+                            <span x-text="clipProcessing ? 'Procesando...' : 'Exportar recorte'"></span>
+                        </button>
+                    </div>
+                </div>
             </div>
         </div>
     </div>

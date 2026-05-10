@@ -7,22 +7,40 @@ use App\Models\Grabador;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Session;
 
 class GrabadorController extends Controller
 {
+    private function getUser(): ?\App\Models\User
+    {
+        $userId = Session::get('user_id');
+        return $userId ? \App\Models\User::find($userId) : null;
+    }
+
+    private function requireAdmin(): void
+    {
+        $user = $this->getUser();
+        if (!$user || !$user->isAdmin()) {
+            abort(403);
+        }
+    }
+
     public function index()
     {
+        $this->requireAdmin();
         $grabadores = Grabador::with('usuarios')->get();
         return view('grabaciones_puntuales.grabadores.index', compact('grabadores'));
     }
 
     public function create()
     {
+        $this->requireAdmin();
         return view('grabaciones_puntuales.grabadores.create');
     }
 
     public function store(Request $request)
     {
+        $this->requireAdmin();
         $request->validate([
             'nombre' => 'required|string|max:100',
             'ip' => 'required|ip',
@@ -49,6 +67,7 @@ class GrabadorController extends Controller
 
     public function show(Grabador $grabador)
     {
+        $this->requireAdmin();
         $grabador->load('usuarios');
         $usuarios = User::where('role', '!=', 'admin')->get();
         return view('grabaciones_puntuales.grabadores.show', compact('grabador', 'usuarios'));
@@ -56,6 +75,7 @@ class GrabadorController extends Controller
 
     public function update(Request $request, Grabador $grabador)
     {
+        $this->requireAdmin();
         $request->validate([
             'nombre' => 'required|string|max:100',
             'ip' => 'required|ip',
@@ -75,6 +95,7 @@ class GrabadorController extends Controller
 
     public function destroy(Grabador $grabador)
     {
+        $this->requireAdmin();
         $grabador->delete();
         return redirect()->route('grabadores.index')
             ->with('success', 'Grabador eliminado');
@@ -82,6 +103,7 @@ class GrabadorController extends Controller
 
     public function asignarUsuario(Request $request, Grabador $grabador)
     {
+        $this->requireAdmin();
         $request->validate([
             'user_id' => 'required|exists:users,id',
             'limite_canales' => 'required|integer|min:1|max:100',
@@ -115,6 +137,7 @@ class GrabadorController extends Controller
 
     public function actualizarAsignacion(Request $request, Grabador $grabador, int $userId)
     {
+        $this->requireAdmin();
         $request->validate([
             'limite_canales' => 'required|integer|min:1|max:100',
         ]);
@@ -129,6 +152,7 @@ class GrabadorController extends Controller
 
     public function removerUsuario(Grabador $grabador, int $userId)
     {
+        $this->requireAdmin();
         \DB::table('grabador_usuario')
             ->where('grabador_id', $grabador->id)
             ->where('user_id', $userId)

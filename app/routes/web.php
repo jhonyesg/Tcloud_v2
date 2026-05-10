@@ -83,6 +83,9 @@ Route::middleware('auth')->group(function () {
 
     Route::resource('shares', App\Http\Controllers\ShareController::class)->only(['index', 'store', 'show', 'update', 'destroy']);
     Route::post('/files/{file}/clip', [App\Http\Controllers\MediaClipController::class, 'clip']);
+    Route::get('/media-clip/history', [App\Http\Controllers\MediaClipController::class, 'history']);
+    Route::get('/media-clip/{jobId}/reclip', [App\Http\Controllers\MediaClipController::class, 'reclip']);
+    Route::get('/media/clip-preview/{token}', [App\Http\Controllers\MediaClipController::class, 'serveTemp']);
 
     // Grabaciones Puntuales
     Route::prefix('grabaciones-puntuales')->middleware(['auth'])->group(function () {

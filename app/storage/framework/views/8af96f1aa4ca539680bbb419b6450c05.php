@@ -66,11 +66,6 @@
                         </div>
                         <span class="font-bold text-lg text-white hidden sm:block drop-shadow-md">Tcloud</span>
                     </a>
-                    <div class="hidden md:flex items-center bg-[#0A1F4D] rounded-lg px-3 py-2 ml-4">
-                        <i class="fas fa-search text-brand-300 mr-2 text-sm"></i>
-                        <input type="text" placeholder="Buscar archivos..."
-                               class="bg-transparent border-none outline-none text-sm text-white placeholder:text-brand-300 w-64">
-                    </div>
                 </div>
 
                 <!-- Right side -->
@@ -86,7 +81,7 @@
                             <div class="w-8 h-8 bg-brand-500 rounded-full flex items-center justify-center">
                                 <i class="fas fa-user text-white text-sm"></i>
                             </div>
-                            <span class="hidden sm:block text-sm font-medium text-white"><?php echo e(session('user_email', 'Usuario')); ?></span>
+                            <span class="hidden sm:block text-sm font-medium text-white"><?php echo e(session('user_username', session('user_email', 'Usuario'))); ?></span>
                             <i class="fas fa-chevron-down text-brand-300 text-xs"></i>
                         </button>
 
@@ -97,7 +92,7 @@
                              @click.outside="userMenuOpen = false"
                              class="absolute right-0 mt-2 w-56 bg-[#0A1F4D] rounded-xl shadow-lg border border-brand-700 py-2 z-50">
                             <div class="px-4 py-2 border-b border-brand-700">
-                                <p class="font-medium text-white text-sm"><?php echo e(session('user_email', 'Usuario')); ?></p>
+                                <p class="font-medium text-white text-sm"><?php echo e(session('user_username', session('user_email', 'Usuario'))); ?></p>
                                 <p class="text-xs text-brand-300 font-medium mt-0.5"><?php echo e(session('user_role') === 'admin' ? 'Administrador' : 'Usuario'); ?></p>
                             </div>
                             <a href="#" @click.prevent="showSettingsModal = true; userMenuOpen = false" class="flex items-center gap-3 px-4 py-2 hover:bg-brand-700 text-brand-100 transition-colors">
@@ -191,16 +186,34 @@
                         <span x-show="sidebarOpen" x-transition class="font-medium text-sm">PostgreSQL</span>
                     </a>
 
+                    <a href="/admin/media-editor" data-nav-path="/admin/media-editor"                       class="nav-link flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg transition-colors text-brand-200 hover:bg-brand-800 hover:text-white">
+                        <i class="nav-icon fas fa-cut w-5 text-center text-brand-300"></i>
+                        <span x-show="sidebarOpen" x-transition class="font-medium text-sm">Editor de Medios</span>
+                    </a>
+
+                    <a href="/grabaciones-puntuales/grabadores" data-nav-path="/grabaciones-puntuales/grabadores"                       class="nav-link flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg transition-colors text-brand-200 hover:bg-brand-800 hover:text-white">
+                        <i class="nav-icon fas fa-satellite-dish w-5 text-center text-brand-300"></i>
+                        <span x-show="sidebarOpen" x-transition class="font-medium text-sm">Grabadores</span>
+                    </a>
+
                     <a href="/correo" data-nav-path="/correo"                       class="nav-link flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg transition-colors text-brand-200 hover:bg-brand-800 hover:text-white">
                         <i class="nav-icon fas fa-envelope w-5 text-center text-brand-300"></i>
                         <span x-show="sidebarOpen" x-transition class="font-medium text-sm">Correo</span>
                     </a>
 
-                    <a href="/admin/file-tools" data-nav-path="/admin/file-tools"                       class="nav-link flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg transition-colors text-brand-200 hover:bg-brand-800 hover:text-white">
-                        <i class="nav-icon fas fa-tools w-5 text-center text-brand-300"></i>
-                        <span x-show="sidebarOpen" x-transition class="font-medium text-sm">Herramientas</span>
-                    </a>
                     <?php endif; ?>
+
+                    <!-- Medios Puntuales - Visible para todos los usuarios autenticados -->
+                    <div class="px-3 mt-6 mb-2" x-show="sidebarOpen">
+                        <span class="text-xs font-semibold text-brand-400 uppercase tracking-wider">Multimedia</span>
+                    </div>
+                    <div x-show="!sidebarOpen" class="mx-2 my-3 border-t border-brand-800"></div>
+
+                    <a href="/grabaciones-puntuales/canales" data-nav-path="/grabaciones-puntuales"                       class="nav-link flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg transition-colors text-brand-200 hover:bg-brand-800 hover:text-white">
+                        <i class="nav-icon fas fa-broadcast-tower w-5 text-center text-brand-300"></i>
+                        <span x-show="sidebarOpen" x-transition class="font-medium text-sm">Medios Puntuales</span>
+                    </a>
+
                 </nav>
 
                 <!-- Sidebar Footer -->
@@ -208,11 +221,13 @@
                     <div x-show="sidebarOpen" x-transition class="bg-brand-800 rounded-lg p-3">
                         <div class="flex items-center justify-between mb-2">
                             <span class="text-xs text-white/70 font-medium">Almacenamiento</span>
-                            <span class="text-xs font-medium text-brand-100">2.5 GB / 10 GB</span>
+                            <span class="text-xs font-medium text-brand-100"><?php echo e($sidebarQuota['used_label']); ?> / <?php echo e($sidebarQuota['limit_label']); ?></span>
                         </div>
+                        <?php if(!$sidebarQuota['is_unlimited']): ?>
                         <div class="w-full bg-brand-700 rounded-full h-1.5">
-                            <div class="bg-brand-300 h-1.5 rounded-full" style="width: 25%"></div>
+                            <div class="<?php echo e($sidebarQuota['color_class']); ?> h-1.5 rounded-full" style="width: <?php echo e($sidebarQuota['percentage']); ?>%"></div>
                         </div>
+                        <?php endif; ?>
                     </div>
                     <div x-show="!sidebarOpen" x-transition class="flex justify-center">
                         <div class="w-10 h-10 bg-brand-800 rounded-lg flex items-center justify-center">
@@ -257,7 +272,7 @@
                     <div class="w-20 h-20 bg-gradient-to-br from-brand-500 to-brand-400 rounded-full flex items-center justify-center mx-auto mb-4 shadow-lg">
                         <i class="fas fa-user text-white text-2xl"></i>
                     </div>
-                    <h3 class="text-white font-semibold"><?php echo e(session('user_email', 'Usuario')); ?></h3>
+                    <h3 class="text-white font-semibold"><?php echo e(session('user_username', session('user_email', 'Usuario'))); ?></h3>
                     <span class="inline-flex items-center gap-1.5 mt-2 px-3 py-1 rounded-full text-xs font-medium <?php echo e(session('user_role') === 'admin' ? 'bg-brand-500/30 border border-brand-500/50 text-brand-300' : 'bg-brand-600/30 border border-brand-600/50 text-brand-200'); ?>">
                         <i class="fas <?php echo e(session('user_role') === 'admin' ? 'fa-shield-alt' : 'fa-user'); ?>"></i>
                         <?php echo e(session('user_role') === 'admin' ? 'Administrador' : 'Usuario'); ?>

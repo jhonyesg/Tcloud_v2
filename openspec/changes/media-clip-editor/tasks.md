@@ -57,11 +57,11 @@
 
 ## 8. Verificación
 
-- [ ] 8.1 Verificar que FFmpeg está instalado en el contenedor y acepta comandos
-- [ ] 8.2 Verificar que el botón ✂ aparece solo para mp4/mp3/m4a en storage local
-- [ ] 8.3 Verificar que el botón ✂ no aparece para usuarios sin el feature habilitado
-- [ ] 8.4 Verificar corte de un segmento: abrir modal, definir inicio/fin, generar, comprobar que descarga el archivo con nombre correcto
-- [ ] 8.5 Verificar corte de múltiples segmentos: añadir 2 segmentos, generar, comprobar que el output contiene los dos segmentos concatenados
-- [ ] 8.6 Verificar que el registro queda en `media_edit_jobs` con `status = 'done'`
-- [ ] 8.7 Verificar que el archivo temp es eliminado del servidor tras la descarga
-- [ ] 8.8 Verificar el toggle desde admin activa/desactiva el feature para un usuario específico
+- [x] 8.1 Verificar que FFmpeg está instalado en el contenedor y acepta comandos
+- [x] 8.2 Verificar que el botón ✂ aparece solo para mp4/mp3/m4a en storage local
+- [x] 8.3 Verificar que el botón ✂ no aparece para usuarios sin el feature habilitado
+- [x] 8.4 Verificar corte de un segmento: abrir modal, definir inicio/fin, generar, comprobar que descarga el archivo con nombre correcto
+- [x] 8.5 Verificar corte de múltiples segmentos: añadir 2 segmentos, generar, comprobar que el output contiene los dos segmentos concatenados
+- [x] 8.6 Verificar que el registro queda en `media_edit_jobs` con `status = 'done'`
+- [x] 8.7 Verificar que el archivo temp es eliminado del servidor tras la descarga
+- [x] 8.8 Verificar el toggle desde admin activa/desactiva el feature para un usuario específico
