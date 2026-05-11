@@ -486,6 +486,15 @@ class FileController extends Controller
         if ($user && $file->is_personal && $user->personal_quota_bytes > 0) {
             $user->decrement('personal_used_bytes', $file->size);
         }
+        $this->deleteClipThumbs($file->id);
         $file->delete();
+    }
+
+    private function deleteClipThumbs(int $fileId): void
+    {
+        $dir = storage_path("app/clip-thumbs/{$fileId}");
+        if (!is_dir($dir)) return;
+        foreach (glob($dir . '/*') ?: [] as $f) @unlink($f);
+        @rmdir($dir);
     }
 }

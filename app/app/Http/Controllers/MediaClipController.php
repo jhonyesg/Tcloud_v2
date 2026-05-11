@@ -11,6 +11,8 @@ use Symfony\Component\Process\Process;
 
 class MediaClipController extends Controller
 {
+    private ?string $tmpConcatFile = null;
+
     private function getUser(): ?User
     {
         $userId = Session::get('user_id');
@@ -150,120 +152,60 @@ class MediaClipController extends Controller
                 $err = $process->getErrorOutput() ?: $process->getOutput();
                 $job->update(['status' => 'failed', 'error_message' => substr($err, -1000)]);
                 @unlink($tmpOutput);
+                @unlink($this->tmpConcatFile);
                 return response()->json(['error' => 'Error FFmpeg: ' . substr($err, -300)], 500);
             }
 
+            @unlink($this->tmpConcatFile);
             $job->update(['status' => 'done']);
             return $this->streamFile($tmpOutput, $outputName, $ext);
 
         } catch (\Exception $e) {
             $job->update(['status' => 'failed', 'error_message' => $e->getMessage()]);
             @unlink($tmpOutput);
+            @unlink($this->tmpConcatFile);
             return response()->json(['error' => $e->getMessage()], 500);
         }
     }
 
     private function buildSequenceCommand(array $sequence, array $fileMap, string $outputPath, string $ext): array
     {
-        $isAudio = in_array($ext, ['mp3', 'm4a']);
+        $this->tmpConcatFile = null;
 
-        // Map fileId → ffmpeg input index
-        $inputs      = [];
-        $inputIndex  = [];
-        foreach ($sequence as $item) {
-            $fid = (int) $item['fileId'];
-            if (!isset($inputIndex[$fid])) {
-                $inputIndex[$fid] = count($inputs);
-                $inputs[]         = $fileMap[$fid]['path'];
-            }
-        }
-
-        // Optimisation: single input + single item, use -c copy
-        if (count($inputs) === 1 && count($sequence) === 1) {
+        // Single segment: input-side seek + stream copy (instantáneo)
+        if (count($sequence) === 1) {
             $item = $sequence[0];
+            $path = $fileMap[(int) $item['fileId']]['path'];
+            $cmd  = ['ffmpeg', '-y'];
+            if (isset($item['start']) && (float) $item['start'] > 0) {
+                $cmd[] = '-ss'; $cmd[] = (string) $item['start'];
+            }
+            $cmd[] = '-i'; $cmd[] = $path;
             if (isset($item['start'], $item['end'])) {
-                return ['ffmpeg', '-y', '-i', $inputs[0],
-                    '-ss', (string) $item['start'], '-to', (string) $item['end'],
-                    '-c', 'copy', $outputPath];
+                $duration = max(0, (float) $item['end'] - (float) $item['start']);
+                $cmd[] = '-t'; $cmd[] = (string) $duration;
+            } elseif (isset($item['end'])) {
+                $cmd[] = '-to'; $cmd[] = (string) $item['end'];
             }
-            // Full file copy
-            return ['ffmpeg', '-y', '-i', $inputs[0], '-c', 'copy', $outputPath];
+            array_push($cmd, '-c', 'copy', $outputPath);
+            return $cmd;
         }
 
-        // Build filter_complex for N clips
-        $filterParts = [];
-        $n           = count($sequence);
-
-        // Detect audio per input
-        $inputHasAudio = [];
-        foreach ($inputs as $idx => $path) {
-            $inputHasAudio[$idx] = $isAudio || $this->fileHasAudioStream($path);
+        // Múltiples segmentos: concat demuxer con -c copy (sin re-codificar)
+        $lines = ['ffconcat version 1.0'];
+        foreach ($sequence as $item) {
+            $path    = $fileMap[(int) $item['fileId']]['path'];
+            $escaped = str_replace(['\\', "'"], ['\\\\', "\\'"], $path);
+            $lines[] = "file '{$escaped}'";
+            if (isset($item['start'])) { $lines[] = 'inpoint '  . $item['start']; }
+            if (isset($item['end']))   { $lines[] = 'outpoint ' . $item['end']; }
         }
 
-        foreach ($sequence as $i => $item) {
-            $idx      = $inputIndex[(int) $item['fileId']];
-            $hasStart = isset($item['start']);
-            $hasEnd   = isset($item['end']);
-            $trimArg  = '';
-            if ($hasStart || $hasEnd) {
-                $trimArg = ($hasStart ? 'start=' . $item['start'] : '') . ($hasStart && $hasEnd ? ':' : '') . ($hasEnd ? 'end=' . $item['end'] : '');
-            }
+        $this->tmpConcatFile = tempnam(sys_get_temp_dir(), 'ffconcat_') . '.txt';
+        file_put_contents($this->tmpConcatFile, implode("\n", $lines) . "\n");
 
-            if ($isAudio || !$inputHasAudio[$idx]) {
-                if ($trimArg !== '') {
-                    $filterParts[] = "[{$idx}:a]atrim={$trimArg},asetpts=PTS-STARTPTS[a{$i}]";
-                } else {
-                    $filterParts[] = "[{$idx}:a]anull[a{$i}]";
-                }
-            } else {
-                if ($trimArg !== '') {
-                    $filterParts[] = "[{$idx}:v]trim={$trimArg},setpts=PTS-STARTPTS[v{$i}]";
-                    $filterParts[] = "[{$idx}:a]atrim={$trimArg},asetpts=PTS-STARTPTS[a{$i}]";
-                } else {
-                    $filterParts[] = "[{$idx}:v]null[v{$i}]";
-                    $filterParts[] = "[{$idx}:a]anull[a{$i}]";
-                }
-            }
-        }
-
-        $cmd = ['ffmpeg', '-y'];
-        foreach ($inputs as $p) { $cmd[] = '-i'; $cmd[] = $p; }
-
-        // Determine if all inputs have audio
-        $allHaveAudio = !in_array(false, $inputHasAudio, true);
-
-        if ($isAudio) {
-            $joined = implode('', array_map(fn($i) => "[a{$i}]", range(0, $n - 1)));
-            $filterParts[] = "{$joined}concat=n={$n}:v=0:a=1[aout]";
-            $cmd[] = '-filter_complex';
-            $cmd[] = implode(';', $filterParts);
-            $cmd[] = '-map'; $cmd[] = '[aout]';
-            if ($ext === 'mp3') {
-                array_push($cmd, '-c:a', 'libmp3lame', '-q:a', '2');
-            } else {
-                array_push($cmd, '-c:a', 'aac', '-b:a', '192k');
-            }
-        } else {
-            $vj = implode('', array_map(fn($i) => "[v{$i}]", range(0, $n - 1)));
-            if ($allHaveAudio) {
-                $aj = implode('', array_map(fn($i) => "[a{$i}]", range(0, $n - 1)));
-                $filterParts[] = "{$vj}{$aj}concat=n={$n}:v=1:a=1[vout][aout]";
-                $cmd[] = '-filter_complex';
-                $cmd[] = implode(';', $filterParts);
-                array_push($cmd, '-map', '[vout]', '-map', '[aout]',
-                    '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
-                    '-c:a', 'aac', '-b:a', '192k');
-            } else {
-                $filterParts[] = "{$vj}concat=n={$n}:v=1:a=0[vout]";
-                $cmd[] = '-filter_complex';
-                $cmd[] = implode(';', $filterParts);
-                array_push($cmd, '-map', '[vout]',
-                    '-c:v', 'libx264', '-preset', 'fast', '-crf', '23');
-            }
-        }
-
-        $cmd[] = $outputPath;
-        return $cmd;
+        return ['ffmpeg', '-y', '-f', 'concat', '-safe', '0',
+                '-i', $this->tmpConcatFile, '-c', 'copy', $outputPath];
     }
 
     // ── Preview mode (same FFmpeg logic, keeps temp file) ──────────
@@ -302,10 +244,12 @@ class MediaClipController extends Controller
 
             if (!$process->isSuccessful() || !file_exists($tmpOutput)) {
                 @unlink($tmpOutput);
+                @unlink($this->tmpConcatFile);
                 $err = $process->getErrorOutput() ?: $process->getOutput();
                 return response()->json(['error' => 'Error FFmpeg: ' . substr($err, -300)], 500);
             }
 
+            @unlink($this->tmpConcatFile);
             $this->scheduleCleanup($tmpOutput, 300);
 
             $mimeMap = ['mp4' => 'video/mp4', 'mp3' => 'audio/mpeg', 'm4a' => 'audio/mp4'];
@@ -364,6 +308,7 @@ class MediaClipController extends Controller
             ]);
         } catch (\Exception $e) {
             @unlink($tmpOutput);
+            @unlink($this->tmpConcatFile);
             return response()->json(['error' => $e->getMessage()], 500);
         }
     }
@@ -432,6 +377,117 @@ class MediaClipController extends Controller
             @unlink($tmpOutput);
             return response()->json(['error' => 'Internal error: ' . $e->getMessage()], 500);
         }
+    }
+
+    // ── Thumbnails de timeline ─────────────────────────────────────
+
+    public function thumbnails(Request $request, int $id)
+    {
+        $user = $this->getUser();
+        if (!$user) return response()->json(['error' => 'Unauthorized'], 401);
+
+        $file    = File::find($id);
+        $storage = $file?->storageProvider;
+        if (!$file || !$storage || $storage->type !== 'local') {
+            return response()->json(['error' => 'Archivo no encontrado'], 404);
+        }
+
+        $srcPath = rtrim($storage->base_path, '/') . '/' . ltrim($file->path, '/');
+        if (!file_exists($srcPath)) return response()->json(['error' => 'Archivo físico no encontrado'], 404);
+
+        $ext = strtolower(pathinfo($file->name, PATHINFO_EXTENSION));
+        if (!in_array($ext, ['mp4', 'mov', 'avi', 'mkv', 'webm'])) {
+            return response()->json(['thumbs' => []]);
+        }
+
+        $thumbDir = storage_path("app/clip-thumbs/{$id}");
+        $count    = 20;
+
+        // Regenerar si no existen o el archivo fue modificado
+        $markerFile  = $thumbDir . '/.mtime';
+        $srcMtime    = (string) filemtime($srcPath);
+        $cachedMtime = file_exists($markerFile) ? trim(file_get_contents($markerFile)) : '';
+        $hasCache    = $cachedMtime === $srcMtime
+            && count(glob($thumbDir . '/thumb_*.jpg') ?: []) >= $count;
+
+        if (!$hasCache) {
+            set_time_limit(180);
+            try {
+                $ok = $this->generateClipThumbnails($srcPath, $thumbDir, $count);
+            } catch (\Throwable $e) {
+                $ok = false;
+            }
+            if (!$ok) return response()->json(['thumbs' => []]);
+            @mkdir($thumbDir, 0755, true);
+            file_put_contents($markerFile, $srcMtime);
+        }
+
+        $thumbs = [];
+        for ($i = 0; $i < $count; $i++) {
+            $file_path = storage_path(sprintf('app/clip-thumbs/%d/thumb_%02d.jpg', $id, $i + 1));
+            if (file_exists($file_path)) $thumbs[] = "/files/{$id}/clip-thumb/{$i}";
+        }
+        return response()->json(['thumbs' => $thumbs]);
+    }
+
+    public function thumb(Request $request, int $id, int $n)
+    {
+        $user = $this->getUser();
+        if (!$user) return response()->json(['error' => 'Unauthorized'], 401);
+
+        $path = storage_path(sprintf('app/clip-thumbs/%d/thumb_%02d.jpg', $id, $n + 1));
+        if (!file_exists($path)) abort(404);
+
+        return response()->file($path, [
+            'Content-Type'  => 'image/jpeg',
+            'Cache-Control' => 'private, max-age=86400',
+        ]);
+    }
+
+    private function generateClipThumbnails(string $srcPath, string $thumbDir, int $count): bool
+    {
+        // Obtener duración con ffprobe
+        $probe = new Process([
+            'ffprobe', '-v', 'quiet', '-print_format', 'json',
+            '-show_format', $srcPath,
+        ]);
+        $probe->setTimeout(15);
+        $probe->run();
+        if (!$probe->isSuccessful()) return false;
+
+        $info     = json_decode($probe->getOutput(), true);
+        $duration = (float) ($info['format']['duration'] ?? 0);
+        if ($duration <= 0) return false;
+
+        @mkdir($thumbDir, 0755, true);
+        foreach (glob($thumbDir . '/thumb_*.jpg') ?: [] as $f) @unlink($f);
+
+        // Un seek por frame con -ss antes de -i: salta directo al keyframe sin
+        // decodificar el video completo. Rápido incluso en archivos de 1+ hora.
+        $generated = 0;
+        for ($i = 0; $i < $count; $i++) {
+            $t       = ($i / $count) * $duration;
+            $outFile = sprintf('%s/thumb_%02d.jpg', $thumbDir, $i + 1);
+            $cmd = [
+                'ffmpeg', '-y',
+                '-ss', number_format($t, 3, '.', ''),
+                '-i', $srcPath,
+                '-frames:v', '1',
+                '-vf', 'scale=160:90',
+                '-q:v', '4',
+                $outFile,
+            ];
+            try {
+                $p = new Process($cmd);
+                $p->setTimeout(20);
+                $p->run();
+                if (file_exists($outFile)) $generated++;
+            } catch (\Throwable $e) {
+                // Sigue con el siguiente frame si uno falla
+            }
+        }
+
+        return $generated > 0;
     }
 
     // ── Shared helpers ─────────────────────────────────────────────
