@@ -42,7 +42,7 @@ class CanalController extends Controller
             return response()->json($canales);
         }
 
-        return view('grabaciones_puntuales.canales.index', compact('canales'));
+        return view('grabaciones_puntuales.canales.index', compact('canales', 'user'));
     }
 
     public function create()

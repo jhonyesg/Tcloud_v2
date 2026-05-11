@@ -1,9 +1,9 @@
-@extends('grabaciones_puntuales.layout')
+@extends('layouts.app')
 
 @section('content')
 <div class="flex justify-between items-center mb-6">
     <h2 class="text-2xl font-bold">Canales</h2>
-    @if(!auth()->user()->isAdmin())
+    @if(!$user || !$user->isAdmin())
         <a href="{{ route('canales.create') }}"
            class="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700">
             <i class="fas fa-plus"></i> Crear Canal
@@ -15,7 +15,7 @@
     <table class="w-full">
         <thead class="bg-gray-50">
             <tr>
-                @if(auth()->user()->isAdmin())
+                @if($user && $user->isAdmin())
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Usuario</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Grabador</th>
                 @endif
@@ -28,8 +28,8 @@
         <tbody class="divide-y divide-gray-200">
             @forelse($canales as $canal)
             <tr>
-                @if(auth()->user()->isAdmin())
-                    <td class="px-6 py-4">{{ $canal->usuario->name ?? 'N/A' }}</td>
+                @if($user && $user->isAdmin())
+                    <td class="px-6 py-4">{{ $canal->usuario->username ?? 'N/A' }}</td>
                     <td class="px-6 py-4">{{ $canal->grabador->nombre }}</td>
                 @endif
                 <td class="px-6 py-4 font-medium">{{ $canal->slot_nombre }}</td>
@@ -59,7 +59,7 @@
             </tr>
             @empty
             <tr>
-                <td colspan="{{ auth()->user()->isAdmin() ? '6' : '4' }}" class="px-6 py-4 text-center text-gray-500">
+                <td colspan="{{ $user && $user->isAdmin() ? '6' : '4' }}" class="px-6 py-4 text-center text-gray-500">
                     No hay canales
                 </td>
             </tr>
