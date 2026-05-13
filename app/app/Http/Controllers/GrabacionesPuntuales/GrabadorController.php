@@ -237,13 +237,27 @@ class GrabadorController extends Controller
         $this->requireAdmin();
 
         $request->validate([
-            'limite_canales' => 'required|integer|min:1|max:100',
+            'limite_canales' => 'nullable|integer|min:1|max:100',
+            'ruta_base'      => 'nullable|string|max:500',
         ]);
+
+        $pivotUpdate = ['updated_at' => now()];
+        if ($request->filled('limite_canales')) {
+            $pivotUpdate['limite_canales'] = $request->limite_canales;
+        }
 
         DB::table('grabador_usuario')
             ->where('grabador_id', $grabador->id)
             ->where('user_id', $userId)
-            ->update(['limite_canales' => $request->limite_canales, 'updated_at' => now()]);
+            ->update($pivotUpdate);
+
+        if ($request->filled('ruta_base')) {
+            $rutaBase = rtrim($request->ruta_base, '/');
+            Canal::where('grabador_id', $grabador->id)
+                ->where('usuario_id', $userId)
+                ->get()
+                ->each(fn($c) => $c->update(['ruta_destino' => $rutaBase . '/' . $c->slot_nombre]));
+        }
 
         $grabador->load('usuarios');
         return response()->json($grabador->usuarios);

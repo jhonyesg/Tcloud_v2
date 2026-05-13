@@ -452,6 +452,7 @@ class FileController extends Controller
                 'name' => $us->storageProvider->name,
                 'type' => $us->storageProvider->type,
                 'permissions' => $us->permissions,
+                'can_create_shares' => (bool) $us->can_create_shares,
             ];
         });
 

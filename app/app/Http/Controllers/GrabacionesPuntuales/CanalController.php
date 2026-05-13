@@ -276,30 +276,39 @@ class CanalController extends Controller
             ->with('success', 'Canal reseteado — listo para reconfigurar');
     }
 
-    public function ejecutar(Canal $canal)
+    public function ejecutar(Request $request, Canal $canal)
     {
         $user = $this->getUser();
-        if (!$user) return redirect('/login');
+        if (!$user) {
+            if ($request->ajax()) return response()->json(['success' => false, 'message' => 'No autenticado'], 401);
+            return redirect('/login');
+        }
 
         if (!$user->isAdmin() && $canal->usuario_id !== $user->id) {
+            if ($request->ajax()) return response()->json(['success' => false, 'message' => 'Sin permiso'], 403);
             abort(403);
         }
 
         if (!$canal->activo) {
+            if ($request->ajax()) return response()->json(['success' => false, 'message' => 'El canal está inactivo']);
             return back()->with('error', 'El canal está inactivo');
         }
 
         if (!$canal->api_canal_id) {
+            if ($request->ajax()) return response()->json(['success' => false, 'message' => 'El canal no tiene configuración en el grabador']);
             return back()->with('error', 'El canal no tiene configuración en el grabador');
         }
 
         $resultado = $this->apiService->iniciarGrabacion($canal->grabador, $canal->api_canal_id);
 
         if ($resultado['success']) {
+            if ($request->ajax()) return response()->json(['success' => true, 'message' => 'Grabación iniciada']);
             return back()->with('success', 'Grabación iniciada');
         }
 
-        return back()->with('error', 'Error: ' . ($resultado['error'] ?? 'Desconocido'));
+        $error = 'Error: ' . ($resultado['error'] ?? 'Desconocido');
+        if ($request->ajax()) return response()->json(['success' => false, 'message' => $error]);
+        return back()->with('error', $error);
     }
 
     public function estado()

@@ -13,6 +13,7 @@ document.addEventListener('alpine:init', () => {
     currentStorage: null,
     currentStorageName: null,
     currentStoragePermission: 'read',
+    currentStorageCanShare: false,
     viewMode: 'storages',
     filesViewMode: localStorage.getItem('files_view_mode') || 'grid',
     selectedFiles: [],
@@ -139,6 +140,7 @@ deleteConfirmFile: null,
             this.currentStorageName = state.storageName;
             const storage = this.availableStorages.find(s => s.id === state.storageId);
             this.currentStoragePermission = storage ? storage.permissions : 'read';
+            this.currentStorageCanShare = storage ? !!storage.can_create_shares : false;
             this.currentFolder = state.folderId || null;
             this.currentFolderName = state.folderName || null;
             this.breadcrumbs = state.breadcrumbs || [];
@@ -217,6 +219,7 @@ deleteConfirmFile: null,
         this.currentStorageName = storageName;
         const storage = this.availableStorages.find(s => s.id === storageId);
         this.currentStoragePermission = storage ? storage.permissions : 'read';
+        this.currentStorageCanShare = storage ? !!storage.can_create_shares : false;
         this.currentFolder = null;
         this.currentFolderName = null;
         this.breadcrumbs = [];
@@ -1621,7 +1624,7 @@ deleteConfirmFile: null,
                                 <p class="text-xs text-slate-400 mt-1" x-text="file.is_folder ? 'Carpeta' : formatSize(file.size)"></p>
                             </div>
                             <div class="flex items-center justify-center mt-3 opacity-0 group-hover:opacity-100 transition-opacity gap-1">
-                                <button @click.stop="openDetailModal(file)" class="p-2 bg-white hover:bg-indigo-100 rounded-lg shadow-sm transition-colors" title="Compartir">
+                                <button x-show="currentStorageCanShare" @click.stop="openDetailModal(file)" class="p-2 bg-white hover:bg-indigo-100 rounded-lg shadow-sm transition-colors" title="Compartir">
                                     <svg class="w-4 h-4 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z"/>
                                     </svg>
@@ -1748,7 +1751,7 @@ deleteConfirmFile: null,
                                     <td class="px-4 py-3 text-slate-500 text-sm hidden lg:table-cell" x-text="formatDate(file.created_at)"></td>
                                     <td class="px-4 py-3 text-right">
                                         <div class="flex items-center justify-end gap-1">
-                                            <button @click.stop="openDetailModal(file)" class="p-2 hover:bg-slate-200 rounded-lg transition-colors" title="Compartir">
+                                            <button x-show="currentStorageCanShare" @click.stop="openDetailModal(file)" class="p-2 hover:bg-slate-200 rounded-lg transition-colors" title="Compartir">
                                                 <svg class="w-4 h-4 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z"/>
                                                 </svg>

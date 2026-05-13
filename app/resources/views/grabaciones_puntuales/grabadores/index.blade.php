@@ -9,6 +9,7 @@
     loading: true,
 
     showCreateModal: false,
+    showEditModal: false,
     showTestModal: false,
     showUsersModal: false,
     showDetailModal: false,
@@ -26,6 +27,12 @@
 
     detailGrabador: null,
     deletingGrabador: null,
+    editingGrabador: null,
+    editForm: { nombre: '', tipo: 'radio', ip: '', puerto: '5002', token: '', observaciones: '', activo: true },
+
+    editingUserId: null,
+    editUserLimit: null,
+    editUserRuta: '',
 
     toast: { show: false, message: '', success: true },
 
@@ -192,6 +199,76 @@
         this.showDetailModal = true;
     },
 
+    openEdit(grabador) {
+        this.editingGrabador = grabador;
+        this.editForm = {
+            nombre: grabador.nombre,
+            tipo: grabador.tipo,
+            ip: grabador.ip,
+            puerto: grabador.puerto,
+            token: grabador.token || '',
+            observaciones: grabador.observaciones || '',
+            activo: grabador.activo,
+        };
+        this.showEditModal = true;
+    },
+
+    async updateGrabador() {
+        const res = await fetch('/grabaciones-puntuales/grabadores/' + this.editingGrabador.id, {
+            method: 'PUT',
+            credentials: 'include',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
+                'Accept': 'application/json',
+            },
+            body: JSON.stringify(this.editForm),
+        });
+        if (res.ok) {
+            this.showEditModal = false;
+            await this.loadGrabadores();
+            this.showToast('Grabador actualizado');
+        } else {
+            const err = await res.json();
+            this.showToast(err.message || 'Error al actualizar', false);
+        }
+    },
+
+    getRutaBase(userId) {
+        const canal = (this.usersModalGrabador?.canales || []).find(c => c.usuario_id === userId && c.ruta_destino);
+        if (!canal) return '';
+        const parts = canal.ruta_destino.split('/');
+        parts.pop();
+        return parts.join('/');
+    },
+
+    openEditUser(u) {
+        this.editingUserId = u.id;
+        this.editUserLimit = u.pivot?.limite_canales ?? 10;
+        this.editUserRuta = this.getRutaBase(u.id);
+    },
+
+    async updateUserAssignment() {
+        const res = await fetch('/grabaciones-puntuales/grabadores/' + this.usersModalGrabador.id + '/actualizar-asignacion/' + this.editingUserId, {
+            method: 'POST',
+            credentials: 'include',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
+                'Accept': 'application/json',
+            },
+            body: JSON.stringify({ limite_canales: this.editUserLimit, ruta_base: this.editUserRuta }),
+        });
+        if (res.ok) {
+            this.usersModalList = await res.json();
+            this.editingUserId = null;
+            await this.loadGrabadores();
+            this.showToast('Asignación actualizada');
+        } else {
+            this.showToast('Error al actualizar asignación', false);
+        }
+    },
+
     async deleteGrabador() {
         if (!this.deletingGrabador) return;
         const res = await fetch('/grabaciones-puntuales/grabadores/' + this.deletingGrabador.id, {
@@ -276,6 +353,9 @@
                             <div class="flex items-center justify-end gap-1">
                                 <button @click="openUsersModal(g)" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded-lg transition-colors" title="Usuarios">
                                     <i class="fas fa-users text-xs"></i>
+                                </button>
+                                <button @click="openEdit(g)" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50 rounded-lg transition-colors" title="Editar grabador">
+                                    <i class="fas fa-edit text-xs"></i>
                                 </button>
                                 <button @click="testGrabador(g)" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm text-emerald-600 hover:text-emerald-800 hover:bg-emerald-50 rounded-lg transition-colors" title="Probar conexión">
                                     <i class="fas fa-plug text-xs"></i>
@@ -383,6 +463,89 @@
         </div>
     </div>
 
+    {{-- ─── EDIT MODAL ───────────────────────────────────────────── --}}
+    <div x-cloak x-show="showEditModal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
+         x-transition:enter="transition ease-out duration-200" x-transition:leave="transition ease-in duration-150">
+        <div class="bg-white rounded-2xl p-6 w-full max-w-lg shadow-xl" @click.away="showEditModal = false">
+            <div class="flex items-center justify-between mb-5">
+                <h2 class="text-xl font-bold text-slate-800">Editar Grabador</h2>
+                <button @click="showEditModal = false" class="text-slate-400 hover:text-slate-600">
+                    <i class="fas fa-times text-lg"></i>
+                </button>
+            </div>
+            <form @submit.prevent="updateGrabador()">
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium text-slate-700 mb-1">Nombre</label>
+                        <input type="text" x-model="editForm.nombre" required
+                               class="w-full border border-slate-300 rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400 outline-none">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-slate-700 mb-1">Tipo</label>
+                        <div class="flex gap-3">
+                            <label class="flex-1 flex items-center gap-3 p-3 border rounded-xl cursor-pointer transition-colors"
+                                   :class="editForm.tipo === 'radio' ? 'border-emerald-500 bg-emerald-50' : 'border-slate-200 hover:border-slate-300'">
+                                <input type="radio" name="edit_tipo" value="radio" x-model="editForm.tipo" class="sr-only">
+                                <div class="w-8 h-8 rounded-lg flex items-center justify-center" :class="editForm.tipo === 'radio' ? 'bg-emerald-500' : 'bg-slate-200'">
+                                    <i class="fas fa-radio text-white text-xs"></i>
+                                </div>
+                                <span class="font-medium text-sm" :class="editForm.tipo === 'radio' ? 'text-emerald-700' : 'text-slate-600'">Radio</span>
+                            </label>
+                            <label class="flex-1 flex items-center gap-3 p-3 border rounded-xl cursor-pointer transition-colors"
+                                   :class="editForm.tipo === 'tv' ? 'border-purple-500 bg-purple-50' : 'border-slate-200 hover:border-slate-300'">
+                                <input type="radio" name="edit_tipo" value="tv" x-model="editForm.tipo" class="sr-only">
+                                <div class="w-8 h-8 rounded-lg flex items-center justify-center" :class="editForm.tipo === 'tv' ? 'bg-purple-500' : 'bg-slate-200'">
+                                    <i class="fas fa-tv text-white text-xs"></i>
+                                </div>
+                                <span class="font-medium text-sm" :class="editForm.tipo === 'tv' ? 'text-purple-700' : 'text-slate-600'">TV</span>
+                            </label>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm font-medium text-slate-700 mb-1">Dirección IP</label>
+                            <input type="text" x-model="editForm.ip" required
+                                   class="w-full border border-slate-300 rounded-xl px-4 py-2.5 text-sm font-mono focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400 outline-none">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-slate-700 mb-1">Puerto</label>
+                            <input type="number" x-model="editForm.puerto" required
+                                   class="w-full border border-slate-300 rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400 outline-none">
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-slate-700 mb-1">Token <span class="text-slate-400 font-normal">(opcional)</span></label>
+                        <input type="text" x-model="editForm.token"
+                               class="w-full border border-slate-300 rounded-xl px-4 py-2.5 text-sm font-mono focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400 outline-none">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-slate-700 mb-1">Observaciones</label>
+                        <textarea x-model="editForm.observaciones" rows="2"
+                                  class="w-full border border-slate-300 rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400 outline-none resize-none"></textarea>
+                    </div>
+                    <div>
+                        <label class="flex items-center gap-3 cursor-pointer group">
+                            <div class="relative">
+                                <input type="checkbox" x-model="editForm.activo" class="sr-only peer">
+                                <div class="w-10 h-6 bg-slate-200 peer-checked:bg-indigo-600 rounded-full transition-colors"></div>
+                                <div class="absolute left-0.5 top-0.5 w-5 h-5 bg-white rounded-full shadow-sm transition-transform peer-checked:translate-x-4"></div>
+                            </div>
+                            <span class="text-sm font-medium text-slate-700">Activo</span>
+                        </label>
+                    </div>
+                </div>
+                <div class="flex gap-3 mt-6">
+                    <button type="submit" class="flex-1 flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-2.5 rounded-xl font-medium transition-colors">
+                        <i class="fas fa-save text-sm"></i> Guardar cambios
+                    </button>
+                    <button type="button" @click="showEditModal = false" class="px-6 py-2.5 rounded-xl border border-slate-300 text-slate-700 hover:bg-slate-50 font-medium transition-colors">
+                        Cancelar
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     {{-- ─── TEST MODAL ───────────────────────────────────────────── --}}
     <div x-cloak x-show="showTestModal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
          x-transition:enter="transition ease-out duration-200" x-transition:leave="transition ease-in duration-150">
@@ -459,15 +622,57 @@
             <!-- Assigned Users -->
             <div class="mb-5">
                 <span class="text-sm font-medium text-slate-600 mb-2 block">Usuarios asignados</span>
-                <div class="min-h-[56px] max-h-40 overflow-y-auto flex flex-wrap gap-2 p-3 bg-slate-50 rounded-xl border border-slate-200">
+                <div class="rounded-xl border border-slate-200 overflow-hidden">
+                    <template x-if="usersModalList.length === 0">
+                        <div class="px-4 py-5 text-center text-sm text-slate-400">Sin usuarios asignados</div>
+                    </template>
                     <template x-for="u in usersModalList" :key="u.id">
-                        <div class="flex items-center gap-1 pl-2 pr-1 py-1 rounded-full text-xs font-medium bg-emerald-100 text-emerald-800 border border-emerald-200">
-                            <span x-text="u.username || u.email"></span>
-                            <span class="ml-1 px-1 rounded text-xs opacity-60" x-text="(u.pivot?.limite_canales || '?') + ' ch'"></span>
-                            <button @click="removeUser(u.id)" class="ml-1 w-4 h-4 flex items-center justify-center rounded-full hover:bg-black/10 transition-colors text-current font-bold leading-none">×</button>
+                        <div class="border-b border-slate-100 last:border-b-0">
+                            <!-- Fila del usuario -->
+                            <div class="flex items-center justify-between px-4 py-3 bg-slate-50">
+                                <div class="flex items-center gap-2">
+                                    <div class="w-7 h-7 rounded-full bg-emerald-100 flex items-center justify-center text-xs font-bold text-emerald-600"
+                                         x-text="(u.username || u.email).charAt(0).toUpperCase()"></div>
+                                    <div>
+                                        <p class="text-sm font-medium text-slate-800" x-text="u.username || u.email"></p>
+                                        <p class="text-xs text-slate-400" x-text="'Límite: ' + (u.pivot?.limite_canales || '?') + ' canales'"></p>
+                                    </div>
+                                </div>
+                                <div class="flex items-center gap-1">
+                                    <button @click="editingUserId === u.id ? editingUserId = null : openEditUser(u)"
+                                            class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors"
+                                            :class="editingUserId === u.id ? 'bg-slate-200 text-slate-600' : 'bg-indigo-50 text-indigo-700 hover:bg-indigo-100'">
+                                        <i class="fas fa-edit text-xs"></i>
+                                        <span x-text="editingUserId === u.id ? 'Cancelar' : 'Editar'"></span>
+                                    </button>
+                                    <button @click="removeUser(u.id)"
+                                            class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-red-50 text-red-700 hover:bg-red-100 text-xs font-medium transition-colors">
+                                        <i class="fas fa-times text-xs"></i>
+                                    </button>
+                                </div>
+                            </div>
+                            <!-- Panel de edición inline -->
+                            <div x-show="editingUserId === u.id" x-transition class="px-4 py-3 bg-indigo-50 border-t border-indigo-100">
+                                <div class="grid grid-cols-2 gap-3 mb-3">
+                                    <div>
+                                        <label class="block text-xs font-medium text-slate-600 mb-1">Límite de canales</label>
+                                        <input type="number" x-model="editUserLimit" min="1" max="100"
+                                               class="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400 outline-none">
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs font-medium text-slate-600 mb-1">Ruta base</label>
+                                        <input type="text" x-model="editUserRuta" placeholder="/disco1/grabaciones"
+                                               class="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm font-mono focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400 outline-none">
+                                        <p class="text-xs text-slate-400 mt-0.5">Se actualiza la ruta de todos los canales del usuario</p>
+                                    </div>
+                                </div>
+                                <button @click="updateUserAssignment()"
+                                        class="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-medium transition-colors">
+                                    <i class="fas fa-check text-xs"></i> Guardar cambios
+                                </button>
+                            </div>
                         </div>
                     </template>
-                    <span x-show="usersModalList.length === 0" class="text-slate-400 text-sm self-center">Sin usuarios asignados</span>
                 </div>
             </div>
 
@@ -555,16 +760,27 @@
          x-transition:enter="transition ease-out duration-200" x-transition:leave="transition ease-in duration-150">
         <div class="bg-white rounded-2xl p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto shadow-xl" @click.away="showDetailModal = false">
             <div class="flex items-center justify-between mb-5">
-                <h2 class="text-xl font-bold text-slate-800">
-                    <span x-text="detailGrabador?.nombre"></span>
-                </h2>
+                <div class="flex items-center gap-3">
+                    <div class="w-9 h-9 rounded-lg flex items-center justify-center"
+                         :class="detailGrabador?.tipo === 'tv' ? 'bg-purple-100' : 'bg-emerald-100'">
+                        <i :class="detailGrabador?.tipo === 'tv' ? 'fas fa-tv text-purple-600' : 'fas fa-radio text-emerald-600'" class="text-sm"></i>
+                    </div>
+                    <div>
+                        <h2 class="text-xl font-bold text-slate-800" x-text="detailGrabador?.nombre"></h2>
+                        <span class="inline-flex items-center gap-1.5 text-xs font-medium"
+                              :class="detailGrabador?.activo ? 'text-green-600' : 'text-red-500'">
+                            <span class="w-1.5 h-1.5 rounded-full" :class="detailGrabador?.activo ? 'bg-green-500' : 'bg-red-500'"></span>
+                            <span x-text="detailGrabador?.activo ? 'Activo' : 'Inactivo'"></span>
+                        </span>
+                    </div>
+                </div>
                 <button @click="showDetailModal = false" class="text-slate-400 hover:text-slate-600">
                     <i class="fas fa-times text-lg"></i>
                 </button>
             </div>
 
-            <!-- Info Cards -->
-            <div class="grid grid-cols-3 gap-3 mb-5">
+            <!-- Stats -->
+            <div class="grid grid-cols-3 gap-3 mb-4">
                 <div class="bg-slate-50 rounded-xl p-3 text-center">
                     <p class="text-xs text-slate-500 mb-1">Tipo</p>
                     <span class="inline-flex px-2 py-0.5 rounded-full text-xs font-medium"
@@ -581,15 +797,32 @@
                 </div>
             </div>
 
-            <div class="bg-slate-50 rounded-xl p-4 mb-5">
-                <div class="grid grid-cols-2 gap-3 text-sm">
-                    <div><span class="text-slate-500">IP:</span> <span class="font-mono font-medium text-slate-700" x-text="detailGrabador?.ip"></span></div>
-                    <div><span class="text-slate-500">Puerto:</span> <span class="font-medium text-slate-700" x-text="detailGrabador?.puerto"></span></div>
-                    <div class="col-span-2"><span class="text-slate-500">Base URL:</span> <span class="font-mono text-xs text-slate-600" x-text="detailGrabador?.base_url"></span></div>
-                </div>
+            <!-- Conexión -->
+            <div class="bg-slate-50 rounded-xl p-4 mb-4 space-y-2 text-sm">
+                <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Conexión</p>
+                <div class="flex justify-between"><span class="text-slate-500">IP</span><span class="font-mono font-medium text-slate-700" x-text="detailGrabador?.ip"></span></div>
+                <div class="flex justify-between"><span class="text-slate-500">Puerto</span><span class="font-medium text-slate-700" x-text="detailGrabador?.puerto"></span></div>
+                <div class="flex justify-between items-start gap-3"><span class="text-slate-500 shrink-0">Base URL</span><span class="font-mono text-xs text-slate-600 text-right break-all" x-text="detailGrabador?.base_url"></span></div>
+                <template x-if="detailGrabador?.token">
+                    <div class="flex justify-between items-center"><span class="text-slate-500">Token</span><span class="font-mono text-xs bg-slate-200 px-2 py-0.5 rounded text-slate-600">••••••••<span x-text="(detailGrabador?.token || '').slice(-4)"></span></span></div>
+                </template>
             </div>
 
-            <!-- Channels List -->
+            <!-- Observaciones -->
+            <template x-if="detailGrabador?.observaciones">
+                <div class="bg-amber-50 border border-amber-200 rounded-xl p-3 mb-4 flex items-start gap-2 text-sm">
+                    <i class="fas fa-sticky-note text-amber-500 mt-0.5 shrink-0 text-xs"></i>
+                    <p class="text-amber-800" x-text="detailGrabador?.observaciones"></p>
+                </div>
+            </template>
+
+            <!-- Fechas -->
+            <div class="flex gap-4 text-xs text-slate-400 mb-4">
+                <span>Creado: <span class="text-slate-500" x-text="detailGrabador?.created_at ? new Date(detailGrabador.created_at).toLocaleDateString('es-CO') : '—'"></span></span>
+                <span>Actualizado: <span class="text-slate-500" x-text="detailGrabador?.updated_at ? new Date(detailGrabador.updated_at).toLocaleDateString('es-CO') : '—'"></span></span>
+            </div>
+
+            <!-- Canales -->
             <div>
                 <h3 class="text-sm font-bold text-slate-700 mb-3">Canales</h3>
                 <div class="bg-slate-50 rounded-xl border border-slate-200 overflow-hidden max-h-60 overflow-y-auto">
@@ -598,14 +831,16 @@
                             <tr>
                                 <th class="px-4 py-2 text-left text-xs font-medium text-slate-500">Slot</th>
                                 <th class="px-4 py-2 text-left text-xs font-medium text-slate-500">Usuario</th>
+                                <th class="px-4 py-2 text-left text-xs font-medium text-slate-500">API ID</th>
                                 <th class="px-4 py-2 text-center text-xs font-medium text-slate-500">Estado</th>
                             </tr>
                         </thead>
                         <tbody class="divide-y divide-slate-100">
                             <template x-for="c in (detailGrabador?.canales || [])" :key="c.id">
                                 <tr class="hover:bg-white/50">
-                                    <td class="px-4 py-2 text-sm font-medium text-slate-700" x-text="c.slot_nombre"></td>
-                                    <td class="px-4 py-2 text-sm text-slate-500" x-text="c.usuario?.username || 'Sin asignar'"></td>
+                                    <td class="px-4 py-2 text-xs font-medium text-slate-700" x-text="c.slot_nombre"></td>
+                                    <td class="px-4 py-2 text-xs text-slate-500" x-text="c.usuario?.username || '—'"></td>
+                                    <td class="px-4 py-2 text-xs font-mono text-slate-400" x-text="c.api_canal_id || '—'"></td>
                                     <td class="px-4 py-2 text-center">
                                         <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium"
                                               :class="c.activo ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'">
@@ -620,9 +855,15 @@
                 </div>
             </div>
 
-            <button @click="showDetailModal = false" class="w-full mt-5 py-2.5 rounded-xl border border-slate-300 text-slate-700 hover:bg-slate-50 font-medium transition-colors">
-                Cerrar
-            </button>
+            <div class="flex gap-3 mt-5">
+                <button @click="showDetailModal = false; openEdit(detailGrabador)"
+                        class="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-indigo-50 text-indigo-700 hover:bg-indigo-100 font-medium text-sm transition-colors">
+                    <i class="fas fa-edit text-xs"></i> Editar
+                </button>
+                <button @click="showDetailModal = false" class="flex-1 py-2.5 rounded-xl border border-slate-300 text-slate-700 hover:bg-slate-50 font-medium transition-colors text-sm">
+                    Cerrar
+                </button>
+            </div>
         </div>
     </div>
 
