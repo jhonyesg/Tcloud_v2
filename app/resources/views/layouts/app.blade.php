@@ -70,11 +70,6 @@
 
                 <!-- Right side -->
                 <div class="flex items-center gap-2">
-                    <button class="p-2 hover:bg-[#0A1F4D] rounded-lg transition-colors relative">
-                        <i class="fas fa-bell text-white"></i>
-                        <span class="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full"></span>
-                    </button>
-
                     <div class="relative">
                         <button @click="userMenuOpen = !userMenuOpen"
                                 class="flex items-center gap-2 p-2 hover:bg-[#0A1F4D] rounded-lg transition-colors">
