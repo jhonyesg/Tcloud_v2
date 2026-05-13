@@ -3,11 +3,18 @@
 @section('title', 'Archivos - Tcloud')
 
 @section('content')
+<style>
+.txt-editor-nowrap { white-space: pre; overflow-x: auto; }
+.txt-editor-wrap   { white-space: pre-wrap; word-break: break-all; overflow-x: hidden; }
+</style>
 <script>
 document.addEventListener('alpine:init', () => {
     Alpine.data('fileManager', () => ({
     files: [],
     availableStorages: [],
+    storageSearchQuery: '',
+    storageSortField: 'name',
+    storageSortDirection: 'asc',
     currentFolder: null,
     currentFolderName: null,
     currentStorage: null,
@@ -47,6 +54,12 @@ document.addEventListener('alpine:init', () => {
     imgSaving: false,
     viewerIndex: null,
     viewerFiles: [],
+    viewerTextContent: '',
+    viewerTextLoading: false,
+    viewerTextDirty: false,
+    viewerTextSaving: false,
+    viewerTextSaved: false,
+    viewerWrap: false,
     renamingFileId: null,
     renamingFileName: '',
 deleteConfirmFile: null,
@@ -112,6 +125,14 @@ deleteConfirmFile: null,
 
     canCreateFolders() {
         return ['write', 'full'].includes(this.currentStoragePermission);
+    },
+
+    canRename() {
+        return this.currentStoragePermission === 'full';
+    },
+
+    canDelete() {
+        return this.currentStoragePermission === 'full';
     },
 
     saveNavState() {
@@ -239,10 +260,11 @@ deleteConfirmFile: null,
         this.clearNavState();
     },
 
-    loadFiles() {
+    loadFiles(forceSync = false) {
         let url = '/files?';
         if (this.currentFolder) url += 'parent_id=' + this.currentFolder;
         if (this.currentStorage) url += '&storage_id=' + this.currentStorage;
+        if (forceSync) url += '&sync=1';
 
         fetch(url, {
             credentials: 'include',
@@ -253,6 +275,10 @@ deleteConfirmFile: null,
         }).then(res => res.ok && res.json()).then(data => {
             this.files = data || [];
         });
+    },
+
+    refreshFiles() {
+        this.loadFiles(true);
     },
 
     navigateToFolder(folderId, folderName) {
@@ -440,6 +466,42 @@ deleteConfirmFile: null,
         return mime === 'application/pdf';
     },
 
+    isText(mime, name) {
+        const ext = name ? name.split('.').pop().toLowerCase() : '';
+        return mime === 'text/plain'
+            || mime === 'application/vnd.oasis.opendocument.text'
+            || ['txt', 'log', 'md', 'csv', 'odt'].includes(ext);
+    },
+
+    editorLineNums() {
+        const count = this.viewerTextContent ? this.viewerTextContent.split('\n').length : 1;
+        return Array.from({ length: count }, (_, i) => i + 1).join('\n');
+    },
+
+    async saveTextContent() {
+        if (!this.currentViewerFile || this.viewerTextSaving) return;
+        this.viewerTextSaving = true;
+        this.viewerTextSaved = false;
+        try {
+            const res = await fetch('/files/' + this.currentViewerFile.id + '/text-content', {
+                method: 'PUT',
+                credentials: 'include',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || ''
+                },
+                body: JSON.stringify({ content: this.viewerTextContent })
+            });
+            if (res.ok) {
+                this.viewerTextDirty = false;
+                this.viewerTextSaved = true;
+                setTimeout(() => { this.viewerTextSaved = false; }, 2500);
+            }
+        } catch (e) {}
+        this.viewerTextSaving = false;
+    },
+
     getViewerUrl(file) {
         return '/media/' + file.id + '/preview' + (file._v ? '?v=' + file._v : '');
     },
@@ -455,6 +517,8 @@ deleteConfirmFile: null,
         this.viewerOpen = true;
         const url = this.getViewerUrl(file);
         const mime = file.mime_type || '';
+        this.viewerTextContent = '';
+        this.viewerTextLoading = false;
         this.$nextTick(() => {
             if (this.isVideo(mime) && this.$refs.videoplayer) {
                 this.$refs.videoplayer.src = url;
@@ -462,6 +526,12 @@ deleteConfirmFile: null,
             } else if (this.isAudio(mime) && this.$refs.audioplayer) {
                 this.$refs.audioplayer.src = url;
                 this.$refs.audioplayer.load();
+            } else if (this.isText(mime, file.name)) {
+                this.viewerTextLoading = true;
+                fetch('/files/' + file.id + '/text-content', { credentials: 'include', headers: { 'Accept': 'application/json' } })
+                    .then(r => r.json())
+                    .then(d => { this.viewerTextContent = d.content ?? d.error ?? 'Error al cargar'; this.viewerTextLoading = false; })
+                    .catch(() => { this.viewerTextContent = 'Error al cargar el archivo'; this.viewerTextLoading = false; });
             }
         });
     },
@@ -479,6 +549,10 @@ deleteConfirmFile: null,
         this.currentViewerFile = null;
         this.viewerIndex = null;
         this.viewerFiles = [];
+        this.viewerTextContent = '';
+        this.viewerTextLoading = false;
+        this.viewerTextDirty = false;
+        this.viewerTextSaved = false;
     },
 
     startRename(file) {
@@ -662,11 +736,13 @@ deleteConfirmFile: null,
     },
 
     formatSize(bytes) {
-        if (bytes === 0) return '0 B';
+        const n = Number(bytes);
+        if (!n && n !== 0) return '—';
+        if (n === 0) return '0 B';
         const k = 1024;
-        const sizes = ['B', 'KB', 'MB', 'GB'];
-        const i = Math.floor(Math.log(bytes) / Math.log(k));
-        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+        const i = Math.min(Math.floor(Math.log(n) / Math.log(k)), sizes.length - 1);
+        return parseFloat((n / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
     },
 
     sortFiles(field) {
@@ -694,12 +770,41 @@ deleteConfirmFile: null,
                 return ((a.size || 0) - (b.size || 0)) * dir;
             }
             if (field === 'date') {
-                const da = a.created_at ? new Date(a.created_at).getTime() : 0;
-                const db = b.created_at ? new Date(b.created_at).getTime() : 0;
+                const da = new Date(a.file_modified_at || a.created_at || 0).getTime();
+                const db = new Date(b.file_modified_at || b.created_at || 0).getTime();
                 return (da - db) * dir;
             }
             return 0;
         });
+    },
+
+    filteredStorages() {
+        let storages = [...this.availableStorages];
+        if (this.storageSearchQuery) {
+            const q = this.storageSearchQuery.toLowerCase();
+            storages = storages.filter(s => s.name.toLowerCase().includes(q));
+        }
+        const field = this.storageSortField;
+        const dir = this.storageSortDirection === 'asc' ? 1 : -1;
+        return storages.sort((a, b) => {
+            let valA = a[field];
+            let valB = b[field];
+            if (typeof valA === 'string') valA = valA.toLowerCase();
+            if (typeof valB === 'string') valB = valB.toLowerCase();
+            if (typeof valA === 'boolean') { valA = valA ? 1 : 0; valB = valB ? 1 : 0; }
+            if (valA < valB) return -dir;
+            if (valA > valB) return dir;
+            return 0;
+        });
+    },
+
+    toggleStorageSort(field) {
+        if (this.storageSortField === field) {
+            this.storageSortDirection = this.storageSortDirection === 'asc' ? 'desc' : 'asc';
+        } else {
+            this.storageSortField = field;
+            this.storageSortDirection = 'asc';
+        }
     },
 
     formatDate(dateString) {
@@ -1418,6 +1523,12 @@ deleteConfirmFile: null,
                         </button>
                     </div>
                 </template>
+                <button @click="refreshFiles()" x-show="viewMode === 'files'" class="flex items-center gap-2 bg-green-600 hover:bg-green-700 active:bg-green-800 text-white px-4 py-2 rounded-lg font-medium shadow-sm transition-colors" title="Re-escanear archivos desde disco">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                    </svg>
+                    Actualizar
+                </button>
                 <button @click="showNewFolderModal = true" x-show="viewMode === 'files' && canCreateFolders()" class="flex items-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-700 px-4 py-2 rounded-lg transition-colors">
                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 13h6m-3-3v6m-9 1V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>
@@ -1458,7 +1569,7 @@ deleteConfirmFile: null,
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/>
                             </svg>
-                            Raíz
+                            <span x-text="currentStorageName || 'Raíz'"></span>
                         </button>
                         <template x-for="(crumb, index) in breadcrumbs" :key="index">
                             <div class="flex items-center gap-2">
@@ -1506,48 +1617,103 @@ deleteConfirmFile: null,
             </div>
 
             <div class="p-6">
-                <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4" x-show="viewMode === 'storages' && availableStorages.length > 0 && filesViewMode === 'grid'">
-                    <template x-for="storage in availableStorages" :key="storage.id">
-                        <div @click="enterStorage(storage.id, storage.name)" class="group bg-slate-50 hover:bg-blue-50 border border-slate-200 hover:border-blue-300 rounded-xl p-4 cursor-pointer transition-all">
-                            <div class="flex flex-col items-center text-center">
-                                <div class="w-16 h-16 bg-indigo-100 rounded-xl flex items-center justify-center mb-3">
-                                    <svg class="w-10 h-10 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"/>
-                                    </svg>
-                                </div>
-                                <p class="font-medium text-slate-700 text-sm truncate w-full" x-text="storage.name" :title="storage.name"></p>
-                                <p class="text-xs text-slate-400 mt-1" x-text="storage.permissions"></p>
-                            </div>
+                <div x-show="viewMode === 'storages' && availableStorages.length > 0">
+                    <div class="mb-4">
+                        <div class="relative w-full max-w-md">
+                            <input type="text" x-model="storageSearchQuery"
+                                   placeholder="Buscar storage..."
+                                   class="w-full border border-slate-300 rounded-lg pl-9 pr-4 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-colors bg-white">
+                            <svg class="absolute left-3 top-2.5 w-4 h-4 text-slate-400 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0"/>
+                            </svg>
                         </div>
-                    </template>
-                </div>
+                    </div>
 
-                <div class="overflow-x-auto" x-show="viewMode === 'storages' && availableStorages.length > 0 && filesViewMode === 'list'">
-                    <table class="w-full">
-                        <thead class="bg-slate-50 border-b border-slate-200">
-                            <tr>
-                                <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Nombre</th>
-                                <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Permisos</th>
-                            </tr>
-                        </thead>
-                        <tbody class="divide-y divide-slate-200">
-                            <template x-for="storage in availableStorages" :key="storage.id">
-                                <tr @click="enterStorage(storage.id, storage.name)" class="hover:bg-slate-50 cursor-pointer">
-                                    <td class="px-4 py-3">
-                                        <div class="flex items-center gap-3">
-                                            <div class="w-10 h-10 bg-indigo-100 rounded-lg flex items-center justify-center flex-shrink-0">
-                                                <svg class="w-6 h-6 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"/>
-                                                </svg>
-                                            </div>
-                                            <span class="font-medium text-slate-700" x-text="storage.name"></span>
+                    <!-- Grid de storages -->
+                    <div x-show="filesViewMode === 'grid'"
+                         class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+                        <template x-for="storage in filteredStorages()" :key="storage.id">
+                            <div @click="enterStorage(storage.id, storage.name)"
+                                 class="group bg-slate-50 hover:bg-indigo-50 border border-slate-200 hover:border-indigo-300 rounded-xl p-4 cursor-pointer transition-all select-none">
+                                <div class="flex flex-col items-center text-center gap-2">
+                                    <!-- Icono con dot de accesibilidad -->
+                                    <div class="relative">
+                                        <div class="w-14 h-14 bg-indigo-100 group-hover:bg-indigo-200 rounded-xl flex items-center justify-center transition-colors">
+                                            <svg class="w-8 h-8 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"/>
+                                            </svg>
                                         </div>
-                                    </td>
-                                    <td class="px-4 py-3 text-slate-500 text-sm" x-text="storage.permissions"></td>
+                                        <span class="absolute -top-1 -right-1 w-3 h-3 rounded-full border-2 border-white"
+                                              :class="storage.accessible ? 'bg-green-500' : 'bg-red-500'"
+                                              :title="storage.accessible ? 'Accesible' : 'No accesible'"></span>
+                                    </div>
+                                    <span class="text-sm font-medium text-slate-700 group-hover:text-indigo-700 leading-tight line-clamp-2 w-full" x-text="storage.name"></span>
+                                    <span class="text-xs text-slate-400 capitalize" x-text="storage.permissions"></span>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+
+                    <!-- Lista de storages -->
+                    <div x-show="filesViewMode === 'list'" class="overflow-x-auto">
+                        <table class="w-full">
+                            <thead class="bg-slate-50 border-b border-slate-200">
+                                <tr>
+                                    <th class="px-4 py-3 text-center text-xs font-medium text-slate-400 uppercase tracking-wider w-10 select-none"
+                                        :title="filteredStorages().length + ' storages'">#</th>
+                                    <th @click="toggleStorageSort('name')" class="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider cursor-pointer hover:bg-slate-100 select-none">
+                                        <div class="flex items-center gap-1">
+                                            Nombre
+                                            <svg x-show="storageSortField === 'name'" class="w-4 h-4" :class="storageSortDirection === 'asc' ? '' : 'rotate-180'" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7"/>
+                                            </svg>
+                                        </div>
+                                    </th>
+                                    <th @click="toggleStorageSort('permissions')" class="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider cursor-pointer hover:bg-slate-100 select-none">
+                                        <div class="flex items-center gap-1">
+                                            Permisos
+                                            <svg x-show="storageSortField === 'permissions'" class="w-4 h-4" :class="storageSortDirection === 'asc' ? '' : 'rotate-180'" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7"/>
+                                            </svg>
+                                        </div>
+                                    </th>
+                                    <th @click="toggleStorageSort('accessible')" class="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider cursor-pointer hover:bg-slate-100 select-none">
+                                        <div class="flex items-center gap-1">
+                                            Accesible
+                                            <svg x-show="storageSortField === 'accessible'" class="w-4 h-4" :class="storageSortDirection === 'asc' ? '' : 'rotate-180'" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7"/>
+                                            </svg>
+                                        </div>
+                                    </th>
                                 </tr>
-                            </template>
-                        </tbody>
-                    </table>
+                            </thead>
+                            <tbody class="divide-y divide-slate-200">
+                                <template x-for="(storage, index) in filteredStorages()" :key="storage.id">
+                                    <tr @click="enterStorage(storage.id, storage.name)" class="hover:bg-slate-50 cursor-pointer">
+                                        <td class="px-4 py-3 text-center text-xs text-slate-400 tabular-nums select-none" x-text="index + 1"></td>
+                                        <td class="px-4 py-3">
+                                            <div class="flex items-center gap-3">
+                                                <div class="w-10 h-10 bg-indigo-100 rounded-lg flex items-center justify-center flex-shrink-0">
+                                                    <svg class="w-6 h-6 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"/>
+                                                    </svg>
+                                                </div>
+                                                <span class="font-medium text-slate-700" x-text="storage.name"></span>
+                                            </div>
+                                        </td>
+                                        <td class="px-4 py-3 text-slate-500 text-sm capitalize" x-text="storage.permissions"></td>
+                                        <td class="px-4 py-3">
+                                            <div class="flex items-center gap-2"
+                                                 :title="storage.accessible ? 'Accesible · ' + (storage.last_checked || 'sin verificar') : 'No accesible · ' + (storage.last_checked || 'sin verificar')">
+                                                <span class="w-2.5 h-2.5 rounded-full flex-shrink-0"
+                                                      :class="storage.accessible ? 'bg-green-500' : 'bg-red-500'"></span>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
 
                 <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4" x-show="viewMode === 'files' && files.length > 0 && filesViewMode === 'grid'">
@@ -1634,12 +1800,12 @@ deleteConfirmFile: null,
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.121 14.121L19 19m-7-7l7-7m-7 7l-2.879 2.879M12 12L9.121 9.121m0 5.758a3 3 0 10-4.243 4.243 3 3 0 004.243-4.243zm0-5.758a3 3 0 10-4.243-4.243 3 3 0 004.243 4.243z"/>
                                     </svg>
                                 </button>
-                                <button @click.stop="startRename(file)" class="p-2 bg-white hover:bg-amber-100 rounded-lg shadow-sm transition-colors" title="Renombrar">
+                                <button x-show="canRename()" @click.stop="startRename(file)" class="p-2 bg-white hover:bg-amber-100 rounded-lg shadow-sm transition-colors" title="Renombrar">
                                     <svg class="w-4 h-4 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
                                     </svg>
                                 </button>
-                                <button @click.stop="deleteFile(file)" class="p-2 bg-white hover:bg-red-100 rounded-lg shadow-sm transition-colors" title="Eliminar">
+                                <button x-show="canDelete()" @click.stop="deleteFile(file)" class="p-2 bg-white hover:bg-red-100 rounded-lg shadow-sm transition-colors" title="Eliminar">
                                     <svg class="w-4 h-4 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
                                     </svg>
@@ -1748,7 +1914,7 @@ deleteConfirmFile: null,
                                         </div>
                                     </td>
                                     <td class="px-4 py-3 text-slate-500 text-sm hidden md:table-cell" x-text="file.is_folder ? '-' : formatSize(file.size)"></td>
-                                    <td class="px-4 py-3 text-slate-500 text-sm hidden lg:table-cell" x-text="formatDate(file.created_at)"></td>
+                                    <td class="px-4 py-3 text-slate-500 text-sm hidden lg:table-cell" x-text="formatDate(file.file_modified_at || file.created_at)"></td>
                                     <td class="px-4 py-3 text-right">
                                         <div class="flex items-center justify-end gap-1">
                                             <button x-show="currentStorageCanShare" @click.stop="openDetailModal(file)" class="p-2 hover:bg-slate-200 rounded-lg transition-colors" title="Compartir">
@@ -1761,12 +1927,12 @@ deleteConfirmFile: null,
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.121 14.121L19 19m-7-7l7-7m-7 7l-2.879 2.879M12 12L9.121 9.121m0 5.758a3 3 0 10-4.243 4.243 3 3 0 004.243-4.243zm0-5.758a3 3 0 10-4.243-4.243 3 3 0 004.243 4.243z"/>
                                                 </svg>
                                             </button>
-                                            <button @click.stop="startRename(file)" class="p-2 bg-amber-100 hover:bg-amber-200 text-amber-600 rounded-lg transition-colors" title="Renombrar">
+                                            <button x-show="canRename()" @click.stop="startRename(file)" class="p-2 bg-amber-100 hover:bg-amber-200 text-amber-600 rounded-lg transition-colors" title="Renombrar">
                                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
                                                 </svg>
                                             </button>
-                                            <button @click.stop="deleteFile(file)" class="p-2 bg-red-100 hover:bg-red-200 text-red-600 rounded-lg transition-colors" title="Eliminar">
+                                            <button x-show="canDelete()" @click.stop="deleteFile(file)" class="p-2 bg-red-100 hover:bg-red-200 text-red-600 rounded-lg transition-colors" title="Eliminar">
                                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
                                                 </svg>
@@ -1949,7 +2115,7 @@ deleteConfirmFile: null,
                             </div>
                             <div>
                                 <p class="text-slate-500">Fecha de creación:</p>
-                                <p class="font-medium text-slate-700" x-text="selectedFile.created_at ? formatDate(selectedFile.created_at) : 'N/A'"></p>
+                                <p class="font-medium text-slate-700" x-text="formatDate(selectedFile.file_modified_at || selectedFile.created_at)"></p>
                             </div>
                             <div x-show="!selectedFile.is_folder">
                                 <p class="text-slate-500">Tipo:</p>
@@ -2186,7 +2352,98 @@ deleteConfirmFile: null,
                         title="PDF Viewer">
                 </iframe>
             </div>
-            <div x-show="currentViewerFile && !isVideo(currentViewerFile.mime_type) && !isAudio(currentViewerFile.mime_type) && !isImage(currentViewerFile.mime_type) && !isPdf(currentViewerFile.mime_type)"
+            <!-- ===== TEXT EDITOR (light theme) ===== -->
+            <div x-show="currentViewerFile && isText(currentViewerFile.mime_type, currentViewerFile.name)"
+                 class="w-full h-full flex flex-col"
+                 style="background:#fff;"
+                 @keydown.ctrl.s.prevent="saveTextContent()"
+                 @keydown.meta.s.prevent="saveTextContent()">
+                <!-- Toolbar -->
+                <div class="flex items-center justify-between px-4 py-2 border-b flex-shrink-0 gap-3" style="background:#f3f3f3;border-color:#e0e0e0;">
+                    <div class="flex items-center gap-2 min-w-0">
+                        <svg class="w-4 h-4 flex-shrink-0 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                        </svg>
+                        <span class="font-mono text-sm font-medium text-slate-700 truncate" x-text="currentViewerFile ? currentViewerFile.name : ''"></span>
+                        <span x-show="viewerTextDirty" class="text-orange-500 text-xs font-medium flex-shrink-0">● Sin guardar</span>
+                    </div>
+                    <div class="flex items-center gap-2 flex-shrink-0">
+                        <button @click="viewerWrap = !viewerWrap"
+                                :class="viewerWrap ? 'bg-blue-100 text-blue-700 border-blue-300' : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'"
+                                class="flex items-center gap-1.5 px-2.5 py-1 rounded border text-xs font-medium transition-colors"
+                                title="Word wrap">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h10a3 3 0 010 6H9l3-3m0 6l-3-3"/>
+                            </svg>
+                            Ajuste
+                        </button>
+                        <!-- Save button -->
+                        <button @click="saveTextContent()"
+                                :disabled="viewerTextSaving || !viewerTextDirty"
+                                :class="viewerTextSaved ? 'bg-green-600 hover:bg-green-700 text-white' : (viewerTextDirty ? 'bg-blue-600 hover:bg-blue-700 text-white' : 'bg-slate-200 text-slate-400 cursor-default')"
+                                class="flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition-colors"
+                                title="Guardar (Ctrl+S)">
+                            <template x-if="viewerTextSaving">
+                                <svg class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                                </svg>
+                            </template>
+                            <template x-if="!viewerTextSaving && viewerTextSaved">
+                                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+                                </svg>
+                            </template>
+                            <template x-if="!viewerTextSaving && !viewerTextSaved">
+                                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"/>
+                                </svg>
+                            </template>
+                            <span x-text="viewerTextSaving ? 'Guardando…' : (viewerTextSaved ? 'Guardado' : 'Guardar')"></span>
+                        </button>
+                    </div>
+                </div>
+                <!-- Editor body -->
+                <div class="flex-1 overflow-hidden flex flex-col">
+                    <!-- Loading -->
+                    <div x-show="viewerTextLoading" class="flex items-center justify-center h-full gap-3 text-slate-400">
+                        <svg class="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                        </svg>
+                        <span>Cargando…</span>
+                    </div>
+                    <!-- Editor with line numbers -->
+                    <div x-show="!viewerTextLoading" class="flex flex-1 overflow-auto" style="background:#fff;">
+                        <!-- Line numbers gutter -->
+                        <div class="flex-shrink-0 overflow-hidden select-none" style="background:#f8f8f8;border-right:1px solid #e8e8e8;">
+                            <pre x-ref="lineGutter"
+                                 x-text="editorLineNums()"
+                                 class="font-mono text-xs py-3 px-3 text-right leading-6 m-0"
+                                 style="color:#aaa;white-space:pre;min-width:3rem;"></pre>
+                        </div>
+                        <!-- Textarea -->
+                        <textarea x-ref="editorArea"
+                                  x-model="viewerTextContent"
+                                  @input="viewerTextDirty = true"
+                                  @scroll="$refs.lineGutter.scrollTop = $event.target.scrollTop"
+                                  :class="viewerWrap ? 'txt-editor-wrap' : 'txt-editor-nowrap'"
+                                  class="flex-1 font-mono text-sm leading-6 py-3 px-4 resize-none border-0 outline-none"
+                                  style="background:#fff;color:#1a1a1a;tab-size:4;min-height:100%;"
+                                  spellcheck="false"
+                                  autocorrect="off"
+                                  autocapitalize="off"></textarea>
+                    </div>
+                </div>
+                <!-- Status bar -->
+                <div x-show="!viewerTextLoading" class="flex items-center gap-4 px-4 py-1 flex-shrink-0 text-xs select-none border-t" style="background:#f0f0f0;border-color:#ddd;color:#666;">
+                    <span x-text="viewerTextContent ? viewerTextContent.split('\\n').length.toLocaleString('es-ES') + ' líneas' : '1 línea'"></span>
+                    <span x-text="viewerTextContent ? viewerTextContent.length.toLocaleString('es-ES') + ' caracteres' : '0 caracteres'"></span>
+                    <span class="ml-auto" x-text="currentViewerFile ? (currentViewerFile.mime_type || 'text/plain') : ''"></span>
+                    <span x-text="viewerWrap ? 'Ajuste: ON' : 'Ajuste: OFF'"></span>
+                </div>
+            </div>
+            <div x-show="currentViewerFile && !isVideo(currentViewerFile.mime_type) && !isAudio(currentViewerFile.mime_type) && !isImage(currentViewerFile.mime_type) && !isPdf(currentViewerFile.mime_type) && !isText(currentViewerFile.mime_type, currentViewerFile.name)"
                  class="text-center py-12">
                 <div class="w-20 h-20 bg-slate-700 rounded-full flex items-center justify-center mx-auto mb-4">
                     <svg class="w-10 h-10 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
