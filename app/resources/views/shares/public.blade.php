@@ -58,6 +58,17 @@ function shareModal() {
                 } catch(e) {}
             }
             this.loadFolderContents();
+            const uploadMsg = sessionStorage.getItem('upload_notification');
+            if (uploadMsg) {
+                sessionStorage.removeItem('upload_notification');
+                this.$nextTick(() => this.showNotification(uploadMsg, 'success'));
+            }
+            // Clean ?refresh=1 from URL bar without reloading
+            if (new URLSearchParams(window.location.search).has('refresh')) {
+                const clean = new URL(window.location.href);
+                clean.searchParams.delete('refresh');
+                history.replaceState(null, '', clean.toString());
+            }
         },
 
         _setDeleteModalVisible(visible) {
@@ -232,22 +243,22 @@ function shareModal() {
             this._uploadQueue = [...files];
             this._uploadTotal = files.length;
             this._uploadDone = 0;
+            this._uploadSuccess = 0;
             this._processNextUpload();
         },
 
         async _processNextUpload() {
             if (!this._uploadQueue || this._uploadQueue.length === 0) {
-                await this.refreshFolderContents();
-                document.getElementById('upload-progress').classList.add('hidden');
-                document.getElementById('upload-select').classList.remove('hidden');
-                const bar = document.getElementById('upload-bar');
-                bar.classList.remove('bg-red-500');
-                bar.classList.add('bg-green-600');
-                if (this._uploadDone > 0) {
-                    this.showNotification(
-                        this._uploadDone === 1 ? '¡Archivo subido!' : `¡${this._uploadDone} archivos subidos!`,
-                        'success'
-                    );
+                if (this._uploadSuccess > 0) {
+                    const msg = this._uploadSuccess === 1 ? '¡Archivo subido!' : `¡${this._uploadSuccess} archivos subidos!`;
+                    sessionStorage.setItem('upload_notification', msg);
+                    setTimeout(() => location.reload(), 800);
+                } else {
+                    document.getElementById('upload-progress').classList.add('hidden');
+                    document.getElementById('upload-select').classList.remove('hidden');
+                    const bar = document.getElementById('upload-bar');
+                    bar.classList.remove('bg-red-500');
+                    bar.classList.add('bg-green-600');
                 }
                 return;
             }
@@ -331,6 +342,7 @@ function shareModal() {
                         progressBar.classList.add('bg-red-500');
                     } else {
                         this.folderContents.push({ id: null, name: file.name });
+                        this._uploadSuccess = (this._uploadSuccess || 0) + 1;
                     }
                     resolve();
                 };
@@ -530,6 +542,20 @@ function shareModal() {
         }
     };
 }
+
+function refreshFolder() {
+    const btn = document.getElementById('refresh-btn');
+    const icon = document.getElementById('refresh-icon');
+    const label = document.getElementById('refresh-label');
+    if (btn) btn.disabled = true;
+    if (label) label.textContent = 'Actualizando...';
+    if (icon) icon.classList.add('animate-spin');
+
+    const url = new URL(window.location.href);
+    url.searchParams.set('refresh', '1');
+    sessionStorage.setItem('upload_notification', '¡Contenido actualizado!');
+    window.location.href = url.toString();
+}
 </script>
 
     <div class="min-h-screen bg-[#03153C] flex flex-col">
@@ -594,6 +620,10 @@ function shareModal() {
                         <div class="mb-4 flex items-center justify-between">
                             <h2 class="text-lg font-semibold text-slate-800">Contenido</h2>
                             <div class="flex items-center gap-2">
+                                <button id="refresh-btn" onclick="refreshFolder()" title="Actualizar contenido" class="flex items-center gap-1.5 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg text-sm transition-colors">
+                                    <svg id="refresh-icon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                                    <span id="refresh-label">Actualizar</span>
+                                </button>
                                 <div class="flex items-center bg-slate-100 rounded-lg p-1">
                                     <button @click="setShareViewMode('grid')" class="p-1.5 rounded-md transition-colors" :class="shareViewMode === 'grid' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-700'">
                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"/></svg>

@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Share;
 use App\Models\ShareAccessLog;
 use App\Models\File;
+use App\Services\StorageSyncService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Cache;
@@ -68,6 +69,7 @@ class PublicShareController extends Controller
         $file = $share->file;
 
         if ($file->is_folder) {
+            $this->autoSyncFolder($file, $request->boolean('refresh'));
             $folderContents = $file->children()->orderBy('is_folder', 'desc')->orderBy('name')->get();
             $mimeType = 'folder';
             $isPreviewable = false;
@@ -139,6 +141,7 @@ class PublicShareController extends Controller
             return view('shares.public-not-found');
         }
 
+        $this->autoSyncFolder($currentFolder, $request->boolean('refresh'));
         $folderContents = $currentFolder->children()->orderBy('is_folder', 'desc')->orderBy('name')->get();
 
         $breadcrumbs = [];
@@ -662,6 +665,26 @@ class PublicShareController extends Controller
             rmdir($path);
         } elseif (is_file($path)) {
             unlink($path);
+        }
+    }
+
+    private function autoSyncFolder(File $folder, bool $force = false): void
+    {
+        $cacheKey = "share_folder_sync:{$folder->id}";
+        if (!$force && Cache::has($cacheKey)) {
+            return;
+        }
+
+        $storage = $folder->storageProvider;
+        if (!$storage || $storage->type !== 'local') {
+            return;
+        }
+
+        try {
+            app(StorageSyncService::class)->syncFolder($storage, $folder->id);
+            Cache::put($cacheKey, true, 60);
+        } catch (\Exception $e) {
+            // Never let sync crash the share view
         }
     }
 
