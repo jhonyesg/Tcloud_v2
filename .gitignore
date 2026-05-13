@@ -12,3 +12,8 @@ app/storage/logs/*
 app/bootstrap/cache/*.php
 *.sql
 backup_*.sql
+
+# Dotfiles and dotdirectories (except .git and .env.example)
+.*
+!.gitignore
+!.env.example
