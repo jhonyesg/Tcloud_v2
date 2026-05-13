@@ -2,3 +2,13 @@ node_modules/
 data/
 *.env
 .env
+app/storage/app
+app/storage/framework/*
+!app/storage/framework/cache/
+app/storage/framework/cache/*
+!app/storage/framework/cache/.gitignore
+app/storage/logs/*
+!app/storage/logs/.gitignore
+app/bootstrap/cache/*.php
+*.sql
+backup_*.sql
