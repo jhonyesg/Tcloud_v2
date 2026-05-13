@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: tcloud_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: tcloudstorage
+      POSTGRES_USER: cloud
+      POSTGRES_PASSWORD: cloud123
+    volumes:
+      - ./data/postgres_data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    networks:
+      - clouding_network
+
+networks:
+  clouding_network:
+    external: true
