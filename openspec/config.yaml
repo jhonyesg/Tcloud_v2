@@ -1,20 +1,67 @@
 schema: spec-driven
 
-# Project context (optional)
-# This is shown to AI when creating artifacts.
-# Add your tech stack, conventions, style guides, domain knowledge, etc.
-# Example:
-#   context: |
-#     Tech stack: TypeScript, React, Node.js
-#     We use conventional commits
-#     Domain: e-commerce platform
+context: |
+  Project: TCloud — self-hosted cloud storage platform (similar to NextCloud)
+  Domain: media storage, file management, sharing, and media editing for organizations
 
-# Per-artifact rules (optional)
-# Add custom rules for specific artifacts.
-# Example:
-#   rules:
-#     proposal:
-#       - Keep proposals under 500 words
-#       - Always include a "Non-goals" section
-#     tasks:
-#       - Break tasks into chunks of max 2 hours
+  ## Tech Stack
+  - Backend: PHP 8.4, Laravel 13
+  - Database: PostgreSQL 15 (via Docker), Eloquent ORM
+  - Cache/Queue: Redis (via Docker), driver configured via CACHE_DRIVER=redis
+  - Storage: AWS S3-compatible (aws/aws-sdk-php), local filesystem
+  - Frontend: Blade templates, Tailwind CSS (CDN), Alpine.js, vanilla JS
+  - Media: WaveSurfer.js (audio waveform/regions), custom media clip editor
+  - Auth: Session-based (no JWT), session user accessed via session('user')
+  - Server: Nginx + PHP-FPM (native), Postgres + Redis in Docker
+
+  ## Project Structure
+  - app/app/Http/Controllers/ — standard Laravel controllers (FileController, StorageProviderController, ShareController, etc.)
+  - app/app/Modules/ — modular features: Correo (email), GrabacionesPuntuales, FileScannerService
+  - app/app/Services/ — StorageSyncService, FileScannerService
+  - app/app/Models/ — User, File, StorageProvider, Share, Canal, Grabador, UserStorage, MediaEditJob
+  - app/resources/views/ — Blade views organized by domain (files/, admin/, shares/, layouts/)
+  - app/routes/web.php — all routes (auth, admin prefix with middleware, file operations, sharing)
+  - openspec/specs/ — feature specs
+  - openspec/changes/ — active change proposals (proposal.md, design.md, tasks.md)
+
+  ## Conventions
+  - Auth: session('user') pattern — NOT auth()->user() (custom session-based auth)
+  - Middleware: 'auth' and 'admin' middlewares guard routes
+  - Admin routes: prefix /admin, grouped with ['auth', 'admin'] middleware
+  - Views extend layouts.app (main layout with Tailwind + Alpine)
+  - JS: Alpine.js for reactivity, vanilla fetch() for AJAX calls, no build step (CDN assets)
+  - Tailwind: configured inline via tailwind.config with brand color palette (brand-500 = #4654a8)
+  - Commits: conventional commits (feat, fix, refactor, chore)
+  - Migrations: date-prefixed files in app/database/migrations/
+
+  ## Key Domain Concepts
+  - StorageProvider: S3-compatible storage backend assigned to users
+  - File: user file record linked to a StorageProvider
+  - Share: file sharing with public links and access logs
+  - Canal/Grabador: media recording channel management
+  - MediaEditJob: background media clip editing jobs
+  - UserStorage: pivot between User and StorageProvider with quota/permissions
+
+  ## Active Features & Specs (openspec/specs/)
+  file-upload-ux, files-search, image-viewer-controls, local-asset-serving,
+  login-by-username, navigation-state-persistence, permission-aware-file-controls,
+  share-file-download, sidebar-storage-widget, spa-navigation, storage-table-filters,
+  storage-table-pagination, storage-table-search, storage-table-sortable,
+  storage-users-chip-ui, storage-users-management-modal, user-search-typeahead, viewer-navigation
+
+rules:
+  proposal:
+    - Keep proposals under 400 words
+    - Always include a "Non-goals" section
+    - Reference affected routes, controllers, or models explicitly
+    - Note if change requires a migration
+
+  design:
+    - Specify Blade view changes with file paths (resources/views/...)
+    - Describe Alpine.js state and events used
+    - Use session('user') — never auth()->user() in this project
+
+  tasks:
+    - Break tasks into chunks of max 2 hours
+    - Mark tasks that require a database migration separately
+    - Group frontend (Blade/Alpine/Tailwind) and backend (Controller/Model/Route) tasks
