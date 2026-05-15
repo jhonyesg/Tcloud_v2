@@ -3,6 +3,7 @@
 namespace App\Providers;
 
 use App\Models\User;
+use App\Models\ExternalSite;
 use Illuminate\Support\Facades\Session;
 use Illuminate\Support\ServiceProvider;
 
@@ -20,14 +21,19 @@ class AppServiceProvider extends ServiceProvider
 
             if (!$userId) {
                 $view->with('sidebarQuota', $this->emptyQuota());
+                $view->with('userExternalSites', collect());
                 return;
             }
 
             $user  = User::find($userId);
             if (!$user) {
                 $view->with('sidebarQuota', $this->emptyQuota());
+                $view->with('userExternalSites', collect());
                 return;
             }
+
+            $userExternalSites = $user->externalSites()->where('enabled', true)->get();
+            $view->with('userExternalSites', $userExternalSites);
 
             $used  = (int) $user->personal_used_bytes;
             $limit = (int) $user->personal_quota_bytes;

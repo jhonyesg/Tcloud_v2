@@ -9,7 +9,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 class User extends Model
 {
     protected $table = 'users';
-    protected $fillable = ['email', 'username', 'password_hash', 'role', 'personal_quota_bytes', 'personal_used_bytes', 'media_editor_enabled', 'media_editor_clip_limit'];
+    protected $fillable = ['email', 'username', 'password_hash', 'role', 'personal_quota_bytes', 'personal_used_bytes', 'media_editor_enabled', 'media_editor_clip_limit', 'max_sessions', 'session_lifetime_minutes'];
     protected $hidden = ['password_hash'];
 
     public function files(): HasMany
@@ -87,5 +87,12 @@ class User extends Model
     public function canales(): HasMany
     {
         return $this->hasMany(Canal::class, 'usuario_id');
+    }
+
+    public function externalSites(): BelongsToMany
+    {
+        return $this->belongsToMany(ExternalSite::class, 'external_site_user')
+            ->withPivot('sort_order')
+            ->orderBy('sort_order');
     }
 }

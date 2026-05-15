@@ -2,7 +2,9 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\StorageProvider;
 use App\Models\User;
+use App\Models\UserStorage;
 use App\Modules\Correo\Services\NotificationService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
@@ -46,6 +48,10 @@ class UserController extends Controller
             'personal_used_bytes' => 0,
         ]);
 
+        if ($user->username) {
+            $this->createPersonalStorage($user);
+        }
+
         if ($request->boolean('send_email')) {
             $this->notificationService->send(
                 'bienvenida',
@@ -70,10 +76,12 @@ class UserController extends Controller
         $user = User::findOrFail($id);
 
         $rules = [
-            'email' => 'sometimes|email|unique:users,email,' . $id,
-            'username' => 'nullable|string|min:3|unique:users,username,' . $id,
-            'role' => 'sometimes|in:admin,user',
-            'personal_quota_bytes' => 'sometimes|integer|min:0',
+            'email'                    => 'sometimes|email|unique:users,email,' . $id,
+            'username'                 => 'nullable|string|min:3|unique:users,username,' . $id,
+            'role'                     => 'sometimes|in:admin,user',
+            'personal_quota_bytes'     => 'sometimes|integer|min:0',
+            'max_sessions'             => 'sometimes|integer|min:0',
+            'session_lifetime_minutes' => 'sometimes|nullable|integer|min:0',
         ];
 
         if ($request->has('password')) {
@@ -82,9 +90,12 @@ class UserController extends Controller
 
         $request->validate($rules);
 
-        $data = $request->only(['email', 'username', 'role', 'personal_quota_bytes']);
+        $data = $request->only(['email', 'username', 'role', 'personal_quota_bytes', 'max_sessions', 'session_lifetime_minutes']);
         if (array_key_exists('username', $data) && $data['username'] === '') {
             $data['username'] = null;
+        }
+        if (array_key_exists('session_lifetime_minutes', $data) && $data['session_lifetime_minutes'] === '') {
+            $data['session_lifetime_minutes'] = null;
         }
 
         if ($request->has('password')) {
@@ -202,6 +213,29 @@ class UserController extends Controller
     public function profileEdit()
     {
         return view('profile.edit');
+    }
+
+    private function createPersonalStorage(User $user): void
+    {
+        $basePath = '/home/www/Usuarios_tcloud/' . $user->username;
+
+        if (!is_dir($basePath)) {
+            mkdir($basePath, 0755, true);
+        }
+
+        $storage = StorageProvider::create([
+            'name'     => 'Personal - ' . $user->username,
+            'type'     => 'local',
+            'base_path' => $basePath,
+            'enabled'  => true,
+        ]);
+
+        UserStorage::create([
+            'user_id'            => $user->id,
+            'storage_provider_id' => $storage->id,
+            'permissions'        => 'full',
+            'can_create_shares'  => true,
+        ]);
     }
 
     private function formatBytes(int $bytes): string

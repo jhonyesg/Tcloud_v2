@@ -107,6 +107,30 @@
                         <div class="bg-brand-400 h-2 rounded-full" style="width: 40%"></div>
                     </div>
                 </div>
+                <div>
+                    <div class="flex justify-between text-sm mb-2">
+                        <div class="flex items-center gap-1.5">
+                            <i class="fas fa-memory text-indigo-500 text-xs"></i>
+                            <span class="text-slate-600">RAM Disk FFmpeg</span>
+                            <span class="text-xs text-slate-400">/mnt/cliptemp</span>
+                        </div>
+                        @if($ramdisk['available'])
+                            <span class="font-medium text-slate-800">{{ $ramdisk['used_gb'] }} <span class="font-normal text-slate-400">/ {{ $ramdisk['total_gb'] }} GB</span></span>
+                        @else
+                            <span class="text-xs text-red-500">No montado</span>
+                        @endif
+                    </div>
+                    @if($ramdisk['available'])
+                        <div class="w-full bg-slate-100 rounded-full h-2">
+                            <div class="h-2 rounded-full transition-all"
+                                 style="width: {{ max($ramdisk['percent'], 0.5) }}%; background-color: {{ $ramdisk['percent'] >= 90 ? '#ef4444' : ($ramdisk['percent'] >= 70 ? '#f59e0b' : '#6366f1') }}"></div>
+                        </div>
+                        <p class="text-xs text-slate-400 mt-1">{{ $ramdisk['percent'] }}% usado · {{ $ramdisk['free_gb'] }} GB libres</p>
+                    @else
+                        <div class="w-full bg-slate-100 rounded-full h-2"></div>
+                        <p class="text-xs text-red-400 mt-1">Verificar que tmpfs esté montado en /mnt/cliptemp</p>
+                    @endif
+                </div>
             </div>
         </div>
 
@@ -134,16 +158,34 @@
                         <p class="text-xs text-slate-500">Proveedor de almacenamiento</p>
                     </div>
                 </a>
-                <a href="/files"
-                   class="flex items-center gap-3 p-3 bg-slate-50 hover:bg-brand-50 rounded-lg transition-colors group">
-                    <div class="w-10 h-10 bg-brand-600 rounded-lg flex items-center justify-center">
+                <a href="{{ $personalStorageId ? '/files?storage_id=' . $personalStorageId : '/files' }}"
+                   class="flex items-center gap-3 p-3 bg-slate-50 hover:bg-amber-50 rounded-lg transition-colors group">
+                    <div class="w-10 h-10 bg-amber-500 rounded-lg flex items-center justify-center">
                         <i class="fas fa-cloud-upload-alt text-white text-sm"></i>
                     </div>
                     <div>
-                        <p class="font-medium text-slate-800 text-sm group-hover:text-brand-600">Subir Archivos</p>
-                        <p class="text-xs text-slate-500">Gestión de archivos</p>
+                        <p class="font-medium text-slate-800 text-sm group-hover:text-amber-700">Subir Archivos</p>
+                        <p class="text-xs text-slate-500">Mi espacio personal</p>
                     </div>
                 </a>
+
+                @if(count($instructivos) > 0)
+                <div class="pt-2 border-t border-slate-100">
+                    <p class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">Instructivos</p>
+                    @foreach($instructivos as $doc)
+                    <button type="button" onclick="openInstructivo('{{ $doc['url'] }}')"
+                            class="flex items-center gap-3 p-3 bg-red-50 hover:bg-red-100 border border-red-200 rounded-lg transition-colors text-left w-full mb-2">
+                        <div class="w-8 h-8 bg-red-600 rounded-lg flex items-center justify-center shrink-0">
+                            <i class="fas fa-file-pdf text-white text-xs"></i>
+                        </div>
+                        <div class="min-w-0">
+                            <p class="font-medium text-slate-800 text-xs truncate">{{ pathinfo($doc['name'], PATHINFO_FILENAME) }}</p>
+                            <p class="text-xs text-red-500">PDF · Click para abrir</p>
+                        </div>
+                    </button>
+                    @endforeach
+                </div>
+                @endif
             </div>
         </div>
     </div>
@@ -173,5 +215,6 @@
             </div>
         </div>
     </div>
+
 </div>
 @endsection

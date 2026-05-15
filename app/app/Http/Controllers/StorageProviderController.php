@@ -74,11 +74,6 @@ class StorageProviderController extends Controller
     public function destroy(int $id)
     {
         $storage = StorageProvider::findOrFail($id);
-
-        if ($storage->files()->exists()) {
-            return response()->json(['error' => 'Cannot delete storage with files. Migrate files first.'], 400);
-        }
-
         $storage->delete();
         return response()->json(['message' => 'Storage deleted']);
     }
@@ -90,6 +85,10 @@ class StorageProviderController extends Controller
         if ($storage->type === 'local') {
             $path = $storage->base_path;
             $exists = file_exists($path) && is_dir($path) && is_readable($path);
+            $storage->update([
+                'is_accessible' => $exists,
+                'last_checked_at' => now(),
+            ]);
             return response()->json([
                 'success' => $exists,
                 'message' => $exists ? 'La ruta local es accesible' : 'La ruta local no es accesible',
@@ -101,6 +100,10 @@ class StorageProviderController extends Controller
             $required = ['region', 'version', 'credentials'];
             foreach ($required as $key) {
                 if (!isset($config[$key])) {
+                    $storage->update([
+                        'is_accessible' => false,
+                        'last_checked_at' => now(),
+                    ]);
                     return response()->json([
                         'success' => false,
                         'message' => "Configuración S3 incompleta: falta campo {$key}",
@@ -110,6 +113,10 @@ class StorageProviderController extends Controller
 
             $creds = $config['credentials'];
             if (!isset($creds['key']) || !isset($creds['secret'])) {
+                $storage->update([
+                    'is_accessible' => false,
+                    'last_checked_at' => now(),
+                ]);
                 return response()->json([
                     'success' => false,
                     'message' => 'Credenciales S3 inválidas: falta key o secret',
@@ -129,22 +136,38 @@ class StorageProviderController extends Controller
                 $bucket = $config['bucket'] ?? null;
                 if ($bucket) {
                     $result = $s3->headBucket(['Bucket' => $bucket]);
+                    $storage->update([
+                        'is_accessible' => true,
+                        'last_checked_at' => now(),
+                    ]);
                     return response()->json([
                         'success' => true,
                         'message' => "Bucket S3 '{$bucket}' es accesible",
                     ]);
                 }
 
+                $storage->update([
+                    'is_accessible' => true,
+                    'last_checked_at' => now(),
+                ]);
                 return response()->json([
                     'success' => true,
                     'message' => 'Las credenciales S3 son válidas',
                 ]);
             } catch (\Aws\Exception\AwsException $e) {
+                $storage->update([
+                    'is_accessible' => false,
+                    'last_checked_at' => now(),
+                ]);
                 return response()->json([
                     'success' => false,
                     'message' => 'Error de conexión S3: ' . $e->getAwsErrorMessage(),
                 ]);
             } catch (\Exception $e) {
+                $storage->update([
+                    'is_accessible' => false,
+                    'last_checked_at' => now(),
+                ]);
                 return response()->json([
                     'success' => false,
                     'message' => 'Error de conexión S3: ' . $e->getMessage(),
@@ -168,8 +191,10 @@ class StorageProviderController extends Controller
             $users->where(function ($q) use ($query) {
                 $q->where('username', 'like', '%' . $query . '%')
                   ->orWhere('email', 'like', '%' . $query . '%');
-            })->limit(20);
+            });
         }
+
+        $users->limit(30);
 
         return response()->json(
             $users->get(['id', 'username', 'email'])

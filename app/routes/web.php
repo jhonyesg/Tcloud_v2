@@ -58,6 +58,31 @@ Route::middleware(['auth', 'admin'])->prefix('admin')->group(function () {
     Route::post('/correo/plantillas/{plantilla}/preview', [CorreoPlantillaController::class, 'preview']);
     Route::post('/correo/plantillas/{plantilla}/send-test', [CorreoPlantillaController::class, 'sendTest']);
 
+    // Sessions management
+    Route::get('/sessions', [App\Http\Controllers\SessionController::class, 'index']);
+    Route::delete('/sessions/{session}', [App\Http\Controllers\SessionController::class, 'destroy']);
+    Route::delete('/sessions/user/{user}', [App\Http\Controllers\SessionController::class, 'destroyByUser']);
+    Route::post('/sessions/settings', [App\Http\Controllers\SessionController::class, 'updateGlobalSettings']);
+
+    // Redis monitor
+    Route::get('/redis', [App\Http\Controllers\RedisMonitorController::class, 'index']);
+    Route::get('/redis/status', [App\Http\Controllers\RedisMonitorController::class, 'status']);
+    Route::get('/redis/config', [App\Http\Controllers\RedisMonitorController::class, 'currentConfig']);
+    Route::post('/redis/config/test', [App\Http\Controllers\RedisMonitorController::class, 'testConfig']);
+    Route::post('/redis/config/save', [App\Http\Controllers\RedisMonitorController::class, 'saveConfig']);
+    Route::post('/redis/toggle-driver', [App\Http\Controllers\RedisMonitorController::class, 'toggleSessionDriver']);
+    Route::post('/redis/clean-expired', [App\Http\Controllers\RedisMonitorController::class, 'cleanExpired']);
+    Route::post('/redis/clean-orphans', [App\Http\Controllers\RedisMonitorController::class, 'cleanOrphans']);
+
+    // Sites Externos
+    Route::get('/external-sites', [App\Http\Controllers\ExternalSiteController::class, 'index']);
+    Route::post('/external-sites', [App\Http\Controllers\ExternalSiteController::class, 'store']);
+    Route::put('/external-sites/{externalSite}', [App\Http\Controllers\ExternalSiteController::class, 'update']);
+    Route::delete('/external-sites/{externalSite}', [App\Http\Controllers\ExternalSiteController::class, 'destroy']);
+    Route::get('/external-sites/{externalSite}/users', [App\Http\Controllers\ExternalSiteController::class, 'users']);
+    Route::post('/external-sites/{externalSite}/users', [App\Http\Controllers\ExternalSiteController::class, 'assignUser']);
+    Route::delete('/external-sites/{externalSite}/users/{user}', [App\Http\Controllers\ExternalSiteController::class, 'removeUser']);
+
 });
 
 Route::middleware(['auth', 'admin'])->group(function () {
@@ -65,6 +90,11 @@ Route::middleware(['auth', 'admin'])->group(function () {
 });
 
 Route::middleware('auth')->group(function () {
+    // User self-service sessions
+    Route::get('/user/sessions', [App\Http\Controllers\UserSessionController::class, 'index']);
+    Route::delete('/user/sessions/others', [App\Http\Controllers\UserSessionController::class, 'destroyOthers']);
+    Route::delete('/user/sessions/{session}', [App\Http\Controllers\UserSessionController::class, 'destroy']);
+
     Route::get('/profile', [App\Http\Controllers\UserController::class, 'profile']);
     Route::put('/profile', [App\Http\Controllers\UserController::class, 'profile']);
     Route::get('/profile/show', [App\Http\Controllers\UserController::class, 'profileShow'])->name('profile.show');
@@ -77,6 +107,8 @@ Route::middleware('auth')->group(function () {
     Route::get('/files/{file}/preview', [App\Http\Controllers\FileController::class, 'preview']);
     Route::get('/files/{file}/view', [App\Http\Controllers\FileController::class, 'view']);
     Route::post('/files/{file}/rotate', [App\Http\Controllers\FileController::class, 'rotate']);
+    Route::get('/files/{file}/text-content', [App\Http\Controllers\FileController::class, 'textContent']);
+    Route::put('/files/{file}/text-content', [App\Http\Controllers\FileController::class, 'saveTextContent']);
 
     Route::get('/media/{file}/preview', [App\Http\Controllers\MediaPreviewController::class, 'preview']);
     Route::get('/media/{file}/thumbnail', [App\Http\Controllers\MediaPreviewController::class, 'thumbnail']);
@@ -106,6 +138,8 @@ Route::middleware('auth')->group(function () {
         Route::get('/estado-grabaciones', [App\Http\Controllers\GrabacionesPuntuales\CanalController::class, 'estado'])->name('grabaciones.estado');
     });
 });
+
+Route::middleware('auth')->get('/sites/{externalSite}', [App\Http\Controllers\ExternalSiteViewController::class, 'show']);
 
 Route::get('/s/{token}', [App\Http\Controllers\PublicShareController::class, 'show']);
 Route::get('/s/{token}/folder/{folder_id}', [App\Http\Controllers\PublicShareController::class, 'folder'])->name('share.folder');

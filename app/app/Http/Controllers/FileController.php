@@ -7,6 +7,7 @@ use App\Models\User;
 use App\Models\StorageProvider;
 use App\Services\StorageSyncService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Session;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
@@ -49,10 +50,25 @@ class FileController extends Controller
 
             if ($searchTerm !== null) {
                 $storageId = $request->has('storage_id') ? $request->storage_id : null;
+                $parentId  = $request->has('parent_id')  ? $request->parent_id  : null;
 
                 $query = File::query()->where('name', 'ilike', '%' . $searchTerm . '%');
 
-                if ($storageId !== null) {
+                if ($parentId !== null) {
+                    // Búsqueda recursiva dentro de la carpeta actual y sus subcarpetas
+                    $folderRows = DB::select("
+                        WITH RECURSIVE folder_tree AS (
+                            SELECT id FROM files WHERE id = ?
+                            UNION ALL
+                            SELECT f.id FROM files f
+                            INNER JOIN folder_tree ft ON f.parent_id = ft.id
+                            WHERE f.is_folder = true
+                        )
+                        SELECT id FROM folder_tree
+                    ", [$parentId]);
+                    $folderIds = collect($folderRows)->pluck('id')->toArray();
+                    $query->whereIn('parent_id', $folderIds);
+                } elseif ($storageId !== null) {
                     $query->where('storage_provider_id', $storageId);
                 }
 
@@ -64,7 +80,7 @@ class FileController extends Controller
                     });
                 }
 
-                $files = $query->orderBy('is_folder', 'desc')->orderBy('name')->get();
+                $files = $query->orderBy('is_folder', 'desc')->orderBy('created_at', 'desc')->get();
                 return response()->json($files);
             }
 
@@ -107,7 +123,7 @@ class FileController extends Controller
                 });
             }
 
-            $files = $query->orderBy('is_folder', 'desc')->orderBy('name')->get();
+            $files = $query->orderBy('is_folder', 'desc')->orderBy('created_at', 'desc')->get();
             return response()->json($files);
         }
 
@@ -153,13 +169,22 @@ class FileController extends Controller
         $storage = StorageProvider::find($storageId);
         $path = $this->generatePath($parentId, $request->name, $storage);
 
+        if ($storage->type === 'local') {
+            $physicalPath = rtrim($storage->base_path, '/') . '/' . $path;
+            if (!is_dir($physicalPath)) {
+                if (!mkdir($physicalPath, 0755, true)) {
+                    return response()->json(['error' => 'No se pudo crear el directorio'], 500);
+                }
+            }
+        }
+
         $file = File::create([
             'name' => $request->name,
             'path' => $path,
             'size' => 0,
             'mime_type' => 'folder',
             'storage_provider_id' => $storageId,
-            'owner_id' => $user->isAdmin() ? $user->id : $user->id,
+            'owner_id' => $user->id,
             'parent_id' => $parentId,
             'is_folder' => true,
             'is_personal' => false,
@@ -296,11 +321,108 @@ class FileController extends Controller
             'is_personal' => $parentId === null,
         ]);
 
-        if ($parentId === null && $user->personal_quota_bytes > 0) {
+        if (str_starts_with($storage->base_path ?? '', '/home/www/Usuarios_tcloud/')) {
             $user->increment('personal_used_bytes', $size);
         }
 
         return response()->json($storedFile, 201);
+    }
+
+    public function textContent(int $id)
+    {
+        $file = File::findOrFail($id);
+
+        if (!$this->checkFilePermission($file, 'read')) {
+            return response()->json(['error' => 'Forbidden'], 403);
+        }
+
+        $storage = $file->storageProvider;
+        if (!$storage || $storage->type !== 'local') {
+            return response()->json(['error' => 'Not supported for this storage type'], 400);
+        }
+
+        $fullPath = rtrim($storage->base_path, '/') . '/' . $file->path;
+        if (!file_exists($fullPath)) {
+            return response()->json(['error' => 'File not found on disk'], 404);
+        }
+
+        $ext = strtolower(pathinfo($file->name, PATHINFO_EXTENSION));
+        $mime = $file->mime_type ?? '';
+
+        if ($mime === 'text/plain' || in_array($ext, ['txt', 'log', 'md', 'csv'])) {
+            $content = @file_get_contents($fullPath);
+            if ($content === false) {
+                return response()->json(['error' => 'Cannot read file'], 500);
+            }
+            $encoding = mb_detect_encoding($content, ['UTF-8', 'ISO-8859-1', 'Windows-1252'], true);
+            if ($encoding && $encoding !== 'UTF-8') {
+                $content = mb_convert_encoding($content, 'UTF-8', $encoding);
+            }
+            return response()->json(['content' => $content, 'type' => 'text']);
+        }
+
+        if ($ext === 'odt' || $mime === 'application/vnd.oasis.opendocument.text') {
+            $zip = new \ZipArchive();
+            if ($zip->open($fullPath) !== true) {
+                return response()->json(['error' => 'Cannot open ODT file'], 500);
+            }
+            $xml = $zip->getFromName('content.xml');
+            $zip->close();
+
+            if ($xml === false) {
+                return response()->json(['error' => 'Cannot read ODT content'], 500);
+            }
+
+            $xml = preg_replace('/<\/text:p>/i', "\n", $xml);
+            $xml = preg_replace('/<\/text:h[^>]*>/i', "\n", $xml);
+            $xml = preg_replace('/<text:line-break[^>]*\/?>/i', "\n", $xml);
+            $xml = preg_replace('/<text:tab[^>]*\/?>/i', "\t", $xml);
+            $text = strip_tags($xml);
+            $text = preg_replace('/\n{3,}/', "\n\n", trim($text));
+
+            return response()->json(['content' => $text, 'type' => 'text']);
+        }
+
+        return response()->json(['error' => 'Unsupported file type for text preview'], 400);
+    }
+
+    public function saveTextContent(Request $request, int $id)
+    {
+        $file = File::findOrFail($id);
+
+        if (!$this->checkFilePermission($file, 'write')) {
+            return response()->json(['error' => 'Write permission required'], 403);
+        }
+
+        $storage = $file->storageProvider;
+        if (!$storage || $storage->type !== 'local') {
+            return response()->json(['error' => 'Not supported for this storage type'], 400);
+        }
+
+        $realBase = realpath($storage->base_path);
+        $fullPath = realpath(rtrim($storage->base_path, '/') . '/' . $file->path);
+
+        if (!$fullPath || !$realBase || !str_starts_with($fullPath, $realBase)) {
+            return response()->json(['error' => 'Invalid file path'], 400);
+        }
+
+        if (!file_exists($fullPath)) {
+            return response()->json(['error' => 'File not found on disk'], 404);
+        }
+
+        $content = $request->input('content', '');
+        $bytes = file_put_contents($fullPath, $content);
+
+        if ($bytes === false) {
+            return response()->json(['error' => 'Cannot write to file — check permissions'], 500);
+        }
+
+        $file->update([
+            'size' => $bytes,
+            'file_modified_at' => now(),
+        ]);
+
+        return response()->json(['ok' => true, 'size' => $bytes]);
     }
 
     public function rotate(Request $request, int $file)
@@ -434,7 +556,11 @@ class FileController extends Controller
             return redirect('/files')->with('error', 'No tienes permiso para ver este archivo');
         }
 
-        return view('files.preview', ['fileId' => $id]);
+        return view('files.preview', [
+            'fileId'   => $id,
+            'fileMime' => $file->mime_type,
+            'fileName' => $file->name,
+        ]);
     }
 
     public function storages(Request $request)
@@ -453,6 +579,9 @@ class FileController extends Controller
                 'type' => $us->storageProvider->type,
                 'permissions' => $us->permissions,
                 'can_create_shares' => (bool) $us->can_create_shares,
+                'accessible' => $us->storageProvider->is_accessible,
+                'last_checked' => $us->storageProvider->last_checked_at?->format('d M, H:i'),
+                'is_personal' => str_starts_with($us->storageProvider->base_path ?? '', '/home/www/Usuarios_tcloud/'),
             ];
         });
 
@@ -484,8 +613,11 @@ class FileController extends Controller
     private function deleteFile(File $file): void
     {
         $user = User::find($file->owner_id);
-        if ($user && $file->is_personal && $user->personal_quota_bytes > 0) {
-            $user->decrement('personal_used_bytes', $file->size);
+        if ($user && $file->size > 0) {
+            $storage = $file->storageProvider;
+            if ($storage && str_starts_with($storage->base_path ?? '', '/home/www/Usuarios_tcloud/')) {
+                $user->decrement('personal_used_bytes', $file->size);
+            }
         }
         $this->deleteClipThumbs($file->id);
         $file->delete();

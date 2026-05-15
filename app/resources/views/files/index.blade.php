@@ -6,6 +6,8 @@
 <style>
 .txt-editor-nowrap { white-space: pre; overflow-x: auto; }
 .txt-editor-wrap   { white-space: pre-wrap; word-break: break-all; overflow-x: hidden; }
+.clip-seq-panel { width: 100%; }
+@media (min-width: 640px) { .clip-seq-panel { width: 280px; flex-shrink: 0; } }
 </style>
 <script>
 document.addEventListener('alpine:init', () => {
@@ -40,8 +42,8 @@ document.addEventListener('alpine:init', () => {
     shareFeedback: { type: '', message: '' },
     viewerOpen: false,
     currentViewerFile: null,
-    sortField: 'name',
-    sortDir: 'asc',
+    sortField: 'created_at',
+    sortDir: 'desc',
     uploadQueue: [],
     dragOverMain: false,
     dragDepth: 0,
@@ -99,6 +101,7 @@ deleteConfirmFile: null,
         clipThumbnails: [],
         clipThumbsLoading: false,
         clipOutputMode: false,
+        clipMobileTab: 'edit',
 
         async init() {
             await Promise.all([
@@ -107,14 +110,28 @@ deleteConfirmFile: null,
                     .then(r => r.ok ? r.json() : null)
                     .then(d => { if (d) this.canUseMediaEditor = !!d.can_use_media_editor; })
             ]);
-            await this.restoreNavState();
+            const urlParams = new URLSearchParams(window.location.search);
+            const urlStorageId = urlParams.get('storage_id');
+            if (urlStorageId) {
+                const sid = parseInt(urlStorageId);
+                const storage = this.availableStorages.find(s => s.id === sid);
+                if (storage) {
+                    this.enterStorage(storage.id, storage.name);
+                    history.replaceState(null, '', '/files');
+                } else {
+                    await this.restoreNavState();
+                }
+            } else {
+                await this.restoreNavState();
+            }
             this.ready = true;
             this.$watch('searchQuery', (val) => {
                 clearTimeout(this.searchTimer);
                 if (val.length >= 2) {
                     this.searchTimer = setTimeout(() => this.searchFiles(), 350);
-                } else if (val.length === 0) {
-                    this.clearSearch();
+                } else if (val.length === 0 && this.searchMode) {
+                    this.searchMode = false;
+                    this.loadFiles();
                 }
             });
         },
@@ -291,13 +308,21 @@ deleteConfirmFile: null,
         this.saveNavState();
     },
 
+    goToStorageRoot() {
+        this.currentFolder = null;
+        this.currentFolderName = null;
+        this.breadcrumbs = [];
+        this.loadFiles();
+        this.saveNavState();
+    },
+
     navigateToBreadcrumb(breadcrumb) {
         const index = this.breadcrumbs.indexOf(breadcrumb);
         if (index > -1) {
             this.breadcrumbs = this.breadcrumbs.slice(0, index);
         }
         this.currentFolder = breadcrumb.id;
-        this.currentFolderName = breadcrumb.name === 'Raíz' ? null : breadcrumb.name;
+        this.currentFolderName = breadcrumb.id === null ? null : breadcrumb.name;
         this.loadFiles();
         this.saveNavState();
     },
@@ -417,6 +442,7 @@ deleteConfirmFile: null,
     },
 
     async createFolder(name) {
+        if (!name || !name.trim()) return;
         const res = await fetch('/files', {
             method: 'POST',
             credentials: 'include',
@@ -427,7 +453,7 @@ deleteConfirmFile: null,
                 'X-Requested-With': 'XMLHttpRequest'
             },
             body: JSON.stringify({
-                name: name,
+                name: name.trim(),
                 parent_id: this.currentFolder,
                 storage_id: this.currentStorage,
                 is_folder: true
@@ -436,7 +462,11 @@ deleteConfirmFile: null,
 
         if (res.ok) {
             this.showNewFolderModal = false;
+            if (this.$refs.folderName) this.$refs.folderName.value = '';
             this.loadFiles();
+        } else {
+            const data = await res.json().catch(() => ({}));
+            alert('Error al crear carpeta: ' + (data.error || res.status));
         }
     },
 
@@ -828,6 +858,7 @@ deleteConfirmFile: null,
     async searchFiles() {
         if (!this.currentStorage || this.searchQuery.length < 2) return;
         let url = '/files?q=' + encodeURIComponent(this.searchQuery) + '&storage_id=' + this.currentStorage;
+        if (this.currentFolder) url += '&parent_id=' + this.currentFolder;
         const res = await fetch(url, {
             credentials: 'include',
             headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
@@ -840,8 +871,8 @@ deleteConfirmFile: null,
 
     clearSearch() {
         clearTimeout(this.searchTimer);
-        this.searchQuery = '';
         this.searchMode = false;
+        this.searchQuery = '';
         this.loadFiles();
     },
 
@@ -875,6 +906,7 @@ deleteConfirmFile: null,
         this.clipThumbnails = [];
         this.clipThumbsLoading = false;
         this.clipOutputMode = false;
+        this.clipMobileTab = 'edit';
         this.showClipModal = true;
         this.$nextTick(() => this.initClipPlayer(file));
     },
@@ -1009,10 +1041,14 @@ deleteConfirmFile: null,
         if (!tl || !this.clipDuration) return 0;
         const rect  = tl.getBoundingClientRect();
         const scrollX = wrap ? wrap.scrollLeft : 0;
-        const innerW  = rect.width; // width of the inner bar (already scaled)
-        const clickX  = e.clientX - rect.left + scrollX;
+        const innerW  = rect.width;
+        const clientX = (e.touches && e.touches[0]) ? e.touches[0].clientX : e.clientX;
+        const clickX  = clientX - rect.left + scrollX;
         return Math.max(0, Math.min(1, clickX / (innerW)));
     },
+    clipTimelineTd(e) { if(e.cancelable) e.preventDefault(); this.clipTimelineMd(e); },
+    clipTimelineTm(e) { if(this.clipDragging && e.cancelable) e.preventDefault(); this.clipTimelineMm(e); },
+    clipTimelineTu(e) { this.clipTimelineMu(); },
 
     clipTimelineMd(e) {
         if (!this.clipReady || !this.clipDuration) return;
@@ -1474,16 +1510,16 @@ deleteConfirmFile: null,
 </script>
 <div class="min-h-screen bg-slate-100" x-data="fileManager()" x-init="init()" x-show="ready" x-cloak>
     <header class="bg-white shadow-sm border-b border-slate-200">
-        <div class="px-6 py-4 flex items-center justify-between">
-            <div class="flex items-center gap-3">
-                <div class="w-10 h-10 bg-[#2451B8] rounded-lg flex items-center justify-center">
-                    <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <div class="px-3 py-3 sm:px-6 sm:py-4 flex items-center justify-between gap-2">
+            <div class="flex items-center gap-2 sm:gap-3 min-w-0">
+                <div class="w-9 h-9 sm:w-10 sm:h-10 bg-[#2451B8] rounded-lg flex items-center justify-center flex-shrink-0">
+                    <svg class="w-5 h-5 sm:w-6 sm:h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
                     </svg>
                 </div>
-                <div>
-                    <h1 class="text-xl font-bold text-slate-800">Mis Archivos</h1>
-                    <p class="text-xs text-slate-500" x-text="viewMode === 'storages' ? 'Selecciona un storage' : currentStorageName"></p>
+                <div class="min-w-0">
+                    <h1 class="text-base sm:text-xl font-bold text-slate-800 truncate">Mis Archivos</h1>
+                    <p class="text-xs text-slate-500 truncate" x-text="viewMode === 'storages' ? 'Selecciona un storage' : currentStorageName"></p>
                 </div>
             </div>
             <div class="flex items-center gap-3">
@@ -1515,37 +1551,107 @@ deleteConfirmFile: null,
                                 </svg>
                             </button>
                         </div>
-                        <button @click="navigateToRoot()" class="flex items-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-700 px-4 py-2 rounded-lg transition-colors">
-                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <button @click="navigateToRoot()" class="flex items-center gap-1 sm:gap-2 bg-slate-100 hover:bg-slate-200 text-slate-700 px-2 sm:px-4 py-2 rounded-lg transition-colors" title="Volver a Storages">
+                            <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 17l-5-5m0 0l5-5m-5 5h12"/>
                             </svg>
-                            Volver a Storages
+                            <span class="hidden sm:inline">Volver a Storages</span>
                         </button>
                     </div>
                 </template>
-                <button @click="refreshFiles()" x-show="viewMode === 'files'" class="flex items-center gap-2 bg-green-600 hover:bg-green-700 active:bg-green-800 text-white px-4 py-2 rounded-lg font-medium shadow-sm transition-colors" title="Re-escanear archivos desde disco">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <button @click="refreshFiles()" x-show="viewMode === 'files'" class="flex items-center gap-1 sm:gap-2 bg-green-600 hover:bg-green-700 active:bg-green-800 text-white px-2 sm:px-4 py-2 rounded-lg font-medium shadow-sm transition-colors" title="Actualizar">
+                    <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
                     </svg>
-                    Actualizar
+                    <span class="hidden sm:inline">Actualizar</span>
                 </button>
-                <button @click="showNewFolderModal = true" x-show="viewMode === 'files' && canCreateFolders()" class="flex items-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-700 px-4 py-2 rounded-lg transition-colors">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <button @click="showNewFolderModal = true" x-show="viewMode === 'files' && canCreateFolders()" class="flex items-center gap-1 sm:gap-2 bg-slate-100 hover:bg-slate-200 text-slate-700 px-2 sm:px-4 py-2 rounded-lg transition-colors" title="Nueva carpeta">
+                    <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 13h6m-3-3v6m-9 1V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>
                     </svg>
-                    Nueva Carpeta
+                    <span class="hidden sm:inline">Nueva Carpeta</span>
                 </button>
-                <button @click="uploadQueue = []; showUploadModal = true" x-show="viewMode === 'files' && canUpload()" class="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <button @click="uploadQueue = []; showUploadModal = true" x-show="viewMode === 'files' && canUpload()" class="flex items-center gap-1 sm:gap-2 bg-blue-600 hover:bg-blue-700 text-white px-2 sm:px-4 py-2 rounded-lg transition-colors" title="Subir archivo">
+                    <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/>
                     </svg>
-                    Subir Archivo
+                    <span class="hidden sm:inline">Subir Archivo</span>
                 </button>
+            </div>
+        </div>
+        <div class="px-3 py-2 sm:px-6 sm:py-3 bg-slate-50 border-t border-slate-100" x-show="viewMode === 'files'">
+            <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-4">
+                <!-- Breadcrumb normal -->
+                <nav x-show="!searchMode" class="flex items-center gap-1.5 text-sm flex-1 min-w-0 overflow-x-auto pb-0.5">
+                    {{-- Home: siempre va al listado de storages --}}
+                    <button @click="navigateToRoot()" class="flex items-center gap-1 text-blue-600 hover:text-blue-700 font-medium whitespace-nowrap flex-shrink-0">
+                        <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/>
+                        </svg>
+                        <span>Home</span>
+                    </button>
+                    {{-- Nombre del storage: va a la raíz del storage actual --}}
+                    <template x-if="currentStorageName">
+                        <div class="flex items-center gap-1.5 flex-shrink-0">
+                            <svg class="w-3 h-3 text-slate-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                            </svg>
+                            <button @click="goToStorageRoot()"
+                                    class="text-blue-600 hover:text-blue-700 truncate max-w-[80px] sm:max-w-[140px]"
+                                    x-text="currentStorageName"></button>
+                        </div>
+                    </template>
+                    {{-- Carpetas intermedias --}}
+                    <template x-for="(crumb, index) in breadcrumbs" :key="index">
+                        <div class="flex items-center gap-1.5 flex-shrink-0">
+                            <svg class="w-3 h-3 text-slate-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                            </svg>
+                            <button @click="navigateToBreadcrumb(crumb)" class="text-blue-600 hover:text-blue-700 truncate max-w-[80px] sm:max-w-[140px]" x-text="crumb.name"></button>
+                        </div>
+                    </template>
+                    {{-- Carpeta actual (no clickable) --}}
+                    <template x-if="currentFolderName">
+                        <div class="flex items-center gap-1.5 flex-shrink-0">
+                            <svg class="w-3 h-3 text-slate-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                            </svg>
+                            <span class="text-slate-600 font-medium truncate max-w-[100px] sm:max-w-[200px]" x-text="currentFolderName"></span>
+                        </div>
+                    </template>
+                </nav>
+                <!-- Indicador de modo búsqueda -->
+                <div x-show="searchMode" class="flex items-center gap-2 flex-1 min-w-0 overflow-hidden">
+                    <svg class="w-4 h-4 text-blue-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0"/>
+                    </svg>
+                    <span class="text-sm font-semibold text-blue-700 truncate min-w-0" x-text="'«' + searchQuery + '»'"></span>
+                    <span class="text-xs text-slate-400 whitespace-nowrap flex-shrink-0" x-text="files.length + ' resultado' + (files.length !== 1 ? 's' : '')"></span>
+                    <button @click="clearSearch()" class="flex-shrink-0 text-xs text-blue-600 hover:text-blue-800 hover:underline whitespace-nowrap">
+                        ← Volver
+                    </button>
+                </div>
+                <!-- Cuadro de búsqueda -->
+                <div class="relative w-full sm:w-64 flex-shrink-0">
+                    <input type="text" x-model="searchQuery"
+                           :disabled="!currentStorage"
+                           placeholder="Buscar archivos..."
+                           autocomplete="off"
+                           inputmode="search"
+                           @keydown.enter.prevent="searchFiles()"
+                           :class="!currentStorage ? 'opacity-50 cursor-not-allowed bg-slate-100' : 'bg-white'"
+                           class="w-full border border-slate-300 rounded-lg pl-9 pr-8 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-colors">
+                    <svg class="absolute left-3 top-2.5 w-4 h-4 text-slate-400 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0"/>
+                    </svg>
+                    <button x-show="searchQuery" @click="clearSearch()"
+                            class="absolute right-2.5 top-2 text-slate-400 hover:text-slate-700 text-lg leading-none font-medium">×</button>
+                </div>
             </div>
         </div>
     </header>
 
-    <main class="p-6">
+    <main class="p-3 sm:p-6 pb-24 sm:pb-8">
         <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden relative"
              @dragenter.prevent="if(viewMode === 'files' && canUpload()) { dragDepth++; dragOverMain = true; }"
              @dragleave.prevent="dragDepth--; if(dragDepth <= 0) { dragDepth = 0; dragOverMain = false; }"
@@ -1561,62 +1667,7 @@ deleteConfirmFile: null,
                     <p class="text-blue-500 text-sm mt-1" x-text="currentFolderName ? 'En: ' + currentFolderName : 'En: ' + currentStorageName"></p>
                 </div>
             </div>
-            <div class="p-4 border-b border-slate-200 bg-slate-50" x-show="viewMode === 'files'">
-                <div class="flex items-center justify-between gap-4 flex-wrap">
-                    <!-- Breadcrumb normal -->
-                    <nav x-show="!searchMode" class="flex items-center gap-2 text-sm flex-1 min-w-0">
-                        <button @click="navigateToRoot()" class="flex items-center gap-1 text-blue-600 hover:text-blue-700 font-medium whitespace-nowrap">
-                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/>
-                            </svg>
-                            <span x-text="currentStorageName || 'Raíz'"></span>
-                        </button>
-                        <template x-for="(crumb, index) in breadcrumbs" :key="index">
-                            <div class="flex items-center gap-2">
-                                <svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
-                                </svg>
-                                <button @click="navigateToBreadcrumb(crumb)" class="text-blue-600 hover:text-blue-700" x-text="crumb.name"></button>
-                            </div>
-                        </template>
-                        <template x-if="currentFolderName">
-                            <div class="flex items-center gap-2">
-                                <svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
-                                </svg>
-                                <span class="text-slate-600 font-medium" x-text="currentFolderName"></span>
-                            </div>
-                        </template>
-                    </nav>
-                    <!-- Indicador de modo búsqueda -->
-                    <div x-show="searchMode" class="flex items-center gap-2 flex-1 min-w-0">
-                        <svg class="w-4 h-4 text-blue-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0"/>
-                        </svg>
-                        <span class="text-sm text-slate-600">Resultados para:</span>
-                        <span class="text-sm font-semibold text-blue-700 truncate" x-text="'«' + searchQuery + '»'"></span>
-                        <span class="text-xs text-slate-400" x-text="'(' + files.length + ' resultado' + (files.length !== 1 ? 's' : '') + ')'"></span>
-                        <button @click="clearSearch()" class="ml-1 flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 hover:underline whitespace-nowrap">
-                            ← Volver a carpeta
-                        </button>
-                    </div>
-                    <!-- Cuadro de búsqueda -->
-                    <div class="relative w-72 flex-shrink-0">
-                        <input type="text" x-model="searchQuery"
-                               :disabled="!currentStorage"
-                               placeholder="Buscar archivos..."
-                               :class="!currentStorage ? 'opacity-50 cursor-not-allowed bg-slate-100' : 'bg-white'"
-                               class="w-full border border-slate-300 rounded-lg pl-9 pr-8 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-colors">
-                        <svg class="absolute left-3 top-2.5 w-4 h-4 text-slate-400 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0"/>
-                        </svg>
-                        <button x-show="searchQuery" @click="clearSearch()"
-                                class="absolute right-2.5 top-2 text-slate-400 hover:text-slate-700 text-lg leading-none font-medium">×</button>
-                    </div>
-                </div>
-            </div>
-
-            <div class="p-6">
+            <div class="p-3 sm:p-6">
                 <div x-show="viewMode === 'storages' && availableStorages.length > 0">
                     <div class="mb-4">
                         <div class="relative w-full max-w-md">
@@ -1631,24 +1682,38 @@ deleteConfirmFile: null,
 
                     <!-- Grid de storages -->
                     <div x-show="filesViewMode === 'grid'"
-                         class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+                         class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3 sm:gap-4">
                         <template x-for="storage in filteredStorages()" :key="storage.id">
                             <div @click="enterStorage(storage.id, storage.name)"
-                                 class="group bg-slate-50 hover:bg-indigo-50 border border-slate-200 hover:border-indigo-300 rounded-xl p-4 cursor-pointer transition-all select-none">
-                                <div class="flex flex-col items-center text-center gap-2">
+                                 :class="storage.is_personal
+                                     ? 'bg-amber-50 hover:bg-amber-100 border-amber-200 hover:border-amber-400'
+                                     : 'bg-slate-50 hover:bg-indigo-50 border-slate-200 hover:border-indigo-300'"
+                                 class="group border rounded-xl p-2 sm:p-4 cursor-pointer transition-all select-none">
+                                <div class="flex flex-col items-center text-center gap-1.5 sm:gap-2">
                                     <!-- Icono con dot de accesibilidad -->
                                     <div class="relative">
-                                        <div class="w-14 h-14 bg-indigo-100 group-hover:bg-indigo-200 rounded-xl flex items-center justify-center transition-colors">
-                                            <svg class="w-8 h-8 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"/>
-                                            </svg>
+                                        <div :class="storage.is_personal
+                                                 ? 'bg-amber-100 group-hover:bg-amber-200'
+                                                 : 'bg-indigo-100 group-hover:bg-indigo-200'"
+                                             class="w-10 h-10 sm:w-14 sm:h-14 rounded-xl flex items-center justify-center transition-colors">
+                                            <template x-if="storage.is_personal">
+                                                <svg class="w-6 h-6 sm:w-8 sm:h-8 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/>
+                                                </svg>
+                                            </template>
+                                            <template x-if="!storage.is_personal">
+                                                <svg class="w-6 h-6 sm:w-8 sm:h-8 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"/>
+                                                </svg>
+                                            </template>
                                         </div>
-                                        <span class="absolute -top-1 -right-1 w-3 h-3 rounded-full border-2 border-white"
+                                        <span class="absolute -top-1 -right-1 w-2.5 h-2.5 sm:w-3 sm:h-3 rounded-full border-2 border-white"
                                               :class="storage.accessible ? 'bg-green-500' : 'bg-red-500'"
                                               :title="storage.accessible ? 'Accesible' : 'No accesible'"></span>
                                     </div>
-                                    <span class="text-sm font-medium text-slate-700 group-hover:text-indigo-700 leading-tight line-clamp-2 w-full" x-text="storage.name"></span>
-                                    <span class="text-xs text-slate-400 capitalize" x-text="storage.permissions"></span>
+                                    <span :class="storage.is_personal ? 'text-amber-700 group-hover:text-amber-800' : 'text-slate-700 group-hover:text-indigo-700'"
+                                          class="text-xs sm:text-sm font-medium leading-tight line-clamp-2 w-full" x-text="storage.name"></span>
+                                    <span class="text-xs text-slate-400 capitalize hidden sm:block" x-text="storage.permissions"></span>
                                 </div>
                             </div>
                         </template>
@@ -1659,9 +1724,9 @@ deleteConfirmFile: null,
                         <table class="w-full">
                             <thead class="bg-slate-50 border-b border-slate-200">
                                 <tr>
-                                    <th class="px-4 py-3 text-center text-xs font-medium text-slate-400 uppercase tracking-wider w-10 select-none"
+                                    <th class="px-2 sm:px-4 py-2 sm:py-3 text-center text-xs font-medium text-slate-400 uppercase tracking-wider w-8 sm:w-10 select-none"
                                         :title="filteredStorages().length + ' storages'">#</th>
-                                    <th @click="toggleStorageSort('name')" class="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider cursor-pointer hover:bg-slate-100 select-none">
+                                    <th @click="toggleStorageSort('name')" class="px-2 sm:px-4 py-2 sm:py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider cursor-pointer hover:bg-slate-100 select-none">
                                         <div class="flex items-center gap-1">
                                             Nombre
                                             <svg x-show="storageSortField === 'name'" class="w-4 h-4" :class="storageSortDirection === 'asc' ? '' : 'rotate-180'" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1669,7 +1734,7 @@ deleteConfirmFile: null,
                                             </svg>
                                         </div>
                                     </th>
-                                    <th @click="toggleStorageSort('permissions')" class="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider cursor-pointer hover:bg-slate-100 select-none">
+                                    <th @click="toggleStorageSort('permissions')" class="px-2 sm:px-4 py-2 sm:py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider cursor-pointer hover:bg-slate-100 select-none hidden sm:table-cell">
                                         <div class="flex items-center gap-1">
                                             Permisos
                                             <svg x-show="storageSortField === 'permissions'" class="w-4 h-4" :class="storageSortDirection === 'asc' ? '' : 'rotate-180'" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1677,7 +1742,7 @@ deleteConfirmFile: null,
                                             </svg>
                                         </div>
                                     </th>
-                                    <th @click="toggleStorageSort('accessible')" class="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider cursor-pointer hover:bg-slate-100 select-none">
+                                    <th @click="toggleStorageSort('accessible')" class="px-2 sm:px-4 py-2 sm:py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider cursor-pointer hover:bg-slate-100 select-none">
                                         <div class="flex items-center gap-1">
                                             Accesible
                                             <svg x-show="storageSortField === 'accessible'" class="w-4 h-4" :class="storageSortDirection === 'asc' ? '' : 'rotate-180'" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1689,20 +1754,31 @@ deleteConfirmFile: null,
                             </thead>
                             <tbody class="divide-y divide-slate-200">
                                 <template x-for="(storage, index) in filteredStorages()" :key="storage.id">
-                                    <tr @click="enterStorage(storage.id, storage.name)" class="hover:bg-slate-50 cursor-pointer">
-                                        <td class="px-4 py-3 text-center text-xs text-slate-400 tabular-nums select-none" x-text="index + 1"></td>
-                                        <td class="px-4 py-3">
-                                            <div class="flex items-center gap-3">
-                                                <div class="w-10 h-10 bg-indigo-100 rounded-lg flex items-center justify-center flex-shrink-0">
-                                                    <svg class="w-6 h-6 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"/>
-                                                    </svg>
+                                    <tr @click="enterStorage(storage.id, storage.name)"
+                                        :class="storage.is_personal ? 'bg-amber-50 hover:bg-amber-100' : 'hover:bg-slate-50'"
+                                        class="cursor-pointer">
+                                        <td class="px-2 sm:px-4 py-2 sm:py-3 text-center text-xs text-slate-400 tabular-nums select-none" x-text="index + 1"></td>
+                                        <td class="px-2 sm:px-4 py-2 sm:py-3 min-w-0">
+                                            <div class="flex items-center gap-2 sm:gap-3 min-w-0">
+                                                <div :class="storage.is_personal ? 'bg-amber-100' : 'bg-indigo-100'"
+                                                     class="w-8 h-8 sm:w-10 sm:h-10 rounded-lg flex items-center justify-center flex-shrink-0">
+                                                    <template x-if="storage.is_personal">
+                                                        <svg class="w-5 h-5 sm:w-6 sm:h-6 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/>
+                                                        </svg>
+                                                    </template>
+                                                    <template x-if="!storage.is_personal">
+                                                        <svg class="w-5 h-5 sm:w-6 sm:h-6 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"/>
+                                                        </svg>
+                                                    </template>
                                                 </div>
-                                                <span class="font-medium text-slate-700" x-text="storage.name"></span>
+                                                <span :class="storage.is_personal ? 'text-amber-700' : 'text-slate-700'"
+                                                      class="font-medium truncate text-sm min-w-0" x-text="storage.name"></span>
                                             </div>
                                         </td>
-                                        <td class="px-4 py-3 text-slate-500 text-sm capitalize" x-text="storage.permissions"></td>
-                                        <td class="px-4 py-3">
+                                        <td class="px-2 sm:px-4 py-2 sm:py-3 text-slate-500 text-sm capitalize hidden sm:table-cell" x-text="storage.permissions"></td>
+                                        <td class="px-2 sm:px-4 py-2 sm:py-3">
                                             <div class="flex items-center gap-2"
                                                  :title="storage.accessible ? 'Accesible · ' + (storage.last_checked || 'sin verificar') : 'No accesible · ' + (storage.last_checked || 'sin verificar')">
                                                 <span class="w-2.5 h-2.5 rounded-full flex-shrink-0"
@@ -1716,11 +1792,11 @@ deleteConfirmFile: null,
                     </div>
                 </div>
 
-                <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4" x-show="viewMode === 'files' && files.length > 0 && filesViewMode === 'grid'">
+                <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2 sm:gap-4" x-show="viewMode === 'files' && files.length > 0 && filesViewMode === 'grid'">
                     <template x-for="file in sortedFiles()" :key="file.id">
-                        <div class="group bg-slate-50 hover:bg-blue-50 border border-slate-200 hover:border-blue-300 rounded-xl p-4 cursor-pointer transition-all">
+                        <div class="group bg-slate-50 hover:bg-blue-50 border border-slate-200 hover:border-blue-300 rounded-xl p-2 sm:p-4 cursor-pointer transition-all">
                             <div class="flex flex-col items-center text-center" @click="file.is_folder ? navigateToFolder(file.id, file.name) : openViewer(file)">
-                                <div class="w-16 h-16 rounded-xl flex items-center justify-center mb-3" :class="getFileIcon(file).bg">
+                                <div class="w-11 h-11 sm:w-16 sm:h-16 rounded-xl flex items-center justify-center mb-1.5 sm:mb-3" :class="getFileIcon(file).bg">
                                     <template x-if="getFileIcon(file).icon === 'folder'">
                                         <svg class="w-10 h-10 text-amber-500" fill="currentColor" viewBox="0 0 20 20">
                                             <path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z"/>
@@ -1789,24 +1865,24 @@ deleteConfirmFile: null,
                                        class="border border-blue-400 px-2 py-0.5 rounded text-sm w-full text-center font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500">
                                 <p class="text-xs text-slate-400 mt-1" x-text="file.is_folder ? 'Carpeta' : formatSize(file.size)"></p>
                             </div>
-                            <div class="flex items-center justify-center mt-3 opacity-0 group-hover:opacity-100 transition-opacity gap-1">
-                                <button x-show="currentStorageCanShare" @click.stop="openDetailModal(file)" class="p-2 bg-white hover:bg-indigo-100 rounded-lg shadow-sm transition-colors" title="Compartir">
-                                    <svg class="w-4 h-4 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <div class="flex items-center justify-center mt-2 sm:mt-3 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity gap-0.5 sm:gap-1">
+                                <button x-show="currentStorageCanShare" @click.stop="openDetailModal(file)" class="p-1.5 sm:p-2 bg-white hover:bg-indigo-100 rounded-lg shadow-sm transition-colors" title="Compartir">
+                                    <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z"/>
                                     </svg>
                                 </button>
-                                <button x-show="isClippable(file)" @click.stop="openClipEditor(file)" class="p-2 bg-white hover:bg-violet-100 rounded-lg shadow-sm transition-colors" title="Editor de corte">
-                                    <svg class="w-4 h-4 text-violet-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <button x-show="isClippable(file)" @click.stop="openClipEditor(file)" class="p-1.5 sm:p-2 bg-white hover:bg-violet-100 rounded-lg shadow-sm transition-colors" title="Editor de corte">
+                                    <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4 text-violet-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.121 14.121L19 19m-7-7l7-7m-7 7l-2.879 2.879M12 12L9.121 9.121m0 5.758a3 3 0 10-4.243 4.243 3 3 0 004.243-4.243zm0-5.758a3 3 0 10-4.243-4.243 3 3 0 004.243 4.243z"/>
                                     </svg>
                                 </button>
-                                <button x-show="canRename()" @click.stop="startRename(file)" class="p-2 bg-white hover:bg-amber-100 rounded-lg shadow-sm transition-colors" title="Renombrar">
-                                    <svg class="w-4 h-4 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <button x-show="canRename()" @click.stop="startRename(file)" class="p-1.5 sm:p-2 bg-white hover:bg-amber-100 rounded-lg shadow-sm transition-colors" title="Renombrar">
+                                    <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
                                     </svg>
                                 </button>
-                                <button x-show="canDelete()" @click.stop="deleteFile(file)" class="p-2 bg-white hover:bg-red-100 rounded-lg shadow-sm transition-colors" title="Eliminar">
-                                    <svg class="w-4 h-4 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <button x-show="canDelete()" @click.stop="deleteFile(file)" class="p-1.5 sm:p-2 bg-white hover:bg-red-100 rounded-lg shadow-sm transition-colors" title="Eliminar">
+                                    <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
                                     </svg>
                                 </button>
@@ -1819,33 +1895,33 @@ deleteConfirmFile: null,
                     <table class="w-full">
                         <thead class="bg-slate-50 border-b border-slate-200">
                             <tr>
-                                <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider cursor-pointer select-none hover:bg-slate-100" @click="sortFiles('name')">
+                                <th class="px-2 sm:px-4 py-2 sm:py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider cursor-pointer select-none hover:bg-slate-100" @click="sortFiles('name')">
                                     <span class="flex items-center gap-1">
                                         Nombre
                                         <span x-show="sortField === 'name'" x-text="sortDir === 'asc' ? '↑' : '↓'" class="text-blue-500"></span>
                                     </span>
                                 </th>
-                                <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider hidden md:table-cell cursor-pointer select-none hover:bg-slate-100" @click="sortFiles('size')">
+                                <th class="px-2 sm:px-4 py-2 sm:py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider hidden md:table-cell cursor-pointer select-none hover:bg-slate-100" @click="sortFiles('size')">
                                     <span class="flex items-center gap-1">
                                         Tamaño
                                         <span x-show="sortField === 'size'" x-text="sortDir === 'asc' ? '↑' : '↓'" class="text-blue-500"></span>
                                     </span>
                                 </th>
-                                <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider hidden lg:table-cell cursor-pointer select-none hover:bg-slate-100" @click="sortFiles('date')">
+                                <th class="px-2 sm:px-4 py-2 sm:py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider hidden lg:table-cell cursor-pointer select-none hover:bg-slate-100" @click="sortFiles('date')">
                                     <span class="flex items-center gap-1">
                                         Fecha
                                         <span x-show="sortField === 'date'" x-text="sortDir === 'asc' ? '↑' : '↓'" class="text-blue-500"></span>
                                     </span>
                                 </th>
-                                <th class="px-4 py-3 text-right text-xs font-medium text-slate-500 uppercase tracking-wider">Acciones</th>
+                                <th class="px-2 sm:px-4 py-2 sm:py-3 text-right text-xs font-medium text-slate-500 uppercase tracking-wider">Acciones</th>
                             </tr>
                         </thead>
                         <tbody class="divide-y divide-slate-200">
                             <template x-for="file in sortedFiles()" :key="file.id">
                                 <tr class="hover:bg-slate-50 cursor-pointer" @click="file.is_folder ? navigateToFolder(file.id, file.name) : openViewer(file)">
-                                    <td class="px-4 py-3">
-                                        <div class="flex items-center gap-3">
-                                            <div class="w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0" :class="getFileIcon(file).bg">
+                                    <td class="px-2 sm:px-4 py-2 sm:py-3 min-w-0">
+                                        <div class="flex items-center gap-2 sm:gap-3 min-w-0">
+                                            <div class="w-8 h-8 sm:w-10 sm:h-10 rounded-lg flex items-center justify-center flex-shrink-0" :class="getFileIcon(file).bg">
                                                 <template x-if="getFileIcon(file).icon === 'folder'">
                                                     <svg class="w-6 h-6 text-amber-500" fill="currentColor" viewBox="0 0 20 20">
                                                         <path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z"/>
@@ -1902,7 +1978,7 @@ deleteConfirmFile: null,
                                                     </svg>
                                                 </template>
                                             </div>
-                                            <span x-show="renamingFileId !== file.id" class="font-medium text-slate-700 truncate" x-text="file.name"></span>
+                                            <span x-show="renamingFileId !== file.id" class="font-medium text-slate-700 truncate text-sm min-w-0" x-text="file.name"></span>
                                             <input x-show="renamingFileId === file.id"
                                                    :id="'rename-input-' + file.id"
                                                    x-model="renamingFileName"
@@ -1910,30 +1986,30 @@ deleteConfirmFile: null,
                                                    @keydown.enter.stop="saveRename(file)"
                                                    @keydown.escape.stop="renamingFileId = null"
                                                    @blur="saveRename(file)"
-                                                   class="border border-blue-400 px-2 py-0.5 rounded text-sm w-40 font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                                   class="border border-blue-400 px-2 py-0.5 rounded text-sm w-32 sm:w-40 font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500">
                                         </div>
                                     </td>
-                                    <td class="px-4 py-3 text-slate-500 text-sm hidden md:table-cell" x-text="file.is_folder ? '-' : formatSize(file.size)"></td>
-                                    <td class="px-4 py-3 text-slate-500 text-sm hidden lg:table-cell" x-text="formatDate(file.file_modified_at || file.created_at)"></td>
-                                    <td class="px-4 py-3 text-right">
-                                        <div class="flex items-center justify-end gap-1">
-                                            <button x-show="currentStorageCanShare" @click.stop="openDetailModal(file)" class="p-2 hover:bg-slate-200 rounded-lg transition-colors" title="Compartir">
-                                                <svg class="w-4 h-4 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <td class="px-2 sm:px-4 py-2 sm:py-3 text-slate-500 text-sm hidden md:table-cell" x-text="file.is_folder ? '-' : formatSize(file.size)"></td>
+                                    <td class="px-2 sm:px-4 py-2 sm:py-3 text-slate-500 text-sm hidden lg:table-cell" x-text="formatDate(file.file_modified_at || file.created_at)"></td>
+                                    <td class="px-2 sm:px-4 py-2 sm:py-3 text-right">
+                                        <div class="flex items-center justify-end gap-0.5 sm:gap-1">
+                                            <button x-show="currentStorageCanShare" @click.stop="openDetailModal(file)" class="p-1.5 sm:p-2 hover:bg-slate-200 rounded-lg transition-colors" title="Compartir">
+                                                <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z"/>
                                                 </svg>
                                             </button>
-                                            <button x-show="isClippable(file)" @click.stop="openClipEditor(file)" class="p-2 bg-violet-100 hover:bg-violet-200 text-violet-600 rounded-lg transition-colors" title="Editor de corte">
-                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <button x-show="isClippable(file)" @click.stop="openClipEditor(file)" class="p-1.5 sm:p-2 bg-violet-100 hover:bg-violet-200 text-violet-600 rounded-lg transition-colors" title="Editor de corte">
+                                                <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.121 14.121L19 19m-7-7l7-7m-7 7l-2.879 2.879M12 12L9.121 9.121m0 5.758a3 3 0 10-4.243 4.243 3 3 0 004.243-4.243zm0-5.758a3 3 0 10-4.243-4.243 3 3 0 004.243 4.243z"/>
                                                 </svg>
                                             </button>
-                                            <button x-show="canRename()" @click.stop="startRename(file)" class="p-2 bg-amber-100 hover:bg-amber-200 text-amber-600 rounded-lg transition-colors" title="Renombrar">
-                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <button x-show="canRename()" @click.stop="startRename(file)" class="p-1.5 sm:p-2 bg-amber-100 hover:bg-amber-200 text-amber-600 rounded-lg transition-colors" title="Renombrar">
+                                                <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
                                                 </svg>
                                             </button>
-                                            <button x-show="canDelete()" @click.stop="deleteFile(file)" class="p-2 bg-red-100 hover:bg-red-200 text-red-600 rounded-lg transition-colors" title="Eliminar">
-                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <button x-show="canDelete()" @click.stop="deleteFile(file)" class="p-1.5 sm:p-2 bg-red-100 hover:bg-red-200 text-red-600 rounded-lg transition-colors" title="Eliminar">
+                                                <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
                                                 </svg>
                                             </button>
@@ -2153,7 +2229,7 @@ deleteConfirmFile: null,
                                 </select>
                                 <input type="datetime-local" x-model="shareForm.expires_at" class="w-full border border-purple-200 px-3 py-1.5 rounded-lg text-sm focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none" placeholder="Expira (opcional)">
                             </div>
-                            <input type="password" x-model="shareForm.password" class="w-full border border-purple-200 px-3 py-1.5 rounded-lg text-sm mb-2 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none" placeholder="Contraseña (opcional)">
+                            <input type="password" x-model="shareForm.password" autocomplete="new-password" class="w-full border border-purple-200 px-3 py-1.5 rounded-lg text-sm mb-2 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none" placeholder="Contraseña (opcional)">
                             <button @click="generateShareLink()" class="w-full bg-purple-600 hover:bg-purple-700 text-white px-3 py-1.5 rounded-lg text-sm transition-colors flex items-center justify-center gap-2">
                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/>
@@ -2506,48 +2582,78 @@ deleteConfirmFile: null,
          @keydown.escape.window="closeClipModal()">
 
         <!-- ── HEADER ── -->
-        <div class="flex items-center gap-3 px-4 py-2.5 flex-shrink-0 border-b" style="border-color:#e5e7eb; background:#f8fafc;">
-            <button @click="closeClipModal()" class="flex items-center gap-2 text-sm font-medium text-slate-600 hover:text-slate-900 transition-colors px-4 py-2 rounded-lg hover:bg-slate-100 border border-slate-300">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <div class="flex items-center gap-2 px-2 sm:px-4 py-2 sm:py-2.5 flex-shrink-0 border-b" style="border-color:#e5e7eb; background:#f8fafc;">
+            <button @click="closeClipModal()" class="flex items-center gap-1.5 text-xs sm:text-sm font-medium text-slate-600 hover:text-slate-900 transition-colors px-2.5 sm:px-4 py-1.5 sm:py-2 rounded-lg hover:bg-slate-100 border border-slate-300 flex-shrink-0">
+                <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
                 </svg>
                 Salir
             </button>
-            <div class="w-px h-5 bg-slate-200"></div>
-            <svg class="w-4 h-4 text-violet-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <div class="w-px h-5 bg-slate-200 hidden sm:block"></div>
+            <svg class="w-4 h-4 text-violet-600 flex-shrink-0 hidden sm:block" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.121 14.121L19 19m-7-7l7-7m-7 7l-2.879 2.879M12 12L9.121 9.121m0 5.758a3 3 0 10-4.243-4.243 3 3 0 004.243-4.243z"/>
             </svg>
-            <p class="text-sm font-medium text-slate-700 truncate flex-1" x-text="clipFile ? clipFile.name : ''"></p>
+            <p class="text-xs sm:text-sm font-medium text-slate-700 truncate flex-1" x-text="clipFile ? clipFile.name : ''"></p>
             <!-- Cortes counter -->
-            <div x-show="clipSequence.length > 0" class="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-violet-100 text-violet-700">
+            <div x-show="clipSequence.length > 0" class="flex items-center gap-1 sm:gap-1.5 px-2 sm:px-2.5 py-1 rounded-full text-xs font-medium bg-violet-100 text-violet-700 flex-shrink-0">
                 <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 4v16M17 4v16M3 8h4m10 0h4M3 16h4m10 0h4"/>
                 </svg>
-                <span x-text="clipSequence.length + (clipSequence.length===1?' corte':' cortes')"></span>
+                <span x-text="clipSequence.length"></span>
             </div>
-            <!-- Resultado duration -->
-            <div x-show="clipSequence.length > 0" class="text-xs font-mono text-slate-400"
+            <!-- Resultado duration (desktop only) -->
+            <div x-show="clipSequence.length > 0" class="text-xs font-mono text-slate-400 hidden sm:block flex-shrink-0"
                  x-text="'→ ' + formatClipTime(clipSeqTotalDuration())"></div>
-            <!-- Undo -->
+            <!-- Undo (desktop only) -->
             <button x-show="clipUndoStack.length > 0" @click="clipUndo()"
-                    class="flex items-center gap-1 text-xs px-2 py-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors" title="Deshacer">
+                    class="hidden sm:flex items-center gap-1 text-xs px-2 py-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors" title="Deshacer">
                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h10a5 5 0 015 5v2M3 10l4 4M3 10l4-4"/>
                 </svg>
                 Deshacer
             </button>
-            <button @click="clipLoadHistory()" title="Historial" class="p-1.5 text-slate-400 hover:text-amber-500 rounded-lg transition-colors">
+            <!-- Undo mobile (icon only) -->
+            <button x-show="clipUndoStack.length > 0" @click="clipUndo()"
+                    class="sm:hidden p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors" title="Deshacer">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h10a5 5 0 015 5v2M3 10l4 4M3 10l4-4"/>
+                </svg>
+            </button>
+            <button @click="clipLoadHistory()" title="Historial" class="p-1.5 text-slate-400 hover:text-amber-500 rounded-lg transition-colors flex-shrink-0">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
                 </svg>
             </button>
         </div>
 
+        <!-- ── MOBILE TAB BAR ── -->
+        <div class="sm:hidden flex border-b flex-shrink-0" style="border-color:#e5e7eb; background:#f8fafc;">
+            <button @click="clipMobileTab='edit'"
+                    class="flex-1 flex items-center justify-center gap-2 py-2 text-xs font-semibold transition-colors"
+                    :class="clipMobileTab==='edit' ? 'text-violet-700 border-b-2 border-violet-600' : 'text-slate-500'">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.069A1 1 0 0121 8.882v6.236a1 1 0 01-1.447.894L15 14M3 8a2 2 0 012-2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V8z"/>
+                </svg>
+                Editar
+            </button>
+            <button @click="clipMobileTab='sequence'"
+                    class="flex-1 flex items-center justify-center gap-2 py-2 text-xs font-semibold transition-colors"
+                    :class="clipMobileTab==='sequence' ? 'text-violet-700 border-b-2 border-violet-600' : 'text-slate-500'">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 4v16M17 4v16M3 8h4m10 0h4M3 16h4m10 0h4"/>
+                </svg>
+                Secuencia
+                <span x-show="clipSequence.length > 0" class="px-1.5 py-0.5 rounded-full bg-violet-600 text-white text-[10px] font-bold" x-text="clipSequence.length"></span>
+            </button>
+        </div>
+
         <!-- ── BODY: sequence left | video right ── -->
-        <div class="flex flex-1 overflow-hidden min-h-0">
+        <div class="flex flex-col sm:flex-row flex-1 overflow-hidden min-h-0">
 
             <!-- ══ LEFT: SEQUENCE PANEL ══ -->
-            <div class="flex-shrink-0 flex flex-col border-r" style="width:280px; background:#f8fafc; border-color:#e5e7eb;">
+            <div class="clip-seq-panel flex flex-col sm:border-r"
+                 :class="clipMobileTab === 'sequence' ? 'flex' : 'hidden sm:flex'"
+                 style="background:#f8fafc; border-color:#e5e7eb;">
 
                 <!-- Panel header -->
                 <div class="px-4 pt-3 pb-2.5 border-b flex-shrink-0 flex items-center justify-between" style="border-color:#e5e7eb;">
@@ -2613,18 +2719,18 @@ deleteConfirmFile: null,
                                     <p x-show="item.type==='segment'" class="text-xs text-slate-400 mt-0.5"
                                        x-text="formatClipTime(item.end - item.start)"></p>
                                 </div>
-                                <div class="flex flex-col gap-0.5 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                                <div class="flex flex-col gap-0.5 flex-shrink-0 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
                                     <button @click="clipMoveSeq(i,-1)" :disabled="i===0"
-                                            class="p-0.5 rounded text-slate-400 hover:text-slate-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
-                                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7"/></svg>
+                                            class="p-1 sm:p-0.5 rounded text-slate-400 hover:text-slate-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
+                                        <svg class="w-4 h-4 sm:w-3.5 sm:h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7"/></svg>
                                     </button>
                                     <button @click="clipMoveSeq(i,1)" :disabled="i===clipSequence.length-1"
-                                            class="p-0.5 rounded text-slate-400 hover:text-slate-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
-                                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+                                            class="p-1 sm:p-0.5 rounded text-slate-400 hover:text-slate-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
+                                        <svg class="w-4 h-4 sm:w-3.5 sm:h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
                                     </button>
                                     <button @click="clipRemoveSeq(i)"
-                                            class="p-0.5 rounded text-slate-400 hover:text-red-500 transition-colors">
-                                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                                            class="p-1 sm:p-0.5 rounded text-red-400 sm:text-slate-400 hover:text-red-500 transition-colors">
+                                        <svg class="w-4 h-4 sm:w-3.5 sm:h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
                                     </button>
                                 </div>
                             </div>
@@ -2643,11 +2749,11 @@ deleteConfirmFile: null,
                         <template x-for="f in clipAddFileList" :key="f.id">
                             <div class="flex items-center gap-2 py-1.5 px-2 rounded-lg group hover:bg-slate-100 transition-colors">
                                 <p class="flex-1 text-xs text-slate-600 truncate" x-text="f.name"></p>
-                                <div class="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                <div class="flex gap-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
                                     <button @click="clipAddFileToSeq(f,'start')" title="Insertar al inicio"
-                                            class="text-xs px-2 py-0.5 rounded bg-violet-100 text-violet-700 hover:bg-violet-200 transition-colors">↑</button>
+                                            class="text-xs px-2 py-1 sm:py-0.5 rounded bg-violet-100 text-violet-700 hover:bg-violet-200 transition-colors">↑</button>
                                     <button @click="clipAddFileToSeq(f,'end')" title="Agregar al final"
-                                            class="text-xs px-2 py-0.5 rounded bg-violet-100 text-violet-700 hover:bg-violet-200 transition-colors">↓</button>
+                                            class="text-xs px-2 py-1 sm:py-0.5 rounded bg-violet-100 text-violet-700 hover:bg-violet-200 transition-colors">↓</button>
                                 </div>
                             </div>
                         </template>
@@ -2709,7 +2815,8 @@ deleteConfirmFile: null,
             </div>
 
             <!-- ══ RIGHT: VIDEO / AUDIO ══ -->
-            <div class="flex-1 flex flex-col min-w-0 overflow-hidden">
+            <div class="flex-1 flex flex-col min-w-0 overflow-hidden"
+                 :class="clipMobileTab === 'edit' ? 'flex' : 'hidden sm:flex'">
 
                 <!-- Video element — always present in DOM (used for both video and audio playback) -->
                 <!-- For video: fills the panel; for audio: container is height:0 but element stays in DOM -->
@@ -2749,40 +2856,43 @@ deleteConfirmFile: null,
         </div>
 
         <!-- ── TIMELINE SECTION (full-width bottom) ── -->
-        <div class="flex-shrink-0 flex flex-col border-t" style="border-color:#e5e7eb; background:#ffffff; min-height:220px; max-height:280px;">
+        <div class="flex-shrink-0 flex-col border-t"
+             :class="clipMobileTab === 'edit' ? 'flex' : 'hidden sm:flex'"
+             style="border-color:#e5e7eb; background:#ffffff; min-height:200px; max-height:280px;">
 
             <!-- Zoom controls + playback -->
-            <div class="flex items-center gap-3 px-4 py-2 border-b flex-shrink-0" style="border-color:#f1f5f9;">
+            <div class="flex items-center gap-2 sm:gap-3 px-2 sm:px-4 py-1.5 sm:py-2 border-b flex-shrink-0" style="border-color:#f1f5f9;">
                 <!-- Playback -->
                 <button @click="clipTogglePlay()" :disabled="!clipReady"
-                        class="w-9 h-9 rounded-full flex items-center justify-center transition-colors flex-shrink-0"
+                        class="w-8 h-8 sm:w-9 sm:h-9 rounded-full flex items-center justify-center transition-colors flex-shrink-0"
                         :class="clipReady?'bg-violet-700 hover:bg-violet-800':'bg-slate-200 cursor-not-allowed'">
-                    <svg x-show="!clipPlaying" class="w-4 h-4 text-white ml-0.5" fill="currentColor" viewBox="0 0 20 20">
+                    <svg x-show="!clipPlaying" class="w-3.5 h-3.5 sm:w-4 sm:h-4 text-white ml-0.5" fill="currentColor" viewBox="0 0 20 20">
                         <path d="M6.3 2.841A1.5 1.5 0 004 4.11v11.78a1.5 1.5 0 002.3 1.269l9.344-5.89a1.5 1.5 0 000-2.538L6.3 2.84z"/>
                     </svg>
-                    <svg x-show="clipPlaying" class="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 20 20">
+                    <svg x-show="clipPlaying" class="w-3.5 h-3.5 sm:w-4 sm:h-4 text-white" fill="currentColor" viewBox="0 0 20 20">
                         <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zM7 8a1 1 0 012 0v4a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v4a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd"/>
                     </svg>
                 </button>
-                <span class="font-mono text-sm flex-shrink-0">
+                <span class="font-mono text-xs sm:text-sm flex-shrink-0">
                     <span class="text-slate-700 font-semibold" x-text="formatClipTime(clipCurrentTime)"></span>
                     <span class="text-slate-400"> / </span>
                     <span class="text-slate-500" x-text="formatClipTime(clipDuration)"></span>
                 </span>
-                <div class="w-px h-5 bg-slate-200 mx-1"></div>
-                <!-- Zoom -->
-                <span class="text-slate-400 text-xs">Zoom</span>
-                <button @click="clipZoomOut()" class="w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors text-base leading-none">−</button>
-                <div class="w-24 h-1.5 rounded-full bg-slate-200">
+                <div class="w-px h-5 bg-slate-200 mx-0.5 sm:mx-1"></div>
+                <!-- Zoom label (desktop only) -->
+                <span class="text-slate-400 text-xs hidden sm:inline">Zoom</span>
+                <button @click="clipZoomOut()" class="w-6 h-6 sm:w-7 sm:h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors text-base leading-none">−</button>
+                <!-- Zoom bar (desktop only) -->
+                <div class="w-24 h-1.5 rounded-full bg-slate-200 hidden sm:block">
                     <div class="h-full rounded-full bg-violet-500 transition-all"
                          :style="'width:' + Math.min(100, ((clipZoomLevel-1)/39)*100) + '%'"></div>
                 </div>
-                <button @click="clipZoomIn()" class="w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors text-base leading-none">+</button>
-                <span class="text-slate-400 text-xs font-mono w-8" x-text="clipZoomLevel + 'x'"></span>
+                <button @click="clipZoomIn()" class="w-6 h-6 sm:w-7 sm:h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors text-base leading-none">+</button>
+                <span class="text-slate-400 text-xs font-mono w-6 sm:w-8" x-text="clipZoomLevel + 'x'"></span>
                 <!-- Thumb loading indicator -->
-                <span x-show="clipThumbsLoading" class="text-xs text-slate-400 ml-2 flex items-center gap-1">
+                <span x-show="clipThumbsLoading" class="text-xs text-slate-400 ml-1 sm:ml-2 flex items-center gap-1">
                     <svg class="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
-                    generando vista previa...
+                    <span class="hidden sm:inline">generando vista previa...</span>
                 </span>
             </div>
 
@@ -2807,7 +2917,10 @@ deleteConfirmFile: null,
                              x-ref="clipTimeline"
                              @mousedown="clipTimelineMd($event)"
                              @mousemove.window="clipTimelineMm($event)"
-                             @mouseup.window="clipTimelineMu()">
+                             @mouseup.window="clipTimelineMu()"
+                             @touchstart="clipTimelineTd($event)"
+                             @touchmove.window="clipTimelineTm($event)"
+                             @touchend.window="clipTimelineTu($event)">
 
                             <!-- Video track background -->
                             <div class="absolute top-1 bottom-7 left-0 right-0 rounded-md pointer-events-none z-[0]"
@@ -2870,14 +2983,16 @@ deleteConfirmFile: null,
                                 <div class="absolute top-1 bottom-7 z-[5] rounded-md"
                                      style="background:rgba(245,158,11,0.40); border:2px solid #f59e0b; box-shadow:0 0 8px rgba(245,158,11,0.4);"
                                      :style="clipSelStyle()">
-                                    <div class="absolute left-0 top-0 bottom-0 w-4 cursor-ew-resize z-10 flex items-center justify-center"
+                                    <div class="absolute left-0 top-0 bottom-0 w-5 sm:w-4 cursor-ew-resize z-10 flex items-center justify-center"
                                          style="background:#f59e0b; border-radius:6px 0 0 6px;"
-                                         @mousedown.stop="clipHandleMd('start',$event)">
+                                         @mousedown.stop="clipHandleMd('start',$event)"
+                                         @touchstart.stop="clipHandleMd('start',$event.touches[0]||$event)">
                                         <div class="flex gap-0.5"><div class="w-px h-5" style="background:rgba(0,0,0,0.35)"></div><div class="w-px h-5" style="background:rgba(0,0,0,0.35)"></div></div>
                                     </div>
-                                    <div class="absolute right-0 top-0 bottom-0 w-4 cursor-ew-resize z-10 flex items-center justify-center"
+                                    <div class="absolute right-0 top-0 bottom-0 w-5 sm:w-4 cursor-ew-resize z-10 flex items-center justify-center"
                                          style="background:#f59e0b; border-radius:0 6px 6px 0;"
-                                         @mousedown.stop="clipHandleMd('end',$event)">
+                                         @mousedown.stop="clipHandleMd('end',$event)"
+                                         @touchstart.stop="clipHandleMd('end',$event.touches[0]||$event)">
                                         <div class="flex gap-0.5"><div class="w-px h-5" style="background:rgba(0,0,0,0.35)"></div><div class="w-px h-5" style="background:rgba(0,0,0,0.35)"></div></div>
                                     </div>
                                 </div>
@@ -2959,13 +3074,13 @@ deleteConfirmFile: null,
             </div>
 
             <!-- ── ACTION BAR (always visible) ── -->
-            <div class="flex items-center gap-2 px-4 py-2.5 flex-shrink-0 border-t" style="border-color:#e5e7eb; background:#f8fafc; min-height:52px;">
+            <div class="flex items-center gap-2 px-2 sm:px-4 py-2 sm:py-2.5 flex-shrink-0 border-t" style="border-color:#e5e7eb; background:#f8fafc; min-height:48px;">
                 <!-- State: no selection -->
                 <div x-show="clipSelStart === null || clipSelEnd === null || Math.abs(clipSelEnd - clipSelStart) <= 0.05"
-                     class="flex items-center gap-3 w-full">
-                    <p class="text-slate-400 text-sm">Arrastra sobre el timeline para seleccionar un rango</p>
-                    <!-- Legend -->
-                    <div x-show="clipSequence.length > 0" class="flex items-center gap-3 ml-2">
+                     class="flex items-center gap-2 sm:gap-3 w-full">
+                    <p class="text-slate-400 text-xs sm:text-sm">Arrastra en el timeline para seleccionar</p>
+                    <!-- Legend (desktop only) -->
+                    <div x-show="clipSequence.length > 0" class="hidden sm:flex items-center gap-3 ml-2">
                         <div class="flex items-center gap-1.5">
                             <div class="w-4 h-3 rounded-sm" style="background:rgba(22,163,74,0.55); border:1px solid #16a34a;"></div>
                             <span class="text-slate-400 text-xs">Conservado</span>
@@ -2978,36 +3093,37 @@ deleteConfirmFile: null,
                 </div>
                 <!-- State: active selection -->
                 <div x-show="clipSelStart !== null && clipSelEnd !== null && Math.abs(clipSelEnd - clipSelStart) > 0.05"
-                     class="flex items-center gap-2 w-full">
-                    <span class="font-mono text-sm text-amber-600 font-semibold flex-shrink-0"
+                     class="flex items-center gap-1.5 sm:gap-2 w-full">
+                    <span class="font-mono text-xs sm:text-sm text-amber-600 font-semibold flex-shrink-0"
                           x-text="formatClipTime(Math.min(clipSelStart??0,clipSelEnd??0)) + ' → ' + formatClipTime(Math.max(clipSelStart??0,clipSelEnd??0))"></span>
-                    <span class="text-slate-400 text-xs flex-shrink-0"
+                    <span class="text-slate-400 text-xs flex-shrink-0 hidden sm:inline"
                           x-text="'(' + formatClipTime(Math.abs((clipSelEnd??0)-(clipSelStart??0))) + ')'"></span>
                     <div class="flex-1"></div>
                     <!-- Ver selección -->
                     <button @click="clipPlaySelection()" :disabled="!clipReady"
-                            class="flex items-center gap-1.5 text-xs px-3 py-2 rounded-lg font-medium transition-colors flex-shrink-0 bg-slate-100 text-slate-600 hover:bg-slate-200 border border-slate-300">
-                        <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
+                            class="flex items-center gap-1 sm:gap-1.5 text-xs px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-lg font-medium transition-colors flex-shrink-0 bg-slate-100 text-slate-600 hover:bg-slate-200 border border-slate-300">
+                        <svg class="w-3 h-3 sm:w-3.5 sm:h-3.5" fill="currentColor" viewBox="0 0 20 20">
                             <path d="M6.3 2.841A1.5 1.5 0 004 4.11v11.78a1.5 1.5 0 002.3 1.269l9.344-5.89a1.5 1.5 0 000-2.538L6.3 2.84z"/>
                         </svg>
                         Ver
                     </button>
                     <!-- CONSERVAR -->
                     <button @click="clipAddToSequence()"
-                            class="flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg font-semibold transition-colors flex-shrink-0 bg-green-600 hover:bg-green-700 text-white shadow-sm">
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            class="flex items-center gap-1 sm:gap-1.5 text-xs sm:text-sm px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg font-semibold transition-colors flex-shrink-0 bg-green-600 hover:bg-green-700 text-white shadow-sm active:bg-green-700">
+                        <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/>
                         </svg>
                         Conservar
                     </button>
                     <!-- ELIMINAR ESTA PARTE -->
                     <button @click="clipDeleteSelection()"
-                            class="flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg font-semibold transition-colors flex-shrink-0 bg-red-600 hover:bg-red-700 text-white shadow-sm"
+                            class="flex items-center gap-1 sm:gap-1.5 text-xs sm:text-sm px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg font-semibold transition-colors flex-shrink-0 bg-red-600 hover:bg-red-700 text-white shadow-sm active:bg-red-700"
                             title="Elimina esta parte del resultado (conserva el resto)">
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/>
                         </svg>
-                        Eliminar esta parte
+                        <span class="hidden sm:inline">Eliminar esta parte</span>
+                        <span class="sm:hidden">Eliminar</span>
                     </button>
                 </div>
             </div>
@@ -3117,6 +3233,24 @@ deleteConfirmFile: null,
                 </div>
             </div>
         </div>
+    </div>
+
+    <!-- Botón fijo en móvil para salir del modo búsqueda -->
+    <div x-show="searchMode"
+         x-transition:enter="transition ease-out duration-200"
+         x-transition:enter-start="opacity-0 translate-y-2"
+         x-transition:enter-end="opacity-100 translate-y-0"
+         x-transition:leave="transition ease-in duration-150"
+         x-transition:leave-start="opacity-100 translate-y-0"
+         x-transition:leave-end="opacity-0 translate-y-2"
+         class="fixed bottom-20 left-1/2 -translate-x-1/2 z-40 sm:hidden">
+        <button @click="clearSearch()"
+                class="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white text-sm font-medium px-5 py-2.5 rounded-full shadow-lg">
+            <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 17l-5-5m0 0l5-5m-5 5h12"/>
+            </svg>
+            ← Volver
+        </button>
     </div>
 </div>
 <style>
