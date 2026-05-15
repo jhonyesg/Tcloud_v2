@@ -3,7 +3,7 @@
 @section('title', 'Gestionar Storages - Tcloud')
 
 @section('content')
-<div class="p-6" x-data="{
+<div class="p-3 sm:p-6 pb-24 sm:pb-8" x-data="{
     storages: [],
     showCreateModal: false,
     showEditModal: false,
@@ -159,13 +159,20 @@
             method: 'DELETE',
             credentials: 'include',
             headers: {
-                'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content
+                'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
+                'Accept': 'application/json'
             }
         });
         if (res.ok) {
             this.showDeleteModal = false;
             this.deletingStorage = null;
             this.loadStorages();
+            this.toast = { show: true, message: 'Storage eliminado correctamente', success: true };
+            this.showToast();
+        } else {
+            const err = await res.json().catch(() => ({}));
+            this.toast = { show: true, message: err.error || 'Error al eliminar el storage', success: false };
+            this.showToast();
         }
     },
     
@@ -346,10 +353,10 @@
     $watch('filterStatus',() => { currentPage = 1; });
     $watch('perPage',     () => { currentPage = 1; });
 ">
-    <div class="flex justify-between items-center mb-6">
-        <h1 class="text-2xl font-bold text-gray-800">Gestionar Storages</h1>
-        <button @click="showCreateModal = true" class="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700">
-            Crear Storage
+    <div class="flex justify-between items-center mb-4 sm:mb-6">
+        <h1 class="text-lg sm:text-2xl font-bold text-gray-800">Gestionar Storages</h1>
+        <button @click="showCreateModal = true" class="bg-green-600 text-white px-3 sm:px-4 py-2 rounded hover:bg-green-700 text-sm">
+            <span class="hidden sm:inline">Crear Storage</span><span class="sm:hidden">Crear</span>
         </button>
     </div>
 
@@ -383,6 +390,9 @@
                     <option value="10">10</option>
                     <option value="25">25</option>
                     <option value="50">50</option>
+                    <option value="100">100</option>
+                    <option value="250">250</option>
+                    <option value="500">500</option>
                 </select>
             </div>
             <!-- Limpiar filtros -->
@@ -403,7 +413,56 @@
         "></div>
     </div>
 
-    <div class="bg-white rounded-lg shadow overflow-hidden">
+    {{-- Vista móvil: tarjetas --}}
+    <div class="sm:hidden space-y-3">
+        <template x-for="storage in paginatedStorages" :key="storage.id">
+            <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+                <div class="flex items-center justify-between gap-3 mb-2">
+                    <div class="min-w-0">
+                        <p class="font-semibold text-slate-800 text-sm truncate" x-text="storage.name"></p>
+                        <p class="text-xs text-slate-400" x-text="'ID: ' + storage.id + ' · ' + storage.files_count + ' archivos'"></p>
+                    </div>
+                    <div class="flex items-center gap-1.5 flex-shrink-0">
+                        <span class="px-2 py-0.5 text-xs font-semibold rounded-full"
+                              :class="storage.type === 'local' ? 'bg-blue-100 text-blue-800' : 'bg-orange-100 text-orange-800'"
+                              x-text="storage.type"></span>
+                        <span class="px-2 py-0.5 text-xs font-semibold rounded-full"
+                              :class="storage.enabled ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'"
+                              x-text="storage.enabled ? 'Activo' : 'Inactivo'"></span>
+                    </div>
+                </div>
+                <div class="grid grid-cols-2 gap-2 mt-3">
+                    <button @click="openUsersModal(storage)"
+                            class="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-green-50 text-green-700 active:bg-green-100 text-xs font-medium border border-green-100">
+                        <i class="fas fa-users text-xs"></i> Usuarios
+                    </button>
+                    <button @click="testStorage(storage)" :disabled="testingStorage === storage.id"
+                            class="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-slate-50 text-slate-700 active:bg-slate-100 text-xs font-medium border border-slate-200 disabled:opacity-50">
+                        <i class="fas fa-plug text-xs"></i> Probar
+                    </button>
+                    <button @click="editingStorage = storage; showEditModal = true"
+                            class="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-indigo-50 text-indigo-700 active:bg-indigo-100 text-xs font-medium border border-indigo-100">
+                        <i class="fas fa-edit text-xs"></i> Editar
+                    </button>
+                    <button @click="deletingStorage = storage; showDeleteModal = true"
+                            class="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-red-50 text-red-700 active:bg-red-100 text-xs font-medium border border-red-100">
+                        <i class="fas fa-trash text-xs"></i> Eliminar
+                    </button>
+                </div>
+            </div>
+        </template>
+        <div x-show="storages.length > 0 && filteredAndSorted.length === 0"
+             class="bg-white rounded-xl border border-slate-200 text-center py-8 text-gray-500 text-sm">
+            Sin resultados. <button @click="resetFilters()" class="ml-1 text-indigo-600">Limpiar filtros</button>
+        </div>
+        <div x-show="storages.length === 0" class="bg-white rounded-xl border border-slate-200 text-center py-8 text-gray-500 text-sm">
+            No hay storages configurados.
+        </div>
+    </div>
+
+    {{-- Vista escritorio: tabla --}}
+    <div class="hidden sm:block bg-white rounded-lg shadow overflow-hidden">
+        <div class="overflow-x-auto">
         <table class="w-full">
             <thead class="bg-gray-50">
                 <tr>
@@ -504,7 +563,8 @@
                 </button>
             </div>
         </div>
-    </div>
+        </div>{{-- /overflow-x-auto --}}
+    </div>{{-- /hidden sm:block --}}
 
     <div x-cloak x-show="showCreateModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
          x-transition:enter="transition ease-out duration-200" x-transition:leave="transition ease-in duration-150">
@@ -592,7 +652,11 @@
             <template x-if="deletingStorage">
                 <div>
                     <p class="mb-4">¿Estás seguro de eliminar el storage <strong x-text="deletingStorage.name"></strong>?</p>
-                    <p class="text-red-600 text-sm mb-4">Los archivos no serán eliminados, pero quedarán huérfanos.</p>
+                    <p class="text-red-600 text-sm mb-1">Esta acción es irreversible. Se eliminarán permanentemente:</p>
+                    <ul class="text-red-600 text-sm mb-4 list-disc list-inside">
+                        <li x-text="(deletingStorage.files_count || 0) + ' archivo(s) asociado(s)'"></li>
+                        <li>Todas las asignaciones de usuarios de este storage</li>
+                    </ul>
                     <div class="flex gap-2">
                         <button @click="deleteStorage(deletingStorage.id)" class="bg-red-600 text-white px-4 py-2 rounded">Eliminar</button>
                         <button @click="showDeleteModal = false; deletingStorage = null" class="bg-gray-300 px-4 py-2 rounded">Cancelar</button>

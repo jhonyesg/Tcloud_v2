@@ -3,9 +3,9 @@
 @section('title', 'Editor de Medios - Admin - Tcloud')
 
 @section('content')
-<div class="p-6" x-data="{
+<div class="p-3 sm:p-6 pb-24 sm:pb-8" x-data="{
     users: [],
-    stats: { clips_this_month: 0, clips_total: 0, active_users: 0, failed_this_month: 0 },
+    stats: { clips_this_month: 0, clips_total: 0, active_users: 0, failed_this_month: 0, ramdisk_total_gb: 20, ramdisk_used_gb: 0, ramdisk_free_gb: 20, ramdisk_percent: 0, ramdisk_available: false },
     loading: true,
     savingId: null,
     feedbackId: null,
@@ -109,17 +109,17 @@
 }" x-init="init()">
 
     <!-- Page Header -->
-    <div class="flex items-center justify-between mb-6">
+    <div class="flex items-center justify-between mb-4 sm:mb-6">
         <div>
-            <h1 class="text-2xl font-bold text-gray-800 flex items-center gap-3">
-                <div class="w-10 h-10 bg-violet-100 rounded-xl flex items-center justify-center">
+            <h1 class="text-lg sm:text-2xl font-bold text-gray-800 flex items-center gap-2 sm:gap-3">
+                <div class="w-9 h-9 sm:w-10 sm:h-10 bg-violet-100 rounded-xl flex items-center justify-center flex-shrink-0">
                     <i class="fas fa-cut text-violet-600"></i>
                 </div>
                 Editor de Medios
             </h1>
-            <p class="text-sm text-gray-500 mt-1">Gestiona el acceso y los límites del editor de corte por usuario</p>
+            <p class="text-xs sm:text-sm text-gray-500 mt-1">Gestiona el acceso y los límites del editor de corte por usuario</p>
         </div>
-        <span class="text-sm text-gray-400 capitalize" x-text="currentMonth"></span>
+        <span class="text-xs sm:text-sm text-gray-400 capitalize" x-text="currentMonth"></span>
     </div>
 
     <!-- Stats cards -->
@@ -162,18 +162,124 @@
         </div>
     </div>
 
-    <!-- Users table -->
+    <!-- RAM disk card -->
+    <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-5 mb-8">
+        <div class="flex items-center justify-between mb-3">
+            <div class="flex items-center gap-3">
+                <div class="w-9 h-9 bg-indigo-100 rounded-xl flex items-center justify-center flex-shrink-0">
+                    <i class="fas fa-memory text-indigo-600"></i>
+                </div>
+                <div>
+                    <p class="text-sm font-semibold text-slate-800">RAM Disk FFmpeg</p>
+                    <p class="text-xs text-slate-400">/mnt/cliptemp — tmpfs en memoria</p>
+                </div>
+            </div>
+            <template x-if="!stats.ramdisk_available">
+                <span class="text-xs text-red-500 font-medium flex items-center gap-1">
+                    <i class="fas fa-exclamation-circle"></i> No montado
+                </span>
+            </template>
+            <template x-if="stats.ramdisk_available">
+                <span class="text-sm font-mono text-slate-600">
+                    <span x-text="stats.ramdisk_used_gb"></span> GB
+                    <span class="text-slate-400">/ <span x-text="stats.ramdisk_total_gb"></span> GB</span>
+                </span>
+            </template>
+        </div>
+        <template x-if="stats.ramdisk_available">
+            <div>
+                <div class="w-full bg-slate-100 rounded-full h-2.5 overflow-hidden">
+                    <div class="h-2.5 rounded-full transition-all duration-500"
+                         :class="stats.ramdisk_percent >= 90 ? 'bg-red-500' : stats.ramdisk_percent >= 70 ? 'bg-amber-400' : 'bg-indigo-500'"
+                         :style="'width: ' + Math.max(stats.ramdisk_percent, 0.5) + '%'"></div>
+                </div>
+                <div class="flex justify-between mt-1.5 text-xs text-slate-400">
+                    <span><span x-text="stats.ramdisk_percent"></span>% usado</span>
+                    <span><span x-text="stats.ramdisk_free_gb"></span> GB libres</span>
+                </div>
+            </div>
+        </template>
+        <template x-if="!stats.ramdisk_available">
+            <p class="text-xs text-slate-400 mt-1">El directorio /mnt/cliptemp no está accesible. Verifica que el tmpfs esté montado.</p>
+        </template>
+    </div>
+
+    <!-- Users section -->
     <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-        <div class="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
+        <div class="px-4 sm:px-6 py-4 border-b border-slate-200 flex items-center justify-between">
             <h2 class="font-semibold text-slate-800">Usuarios</h2>
-            <p class="text-xs text-slate-400">Los cambios se guardan en tiempo real</p>
+            <p class="text-xs text-slate-400 hidden sm:block">Los cambios se guardan en tiempo real</p>
         </div>
 
         <div x-show="loading" class="flex items-center justify-center py-16">
             <i class="fas fa-spinner fa-spin text-2xl text-slate-300"></i>
         </div>
 
-        <div x-show="!loading">
+        {{-- Vista móvil: tarjetas --}}
+        <div x-show="!loading" class="sm:hidden divide-y divide-slate-100">
+            <template x-for="user in users" :key="user.id">
+                <div class="p-4">
+                    <div class="flex items-center gap-3 mb-3">
+                        <div class="w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0"
+                             :class="user.role === 'admin' ? 'bg-purple-100' : 'bg-slate-100'">
+                            <i class="fas fa-user text-sm"
+                               :class="user.role === 'admin' ? 'text-purple-600' : 'text-slate-400'"></i>
+                        </div>
+                        <div class="min-w-0 flex-1">
+                            <p class="font-medium text-slate-800 text-sm truncate" x-text="user.username || user.email"></p>
+                            <p class="text-xs text-slate-400 truncate" x-text="user.email" x-show="user.username"></p>
+                        </div>
+                        <span class="inline-block px-2 py-0.5 text-xs rounded-full font-medium flex-shrink-0"
+                              :class="user.role === 'admin' ? 'bg-purple-100 text-purple-700' : 'bg-slate-100 text-slate-600'"
+                              x-text="user.role === 'admin' ? 'Admin' : 'Usuario'"></span>
+                    </div>
+                    <div class="flex items-center justify-between gap-3">
+                        <div class="text-xs text-slate-500">
+                            <span>Uso: <span class="font-medium text-slate-700" x-text="user.clips_this_month"></span>
+                            <span x-show="user.media_editor_clip_limit > 0"> / <span x-text="user.media_editor_clip_limit"></span></span>
+                            cortes</span>
+                            <span class="ml-2 text-slate-400">Total: <span x-text="user.clips_total"></span></span>
+                        </div>
+                        <template x-if="user.role === 'admin'">
+                            <span class="inline-flex items-center gap-1 px-2 py-1 bg-purple-100 text-purple-700 rounded-full text-xs font-medium">
+                                <i class="fas fa-shield-alt text-xs"></i> Siempre activo
+                            </span>
+                        </template>
+                        <template x-if="user.role !== 'admin'">
+                            <div class="flex items-center gap-2">
+                                <button @click="toggleEnabled(user)"
+                                        :disabled="savingId === user.id"
+                                        :class="user.media_editor_enabled ? 'bg-violet-600 border-violet-600' : 'bg-slate-200 border-slate-300'"
+                                        class="relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 transition-colors duration-200 disabled:opacity-60">
+                                    <span :class="user.media_editor_enabled ? 'translate-x-5' : 'translate-x-0'"
+                                          class="pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200"></span>
+                                </button>
+                                <span class="text-xs font-medium"
+                                      :class="user.media_editor_enabled ? 'text-violet-700' : 'text-slate-400'"
+                                      x-text="user.media_editor_enabled ? 'Activo' : 'Inactivo'"></span>
+                            </div>
+                        </template>
+                    </div>
+                    <template x-if="user.role !== 'admin' && user.media_editor_enabled">
+                        <div class="flex items-center gap-2 mt-2">
+                            <span class="text-xs text-slate-500">Límite mensual:</span>
+                            <input type="number" x-model.number="user.media_editor_clip_limit"
+                                   min="0" step="1" placeholder="0"
+                                   @keydown.enter="saveLimit(user)" @blur="saveLimit(user)"
+                                   class="w-20 border border-slate-300 rounded-lg px-2 py-1 text-xs text-center focus:ring-2 focus:ring-violet-400 outline-none">
+                            <span class="text-xs text-slate-400">cortes (0=∞)</span>
+                        </div>
+                    </template>
+                </div>
+            </template>
+            <div x-show="!loading && users.length === 0" class="text-center py-12 text-slate-400 text-sm">
+                No hay usuarios registrados.
+            </div>
+        </div>
+
+        {{-- Vista escritorio: tabla --}}
+        <div x-show="!loading" class="hidden sm:block">
+            <div class="overflow-x-auto">
             <table class="w-full">
                 <thead class="bg-slate-50 border-b border-slate-200">
                     <tr>
@@ -304,7 +410,8 @@
             <div x-show="!loading && users.length === 0" class="text-center py-12 text-slate-400">
                 No hay usuarios registrados.
             </div>
-        </div>
+            </div>{{-- /overflow-x-auto --}}
+        </div>{{-- /hidden sm:block --}}
     </div>
 
     <!-- Legend / Info -->

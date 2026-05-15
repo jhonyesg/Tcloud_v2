@@ -11,6 +11,8 @@ use Symfony\Component\Process\Process;
 
 class MediaClipController extends Controller
 {
+    private const CLIP_TMP_DIR = '/mnt/cliptemp';
+
     private ?string $tmpConcatFile = null;
 
     private function getUser(): ?User
@@ -83,7 +85,7 @@ class MediaClipController extends Controller
 
     public function serveTemp(string $token)
     {
-        $path = sys_get_temp_dir() . '/clippreview_' . $token;
+        $path = self::CLIP_TMP_DIR . '/clippreview_' . $token;
         if (!file_exists($path)) return response()->json(['error' => 'Preview no encontrado o expirado'], 404);
 
         $ext  = strtolower(pathinfo($path, PATHINFO_EXTENSION));
@@ -130,7 +132,7 @@ class MediaClipController extends Controller
         $ext         = strtolower(pathinfo($primaryFile->name, PATHINFO_EXTENSION));
         $baseName    = pathinfo($primaryFile->name, PATHINFO_FILENAME);
         $outputName  = $baseName . '_corte.' . $ext;
-        $tmpOutput   = sys_get_temp_dir() . '/' . uniqid('clip_', true) . '.' . $ext;
+        $tmpOutput   = self::CLIP_TMP_DIR . '/' . uniqid('clip_', true) . '.' . $ext;
 
         $job = MediaEditJob::create([
             'user_id'          => $user->id,
@@ -201,7 +203,7 @@ class MediaClipController extends Controller
             if (isset($item['end']))   { $lines[] = 'outpoint ' . $item['end']; }
         }
 
-        $this->tmpConcatFile = tempnam(sys_get_temp_dir(), 'ffconcat_') . '.txt';
+        $this->tmpConcatFile = tempnam(self::CLIP_TMP_DIR, 'ffconcat_') . '.txt';
         file_put_contents($this->tmpConcatFile, implode("\n", $lines) . "\n");
 
         return ['ffmpeg', '-y', '-f', 'concat', '-safe', '0',
@@ -234,7 +236,7 @@ class MediaClipController extends Controller
         $primaryFile = $fileMap[$primaryFileId]['file'] ?? File::find($primaryFileId);
         $ext = strtolower(pathinfo($primaryFile->name, PATHINFO_EXTENSION));
         $previewToken = uniqid('prev_', true);
-        $tmpOutput = sys_get_temp_dir() . '/clippreview_' . $previewToken . '.' . $ext;
+        $tmpOutput = self::CLIP_TMP_DIR . '/clippreview_' . $previewToken . '.' . $ext;
 
         try {
             $cmd = $this->buildSequenceCommand($sequence, $fileMap, $tmpOutput, $ext);
@@ -282,7 +284,7 @@ class MediaClipController extends Controller
 
         $ext = strtolower(pathinfo($file->name, PATHINFO_EXTENSION));
         $previewToken = uniqid('prev_', true);
-        $tmpOutput = sys_get_temp_dir() . '/clippreview_' . $previewToken . '.' . $ext;
+        $tmpOutput = self::CLIP_TMP_DIR . '/clippreview_' . $previewToken . '.' . $ext;
 
         try {
             $cmd = count($segments) === 1
@@ -345,7 +347,7 @@ class MediaClipController extends Controller
 
         $ext           = strtolower(pathinfo($file->name, PATHINFO_EXTENSION));
         $outputFilename = pathinfo($file->name, PATHINFO_FILENAME) . '_corte.' . $ext;
-        $tmpOutput     = sys_get_temp_dir() . '/' . uniqid('clip_', true) . '.' . $ext;
+        $tmpOutput     = self::CLIP_TMP_DIR . '/' . uniqid('clip_', true) . '.' . $ext;
 
         $job = MediaEditJob::create([
             'user_id' => $user->id, 'source_file_id' => $file->id,

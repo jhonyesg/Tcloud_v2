@@ -62,8 +62,18 @@ class StorageSyncService
 
             if (isset($bdFiles[$fullRelativePath])) {
                 $existingFile = $bdFiles[$fullRelativePath];
+                $changes = [];
                 if (!$existingFile->is_folder && $existingFile->size !== $entry['size']) {
-                    $existingFile->update(['size' => $entry['size']]);
+                    $changes['size'] = $entry['size'];
+                }
+                if (isset($entry['modified_at'])) {
+                    $entryModified = \Carbon\Carbon::createFromTimestamp($entry['modified_at']);
+                    if (!$existingFile->file_modified_at || !$existingFile->file_modified_at->eq($entryModified)) {
+                        $changes['file_modified_at'] = $entryModified;
+                    }
+                }
+                if ($changes) {
+                    $existingFile->update($changes);
                     $updated++;
                 }
                 unset($bdFiles[$fullRelativePath]);
@@ -85,7 +95,7 @@ class StorageSyncService
         return File::where('storage_provider_id', $storage->id)
             ->where('parent_id', $parentId)
             ->orderBy('is_folder', 'desc')
-            ->orderBy('name')
+            ->orderBy('created_at', 'desc')
             ->get()
             ->toArray();
     }
@@ -109,6 +119,8 @@ class StorageSyncService
             }
         }
 
+        $modifiedAt = isset($entry['modified_at']) ? \Carbon\Carbon::createFromTimestamp($entry['modified_at']) : null;
+
         return File::create([
             'name' => $name,
             'path' => $path,
@@ -119,6 +131,7 @@ class StorageSyncService
             'parent_id' => $parentId,
             'is_folder' => $entry['is_folder'],
             'is_personal' => false,
+            'file_modified_at' => $modifiedAt,
         ]);
     }
 

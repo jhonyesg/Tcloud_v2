@@ -1,0 +1,23 @@
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    public function up(): void
+    {
+        Schema::table('storage_providers', function (Blueprint $table) {
+            $table->boolean('is_accessible')->default(false)->after('enabled');
+            $table->timestamp('last_checked_at')->nullable()->after('is_accessible');
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::table('storage_providers', function (Blueprint $table) {
+            $table->dropColumn(['is_accessible', 'last_checked_at']);
+        });
+    }
+};

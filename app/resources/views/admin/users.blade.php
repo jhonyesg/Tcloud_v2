@@ -3,7 +3,7 @@
 @section('title', 'Gestionar Usuarios - Tcloud')
 
 @section('content')
-<div class="p-6" x-data="{
+<div class="p-3 sm:p-6 pb-24 sm:pb-8" x-data="{
     users: [],
     showCreateModal: false,
     showEditModal: false,
@@ -105,14 +105,67 @@
         }
     }
 }" x-init="loadUsers()">
-    <div class="flex justify-between items-center mb-6">
-        <h1 class="text-2xl font-bold text-gray-800">Gestionar Usuarios</h1>
-        <button @click="showCreateModal = true" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">
-            Crear Usuario
+    <div class="flex justify-between items-center mb-4 sm:mb-6">
+        <h1 class="text-lg sm:text-2xl font-bold text-gray-800">Gestionar Usuarios</h1>
+        <button @click="showCreateModal = true" class="bg-blue-600 text-white px-3 sm:px-4 py-2 rounded hover:bg-blue-700 text-sm">
+            <span class="hidden sm:inline">Crear Usuario</span><span class="sm:hidden">Crear</span>
         </button>
     </div>
 
-    <div class="bg-white rounded-lg shadow overflow-hidden">
+    {{-- Vista móvil: tarjetas --}}
+    <div class="sm:hidden space-y-3">
+        <template x-for="user in (users || [])" :key="user.id">
+            <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+                <div class="flex items-center justify-between gap-3 mb-2">
+                    <div class="min-w-0">
+                        <p class="font-semibold text-slate-800 text-sm truncate" x-text="user.username || user.email"></p>
+                        <p class="text-xs text-slate-400 truncate" x-text="user.email" x-show="user.username"></p>
+                    </div>
+                    <span class="px-2 py-0.5 text-xs font-semibold rounded-full flex-shrink-0"
+                          :class="user.role === 'admin' ? 'bg-purple-100 text-purple-800' : 'bg-green-100 text-green-800'"
+                          x-text="user.role"></span>
+                </div>
+                <div class="flex items-center gap-4 text-xs text-slate-500 mb-3">
+                    <span><i class="fas fa-hdd text-slate-300 mr-1"></i><span x-text="user.personal_quota_bytes === 0 ? 'Ilimitado' : formatBytes(user.personal_quota_bytes)"></span></span>
+                    <span><i class="fas fa-chart-pie text-slate-300 mr-1"></i><span x-text="formatBytes(user.personal_used_bytes)"></span></span>
+                </div>
+                <div class="flex items-center justify-between mb-3">
+                    <span class="text-xs text-slate-500">Editor medios:</span>
+                    <template x-if="user.role === 'admin'">
+                        <span class="text-xs text-gray-400">Siempre activo</span>
+                    </template>
+                    <template x-if="user.role !== 'admin'">
+                        <button @click="toggleMediaEditor(user)"
+                            :class="user.media_editor_enabled ? 'bg-indigo-600 text-white' : 'bg-gray-200 text-gray-600'"
+                            class="px-3 py-1 rounded-full text-xs font-medium transition-colors"
+                            x-text="user.media_editor_enabled ? 'Activo' : 'Inactivo'">
+                        </button>
+                    </template>
+                </div>
+                <div class="flex gap-2">
+                    <a :href="'/admin/users/' + user.id + '/storages'"
+                       class="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-green-50 text-green-700 active:bg-green-100 text-xs font-medium border border-green-100">
+                        <i class="fas fa-database text-xs"></i> Storages
+                    </a>
+                    <button @click="editingUser = user; showEditModal = true"
+                            class="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-indigo-50 text-indigo-700 active:bg-indigo-100 text-xs font-medium border border-indigo-100">
+                        <i class="fas fa-edit text-xs"></i> Editar
+                    </button>
+                    <button @click="deletingUser = user; showDeleteModal = true"
+                            class="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-red-50 text-red-700 active:bg-red-100 text-xs font-medium border border-red-100">
+                        <i class="fas fa-trash text-xs"></i> Eliminar
+                    </button>
+                </div>
+            </div>
+        </template>
+        <div x-show="users.length === 0" class="bg-white rounded-xl border border-slate-200 text-center py-8 text-gray-500 text-sm">
+            No hay usuarios registrados.
+        </div>
+    </div>
+
+    {{-- Vista escritorio: tabla --}}
+    <div class="hidden sm:block bg-white rounded-lg shadow overflow-hidden">
+        <div class="overflow-x-auto">
         <table class="w-full">
             <thead class="bg-gray-50">
                 <tr>
@@ -137,9 +190,9 @@
                                   :class="user.role === 'admin' ? 'bg-purple-100 text-purple-800' : 'bg-green-100 text-green-800'"
                                   x-text="user.role"></span>
                         </td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500" 
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500"
                             x-text="user.personal_quota_bytes === 0 ? 'Ilimitado' : formatBytes(user.personal_quota_bytes)"></td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500" 
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500"
                             x-text="formatBytes(user.personal_used_bytes)"></td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm">
                             <template x-if="user.role === 'admin'">
@@ -162,6 +215,7 @@
                 </template>
             </tbody>
         </table>
+        </div>{{-- /overflow-x-auto --}}
         <div x-show="users.length === 0" class="text-center py-8 text-gray-500">
             No hay usuarios registrados.
         </div>
@@ -203,9 +257,9 @@
         </div>
     </div>
 
-    <div x-cloak x-show="showEditModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
+    <div x-cloak x-show="showEditModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4"
          x-transition:enter="transition ease-out duration-200" x-transition:leave="transition ease-in duration-150">
-        <div class="bg-white rounded-lg p-6 w-full max-w-md" @click.away="showEditModal = false">
+        <div class="bg-white rounded-lg p-6 w-full max-w-md max-h-[90vh] overflow-y-auto" @click.away="showEditModal = false">
             <h2 class="text-xl font-bold mb-4">Editar Usuario</h2>
             <template x-if="editingUser">
                 <form @submit.prevent="updateUser(new FormData($event.target), editingUser.id)">
@@ -232,6 +286,21 @@
                     <div class="mb-4">
                         <label class="block text-sm font-medium mb-1">Quota (bytes, 0 = ilimitado)</label>
                         <input type="number" name="personal_quota_bytes" :value="editingUser.personal_quota_bytes" min="0" class="w-full border p-2 rounded">
+                    </div>
+                    <div class="mb-4 border-t pt-4 mt-2">
+                        <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Control de Sesiones</p>
+                        <div class="grid grid-cols-2 gap-3">
+                            <div>
+                                <label class="block text-sm font-medium mb-1">Máx. sesiones simultáneas</label>
+                                <input type="number" name="max_sessions" :value="editingUser.max_sessions ?? 6" min="0" class="w-full border p-2 rounded text-sm">
+                                <p class="text-xs text-gray-400 mt-0.5">0 = sin límite</p>
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium mb-1">Duración de sesión (min)</label>
+                                <input type="number" name="session_lifetime_minutes" :value="editingUser.session_lifetime_minutes ?? ''" min="0" placeholder="vacío = global" class="w-full border p-2 rounded text-sm">
+                                <p class="text-xs text-gray-400 mt-0.5">0 = sin expiración, vacío = global</p>
+                            </div>
+                        </div>
                     </div>
                     <div class="flex gap-2">
                         <button type="submit" class="bg-blue-600 text-white px-4 py-2 rounded">Guardar</button>

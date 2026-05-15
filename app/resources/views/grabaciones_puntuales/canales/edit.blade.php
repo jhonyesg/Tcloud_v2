@@ -3,20 +3,20 @@
 @section('title', 'Editar Canal - Tcloud')
 
 @section('content')
-<div class="p-6">
+<div class="p-3 sm:p-6 pb-24 sm:pb-8">
     <!-- Page Header -->
-    <div class="flex items-center gap-3 mb-6">
-        <a href="{{ route('canales.index') }}" class="w-10 h-10 bg-slate-100 rounded-xl flex items-center justify-center hover:bg-slate-200 transition-colors">
-            <i class="fas fa-arrow-left text-slate-600"></i>
+    <div class="flex items-center gap-3 mb-4 sm:mb-6">
+        <a href="{{ route('canales.index') }}" class="w-9 h-9 sm:w-10 sm:h-10 bg-slate-100 rounded-xl flex items-center justify-center hover:bg-slate-200 transition-colors flex-shrink-0">
+            <i class="fas fa-arrow-left text-slate-600 text-sm sm:text-base"></i>
         </a>
-        <div>
-            <h1 class="text-2xl font-bold text-gray-800 flex items-center gap-3">
-                <div class="w-10 h-10 bg-sky-100 rounded-xl flex items-center justify-center">
+        <div class="min-w-0">
+            <h1 class="text-lg sm:text-2xl font-bold text-gray-800 flex items-center gap-2 sm:gap-3">
+                <div class="w-9 h-9 sm:w-10 sm:h-10 bg-sky-100 rounded-xl flex items-center justify-center flex-shrink-0">
                     <i class="fas fa-edit text-sky-600"></i>
                 </div>
                 Editar Canal
             </h1>
-            <p class="text-sm text-gray-500 mt-1">Modifica la configuración del canal <span class="font-medium text-slate-700">{{ $canal->slot_nombre }}</span></p>
+            <p class="text-xs sm:text-sm text-gray-500 mt-1 truncate">Modifica la configuración del canal <span class="font-medium text-slate-700">{{ $canal->slot_nombre }}</span></p>
         </div>
     </div>
 

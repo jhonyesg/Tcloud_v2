@@ -18,7 +18,8 @@
         align-items: center;
         justify-content: center;
         min-height-screen: calc(100vh - 3.5rem);
-        padding: 2rem 1rem;
+        padding: 1rem;
+        padding-bottom: 6rem;
     }
 
     .glass-card {
@@ -27,7 +28,7 @@
         -webkit-backdrop-filter: blur(24px);
         border: 1px solid rgba(255, 255, 255, 0.1);
         border-radius: 1.5rem;
-        padding: 2.5rem;
+        padding: 1.5rem;
         width: 100%;
         max-width: 480px;
         box-shadow: 

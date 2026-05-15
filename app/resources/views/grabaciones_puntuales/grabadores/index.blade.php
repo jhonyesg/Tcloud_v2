@@ -3,7 +3,7 @@
 @section('title', 'Grabadores - Tcloud')
 
 @section('content')
-<div class="p-6" x-data="{
+<div class="p-3 sm:p-6 pb-24 sm:pb-8" x-data="{
     grabadores: [],
     allUsers: [],
     loading: true,
@@ -286,20 +286,21 @@
 }" x-init="init()">
 
     <!-- Page Header -->
-    <div class="flex items-center justify-between mb-6">
+    <div class="flex items-center justify-between mb-4 sm:mb-6">
         <div>
-            <h1 class="text-2xl font-bold text-gray-800 flex items-center gap-3">
-                <div class="w-10 h-10 bg-emerald-100 rounded-xl flex items-center justify-center">
-                    <i class="fas fa-satellite-dish text-emerald-600"></i>
+            <h1 class="text-xl sm:text-2xl font-bold text-gray-800 flex items-center gap-2 sm:gap-3">
+                <div class="w-9 h-9 sm:w-10 sm:h-10 bg-emerald-100 rounded-xl flex items-center justify-center flex-shrink-0">
+                    <i class="fas fa-satellite-dish text-emerald-600 text-sm sm:text-base"></i>
                 </div>
                 Grabadores
             </h1>
-            <p class="text-sm text-gray-500 mt-1">Administra los dispositivos grabadores y sus canales</p>
+            <p class="text-xs sm:text-sm text-gray-500 mt-1 hidden sm:block">Administra los dispositivos grabadores y sus canales</p>
         </div>
         <button @click="showCreateModal = true"
-                class="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2.5 rounded-xl font-medium transition-colors shadow-sm">
-            <i class="fas fa-plus text-sm"></i>
-            Nuevo Grabador
+                class="flex items-center gap-1 sm:gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl font-medium transition-colors shadow-sm text-sm">
+            <i class="fas fa-plus text-xs sm:text-sm"></i>
+            <span class="hidden sm:inline">Nuevo Grabador</span>
+            <span class="sm:hidden">Nuevo</span>
         </button>
     </div>
 
@@ -308,8 +309,62 @@
         <i class="fas fa-spinner fa-spin text-3xl text-slate-300"></i>
     </div>
 
-    <!-- Table -->
-    <div x-show="!loading" class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+    <!-- Cards (móvil) -->
+    <div x-show="!loading" class="sm:hidden space-y-3">
+        <template x-for="g in grabadores" :key="g.id">
+            <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-4">
+                <div class="flex items-center justify-between mb-3">
+                    <div class="flex items-center gap-3 min-w-0">
+                        <div class="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
+                             :class="g.tipo === 'tv' ? 'bg-purple-100' : 'bg-emerald-100'">
+                            <i :class="g.tipo === 'tv' ? 'fas fa-tv text-purple-600' : 'fas fa-radio text-emerald-600'"></i>
+                        </div>
+                        <div class="min-w-0">
+                            <p class="font-semibold text-slate-800 text-sm truncate" x-text="g.nombre"></p>
+                            <p class="text-xs text-slate-400 font-mono" x-text="g.ip + ':' + g.puerto"></p>
+                        </div>
+                    </div>
+                    <span class="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium flex-shrink-0"
+                          :class="g.activo ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'">
+                        <span class="w-1.5 h-1.5 rounded-full" :class="g.activo ? 'bg-green-500' : 'bg-red-500'"></span>
+                        <span x-text="g.activo ? 'Activo' : 'Inactivo'"></span>
+                    </span>
+                </div>
+                <div class="flex items-center gap-3 mb-3 text-xs text-slate-500">
+                    <span class="inline-flex px-2 py-0.5 rounded-full font-medium"
+                          :class="g.tipo === 'tv' ? 'bg-purple-100 text-purple-700' : 'bg-emerald-100 text-emerald-700'"
+                          x-text="g.tipo === 'tv' ? 'TV' : 'Radio'"></span>
+                    <span><i class="fas fa-list-ol mr-1 text-slate-400"></i><span x-text="g.canales_count"></span> canales</span>
+                    <span><i class="fas fa-users mr-1 text-slate-400"></i><span x-text="(g.usuarios || []).length"></span> usuarios</span>
+                </div>
+                <div class="flex items-center gap-2 flex-wrap">
+                    <button @click="openUsersModal(g)" class="flex-1 min-w-0 flex items-center justify-center gap-1.5 px-3 py-2 text-xs text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-lg font-medium transition-colors">
+                        <i class="fas fa-users text-xs"></i> Usuarios
+                    </button>
+                    <button @click="openEdit(g)" class="flex-1 min-w-0 flex items-center justify-center gap-1.5 px-3 py-2 text-xs text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-lg font-medium transition-colors">
+                        <i class="fas fa-edit text-xs"></i> Editar
+                    </button>
+                    <button @click="testGrabador(g)" class="flex-1 min-w-0 flex items-center justify-center gap-1.5 px-3 py-2 text-xs text-emerald-600 bg-emerald-50 hover:bg-emerald-100 rounded-lg font-medium transition-colors">
+                        <i class="fas fa-plug text-xs"></i> Probar
+                    </button>
+                    <button @click="openDetail(g)" class="px-3 py-2 text-xs text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors">
+                        <i class="fas fa-eye text-xs"></i>
+                    </button>
+                    <button @click="deletingGrabador = g; showDeleteModal = true" class="px-3 py-2 text-xs text-red-600 bg-red-50 hover:bg-red-100 rounded-lg transition-colors">
+                        <i class="fas fa-trash-alt text-xs"></i>
+                    </button>
+                </div>
+            </div>
+        </template>
+        <div x-show="grabadores.length === 0" class="text-center py-16 bg-white rounded-xl border border-slate-200">
+            <i class="fas fa-satellite-dish text-slate-300 text-3xl mb-3"></i>
+            <p class="text-slate-500 font-medium">No hay grabadores registrados</p>
+        </div>
+    </div>
+
+    <!-- Table (desktop) -->
+    <div x-show="!loading" class="hidden sm:block bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+        <div class="overflow-x-auto">
         <table class="w-full">
             <thead class="bg-slate-50 border-b border-slate-200">
                 <tr>
@@ -372,6 +427,7 @@
                 </template>
             </tbody>
         </table>
+        </div>
         <div x-show="!loading && grabadores.length === 0" class="text-center py-16">
             <div class="flex flex-col items-center">
                 <div class="w-16 h-16 bg-slate-100 rounded-full flex items-center justify-center mb-4">
@@ -723,7 +779,7 @@
                         <label class="block text-xs font-medium text-slate-600 mb-1">Nombre base</label>
                         <input type="text" x-model="nombreBase" placeholder="Ej: Siglo"
                                class="w-full border border-slate-300 rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-400 focus:border-emerald-400 outline-none"
-                               pattern="[a-zA-Z0-9_]+">
+                               pattern="[a-zA-Z0-9_]+" maxlength="47">
                     </div>
                     <div>
                         <label class="block text-xs font-medium text-slate-600 mb-1">Ruta base</label>

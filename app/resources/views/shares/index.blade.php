@@ -3,38 +3,38 @@
 @section('title', 'Compartidos - Tcloud')
 
 @section('content')
-<div class="p-6" x-data="sharesApp()" x-init="init()">
+<div class="p-3 sm:p-6 pb-24 sm:pb-8" x-data="sharesApp()" x-init="init()">
 
     <!-- Header -->
-    <div class="flex justify-between items-center mb-6">
-        <div>
-            <h1 class="text-2xl font-bold text-gray-800">Mis Recursos Compartidos</h1>
-            <p class="text-sm text-gray-500 mt-0.5">Gestiona los enlaces de acceso que has generado</p>
+    <div class="flex justify-between items-center mb-4 sm:mb-6">
+        <div class="min-w-0">
+            <h1 class="text-lg sm:text-2xl font-bold text-gray-800">Mis Recursos Compartidos</h1>
+            <p class="text-xs sm:text-sm text-gray-500 mt-0.5">Gestiona los enlaces de acceso que has generado</p>
         </div>
         <button @click="loadShares()" :disabled="loading"
-                class="flex items-center gap-2 text-sm text-gray-500 hover:text-gray-700 border border-gray-200 rounded-lg px-3 py-1.5 hover:bg-gray-50 disabled:opacity-50">
+                class="flex-shrink-0 flex items-center gap-2 text-sm text-gray-500 hover:text-gray-700 border border-gray-200 rounded-lg px-3 py-1.5 hover:bg-gray-50 disabled:opacity-50 ml-2">
             <i :class="loading ? 'fas fa-spinner fa-spin' : 'fas fa-sync-alt'" class="text-xs"></i>
-            Actualizar
+            <span class="hidden sm:inline">Actualizar</span>
         </button>
     </div>
 
     <!-- Stats bar -->
-    <div x-show="shares.length > 0" class="grid grid-cols-4 gap-3 mb-5">
+    <div x-show="shares.length > 0" class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
         <div class="bg-white rounded-lg border px-4 py-3">
             <p class="text-xs text-gray-400 mb-0.5">Total</p>
-            <p class="text-2xl font-bold text-gray-800" x-text="shares.length"></p>
+            <p class="text-xl sm:text-2xl font-bold text-gray-800" x-text="shares.length"></p>
         </div>
         <div class="bg-white rounded-lg border px-4 py-3">
             <p class="text-xs text-gray-400 mb-0.5">Activos</p>
-            <p class="text-2xl font-bold text-green-600" x-text="shares.filter(s => !s.is_expired).length"></p>
+            <p class="text-xl sm:text-2xl font-bold text-green-600" x-text="shares.filter(s => !s.is_expired).length"></p>
         </div>
         <div class="bg-white rounded-lg border px-4 py-3">
             <p class="text-xs text-gray-400 mb-0.5">Expirados</p>
-            <p class="text-2xl font-bold text-red-500" x-text="shares.filter(s => s.is_expired).length"></p>
+            <p class="text-xl sm:text-2xl font-bold text-red-500" x-text="shares.filter(s => s.is_expired).length"></p>
         </div>
         <div class="bg-white rounded-lg border px-4 py-3">
             <p class="text-xs text-gray-400 mb-0.5">Total accesos</p>
-            <p class="text-2xl font-bold text-indigo-600" x-text="shares.reduce((acc, s) => acc + (s.access_logs_count || 0), 0)"></p>
+            <p class="text-xl sm:text-2xl font-bold text-indigo-600" x-text="shares.reduce((acc, s) => acc + (s.access_logs_count || 0), 0)"></p>
         </div>
     </div>
 
@@ -84,8 +84,85 @@
             Ningún resultado con los filtros aplicados.
         </div>
 
-        <!-- Table -->
-        <div x-show="!loading && filteredShares.length > 0" class="overflow-x-auto">
+        <!-- Mobile cards -->
+        <div x-show="!loading && filteredShares.length > 0" class="sm:hidden divide-y divide-gray-100">
+            <template x-for="share in filteredShares" :key="share.id">
+                <div class="p-4" :class="share.is_expired ? 'opacity-70' : ''">
+                    <!-- Top row: icon + name + status -->
+                    <div class="flex items-start gap-3 mb-3">
+                        <span class="text-xl flex-shrink-0 mt-0.5" x-html="fileIcon(share.file)"></span>
+                        <div class="flex-1 min-w-0">
+                            <div class="flex items-center gap-1.5 flex-wrap">
+                                <p class="font-medium text-gray-800 text-sm truncate"
+                                   x-text="share.file?.name || 'Recurso eliminado'"></p>
+                                <span x-show="share.has_password" class="text-amber-400">
+                                    <i class="fas fa-lock text-xs"></i>
+                                </span>
+                            </div>
+                            <p class="text-xs text-gray-400 truncate" x-text="share.file?.path ? filePath(share.file.path) : ''"></p>
+                        </div>
+                        <span class="flex-shrink-0 inline-flex items-center gap-1 text-xs font-medium"
+                              :class="share.is_expired ? 'text-red-500' : 'text-green-600'">
+                            <span class="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                                  :class="share.is_expired ? 'bg-red-400' : 'bg-green-400'"></span>
+                            <span x-text="share.is_expired ? 'Expirado' : 'Activo'"></span>
+                        </span>
+                    </div>
+
+                    <!-- Meta row -->
+                    <div class="grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs mb-3">
+                        <div class="flex items-center gap-1.5">
+                            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-medium"
+                                  :class="{
+                                      'bg-gray-100 text-gray-700':   share.permissions === 'read',
+                                      'bg-blue-100 text-blue-700':   share.permissions === 'write',
+                                      'bg-amber-100 text-amber-700': share.permissions === 'upload',
+                                      'bg-green-100 text-green-700': share.permissions === 'full'
+                                  }">
+                                <i :class="{
+                                    'fas fa-eye':          share.permissions === 'read',
+                                    'fas fa-pen':          share.permissions === 'write',
+                                    'fas fa-upload':       share.permissions === 'upload',
+                                    'fas fa-check-double': share.permissions === 'full'
+                                }" class="text-xs"></i>
+                                <span x-text="permLabel(share.permissions)"></span>
+                            </span>
+                        </div>
+                        <div class="flex items-center gap-1 text-gray-500">
+                            <i class="fas fa-eye text-gray-300"></i>
+                            <span x-text="(share.access_logs_count || 0) + ' accesos'"></span>
+                        </div>
+                        <div class="text-gray-500" :class="share.is_expired ? 'text-red-400' : ''">
+                            <span class="text-gray-400">Expira: </span>
+                            <span x-show="!share.expires_at" class="text-gray-400">Sin vencimiento</span>
+                            <span x-show="share.expires_at" x-text="formatDate(share.expires_at)"></span>
+                        </div>
+                        <div class="text-gray-400">
+                            <span>Creado: </span><span x-text="formatDate(share.created_at)"></span>
+                        </div>
+                    </div>
+
+                    <!-- Actions -->
+                    <div class="flex gap-2">
+                        <button @click="copyLink(share)"
+                                class="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg bg-indigo-50 text-indigo-600 active:bg-indigo-100 text-xs font-medium">
+                            <i class="fas fa-link"></i> Copiar enlace
+                        </button>
+                        <button @click="openLink(share)"
+                                class="px-3 py-2 rounded-lg bg-gray-50 text-gray-600 active:bg-gray-100 text-xs">
+                            <i class="fas fa-external-link-alt"></i>
+                        </button>
+                        <button @click="confirmDelete(share)"
+                                class="px-3 py-2 rounded-lg bg-red-50 text-red-500 active:bg-red-100 text-xs">
+                            <i class="fas fa-trash-alt"></i>
+                        </button>
+                    </div>
+                </div>
+            </template>
+        </div>
+
+        <!-- Desktop table -->
+        <div x-show="!loading && filteredShares.length > 0" class="hidden sm:block overflow-x-auto">
             <table class="w-full text-sm">
                 <thead>
                     <tr class="border-b border-gray-100 text-xs font-semibold text-gray-400 uppercase tracking-wide">
@@ -128,7 +205,7 @@
                                           :title="share.public_url"
                                           x-text="'/s/' + share.token.slice(0,10) + '...'"></code>
                                     <button @click="copyLink(share)"
-                                            class="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-indigo-600 transition-all"
+                                            class="text-gray-400 hover:text-indigo-600 transition-all"
                                             title="Copiar enlace">
                                         <i class="fas fa-copy text-xs"></i>
                                     </button>
@@ -184,7 +261,7 @@
 
                             <!-- Actions -->
                             <td class="px-4 py-3.5 text-right">
-                                <div class="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                <div class="flex items-center justify-end gap-1">
                                     <button @click="copyLink(share)"
                                             class="px-2.5 py-1 rounded-lg bg-indigo-50 text-indigo-600 hover:bg-indigo-100 text-xs flex items-center gap-1"
                                             title="Copiar enlace público">

@@ -3,14 +3,14 @@
 @section('title', 'Configuración de Correo - Tcloud')
 
 @section('content')
-<div class="p-6" x-data="correoData()" x-init="init()">
-    <div class="flex justify-between items-center mb-6">
-        <h1 class="text-2xl font-bold text-gray-800">Configuración de Correo</h1>
+<div class="p-3 sm:p-6 pb-24 sm:pb-8" x-data="correoData()" x-init="init()">
+    <div class="flex justify-between items-center mb-4 sm:mb-6">
+        <h1 class="text-lg sm:text-2xl font-bold text-gray-800">Configuración de Correo</h1>
     </div>
 
     <div class="bg-white rounded-lg shadow">
         <div class="border-b border-gray-200">
-            <nav class="flex -mb-px">
+            <nav class="flex -mb-px overflow-x-auto">
                 <button @click="setTab('config')"
                         :class="activeTab === 'config' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'"
                         class="px-6 py-3 border-b-2 font-medium text-sm transition-colors">
@@ -32,7 +32,7 @@
         <div class="p-6">
             <template x-if="activeTab === 'config'">
                 <div>
-                    <div class="grid grid-cols-2 gap-4">
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-1">Host SMTP <span class="text-red-500">*</span></label>
                             <input type="text" x-model="config.host" class="w-full border rounded px-3 py-2" :class="{'border-red-500': errors.host}" placeholder="smtp.gmail.com">
@@ -62,7 +62,7 @@
                             <input type="email" x-model="config.from_email" class="w-full border rounded px-3 py-2" :class="{'border-red-500': errors.from_email}" placeholder="noreply@example.com">
                             <p x-show="errors.from_email" class="text-red-500 text-xs mt-1" x-text="errors.from_email"></p>
                         </div>
-                        <div class="col-span-2">
+                        <div class="sm:col-span-2">
                             <label class="flex items-center gap-2">
                                 <input type="checkbox" x-model="config.secure" class="rounded">
                                 <span class="text-sm font-medium text-gray-700">Usar SSL/TLS</span>
@@ -94,6 +94,28 @@
                             + Nueva Plantilla
                         </button>
                     </div>
+
+                    <!-- Mobile cards -->
+                    <div class="sm:hidden space-y-3">
+                        <template x-for="plantilla in plantillas" :key="plantilla.id">
+                            <div class="bg-gray-50 border border-gray-200 rounded-xl p-4">
+                                <p class="font-semibold text-gray-800 text-sm" x-text="plantilla.display_name"></p>
+                                <p class="text-xs text-gray-500 mt-1" x-text="plantilla.subject"></p>
+                                <p x-show="plantilla.variables" class="text-xs text-gray-400 mt-1">
+                                    <span class="font-medium text-gray-500">Variables:</span>
+                                    <span x-text="plantilla.variables"></span>
+                                </p>
+                                <div class="flex gap-2 mt-3">
+                                    <button @click="openPlantillaModal(plantilla)" class="flex-1 py-1.5 text-xs font-medium rounded-lg bg-blue-50 text-blue-700 active:bg-blue-100">Editar</button>
+                                    <button @click="openTestModal(plantilla)" class="flex-1 py-1.5 text-xs font-medium rounded-lg bg-green-50 text-green-700 active:bg-green-100">Probar</button>
+                                    <button @click="deletePlantilla(plantilla)" class="flex-1 py-1.5 text-xs font-medium rounded-lg bg-red-50 text-red-600 active:bg-red-100">Eliminar</button>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+
+                    <!-- Desktop table -->
+                    <div class="hidden sm:block overflow-x-auto">
                     <table class="w-full border-collapse">
                         <thead>
                             <tr class="border-b border-gray-200">
@@ -110,14 +132,18 @@
                                     <td class="py-3 px-4 text-sm text-gray-800" x-text="plantilla.subject"></td>
                                     <td class="py-3 px-4 text-sm text-gray-500" x-text="plantilla.variables || '-'"></td>
                                     <td class="py-3 px-4">
-                                        <button @click="openPlantillaModal(plantilla)" class="text-blue-600 hover:text-blue-800 text-sm mr-3">Editar</button>
-                                        <button @click="openTestModal(plantilla)" class="text-green-600 hover:text-green-800 text-sm mr-3">Probar</button>
-                                        <button @click="deletePlantilla(plantilla)" class="text-red-600 hover:text-red-800 text-sm">Eliminar</button>
+                                        <div class="flex gap-3">
+                                            <button @click="openPlantillaModal(plantilla)" class="text-blue-600 hover:text-blue-800 text-sm">Editar</button>
+                                            <button @click="openTestModal(plantilla)" class="text-green-600 hover:text-green-800 text-sm">Probar</button>
+                                            <button @click="deletePlantilla(plantilla)" class="text-red-600 hover:text-red-800 text-sm">Eliminar</button>
+                                        </div>
                                     </td>
                                 </tr>
                             </template>
                         </tbody>
                     </table>
+                    </div>
+
                     <div x-show="plantillas.length === 0" class="text-center py-8 text-gray-500">
                         <p>No hay plantillas configuradas</p>
                     </div>
@@ -126,6 +152,25 @@
 
             <template x-if="activeTab === 'logs'">
                 <div>
+                    <!-- Mobile cards -->
+                    <div class="sm:hidden space-y-3">
+                        <template x-for="log in logs" :key="log.id">
+                            <div class="bg-gray-50 border border-gray-200 rounded-xl p-4">
+                                <div class="flex items-start justify-between gap-2 mb-2">
+                                    <p class="text-xs text-gray-500 leading-snug" x-text="new Date(log.sent_at).toLocaleString()"></p>
+                                    <span class="flex-shrink-0 px-2 py-0.5 rounded text-xs font-medium"
+                                          :class="log.estado === 'exito' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'"
+                                          x-text="log.estado"></span>
+                                </div>
+                                <p class="text-sm font-medium text-gray-800 truncate" x-text="log.destinatario"></p>
+                                <p class="text-xs text-gray-500 mt-1" x-text="log.plantilla"></p>
+                                <p x-show="log.error_message" class="text-xs text-red-500 mt-1 break-words" x-text="log.error_message"></p>
+                            </div>
+                        </template>
+                    </div>
+
+                    <!-- Desktop table -->
+                    <div class="hidden sm:block overflow-x-auto">
                     <table class="w-full border-collapse">
                         <thead>
                             <tr class="border-b border-gray-200">
@@ -139,7 +184,7 @@
                         <tbody>
                             <template x-for="log in logs" :key="log.id">
                                 <tr class="border-b border-gray-100 hover:bg-gray-50">
-                                    <td class="py-3 px-4 text-sm text-gray-800" x-text="new Date(log.sent_at).toLocaleString()"></td>
+                                    <td class="py-3 px-4 text-sm text-gray-800 whitespace-nowrap" x-text="new Date(log.sent_at).toLocaleString()"></td>
                                     <td class="py-3 px-4 text-sm text-gray-800" x-text="log.destinatario"></td>
                                     <td class="py-3 px-4 text-sm text-gray-800" x-text="log.plantilla"></td>
                                     <td class="py-3 px-4">
@@ -150,6 +195,8 @@
                             </template>
                         </tbody>
                     </table>
+                    </div>
+
                     <div x-show="logs.length === 0" class="text-center py-8 text-gray-500">
                         <p>No hay logs de correos</p>
                     </div>

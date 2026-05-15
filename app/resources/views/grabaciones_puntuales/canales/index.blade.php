@@ -1,7 +1,7 @@
 @extends('layouts.app')
 
 @section('content')
-<div class="p-6">
+<div class="p-3 sm:p-6 pb-24 sm:pb-8">
 
 {{-- Toast --}}
 <div id="toast" class="fixed top-6 right-6 z-50 hidden max-w-sm px-4 py-3 rounded-xl shadow-lg text-white text-sm font-medium">
@@ -9,20 +9,22 @@
 </div>
 
 {{-- Encabezado --}}
-<div class="flex items-center justify-between mb-6">
+<div class="flex items-center justify-between mb-4 sm:mb-6">
     <div>
-        <h1 class="text-2xl font-bold text-slate-800 flex items-center gap-3">
-            <div class="w-10 h-10 bg-indigo-100 rounded-xl flex items-center justify-center">
+        <h1 class="text-lg sm:text-2xl font-bold text-slate-800 flex items-center gap-2 sm:gap-3">
+            <div class="w-9 h-9 sm:w-10 sm:h-10 bg-indigo-100 rounded-xl flex items-center justify-center flex-shrink-0">
                 <i class="fas fa-broadcast-tower text-indigo-600"></i>
             </div>
             Grabaciones Puntuales
         </h1>
-        <p class="text-sm text-slate-500 mt-1">Canales de grabación configurados</p>
+        <p class="text-xs sm:text-sm text-slate-500 mt-1">Canales de grabación configurados</p>
     </div>
     @if(!$user || !$user->isAdmin())
         <a href="{{ route('canales.create') }}"
-           class="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-xl font-medium text-sm transition-colors shadow-sm">
-            <i class="fas fa-plus text-xs"></i> Crear Canal
+           class="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl font-medium text-sm transition-colors shadow-sm">
+            <i class="fas fa-plus text-xs"></i>
+            <span class="hidden sm:inline">Crear Canal</span>
+            <span class="sm:hidden">Crear</span>
         </a>
     @endif
 </div>
@@ -30,12 +32,79 @@
 {{-- Barra de búsqueda --}}
 <div class="mb-4 relative">
     <i class="fas fa-search absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 text-sm"></i>
-    <input id="busqueda" type="text" placeholder="Buscar por slot, detalle, API ID..."
+    <input id="busqueda" type="text" autocomplete="off" placeholder="Buscar por slot, detalle, API ID..."
            class="w-full pl-10 pr-4 py-2.5 border border-slate-200 rounded-xl bg-white text-sm text-slate-700 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400 shadow-sm">
 </div>
 
-{{-- Tabla --}}
-<div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+{{-- Vista móvil: tarjetas --}}
+<div class="sm:hidden space-y-3" id="cards-canales">
+    @forelse($canales as $canal)
+    <div class="canal-card bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+        <div class="flex items-start justify-between gap-3 mb-2">
+            <div class="flex items-center gap-3 min-w-0">
+                <div class="w-9 h-9 bg-indigo-100 rounded-lg flex items-center justify-center flex-shrink-0">
+                    <i class="fas fa-broadcast-tower text-indigo-600 text-sm"></i>
+                </div>
+                <div class="min-w-0">
+                    <p class="font-semibold text-slate-800 text-sm truncate">{{ $canal->slot_nombre }}</p>
+                    @if($canal->api_canal_id)
+                        <p class="text-xs font-mono text-slate-400 truncate">API: {{ $canal->api_canal_id }}</p>
+                    @endif
+                </div>
+            </div>
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium flex-shrink-0 {{ $canal->activo ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700' }}">
+                <span class="w-1.5 h-1.5 rounded-full {{ $canal->activo ? 'bg-green-500' : 'bg-red-500' }}"></span>
+                {{ $canal->activo ? 'Activo' : 'Inactivo' }}
+            </span>
+        </div>
+        @if($canal->detalle)
+            <p class="text-xs text-slate-500 mb-2 truncate">{{ $canal->detalle }}</p>
+        @endif
+        @if($user && $user->isAdmin())
+            <div class="flex gap-3 text-xs text-slate-500 mb-3">
+                <span><i class="fas fa-user text-slate-300 mr-1"></i>{{ $canal->usuario->username ?? 'N/A' }}</span>
+                <span><i class="fas fa-server text-slate-300 mr-1"></i>{{ $canal->grabador->nombre }}</span>
+            </div>
+        @endif
+        <div class="flex gap-2">
+            @if($canal->activo && $canal->api_canal_id)
+                <button type="button"
+                        class="btn-ejecutar flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-green-50 text-green-700 active:bg-green-100 text-xs font-medium transition-colors border border-green-100"
+                        data-url="{{ route('canales.ejecutar', $canal) }}">
+                    <i class="fas fa-play text-xs"></i> Ejecutar
+                </button>
+            @endif
+            <a href="{{ route('canales.edit', $canal) }}"
+               class="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-indigo-50 text-indigo-700 active:bg-indigo-100 text-xs font-medium transition-colors border border-indigo-100">
+                <i class="fas fa-edit text-xs"></i> Editar
+            </a>
+            <button type="button"
+                    class="btn-limpiar flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-amber-50 text-amber-700 active:bg-amber-100 text-xs font-medium transition-colors border border-amber-100"
+                    data-url="{{ route('canales.destroy', $canal) }}"
+                    data-nombre="{{ $canal->slot_nombre }}">
+                <i class="fas fa-eraser text-xs"></i> Limpiar
+            </button>
+        </div>
+    </div>
+    @empty
+    <div class="bg-white rounded-xl shadow-sm border border-slate-200 px-6 py-16 text-center">
+        <div class="flex flex-col items-center gap-2">
+            <div class="w-12 h-12 bg-slate-100 rounded-full flex items-center justify-center">
+                <i class="fas fa-broadcast-tower text-slate-300 text-lg"></i>
+            </div>
+            <p class="text-slate-500 font-medium text-sm">No hay canales configurados</p>
+        </div>
+    </div>
+    @endforelse
+    <div id="sin-resultados-mobile" class="hidden bg-white rounded-xl border border-slate-200 px-6 py-12 text-center">
+        <i class="fas fa-search text-slate-300 text-2xl mb-2"></i>
+        <p class="text-slate-500 text-sm">Sin resultados para "<span id="busqueda-texto-mobile" class="font-medium text-slate-700"></span>"</p>
+    </div>
+</div>
+
+{{-- Vista escritorio: tabla --}}
+<div class="hidden sm:block bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+    <div class="overflow-x-auto">
     <table class="w-full" id="tabla-canales">
         <thead class="bg-slate-50 border-b border-slate-200">
             <tr>
@@ -116,6 +185,7 @@
             @endforelse
         </tbody>
     </table>
+    </div>
     <div id="sin-resultados" class="hidden px-6 py-12 text-center">
         <div class="flex flex-col items-center gap-2">
             <i class="fas fa-search text-slate-300 text-2xl"></i>
@@ -124,7 +194,7 @@
     </div>
 </div>
 
-</div>{{-- /p-6 --}}
+</div>{{-- /p-3 --}}
 
 {{-- Modal de confirmación Limpiar --}}
 <div id="modal-limpiar" class="fixed inset-0 z-50 hidden flex items-center justify-center bg-black/40 backdrop-blur-sm">
@@ -184,24 +254,41 @@
     }
 
     // --- Búsqueda en tiempo real ---
-    if (inputBusqueda && tbody) {
+    if (inputBusqueda) {
         inputBusqueda.addEventListener('input', function () {
             const texto = this.value.trim().toLowerCase();
-            const filas = tbody.querySelectorAll('tr:not(#fila-vacia)');
             let visibles = 0;
 
-            filas.forEach(function (fila) {
-                const contenido = fila.textContent.toLowerCase();
-                const coincide = texto === '' || contenido.includes(texto);
-                fila.style.display = coincide ? '' : 'none';
-                if (coincide) visibles++;
-            });
-
-            if (sinResultados) {
-                document.getElementById('busqueda-texto').textContent = this.value;
-                sinResultados.classList.toggle('hidden', visibles > 0 || texto === '');
+            // Filtrar tabla desktop
+            if (tbody) {
+                const filas = tbody.querySelectorAll('tr:not(#fila-vacia)');
+                filas.forEach(function (fila) {
+                    const contenido = fila.textContent.toLowerCase();
+                    const coincide = texto === '' || contenido.includes(texto);
+                    fila.style.display = coincide ? '' : 'none';
+                    if (coincide) visibles++;
+                });
+                if (sinResultados) {
+                    document.getElementById('busqueda-texto').textContent = this.value;
+                    sinResultados.classList.toggle('hidden', visibles > 0 || texto === '');
+                }
+                actualizarNumeracion();
             }
-            actualizarNumeracion();
+
+            // Filtrar tarjetas móviles
+            const cards = document.querySelectorAll('#cards-canales .canal-card');
+            let mobileVisibles = 0;
+            cards.forEach(function (card) {
+                const contenido = card.textContent.toLowerCase();
+                const coincide = texto === '' || contenido.includes(texto);
+                card.style.display = coincide ? '' : 'none';
+                if (coincide) mobileVisibles++;
+            });
+            const sinResultadosMobile = document.getElementById('sin-resultados-mobile');
+            if (sinResultadosMobile) {
+                document.getElementById('busqueda-texto-mobile').textContent = this.value;
+                sinResultadosMobile.classList.toggle('hidden', mobileVisibles > 0 || texto === '');
+            }
         });
     }
 

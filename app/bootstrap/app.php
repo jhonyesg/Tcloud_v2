@@ -13,10 +13,12 @@ return Application::configure(basePath: dirname(__DIR__))
     )
     ->withMiddleware(function (Middleware $middleware) {
         $middleware->alias([
-            'auth' => \App\Http\Middleware\Authenticate::class,
-            'admin' => \App\Http\Middleware\AdminOnly::class,
-            'role' => \App\Http\Middleware\CheckRole::class,
+            'auth'            => \App\Http\Middleware\Authenticate::class,
+            'admin'           => \App\Http\Middleware\AdminOnly::class,
+            'role'            => \App\Http\Middleware\CheckRole::class,
+            'session.tracker' => \App\Http\Middleware\SessionTracker::class,
         ]);
+        $middleware->appendToGroup('web', \App\Http\Middleware\SessionTracker::class);
     })
     ->withExceptions(function (Exceptions $exceptions) {
         //

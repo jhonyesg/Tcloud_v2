@@ -3,35 +3,31 @@
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Artisan;
-use Illuminate\Support\Facades\Config;
+use PDO;
+use PDOException;
 
 class PostgresAdminController extends Controller
 {
-    private $pgConnection = null;
-
-    private function getPgConnection()
+    private function getPgConfig(?Request $request = null): array
     {
-        if ($this->pgConnection !== null) {
-            return $this->pgConnection;
-        }
+        return [
+            'host'     => $request?->input('host')     ?: config('database.connections.pgsql.host'),
+            'port'     => $request?->input('port')     ?: config('database.connections.pgsql.port'),
+            'database' => $request?->input('database') ?: config('database.connections.pgsql.database'),
+            'username' => $request?->input('username') ?: config('database.connections.pgsql.username'),
+            'password' => $request?->input('password') ?: config('database.connections.pgsql.password'),
+        ];
+    }
 
-        $host = env('PG_HOST', 'postgres');
-        $port = env('PG_PORT', '5432');
-        $database = env('PG_DATABASE', 'tcloud');
-        $username = env('PG_USERNAME', 'postgres');
-        $password = env('PG_PASSWORD', 'postgres');
-
-        try {
-            $this->pgConnection = pg_connect(
-                "host={$host} port={$port} dbname={$database} user={$username} password={$password}"
-            );
-        } catch (\Exception $e) {
-            $this->pgConnection = null;
-        }
-
-        return $this->pgConnection;
+    private function getPdoConnection(array $cfg): PDO
+    {
+        $dsn = "pgsql:host={$cfg['host']};port={$cfg['port']};dbname={$cfg['database']}";
+        $pdo = new PDO($dsn, $cfg['username'], $cfg['password'], [
+            PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+            PDO::ATTR_TIMEOUT            => 5,
+        ]);
+        return $pdo;
     }
 
     public function index()
@@ -42,22 +38,22 @@ class PostgresAdminController extends Controller
     public function saveConfig(Request $request)
     {
         $validated = $request->validate([
-            'pg_host' => 'required|string',
-            'pg_port' => 'required|string',
-            'pg_database' => 'required|string',
-            'pg_username' => 'required|string',
-            'pg_password' => 'required|string',
+            'host'     => 'required|string',
+            'port'     => 'required|string',
+            'database' => 'required|string',
+            'username' => 'required|string',
+            'password' => 'required|string',
         ]);
 
-        $envPath = base_path('.env');
+        $envPath    = base_path('.env');
         $envContent = file_get_contents($envPath);
 
         $keys = [
-            'PG_HOST' => $validated['pg_host'],
-            'PG_PORT' => $validated['pg_port'],
-            'PG_DATABASE' => $validated['pg_database'],
-            'PG_USERNAME' => $validated['pg_username'],
-            'PG_PASSWORD' => $validated['pg_password'],
+            'DB_HOST'     => $validated['host'],
+            'DB_PORT'     => $validated['port'],
+            'DB_DATABASE' => $validated['database'],
+            'DB_USERNAME' => $validated['username'],
+            'DB_PASSWORD' => $validated['password'],
         ];
 
         foreach ($keys as $key => $value) {
@@ -69,225 +65,146 @@ class PostgresAdminController extends Controller
         }
 
         file_put_contents($envPath, $envContent);
-        putenv("PG_HOST={$validated['pg_host']}");
-        putenv("PG_PORT={$validated['pg_port']}");
-        putenv("PG_DATABASE={$validated['pg_database']}");
-        putenv("PG_USERNAME={$validated['pg_username']}");
-        putenv("PG_PASSWORD={$validated['pg_password']}");
 
         return response()->json(['success' => true, 'message' => 'Configuración guardada']);
     }
 
     public function testConnection(Request $request)
     {
-        $host = $request->input('host') ?: env('PG_HOST', 'postgres');
-        $port = $request->input('port') ?: env('PG_PORT', '5432');
-        $database = $request->input('database') ?: env('PG_DATABASE', 'tcloud');
-        $username = $request->input('username') ?: env('PG_USERNAME', 'postgres');
-        $password = $request->input('password') ?: env('PG_PASSWORD', 'postgres');
+        $cfg = $this->getPgConfig($request);
 
         try {
-            $conn = pg_connect("host={$host} port={$port} dbname={$database} user={$username} password={$password}");
-            if ($conn) {
-                pg_close($conn);
-                return response()->json([
-                    'success' => true,
-                    'message' => 'Conexión exitosa a PostgreSQL'
-                ]);
-            }
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Error de conexión: ' . $e->getMessage()
-            ]);
+            $pdo = $this->getPdoConnection($cfg);
+            $pdo->query('SELECT 1');
+            return response()->json(['success' => true, 'message' => 'Conexión exitosa a PostgreSQL']);
+        } catch (PDOException $e) {
+            return response()->json(['success' => false, 'message' => 'Error de conexión: ' . $e->getMessage()]);
         }
-
-        return response()->json([
-            'success' => false,
-            'message' => 'No se pudo conectar a PostgreSQL'
-        ]);
     }
 
     public function getSchema(Request $request)
     {
-        $host = env('PG_HOST', 'postgres');
-        $port = env('PG_PORT', '5432');
-        $database = env('PG_DATABASE', 'tcloud');
-        $username = env('PG_USERNAME', 'postgres');
-        $password = env('PG_PASSWORD', 'postgres');
+        $cfg = $this->getPgConfig($request);
 
         try {
-            $conn = pg_connect("host={$host} port={$port} dbname={$database} user={$username} password={$password}");
-            if (!$conn) {
-                return response()->json(['success' => false, 'message' => 'Sin conexión'], 500);
-            }
+            $pdo = $this->getPdoConnection($cfg);
 
-            $tablesResult = pg_query($conn, "
-                SELECT table_name 
-                FROM information_schema.tables 
-                WHERE table_schema = 'public' 
+            $tablesStmt = $pdo->query("
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema = 'public'
                 AND table_type = 'BASE TABLE'
                 ORDER BY table_name
             ");
 
             $tables = [];
-            while ($row = pg_fetch_assoc($tablesResult)) {
+            foreach ($tablesStmt->fetchAll() as $row) {
                 $tableName = $row['table_name'];
-                
-                $columnsResult = pg_query($conn, "
-                    SELECT 
-                        column_name, 
-                        data_type,
-                        is_nullable,
-                        column_default,
-                        character_maximum_length
-                    FROM information_schema.columns 
-                    WHERE table_name = '{$tableName}' 
-                    AND table_schema = 'public'
+
+                $colsStmt = $pdo->prepare("
+                    SELECT column_name, data_type, is_nullable, column_default, character_maximum_length
+                    FROM information_schema.columns
+                    WHERE table_name = ? AND table_schema = 'public'
                     ORDER BY ordinal_position
                 ");
+                $colsStmt->execute([$tableName]);
 
                 $columns = [];
-                while ($col = pg_fetch_assoc($columnsResult)) {
+                foreach ($colsStmt->fetchAll() as $col) {
                     $columns[] = [
-                        'name' => $col['column_name'],
-                        'type' => $col['data_type'],
-                        'nullable' => $col['is_nullable'] === 'YES',
-                        'default' => $col['column_default'],
+                        'name'      => $col['column_name'],
+                        'type'      => $col['data_type'],
+                        'nullable'  => $col['is_nullable'] === 'YES',
+                        'default'   => $col['column_default'],
                         'maxLength' => $col['character_maximum_length'],
                     ];
                 }
 
-                $fkResult = pg_query($conn, "
-                    SELECT
-                        tc.constraint_name,
-                        kcu.column_name,
-                        ccu.table_name AS foreign_table_name,
-                        ccu.column_name AS foreign_column_name
+                $fkStmt = $pdo->prepare("
+                    SELECT kcu.column_name, ccu.table_name AS foreign_table_name, ccu.column_name AS foreign_column_name
                     FROM information_schema.table_constraints AS tc
-                    JOIN information_schema.key_column_usage AS kcu ON tc.constraint_name = kcu.constraint_name
-                    JOIN information_schema.constraint_column_usage AS ccu ON ccu.constraint_name = tc.constraint_name
+                    JOIN information_schema.key_column_usage AS kcu
+                        ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+                    JOIN information_schema.constraint_column_usage AS ccu
+                        ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema
                     WHERE tc.constraint_type = 'FOREIGN KEY'
-                    AND tc.table_name = '{$tableName}'
+                    AND tc.table_name = ?
+                    AND tc.table_schema = 'public'
                 ");
+                $fkStmt->execute([$tableName]);
 
                 $foreignKeys = [];
-                while ($fk = pg_fetch_assoc($fkResult)) {
+                foreach ($fkStmt->fetchAll() as $fk) {
                     $foreignKeys[] = [
-                        'column' => $fk['column_name'],
+                        'column'     => $fk['column_name'],
                         'references' => $fk['foreign_table_name'] . '.' . $fk['foreign_column_name'],
                     ];
                 }
 
                 $tables[] = [
-                    'name' => $tableName,
-                    'columns' => $columns,
+                    'name'        => $tableName,
+                    'columns'     => $columns,
                     'foreignKeys' => $foreignKeys,
                 ];
             }
 
-            pg_close($conn);
+            return response()->json(['success' => true, 'tables' => $tables]);
 
-            return response()->json([
-                'success' => true,
-                'tables' => $tables
-            ]);
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Error al obtener esquema: ' . $e->getMessage()
-            ], 500);
+        } catch (PDOException $e) {
+            return response()->json(['success' => false, 'message' => 'Error al obtener esquema: ' . $e->getMessage()], 500);
         }
     }
 
     public function executeQuery(Request $request)
     {
-        $host = env('PG_HOST', 'postgres');
-        $port = env('PG_PORT', '5432');
-        $database = env('PG_DATABASE', 'tcloud');
-        $username = env('PG_USERNAME', 'postgres');
-        $password = env('PG_PASSWORD', 'postgres');
-
+        $cfg = $this->getPgConfig($request);
         $sql = trim($request->input('sql', ''));
 
         if (empty($sql)) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Query vacío'
-            ], 400);
+            return response()->json(['success' => false, 'message' => 'Query vacío'], 400);
         }
 
-        $isSelect = preg_match('/^\s*(SELECT|WITH)\s/i', $sql);
-        $isReadOnly = $isSelect;
-
-        if (!$isReadOnly) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Solo se permiten consultas SELECT'
-            ], 403);
+        if (!preg_match('/^\s*(SELECT|WITH)\s/i', $sql)) {
+            return response()->json(['success' => false, 'message' => 'Solo se permiten consultas SELECT'], 403);
         }
 
         try {
-            $conn = pg_connect("host={$host} port={$port} dbname={$database} user={$username} password={$password}");
-            if (!$conn) {
-                return response()->json(['success' => false, 'message' => 'Sin conexión'], 500);
-            }
-
-            $result = pg_query($conn, $sql);
-            
-            if (!$result) {
-                pg_close($conn);
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Error en query: ' . pg_last_error($conn)
-                ], 400);
-            }
-
+            $pdo    = $this->getPdoConnection($cfg);
+            $stmt   = $pdo->query($sql);
             $columns = [];
-            $numFields = pg_num_fields($result);
-            for ($i = 0; $i < $numFields; $i++) {
-                $columns[] = pg_field_name($result, $i);
+            for ($i = 0; $i < $stmt->columnCount(); $i++) {
+                $meta      = $stmt->getColumnMeta($i);
+                $columns[] = $meta['name'];
             }
-
-            $rows = [];
-            while ($row = pg_fetch_assoc($result)) {
-                $rows[] = $row;
-            }
-
-            pg_close($conn);
+            $rows = $stmt->fetchAll();
 
             return response()->json([
-                'success' => true,
-                'columns' => $columns,
-                'rows' => $rows,
-                'rowCount' => count($rows)
+                'success'  => true,
+                'columns'  => $columns,
+                'rows'     => $rows,
+                'rowCount' => count($rows),
             ]);
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Error: ' . $e->getMessage()
-            ], 500);
+
+        } catch (PDOException $e) {
+            return response()->json(['success' => false, 'message' => 'Error en query: ' . $e->getMessage()], 400);
         }
     }
 
     public function backupLocal(Request $request)
     {
-        $host     = env('PG_HOST',     'postgres');
-        $port     = env('PG_PORT',     '5432');
-        $database = env('PG_DATABASE', 'tcloud');
-        $username = env('PG_USERNAME', 'postgres');
-        $password = env('PG_PASSWORD', 'postgres');
+        $cfg = $this->getPgConfig($request);
 
-        $conn = pg_connect("host={$host} port={$port} dbname={$database} user={$username} password={$password}");
-        if (!$conn) {
-            return response()->json(['success' => false, 'message' => 'Sin conexión a PostgreSQL'], 500);
+        try {
+            $pdo = $this->getPdoConnection($cfg);
+        } catch (PDOException $e) {
+            return response()->json(['success' => false, 'message' => 'Sin conexión a PostgreSQL: ' . $e->getMessage()], 500);
         }
 
-        $filename = "backup_{$database}_" . date('Y-m-d_H-i-s') . ".sql";
+        $filename = "backup_{$cfg['database']}_" . date('Y-m-d_H-i-s') . ".sql";
         $lines    = [];
 
         $lines[] = "-- Backup generado por Tcloud PostgreSQL Admin";
-        $lines[] = "-- Base de datos: {$database}";
+        $lines[] = "-- Base de datos: {$cfg['database']}";
         $lines[] = "-- Fecha: " . date('Y-m-d H:i:s');
         $lines[] = "-- ============================================";
         $lines[] = "";
@@ -296,35 +213,32 @@ class PostgresAdminController extends Controller
         $lines[] = "BEGIN;";
         $lines[] = "";
 
-        $tablesResult = pg_query($conn, "
+        $tablesStmt = $pdo->query("
             SELECT table_name
             FROM information_schema.tables
             WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
             ORDER BY table_name
         ");
-        $tables = [];
-        while ($row = pg_fetch_assoc($tablesResult)) {
-            $tables[] = $row['table_name'];
-        }
+        $tables = array_column($tablesStmt->fetchAll(), 'table_name');
 
         foreach ($tables as $tableName) {
-            $safe = pg_escape_string($conn, $tableName);
-
             $lines[] = "";
             $lines[] = "-- ──────────────────────────────────────────";
             $lines[] = "-- Table: {$tableName}";
             $lines[] = "-- ──────────────────────────────────────────";
             $lines[] = "DROP TABLE IF EXISTS \"{$tableName}\" CASCADE;";
 
-            $colsResult = pg_query($conn, "
+            $colsStmt = $pdo->prepare("
                 SELECT column_name, data_type, is_nullable, column_default,
                        character_maximum_length, numeric_precision, numeric_scale
                 FROM information_schema.columns
-                WHERE table_name = '{$safe}' AND table_schema = 'public'
+                WHERE table_name = ? AND table_schema = 'public'
                 ORDER BY ordinal_position
             ");
+            $colsStmt->execute([$tableName]);
+
             $colDefs = [];
-            while ($col = pg_fetch_assoc($colsResult)) {
+            foreach ($colsStmt->fetchAll() as $col) {
                 $type = $col['data_type'];
                 if ($col['character_maximum_length']) {
                     $type .= "({$col['character_maximum_length']})";
@@ -337,18 +251,16 @@ class PostgresAdminController extends Controller
                 $colDefs[] = $def;
             }
 
-            $pkResult = pg_query($conn, "
+            $pkStmt = $pdo->prepare("
                 SELECT kcu.column_name
                 FROM information_schema.table_constraints tc
                 JOIN information_schema.key_column_usage kcu
-                    ON tc.constraint_name = kcu.constraint_name
-                WHERE tc.table_name = '{$safe}' AND tc.constraint_type = 'PRIMARY KEY'
+                    ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+                WHERE tc.table_name = ? AND tc.constraint_type = 'PRIMARY KEY' AND tc.table_schema = 'public'
                 ORDER BY kcu.ordinal_position
             ");
-            $pkCols = [];
-            while ($pk = pg_fetch_assoc($pkResult)) {
-                $pkCols[] = '"' . $pk['column_name'] . '"';
-            }
+            $pkStmt->execute([$tableName]);
+            $pkCols = array_map(fn($r) => '"' . $r['column_name'] . '"', $pkStmt->fetchAll());
             if (!empty($pkCols)) {
                 $colDefs[] = "    PRIMARY KEY (" . implode(', ', $pkCols) . ")";
             }
@@ -357,27 +269,23 @@ class PostgresAdminController extends Controller
             $lines[] = implode(",\n", $colDefs);
             $lines[] = ");";
 
-            $idxResult = pg_query($conn, "
+            $idxStmt = $pdo->prepare("
                 SELECT indexname, indexdef FROM pg_indexes
-                WHERE tablename = '{$safe}' AND schemaname = 'public'
+                WHERE tablename = ? AND schemaname = 'public'
                 AND indexname NOT LIKE '%_pkey'
             ");
-            while ($idx = pg_fetch_assoc($idxResult)) {
+            $idxStmt->execute([$tableName]);
+            foreach ($idxStmt->fetchAll() as $idx) {
                 $lines[] = $idx['indexdef'] . ";";
             }
 
-            $dataResult = pg_query($conn, "SELECT * FROM \"{$tableName}\"");
-            $numFields  = pg_num_fields($dataResult);
-            $numRows    = pg_num_rows($dataResult);
-
-            if ($numRows > 0) {
-                $fieldNames = [];
-                for ($i = 0; $i < $numFields; $i++) {
-                    $fieldNames[] = '"' . pg_field_name($dataResult, $i) . '"';
-                }
+            $dataStmt = $pdo->query("SELECT * FROM \"{$tableName}\"");
+            $rows     = $dataStmt->fetchAll();
+            if (!empty($rows)) {
+                $fieldNames = array_map(fn($k) => '"' . $k . '"', array_keys($rows[0]));
                 $lines[] = "";
-                $lines[] = "-- Data ({$numRows} rows)";
-                while ($dataRow = pg_fetch_assoc($dataResult)) {
+                $lines[] = "-- Data (" . count($rows) . " rows)";
+                foreach ($rows as $dataRow) {
                     $values = [];
                     foreach ($dataRow as $value) {
                         if ($value === null) {
@@ -385,7 +293,7 @@ class PostgresAdminController extends Controller
                         } elseif (is_numeric($value) && !preg_match('/^0\d/', $value)) {
                             $values[] = $value;
                         } else {
-                            $values[] = "'" . pg_escape_string($conn, $value) . "'";
+                            $values[] = "'" . str_replace("'", "''", $value) . "'";
                         }
                     }
                     $lines[] = "INSERT INTO \"{$tableName}\" (" . implode(', ', $fieldNames) . ") VALUES (" . implode(', ', $values) . ");";
@@ -398,18 +306,18 @@ class PostgresAdminController extends Controller
         $lines[] = "-- Foreign Key Constraints";
         $lines[] = "-- ──────────────────────────────────────────";
         foreach ($tables as $tableName) {
-            $safe     = pg_escape_string($conn, $tableName);
-            $fkResult = pg_query($conn, "
+            $fkStmt = $pdo->prepare("
                 SELECT tc.constraint_name, kcu.column_name,
                        ccu.table_name AS foreign_table, ccu.column_name AS foreign_column
                 FROM information_schema.table_constraints AS tc
                 JOIN information_schema.key_column_usage AS kcu
-                    ON tc.constraint_name = kcu.constraint_name
+                    ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
                 JOIN information_schema.constraint_column_usage AS ccu
-                    ON ccu.constraint_name = tc.constraint_name
-                WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_name = '{$safe}'
+                    ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema
+                WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_name = ? AND tc.table_schema = 'public'
             ");
-            while ($fk = pg_fetch_assoc($fkResult)) {
+            $fkStmt->execute([$tableName]);
+            foreach ($fkStmt->fetchAll() as $fk) {
                 $lines[] = "ALTER TABLE \"{$tableName}\" ADD CONSTRAINT \"{$fk['constraint_name']}\"";
                 $lines[] = "    FOREIGN KEY (\"{$fk['column_name']}\") REFERENCES \"{$fk['foreign_table']}\" (\"{$fk['foreign_column']}\");";
             }
@@ -417,8 +325,6 @@ class PostgresAdminController extends Controller
 
         $lines[] = "";
         $lines[] = "COMMIT;";
-
-        pg_close($conn);
 
         $sqlContent = implode("\n", $lines);
 
@@ -432,22 +338,22 @@ class PostgresAdminController extends Controller
     public function saveFtpConfig(Request $request)
     {
         $validated = $request->validate([
-            'ftp_host' => 'required|string',
-            'ftp_port' => 'required|string',
+            'ftp_host'     => 'required|string',
+            'ftp_port'     => 'required|string',
             'ftp_username' => 'required|string',
             'ftp_password' => 'required|string',
-            'ftp_path' => 'nullable|string',
+            'ftp_path'     => 'nullable|string',
         ]);
 
-        $envPath = base_path('.env');
+        $envPath    = base_path('.env');
         $envContent = file_get_contents($envPath);
 
         $keys = [
-            'FTP_HOST' => $validated['ftp_host'],
-            'FTP_PORT' => $validated['ftp_port'],
+            'FTP_HOST'     => $validated['ftp_host'],
+            'FTP_PORT'     => $validated['ftp_port'],
             'FTP_USERNAME' => $validated['ftp_username'],
             'FTP_PASSWORD' => $validated['ftp_password'],
-            'FTP_PATH' => $validated['ftp_path'] ?? '/',
+            'FTP_PATH'     => $validated['ftp_path'] ?? '/',
         ];
 
         foreach ($keys as $key => $value) {
@@ -465,11 +371,7 @@ class PostgresAdminController extends Controller
 
     public function backupFtp(Request $request)
     {
-        $host = env('PG_HOST', 'postgres');
-        $port = env('PG_PORT', '5432');
-        $database = env('PG_DATABASE', 'tcloud');
-        $username = env('PG_USERNAME', 'postgres');
-        $password = env('PG_PASSWORD', 'postgres');
+        $cfg = $this->getPgConfig($request);
 
         $ftpHost = env('FTP_HOST');
         $ftpPort = env('FTP_PORT', '21');
@@ -478,10 +380,7 @@ class PostgresAdminController extends Controller
         $ftpPath = env('FTP_PATH', '/');
 
         if (!$ftpHost || !$ftpUser || !$ftpPass) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Configuración FTP no encontrada. Guarda la configuración primero.'
-            ], 400);
+            return response()->json(['success' => false, 'message' => 'Configuración FTP no encontrada. Guarda la configuración primero.'], 400);
         }
 
         $backupDir = storage_path('app/backups');
@@ -489,37 +388,27 @@ class PostgresAdminController extends Controller
             mkdir($backupDir, 0755, true);
         }
 
-        $filename = "backup_{$database}_" . date('Y-m-d_H-i-s') . ".sql";
+        $filename  = "backup_{$cfg['database']}_" . date('Y-m-d_H-i-s') . ".sql";
         $localPath = "{$backupDir}/{$filename}";
 
-        putenv("PGPASSWORD={$password}");
-        $command = "pg_dump -h {$host} -p {$port} -U {$username} -d {$database} -f {$localPath}";
-        $output = [];
+        putenv("PGPASSWORD={$cfg['password']}");
+        $command    = "pg_dump -h {$cfg['host']} -p {$cfg['port']} -U {$cfg['username']} -d {$cfg['database']} -f " . escapeshellarg($localPath);
+        $output     = [];
         $returnCode = 0;
         exec($command . " 2>&1", $output, $returnCode);
 
         if ($returnCode !== 0 || !file_exists($localPath)) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Error creando backup local'
-            ], 500);
+            return response()->json(['success' => false, 'message' => 'Error creando backup local'], 500);
         }
 
-        $conn = ftp_connect($ftpHost, (int)$ftpPort);
+        $conn = ftp_connect($ftpHost, (int) $ftpPort);
         if (!$conn) {
-            return response()->json([
-                'success' => false,
-                'message' => 'No se pudo conectar al servidor FTP'
-            ], 500);
+            return response()->json(['success' => false, 'message' => 'No se pudo conectar al servidor FTP'], 500);
         }
 
-        $login = ftp_login($conn, $ftpUser, $ftpPass);
-        if (!$login) {
+        if (!ftp_login($conn, $ftpUser, $ftpPass)) {
             ftp_close($conn);
-            return response()->json([
-                'success' => false,
-                'message' => 'Credenciales FTP inválidas'
-            ], 401);
+            return response()->json(['success' => false, 'message' => 'Credenciales FTP inválidas'], 401);
         }
 
         ftp_pasv($conn, true);
@@ -530,19 +419,12 @@ class PostgresAdminController extends Controller
 
         $upload = ftp_put($conn, $filename, $localPath, FTP_BINARY);
         ftp_close($conn);
-
         unlink($localPath);
 
         if ($upload) {
-            return response()->json([
-                'success' => true,
-                'message' => "Backup enviado a FTP exitosamente: {$filename}"
-            ]);
+            return response()->json(['success' => true, 'message' => "Backup enviado a FTP exitosamente: {$filename}"]);
         }
 
-        return response()->json([
-            'success' => false,
-            'message' => 'Error subiendo archivo a FTP'
-        ], 500);
+        return response()->json(['success' => false, 'message' => 'Error subiendo archivo a FTP'], 500);
     }
 }

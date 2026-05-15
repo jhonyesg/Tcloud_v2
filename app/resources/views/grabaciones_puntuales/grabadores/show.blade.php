@@ -3,31 +3,31 @@
 @section('title', 'Grabador: ' . $grabador->nombre . ' - Tcloud')
 
 @section('content')
-<div class="p-6">
+<div class="p-3 sm:p-6 pb-24 sm:pb-8">
     <!-- Page Header -->
-    <div class="flex items-center justify-between mb-6">
-        <div class="flex items-center gap-3">
-            <a href="{{ route('grabadores.index') }}" class="w-10 h-10 bg-slate-100 rounded-xl flex items-center justify-center hover:bg-slate-200 transition-colors">
-                <i class="fas fa-arrow-left text-slate-600"></i>
+    <div class="flex items-center justify-between mb-4 sm:mb-6 gap-3">
+        <div class="flex items-center gap-3 min-w-0">
+            <a href="{{ route('grabadores.index') }}" class="w-9 h-9 sm:w-10 sm:h-10 bg-slate-100 rounded-xl flex items-center justify-center hover:bg-slate-200 transition-colors flex-shrink-0">
+                <i class="fas fa-arrow-left text-slate-600 text-sm sm:text-base"></i>
             </a>
-            <div>
-                <h1 class="text-2xl font-bold text-gray-800 flex items-center gap-3">
-                    <div class="w-10 h-10 bg-emerald-100 rounded-xl flex items-center justify-center">
+            <div class="min-w-0">
+                <h1 class="text-lg sm:text-2xl font-bold text-gray-800 flex items-center gap-2 sm:gap-3">
+                    <div class="w-9 h-9 sm:w-10 sm:h-10 bg-emerald-100 rounded-xl flex items-center justify-center flex-shrink-0">
                         <i class="fas fa-server text-emerald-600"></i>
                     </div>
-                    {{ $grabador->nombre }}
+                    <span class="truncate">{{ $grabador->nombre }}</span>
                 </h1>
-                <p class="text-sm text-gray-500 mt-1">{{ $grabador->ip }}:{{ $grabador->puerto }}</p>
+                <p class="text-xs sm:text-sm text-gray-500 mt-1">{{ $grabador->ip }}:{{ $grabador->puerto }}</p>
             </div>
         </div>
-        <div class="flex items-center gap-2">
+        <div class="flex items-center gap-2 flex-shrink-0">
             <form action="{{ route('grabadores.destroy', $grabador) }}" method="POST"
                   onsubmit="return confirm('¿Eliminar este grabador? Esta acción no se puede deshacer.')">
                 @csrf @method('DELETE')
                 <button type="submit"
-                        class="flex items-center gap-2 px-4 py-2.5 text-red-600 hover:bg-red-50 rounded-xl font-medium transition-colors text-sm">
+                        class="flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2 sm:py-2.5 text-red-600 hover:bg-red-50 rounded-xl font-medium transition-colors text-sm">
                     <i class="fas fa-trash-alt text-sm"></i>
-                    Eliminar
+                    <span class="hidden sm:inline">Eliminar</span>
                 </button>
             </form>
         </div>
@@ -167,9 +167,9 @@
         </div>
 
         <!-- Assign User Form -->
-        <div class="px-6 py-4 border-t border-slate-200 bg-slate-50">
+        <div class="px-4 sm:px-6 py-4 border-t border-slate-200 bg-slate-50">
             <form action="{{ route('grabadores.asignar-usuario', $grabador) }}" method="POST"
-                  class="flex items-end gap-4">
+                  class="flex flex-col sm:flex-row sm:items-end gap-3 sm:gap-4">
                 @csrf
                 <div class="flex-1">
                     <label class="block text-xs font-medium text-slate-500 uppercase tracking-wider mb-1.5">Usuario</label>
@@ -181,17 +181,19 @@
                         @endforeach
                     </select>
                 </div>
-                <div class="w-28">
-                    <label class="block text-xs font-medium text-slate-500 uppercase tracking-wider mb-1.5">Límite</label>
-                    <input type="number" name="limite_canales" value="10" required
-                           min="1" max="100"
-                           class="w-full border border-slate-300 rounded-xl px-4 py-2.5 text-sm text-center focus:ring-2 focus:ring-emerald-400 focus:border-emerald-400 outline-none">
+                <div class="flex gap-3 sm:gap-4 sm:items-end">
+                    <div class="w-28">
+                        <label class="block text-xs font-medium text-slate-500 uppercase tracking-wider mb-1.5">Límite</label>
+                        <input type="number" name="limite_canales" value="10" required
+                               min="1" max="100"
+                               class="w-full border border-slate-300 rounded-xl px-4 py-2.5 text-sm text-center focus:ring-2 focus:ring-emerald-400 focus:border-emerald-400 outline-none">
+                    </div>
+                    <button type="submit"
+                            class="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2.5 rounded-xl font-medium transition-colors shadow-sm text-sm whitespace-nowrap">
+                        <i class="fas fa-user-plus text-xs"></i>
+                        Asignar
+                    </button>
                 </div>
-                <button type="submit"
-                        class="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2.5 rounded-xl font-medium transition-colors shadow-sm text-sm whitespace-nowrap">
-                    <i class="fas fa-user-plus text-xs"></i>
-                    Asignar
-                </button>
             </form>
         </div>
     </div>
@@ -210,6 +212,7 @@
             </a>
         </div>
 
+        <div class="overflow-x-auto">
         <table class="w-full">
             <thead class="bg-slate-50 border-b border-slate-200">
                 <tr>
@@ -246,6 +249,7 @@
                 @endforelse
             </tbody>
         </table>
+        </div>
     </div>
 </div>
 @endsection

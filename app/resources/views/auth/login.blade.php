@@ -26,15 +26,19 @@
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
         background: var(--color-brand-900) !important;
         min-height: 100vh;
-        overflow: hidden;
+        overflow-y: auto;
     }
 
     .login-wrapper {
+        position: relative;
+        z-index: 10;
         display: flex;
+        flex-direction: column;
         align-items: center;
         justify-content: center;
         min-height: 100vh;
         width: 100%;
+        padding: 1rem;
     }
 
     #particles {
@@ -167,11 +171,17 @@
         -webkit-backdrop-filter: blur(32px);
         border: 1px solid rgba(255, 255, 255, 0.1);
         border-radius: 1.5rem;
-        padding: 2.5rem;
-        box-shadow: 
+        padding: 1.5rem;
+        width: 100%;
+        max-width: 28rem;
+        box-shadow:
             0 0 60px rgba(45, 90, 160, 0.15),
             0 0 100px rgba(45, 90, 160, 0.1),
             inset 0 0 80px rgba(255, 255, 255, 0.02);
+    }
+
+    @media (min-width: 480px) {
+        .glass-card { padding: 2.5rem; }
     }
 
     .glass-input {
@@ -313,8 +323,8 @@
 <div class="grid-pattern"></div>
 <canvas id="particles"></canvas>
 
-<div class="login-wrapper relative z-10" style="position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); display: flex; flex-direction: column; align-items: center;">
-    <div class="glass-card shadow-2xl" style="width: 100%; max-width: 28rem;">
+<div class="login-wrapper">
+    <div class="glass-card shadow-2xl">
         <div class="text-center mb-7">
             <img src="/logo.png" alt="Tcloud" class="logo mx-auto rounded-2xl object-contain transition-all duration-300" style="width: 72px; height: 72px;">
             <div class="brand mt-4">

@@ -1,6 +1,40 @@
 @extends('layouts.app')
 
-@section('title', $file->is_folder ? 'Carpeta Compartida' : 'Archivo Compartido - Tcloud')
+@section('title', $file->name . ' — Tcloud')
+
+@php
+    $ogTitle       = $file->name;
+    $ogUrl         = config('app.url') . '/s/' . $share->token;
+    $ogLogoUrl     = config('app.url') . '/logo.png';
+    $isImage       = !$file->is_folder && str_starts_with($file->mime_type ?? '', 'image/');
+    $ogImageUrl    = $isImage
+        ? config('app.url') . '/s/' . $share->token . '/media/' . $file->id . '/preview'
+        : $ogLogoUrl;
+    if ($file->is_folder) {
+        $itemCount  = isset($folderContents) ? $folderContents->count() : 0;
+        $ogDesc     = 'Carpeta compartida · ' . $itemCount . ' ' . ($itemCount === 1 ? 'elemento' : 'elementos');
+    } else {
+        $mime = $file->mime_type ?? '';
+        if (str_starts_with($mime, 'image/'))      $ogDesc = 'Imagen compartida en Tcloud';
+        elseif (str_starts_with($mime, 'video/'))  $ogDesc = 'Video compartido en Tcloud';
+        elseif (str_starts_with($mime, 'audio/'))  $ogDesc = 'Audio compartido en Tcloud';
+        elseif ($mime === 'application/pdf')        $ogDesc = 'PDF compartido en Tcloud';
+        else                                        $ogDesc = 'Archivo compartido en Tcloud';
+    }
+@endphp
+
+@section('og_meta')
+<meta property="og:type"        content="website">
+<meta property="og:title"       content="{{ $ogTitle }}">
+<meta property="og:description" content="{{ $ogDesc }}">
+<meta property="og:url"         content="{{ $ogUrl }}">
+<meta property="og:image"       content="{{ $ogImageUrl }}">
+<meta property="og:site_name"   content="Tcloud">
+<meta name="twitter:card"       content="summary_large_image">
+<meta name="twitter:title"      content="{{ $ogTitle }}">
+<meta name="twitter:description" content="{{ $ogDesc }}">
+<meta name="twitter:image"      content="{{ $ogImageUrl }}">
+@endsection
 
 @section('content')
 @php
@@ -881,28 +915,40 @@ function refreshFolder() {
                         @endphp
 
                         @if($isPreviewable)
-                            <div class="bg-slate-100 rounded-2xl p-4 mb-6 min-h-[300px] max-h-[500px] flex items-center justify-center">
+                            <div class="rounded-2xl overflow-hidden mb-6">
                                 @if(str_starts_with($mimeType, 'image/'))
-                                    <img src="{{ $fileUrl }}" alt="{{ $file->name }}" class="max-w-full max-h-[450px] object-contain rounded-lg cursor-pointer" @click="openPreview(0)">
+                                    <div class="bg-slate-900 flex items-center justify-center rounded-2xl" style="min-height:300px; max-height:75vh">
+                                        <img src="{{ $fileUrl }}" alt="{{ $file->name }}"
+                                             class="object-contain rounded-2xl cursor-pointer"
+                                             style="max-width:100%; max-height:75vh; width:auto; height:auto"
+                                             @click="openPreview(0)">
+                                    </div>
                                 @elseif(str_starts_with($mimeType, 'video/'))
-                                    <video controls class="max-w-full max-h-[450px] rounded-lg">
-                                        <source src="{{ $fileUrl }}" type="{{ $mimeType }}">
-                                        Tu navegador no soporta reproducción de video.
-                                    </video>
+                                    <div class="bg-black flex items-center justify-center rounded-2xl" style="min-height:300px; max-height:75vh">
+                                        <video controls playsinline
+                                               class="rounded-2xl block"
+                                               style="max-width:100%; max-height:75vh; width:auto; height:auto">
+                                            <source src="{{ $fileUrl }}" type="{{ $mimeType }}">
+                                            Tu navegador no soporta reproducción de video.
+                                        </video>
+                                    </div>
                                 @elseif(str_starts_with($mimeType, 'audio/'))
-                                    <div class="text-center">
-                                        <div class="w-20 h-20 bg-purple-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                                            <svg class="w-10 h-10 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <div class="bg-gradient-to-br from-purple-950 to-slate-900 rounded-2xl flex flex-col items-center justify-center gap-6 py-16 px-8">
+                                        <div class="w-24 h-24 bg-purple-500/20 rounded-full flex items-center justify-center ring-4 ring-purple-500/30">
+                                            <svg class="w-12 h-12 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2z"/>
                                             </svg>
                                         </div>
-                                        <audio controls class="w-full max-w-md">
+                                        <p class="text-purple-200 font-medium text-lg text-center truncate max-w-full">{{ $file->name }}</p>
+                                        <audio controls class="w-full" style="max-width:700px">
                                             <source src="{{ $fileUrl }}" type="{{ $mimeType }}">
                                             Tu navegador no soporta reproducción de audio.
                                         </audio>
                                     </div>
                                 @elseif($mimeType === 'application/pdf')
-                                    <iframe src="{{ $fileUrl }}" class="w-full h-[450px] rounded-lg"></iframe>
+                                    <iframe src="{{ $fileUrl }}"
+                                            class="w-full rounded-2xl border-0"
+                                            style="height:80vh"></iframe>
                                 @endif
                             </div>
                         @else

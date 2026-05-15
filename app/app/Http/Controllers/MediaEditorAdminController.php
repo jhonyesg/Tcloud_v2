@@ -65,11 +65,21 @@ class MediaEditorAdminController extends Controller
             ->whereYear('created_at', $currentYear)
             ->count();
 
+        $clipTmpDir   = '/mnt/cliptemp';
+        $diskTotal    = @disk_total_space($clipTmpDir) ?: 0;
+        $diskFree     = @disk_free_space($clipTmpDir) ?: 0;
+        $diskUsed     = $diskTotal - $diskFree;
+
         return response()->json([
-            'clips_this_month' => $totalClipsMonth,
-            'clips_total' => $totalClipsAll,
-            'active_users' => $activeUsers,
-            'failed_this_month' => $failedJobs,
+            'clips_this_month'    => $totalClipsMonth,
+            'clips_total'         => $totalClipsAll,
+            'active_users'        => $activeUsers,
+            'failed_this_month'   => $failedJobs,
+            'ramdisk_total_gb'    => $diskTotal > 0 ? round($diskTotal / 1073741824, 1) : 0,
+            'ramdisk_used_gb'     => round($diskUsed  / 1073741824, 2),
+            'ramdisk_free_gb'     => $diskTotal > 0 ? round($diskFree  / 1073741824, 1) : 0,
+            'ramdisk_percent'     => $diskTotal > 0 ? round(($diskUsed / $diskTotal) * 100, 1) : 0,
+            'ramdisk_available'   => $diskTotal > 0,
         ]);
     }
 

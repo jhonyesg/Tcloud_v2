@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\User;
 use App\Modules\Correo\Services\NotificationService;
+use App\Services\SessionService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Session;
@@ -11,12 +12,10 @@ use Illuminate\Support\Str;
 
 class AuthController extends Controller
 {
-    private NotificationService $notificationService;
-
-    public function __construct(NotificationService $notificationService)
-    {
-        $this->notificationService = $notificationService;
-    }
+    public function __construct(
+        private NotificationService $notificationService,
+        private SessionService $sessionService,
+    ) {}
 
     public function showLogin()
     {
@@ -42,16 +41,29 @@ class AuthController extends Controller
             return back()->with('error', 'Credenciales inválidas');
         }
 
+        $maxSessions = $this->sessionService->getEffectiveMaxSessions($user);
+        if ($maxSessions > 0 && $this->sessionService->countActiveSessions($user) >= $maxSessions) {
+            return back()->with('error', 'Límite de sesiones simultáneas superado. Cierra una sesión desde otro dispositivo e intenta de nuevo.');
+        }
+
+        Session::regenerate();
         Session::put('user_id', $user->id);
         Session::put('user_role', $user->role);
         Session::put('user_email', $user->email);
         Session::put('user_username', $user->username);
+
+        $this->sessionService->createSession($user, $request);
 
         return redirect('/dashboard');
     }
 
     public function logout()
     {
+        $sessionId = Session::getId();
+        $record = \App\Models\UserSession::where('session_id', $sessionId)->first();
+        if ($record) {
+            $this->sessionService->killSession($record);
+        }
         Session::flush();
         return redirect('/login');
     }

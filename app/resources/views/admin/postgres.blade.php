@@ -3,14 +3,18 @@
 @section('title', 'PostgreSQL Admin - Tcloud')
 
 @section('content')
-<div class="p-6" x-data="jsonData()" x-init="init()">
-    <div class="flex justify-between items-center mb-6">
-        <h1 class="text-2xl font-bold text-gray-800">Administracion PostgreSQL</h1>
+<style>
+.query-sidebar { max-height: 180px; }
+@media (min-width: 640px) { .query-sidebar { max-height: 520px; } }
+</style>
+<div class="p-3 sm:p-6 pb-24 sm:pb-8" x-data="jsonData()" x-init="init()">
+    <div class="flex justify-between items-center mb-4 sm:mb-6">
+        <h1 class="text-lg sm:text-2xl font-bold text-gray-800">Administracion PostgreSQL</h1>
     </div>
 
     <div class="bg-white rounded-lg shadow">
         <div class="border-b border-gray-200">
-            <nav class="flex -mb-px">
+            <nav class="flex -mb-px overflow-x-auto">
                 <button @click="setTab('config')"
                         :class="activeTab === 'config' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'"
                         class="px-6 py-3 border-b-2 font-medium text-sm transition-colors">
@@ -37,7 +41,7 @@
         <div class="p-6">
             <template x-if="activeTab === 'config'">
                 <div>
-                    <div class="grid grid-cols-2 gap-4">
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-1">Host</label>
                             <input type="text" x-model="config.host" class="w-full border rounded px-3 py-2">
@@ -54,7 +58,7 @@
                             <label class="block text-sm font-medium text-gray-700 mb-1">Usuario</label>
                             <input type="text" x-model="config.username" class="w-full border rounded px-3 py-2">
                         </div>
-                        <div class="col-span-2">
+                        <div class="sm:col-span-2">
                             <label class="block text-sm font-medium text-gray-700 mb-1">Contrasena</label>
                             <input type="password" x-model="config.password" class="w-full border rounded px-3 py-2">
                         </div>
@@ -68,9 +72,11 @@
                             <span x-show="testing">Probando...</span>
                         </button>
                     </div>
-                    <div x-show="testResult !== null" x-transition class="mt-4 p-4 rounded" :class="testResult.success ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800'">
-                        <p x-text="testResult.message"></p>
-                    </div>
+                    <template x-if="testResult !== null">
+                        <div x-transition class="mt-4 p-4 rounded" :class="testResult.success ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800'">
+                            <p x-text="testResult.message"></p>
+                        </div>
+                    </template>
                 </div>
             </template>
 
@@ -98,10 +104,10 @@
             </template>
 
             <template x-if="activeTab === 'query'">
-                <div class="flex gap-0" style="min-height:520px;">
+                <div class="flex flex-col sm:flex-row gap-0">
 
                     <!-- ── Sidebar ── -->
-                    <div class="w-52 flex-shrink-0 border-r pr-3 mr-4 overflow-y-auto" style="max-height:520px;">
+                    <div class="query-sidebar w-full sm:w-52 sm:flex-shrink-0 border-b sm:border-b-0 sm:border-r pb-3 sm:pb-0 pr-0 sm:pr-3 mr-0 sm:mr-4 overflow-y-auto">
 
                         <!-- Tables list -->
                         <div class="mb-5">
@@ -239,7 +245,7 @@
                     <hr class="my-6">
 
                     <h3 class="font-medium text-gray-800 mb-4">Backup via FTP</h3>
-                    <div class="grid grid-cols-2 gap-4">
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-1">Host FTP</label>
                             <input type="text" x-model="ftp.host" class="w-full border rounded px-3 py-2">
@@ -256,7 +262,7 @@
                             <label class="block text-sm font-medium text-gray-700 mb-1">Contrasena FTP</label>
                             <input type="password" x-model="ftp.password" class="w-full border rounded px-3 py-2">
                         </div>
-                        <div class="col-span-2">
+                        <div class="sm:col-span-2">
                             <label class="block text-sm font-medium text-gray-700 mb-1">Ruta FTP (opcional)</label>
                             <input type="text" x-model="ftp.path" class="w-full border rounded px-3 py-2">
                         </div>
@@ -322,10 +328,10 @@ function jsonData() {
     return {
         activeTab: 'config',
         config: {
-            host: '{{ env("PG_HOST", "postgres") }}',
-            port: '{{ env("PG_PORT", "5432") }}',
-            database: '{{ env("PG_DATABASE", "tcloudstorage") }}',
-            username: '{{ env("PG_USERNAME", "cloud") }}',
+            host: '{{ env("DB_HOST", "127.0.0.1") }}',
+            port: '{{ env("DB_PORT", "5432") }}',
+            database: '{{ env("DB_DATABASE", "tcloudstorage") }}',
+            username: '{{ env("DB_USERNAME", "cloud") }}',
             password: ''
         },
         ftp: {

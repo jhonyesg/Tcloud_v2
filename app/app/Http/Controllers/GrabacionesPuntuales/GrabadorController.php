@@ -142,8 +142,8 @@ class GrabadorController extends Controller
 
         $request->validate([
             'user_id' => 'required|exists:users,id',
-            'nombre_base' => 'required|string|max:50|regex:/^[a-zA-Z0-9_]+$/',
-            'ruta_base' => 'required|string|max:500',
+            'nombre_base' => 'required|string|max:47|regex:/^[a-zA-Z0-9_]+$/',
+            'ruta_base' => 'required|string|max:449',
         ]);
 
         $user = User::find($request->user_id);
@@ -180,55 +180,43 @@ class GrabadorController extends Controller
             }
         }
 
-        DB::table('grabador_usuario')->insert([
-            'grabador_id' => $grabador->id,
-            'user_id' => $request->user_id,
-            'limite_canales' => 10,
-            'created_at' => now(),
-            'updated_at' => now(),
-        ]);
+        try {
+            DB::transaction(function () use ($grabador, $request, $nombreBase, $rutaBase) {
+                DB::table('grabador_usuario')->insert([
+                    'grabador_id' => $grabador->id,
+                    'user_id' => $request->user_id,
+                    'limite_canales' => 10,
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
 
-        $canalesCreados = [];
-        $errores = [];
+                $esRadio = $grabador->tipo === 'radio';
 
-        for ($i = 1; $i <= 10; $i++) {
-            $slotNombre = $nombreBase . '_' . str_pad($i, 2, '0', STR_PAD_LEFT);
-            $rutaDestino = $rutaBase . '/' . $slotNombre;
-            $esRadio = $grabador->tipo === 'radio';
-
-            $canal = Canal::create([
-                'grabador_id' => $grabador->id,
-                'usuario_id' => $request->user_id,
-                'slot_nombre' => $slotNombre,
-                'ruta_destino' => $rutaDestino,
-                'duracion_grabacion' => '00:21:00',
-                'formato_salida' => $esRadio ? '.mp3' : '.mp4',
-                'ffmpeg_args_pre' => '-re',
-                'ffmpeg_args_post' => $esRadio ? '-acodec libmp3lame' : '-c copy',
-                'activo' => true,
+                for ($i = 1; $i <= 10; $i++) {
+                    $slotNombre = $nombreBase . '_' . str_pad($i, 2, '0', STR_PAD_LEFT);
+                    Canal::create([
+                        'grabador_id' => $grabador->id,
+                        'usuario_id' => $request->user_id,
+                        'slot_nombre' => $slotNombre,
+                        'ruta_destino' => $rutaBase . '/' . $slotNombre,
+                        'duracion_grabacion' => '00:21:00',
+                        'formato_salida' => $esRadio ? '.mp3' : '.mp4',
+                        'ffmpeg_args_pre' => '-re',
+                        'ffmpeg_args_post' => $esRadio ? '-acodec libmp3lame' : '-c copy',
+                        'activo' => true,
+                    ]);
+                }
+            });
+        } catch (\Throwable $e) {
+            \Log::error('asignarUsuario: error al crear canales', [
+                'grabador' => $grabador->id,
+                'user_id' => $request->user_id,
+                'error' => $e->getMessage(),
             ]);
-
-            $resultado = $this->apiService->crearCanal($grabador, $canal);
-
-            if ($resultado['success'] && !empty($resultado['api_canal_id'])) {
-                $canal->update(['api_canal_id' => $resultado['api_canal_id']]);
-            } else {
-                $errores[] = "Canal {$slotNombre}: " . ($resultado['error'] ?? 'Error en API');
-            }
-
-            $canalesCreados[] = $canal;
+            return response()->json(['error' => 'Error al crear los canales: ' . $e->getMessage()], 500);
         }
 
         $grabador->load('usuarios');
-
-        if (!empty($errores)) {
-            return response()->json([
-                'warning' => 'Canales creados pero algunos no se registraron en el grabador',
-                'errores' => $errores,
-                'usuarios' => $grabador->usuarios
-            ]);
-        }
-
         return response()->json($grabador->usuarios);
     }
 
@@ -238,12 +226,31 @@ class GrabadorController extends Controller
 
         $request->validate([
             'limite_canales' => 'nullable|integer|min:1|max:100',
-            'ruta_base'      => 'nullable|string|max:500',
+            'ruta_base'      => 'nullable|string|max:449',
         ]);
 
+        $canalesDelUsuario = Canal::where('grabador_id', $grabador->id)
+            ->where('usuario_id', $userId)
+            ->orderBy('id')
+            ->get();
+
+        $nuevoLimite = $request->filled('limite_canales') ? (int) $request->limite_canales : null;
+
+        // Eliminar canales sobrantes si el nuevo límite es menor al actual
+        if ($nuevoLimite !== null && $nuevoLimite < $canalesDelUsuario->count()) {
+            $canalesAEliminar = $canalesDelUsuario->slice($nuevoLimite);
+            foreach ($canalesAEliminar as $canal) {
+                if ($canal->api_canal_id) {
+                    $this->apiService->eliminarCanal($grabador, $canal->api_canal_id);
+                }
+                $canal->delete();
+            }
+            $canalesDelUsuario = $canalesDelUsuario->take($nuevoLimite);
+        }
+
         $pivotUpdate = ['updated_at' => now()];
-        if ($request->filled('limite_canales')) {
-            $pivotUpdate['limite_canales'] = $request->limite_canales;
+        if ($nuevoLimite !== null) {
+            $pivotUpdate['limite_canales'] = $nuevoLimite;
         }
 
         DB::table('grabador_usuario')
@@ -253,10 +260,7 @@ class GrabadorController extends Controller
 
         if ($request->filled('ruta_base')) {
             $rutaBase = rtrim($request->ruta_base, '/');
-            Canal::where('grabador_id', $grabador->id)
-                ->where('usuario_id', $userId)
-                ->get()
-                ->each(fn($c) => $c->update(['ruta_destino' => $rutaBase . '/' . $c->slot_nombre]));
+            $canalesDelUsuario->each(fn($c) => $c->update(['ruta_destino' => $rutaBase . '/' . $c->slot_nombre]));
         }
 
         $grabador->load('usuarios');

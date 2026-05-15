@@ -7,11 +7,13 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class StorageProvider extends Model
 {
-    protected $fillable = ['name', 'type', 'config', 'base_path', 'enabled'];
+    protected $fillable = ['name', 'type', 'config', 'base_path', 'enabled', 'is_accessible', 'last_checked_at'];
 
     protected $casts = [
         'config' => 'array',
         'enabled' => 'boolean',
+        'is_accessible' => 'boolean',
+        'last_checked_at' => 'datetime',
     ];
 
     public function userStorages(): HasMany
