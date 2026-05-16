@@ -157,7 +157,7 @@ class CanalController extends Controller
             'duracion_grabacion' => 'nullable|string|max:20',
             'ffmpeg_args_pre' => 'nullable|string|max:100',
             'ffmpeg_args_post' => 'nullable|string|max:100',
-            'formato_salida' => 'nullable|string|max:10',
+            'formato_salida' => 'nullable|in:.mp3,.mp4',
         ]);
 
         $campos = $request->only([

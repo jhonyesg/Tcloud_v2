@@ -16,3 +16,9 @@ Schedule::call(function () {
     $service->cleanOrphans();
     $service->cleanExpired();
 })->everyThirtyMinutes()->name('sessions:cleanup')->withoutOverlapping();
+
+// Limpieza de logs de acceso a shares más antiguos de 90 días (corre 1 vez/semana)
+Schedule::command('shares:cleanup-logs --days=90')->weekly()->sundays()->at('03:00');
+
+// Corrección de cuotas personales — detecta y corrige drift (corre 1 vez/semana)
+Schedule::command('files:recalc-personal-quota')->weekly()->sundays()->at('03:30');

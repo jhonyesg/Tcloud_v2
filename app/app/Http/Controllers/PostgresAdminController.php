@@ -201,138 +201,187 @@ class PostgresAdminController extends Controller
         }
 
         $filename = "backup_{$cfg['database']}_" . date('Y-m-d_H-i-s') . ".sql";
-        $lines    = [];
 
-        $lines[] = "-- Backup generado por Tcloud PostgreSQL Admin";
-        $lines[] = "-- Base de datos: {$cfg['database']}";
-        $lines[] = "-- Fecha: " . date('Y-m-d H:i:s');
-        $lines[] = "-- ============================================";
-        $lines[] = "";
-        $lines[] = "SET client_encoding = 'UTF8';";
-        $lines[] = "SET standard_conforming_strings = on;";
-        $lines[] = "BEGIN;";
-        $lines[] = "";
+        // Stream la respuesta: nunca carga toda la BD en memoria
+        return response()->streamDownload(function () use ($pdo, $cfg) {
+            // Snapshot consistente para todo el backup
+            $pdo->exec("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ");
 
-        $tablesStmt = $pdo->query("
-            SELECT table_name
-            FROM information_schema.tables
-            WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
-            ORDER BY table_name
-        ");
-        $tables = array_column($tablesStmt->fetchAll(), 'table_name');
+            echo "-- Backup generado por Tcloud PostgreSQL Admin\n";
+            echo "-- Base de datos: {$cfg['database']}\n";
+            echo "-- Fecha: " . date('Y-m-d H:i:s') . "\n";
+            echo "-- ============================================\n\n";
+            echo "SET client_encoding = 'UTF8';\n";
+            echo "SET standard_conforming_strings = on;\n";
+            echo "BEGIN;\n";
+            flush();
 
-        foreach ($tables as $tableName) {
-            $lines[] = "";
-            $lines[] = "-- ──────────────────────────────────────────";
-            $lines[] = "-- Table: {$tableName}";
-            $lines[] = "-- ──────────────────────────────────────────";
-            $lines[] = "DROP TABLE IF EXISTS \"{$tableName}\" CASCADE;";
+            $tables = array_column($pdo->query(
+                "SELECT table_name FROM information_schema.tables
+                 WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+                 ORDER BY table_name"
+            )->fetchAll(PDO::FETCH_ASSOC), 'table_name');
 
-            $colsStmt = $pdo->prepare("
-                SELECT column_name, data_type, is_nullable, column_default,
-                       character_maximum_length, numeric_precision, numeric_scale
-                FROM information_schema.columns
-                WHERE table_name = ? AND table_schema = 'public'
-                ORDER BY ordinal_position
-            ");
-            $colsStmt->execute([$tableName]);
+            foreach ($tables as $tableName) {
+                echo "\n-- ──────────────────────────────────────────\n";
+                echo "-- Table: {$tableName}\n";
+                echo "-- ──────────────────────────────────────────\n";
+                echo "DROP TABLE IF EXISTS \"{$tableName}\" CASCADE;\n";
 
-            $colDefs = [];
-            foreach ($colsStmt->fetchAll() as $col) {
-                $type = $col['data_type'];
-                if ($col['character_maximum_length']) {
-                    $type .= "({$col['character_maximum_length']})";
-                } elseif ($col['numeric_precision'] && $col['data_type'] === 'numeric') {
-                    $type .= "({$col['numeric_precision']},{$col['numeric_scale']})";
+                // Columnas
+                $colsStmt = $pdo->prepare(
+                    "SELECT column_name, data_type, udt_name, is_nullable, column_default,
+                            character_maximum_length, numeric_precision, numeric_scale
+                     FROM information_schema.columns
+                     WHERE table_name = ? AND table_schema = 'public'
+                     ORDER BY ordinal_position"
+                );
+                $colsStmt->execute([$tableName]);
+
+                $colDefs     = [];
+                $columnNames = [];
+                foreach ($colsStmt->fetchAll(PDO::FETCH_ASSOC) as $col) {
+                    $columnNames[] = '"' . $col['column_name'] . '"';
+                    $def = "    \"{$col['column_name']}\" " . $this->resolveColumnType($col);
+                    if ($col['is_nullable'] === 'NO') $def .= ' NOT NULL';
+                    if ($col['column_default'] !== null) $def .= " DEFAULT {$col['column_default']}";
+                    $colDefs[] = $def;
                 }
-                $def = "    \"{$col['column_name']}\" {$type}";
-                if ($col['is_nullable'] === 'NO') $def .= " NOT NULL";
-                if ($col['column_default'] !== null) $def .= " DEFAULT {$col['column_default']}";
-                $colDefs[] = $def;
-            }
 
-            $pkStmt = $pdo->prepare("
-                SELECT kcu.column_name
-                FROM information_schema.table_constraints tc
-                JOIN information_schema.key_column_usage kcu
-                    ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
-                WHERE tc.table_name = ? AND tc.constraint_type = 'PRIMARY KEY' AND tc.table_schema = 'public'
-                ORDER BY kcu.ordinal_position
-            ");
-            $pkStmt->execute([$tableName]);
-            $pkCols = array_map(fn($r) => '"' . $r['column_name'] . '"', $pkStmt->fetchAll());
-            if (!empty($pkCols)) {
-                $colDefs[] = "    PRIMARY KEY (" . implode(', ', $pkCols) . ")";
-            }
+                // Primary key
+                $pkStmt = $pdo->prepare(
+                    "SELECT kcu.column_name
+                     FROM information_schema.table_constraints tc
+                     JOIN information_schema.key_column_usage kcu
+                         ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+                     WHERE tc.table_name = ? AND tc.constraint_type = 'PRIMARY KEY' AND tc.table_schema = 'public'
+                     ORDER BY kcu.ordinal_position"
+                );
+                $pkStmt->execute([$tableName]);
+                $pkCols = array_map(fn($r) => '"' . $r['column_name'] . '"', $pkStmt->fetchAll(PDO::FETCH_ASSOC));
+                if (!empty($pkCols)) {
+                    $colDefs[] = '    PRIMARY KEY (' . implode(', ', $pkCols) . ')';
+                }
 
-            $lines[] = "CREATE TABLE \"{$tableName}\" (";
-            $lines[] = implode(",\n", $colDefs);
-            $lines[] = ");";
+                echo "CREATE TABLE \"{$tableName}\" (\n";
+                echo implode(",\n", $colDefs) . "\n);\n";
 
-            $idxStmt = $pdo->prepare("
-                SELECT indexname, indexdef FROM pg_indexes
-                WHERE tablename = ? AND schemaname = 'public'
-                AND indexname NOT LIKE '%_pkey'
-            ");
-            $idxStmt->execute([$tableName]);
-            foreach ($idxStmt->fetchAll() as $idx) {
-                $lines[] = $idx['indexdef'] . ";";
-            }
+                // Índices (excluyendo PK)
+                $idxStmt = $pdo->prepare(
+                    "SELECT indexname, indexdef FROM pg_indexes
+                     WHERE tablename = ? AND schemaname = 'public' AND indexname NOT LIKE '%_pkey'"
+                );
+                $idxStmt->execute([$tableName]);
+                foreach ($idxStmt->fetchAll(PDO::FETCH_ASSOC) as $idx) {
+                    echo $idx['indexdef'] . ";\n";
+                }
 
-            $dataStmt = $pdo->query("SELECT * FROM \"{$tableName}\"");
-            $rows     = $dataStmt->fetchAll();
-            if (!empty($rows)) {
-                $fieldNames = array_map(fn($k) => '"' . $k . '"', array_keys($rows[0]));
-                $lines[] = "";
-                $lines[] = "-- Data (" . count($rows) . " rows)";
-                foreach ($rows as $dataRow) {
-                    $values = [];
-                    foreach ($dataRow as $value) {
-                        if ($value === null) {
-                            $values[] = 'NULL';
-                        } elseif (is_numeric($value) && !preg_match('/^0\d/', $value)) {
-                            $values[] = $value;
-                        } else {
-                            $values[] = "'" . str_replace("'", "''", $value) . "'";
-                        }
+                // Datos con cursor — lee 1000 filas a la vez, sin cargar la tabla entera
+                $cursorName = 'bkp_' . preg_replace('/[^a-z0-9_]/', '_', $tableName);
+                $pdo->exec("DECLARE {$cursorName} CURSOR FOR SELECT * FROM \"{$tableName}\"");
+
+                $firstBatch  = true;
+                $insertPrefix = "INSERT INTO \"{$tableName}\" (" . implode(', ', $columnNames) . ') VALUES ';
+                while (true) {
+                    $batch = $pdo->query("FETCH 1000 FROM {$cursorName}")->fetchAll(PDO::FETCH_ASSOC);
+                    if (empty($batch)) break;
+
+                    if ($firstBatch) {
+                        echo "\n-- Data\n";
+                        $firstBatch = false;
                     }
-                    $lines[] = "INSERT INTO \"{$tableName}\" (" . implode(', ', $fieldNames) . ") VALUES (" . implode(', ', $values) . ");";
+
+                    foreach ($batch as $row) {
+                        $values = array_map([$this, 'escapeSqlValue'], array_values($row));
+                        echo $insertPrefix . '(' . implode(', ', $values) . ");\n";
+                    }
+                    flush();
+                }
+
+                $pdo->exec("CLOSE {$cursorName}");
+                flush();
+            }
+
+            // Foreign keys con reglas ON DELETE / ON UPDATE
+            echo "\n-- ──────────────────────────────────────────\n";
+            echo "-- Foreign Key Constraints\n";
+            echo "-- ──────────────────────────────────────────\n";
+            foreach ($tables as $tableName) {
+                $fkStmt = $pdo->prepare(
+                    "SELECT tc.constraint_name, kcu.column_name,
+                            ccu.table_name AS foreign_table, ccu.column_name AS foreign_column,
+                            rc.delete_rule, rc.update_rule
+                     FROM information_schema.table_constraints tc
+                     JOIN information_schema.key_column_usage kcu
+                         ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+                     JOIN information_schema.constraint_column_usage ccu
+                         ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema
+                     JOIN information_schema.referential_constraints rc
+                         ON tc.constraint_name = rc.constraint_name AND tc.table_schema = rc.constraint_schema
+                     WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_name = ? AND tc.table_schema = 'public'"
+                );
+                $fkStmt->execute([$tableName]);
+                foreach ($fkStmt->fetchAll(PDO::FETCH_ASSOC) as $fk) {
+                    $actions = '';
+                    if ($fk['delete_rule'] !== 'NO ACTION') $actions .= " ON DELETE {$fk['delete_rule']}";
+                    if ($fk['update_rule'] !== 'NO ACTION') $actions .= " ON UPDATE {$fk['update_rule']}";
+                    echo "ALTER TABLE \"{$tableName}\" ADD CONSTRAINT \"{$fk['constraint_name']}\"\n";
+                    echo "    FOREIGN KEY (\"{$fk['column_name']}\") REFERENCES \"{$fk['foreign_table']}\" (\"{$fk['foreign_column']}\"){$actions};\n";
                 }
             }
-        }
 
-        $lines[] = "";
-        $lines[] = "-- ──────────────────────────────────────────";
-        $lines[] = "-- Foreign Key Constraints";
-        $lines[] = "-- ──────────────────────────────────────────";
-        foreach ($tables as $tableName) {
-            $fkStmt = $pdo->prepare("
-                SELECT tc.constraint_name, kcu.column_name,
-                       ccu.table_name AS foreign_table, ccu.column_name AS foreign_column
-                FROM information_schema.table_constraints AS tc
-                JOIN information_schema.key_column_usage AS kcu
-                    ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
-                JOIN information_schema.constraint_column_usage AS ccu
-                    ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema
-                WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_name = ? AND tc.table_schema = 'public'
-            ");
-            $fkStmt->execute([$tableName]);
-            foreach ($fkStmt->fetchAll() as $fk) {
-                $lines[] = "ALTER TABLE \"{$tableName}\" ADD CONSTRAINT \"{$fk['constraint_name']}\"";
-                $lines[] = "    FOREIGN KEY (\"{$fk['column_name']}\") REFERENCES \"{$fk['foreign_table']}\" (\"{$fk['foreign_column']}\");";
+            // CHECK constraints
+            echo "\n-- ──────────────────────────────────────────\n";
+            echo "-- Check Constraints\n";
+            echo "-- ──────────────────────────────────────────\n";
+            $ckStmt = $pdo->query(
+                "SELECT conrelid::regclass AS tbl, conname, pg_get_constraintdef(oid) AS def
+                 FROM pg_constraint WHERE contype = 'c'
+                 ORDER BY tbl, conname"
+            );
+            foreach ($ckStmt->fetchAll(PDO::FETCH_ASSOC) as $ck) {
+                echo "ALTER TABLE \"{$ck['tbl']}\" ADD CONSTRAINT \"{$ck['conname']}\" {$ck['def']};\n";
             }
-        }
 
-        $lines[] = "";
-        $lines[] = "COMMIT;";
-
-        $sqlContent = implode("\n", $lines);
-
-        return response($sqlContent, 200, [
+            $pdo->exec('COMMIT');
+            echo "\nCOMMIT;\n";
+        }, $filename, [
             'Content-Type'        => 'text/plain; charset=UTF-8',
             'Content-Disposition' => "attachment; filename=\"{$filename}\"",
-            'Content-Length'      => strlen($sqlContent),
+            'X-Accel-Buffering'   => 'no',
         ]);
+    }
+
+    private function resolveColumnType(array $col): string
+    {
+        $type = $col['data_type'];
+
+        if ($type === 'USER-DEFINED') return $col['udt_name'];
+        if ($type === 'ARRAY')        return $col['udt_name'];
+
+        if (!empty($col['character_maximum_length'])) {
+            return "character varying({$col['character_maximum_length']})";
+        }
+        if ($col['data_type'] === 'numeric' && !empty($col['numeric_precision'])) {
+            return "numeric({$col['numeric_precision']},{$col['numeric_scale']})";
+        }
+
+        return $type;
+    }
+
+    private function escapeSqlValue($value): string
+    {
+        if ($value === null) return 'NULL';
+        if ($value === 't')  return 'TRUE';
+        if ($value === 'f')  return 'FALSE';
+
+        // Números sin cero inicial (enteros y decimales)
+        if (is_numeric($value) && !preg_match('/^0\d/', (string) $value)) {
+            return (string) $value;
+        }
+
+        // Todo lo demás: escapar comillas simples y backslashes
+        return "'" . str_replace(["\\", "'"], ["\\\\", "''"], (string) $value) . "'";
     }
 
     public function saveFtpConfig(Request $request)
