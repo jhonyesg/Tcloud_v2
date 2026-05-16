@@ -247,11 +247,6 @@
                         <span x-show="sidebarOpen" x-transition class="font-medium text-sm">Storages</span>
                     </a>
 
-                    <a href="/admin/postgres" data-nav-path="/admin/postgres"                       class="nav-link flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg transition-colors text-brand-200 hover:bg-brand-800 hover:text-white">
-                        <i class="nav-icon fas fa-server w-5 text-center text-brand-300"></i>
-                        <span x-show="sidebarOpen" x-transition class="font-medium text-sm">PostgreSQL</span>
-                    </a>
-
                     <a href="/admin/media-editor" data-nav-path="/admin/media-editor"                       class="nav-link flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg transition-colors text-brand-200 hover:bg-brand-800 hover:text-white">
                         <i class="nav-icon fas fa-cut w-5 text-center text-brand-300"></i>
                         <span x-show="sidebarOpen" x-transition class="font-medium text-sm">Editor de Medios</span>
@@ -262,20 +257,63 @@
                         <span x-show="sidebarOpen" x-transition class="font-medium text-sm">Grabadores</span>
                     </a>
 
-                    <a href="/correo" data-nav-path="/correo"                       class="nav-link flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg transition-colors text-brand-200 hover:bg-brand-800 hover:text-white">
-                        <i class="nav-icon fas fa-envelope w-5 text-center text-brand-300"></i>
-                        <span x-show="sidebarOpen" x-transition class="font-medium text-sm">Correo</span>
-                    </a>
+                    <!-- Grupo: Sistema -->
+                    <div x-data="{
+                        open: (function(){
+                            var saved = localStorage.getItem('adminSistemaOpen');
+                            if (saved !== null) return saved === 'true';
+                            var p = window.location.pathname;
+                            return p.startsWith('/correo') || p.startsWith('/admin/sessions') || p.startsWith('/admin/redis') || p.startsWith('/admin/postgres');
+                        })(),
+                        toggle() { this.open = !this.open; localStorage.setItem('adminSistemaOpen', this.open); }
+                    }">
+                        <!-- Sidebar expandido: botón grupo -->
+                        <button x-show="sidebarOpen" @click="toggle()" data-grupo="sistema"
+                            class="w-full flex items-center justify-between mx-2 px-3 py-2.5 rounded-lg transition-colors text-brand-200 hover:bg-brand-800 hover:text-white"
+                            style="width: calc(100% - 1rem);">
+                            <div class="flex items-center gap-3">
+                                <i class="fas fa-cogs w-5 text-center text-brand-300"></i>
+                                <span class="font-medium text-sm">Sistema</span>
+                            </div>
+                            <i class="fas fa-chevron-down text-xs mr-1 transition-transform duration-200" :class="open ? 'rotate-180' : ''"></i>
+                        </button>
 
-                    <a href="/admin/sessions" data-nav-path="/admin/sessions"                       class="nav-link flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg transition-colors text-brand-200 hover:bg-brand-800 hover:text-white">
-                        <i class="nav-icon fas fa-shield-alt w-5 text-center text-brand-300"></i>
-                        <span x-show="sidebarOpen" x-transition class="font-medium text-sm">Sesiones</span>
-                    </a>
+                        <!-- Sidebar colapsado: solo ícono del grupo -->
+                        <div x-show="!sidebarOpen" class="flex justify-center mx-2 px-3 py-2.5">
+                            <i class="fas fa-cogs w-5 text-center text-brand-300"></i>
+                        </div>
 
-                    <a href="/admin/redis" data-nav-path="/admin/redis"                       class="nav-link flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg transition-colors text-brand-200 hover:bg-brand-800 hover:text-white">
-                        <i class="nav-icon fas fa-memory w-5 text-center text-brand-300"></i>
-                        <span x-show="sidebarOpen" x-transition class="font-medium text-sm">Redis</span>
-                    </a>
+                        <!-- Hijos (solo cuando sidebar expandido y grupo abierto) -->
+                        <div x-show="sidebarOpen && open"
+                             x-transition:enter="transition ease-out duration-150"
+                             x-transition:enter-start="opacity-0 -translate-y-1"
+                             x-transition:enter-end="opacity-100 translate-y-0"
+                             x-transition:leave="transition ease-in duration-100"
+                             x-transition:leave-start="opacity-100 translate-y-0"
+                             x-transition:leave-end="opacity-0 -translate-y-1"
+                             class="mt-0.5 space-y-0.5">
+                            <a href="/admin/sessions" data-nav-path="/admin/sessions"
+                               class="nav-link flex items-center gap-3 ml-5 mr-2 px-3 py-2 rounded-lg transition-colors text-brand-200 hover:bg-brand-800 hover:text-white">
+                                <i class="nav-icon fas fa-shield-alt w-4 text-center text-brand-300 text-xs"></i>
+                                <span class="font-medium text-sm">Sesiones</span>
+                            </a>
+                            <a href="/admin/redis" data-nav-path="/admin/redis"
+                               class="nav-link flex items-center gap-3 ml-5 mr-2 px-3 py-2 rounded-lg transition-colors text-brand-200 hover:bg-brand-800 hover:text-white">
+                                <i class="nav-icon fas fa-memory w-4 text-center text-brand-300 text-xs"></i>
+                                <span class="font-medium text-sm">Redis</span>
+                            </a>
+                            <a href="/admin/postgres" data-nav-path="/admin/postgres"
+                               class="nav-link flex items-center gap-3 ml-5 mr-2 px-3 py-2 rounded-lg transition-colors text-brand-200 hover:bg-brand-800 hover:text-white">
+                                <i class="nav-icon fas fa-server w-4 text-center text-brand-300 text-xs"></i>
+                                <span class="font-medium text-sm">PostgreSQL</span>
+                            </a>
+                            <a href="/correo" data-nav-path="/correo"
+                               class="nav-link flex items-center gap-3 ml-5 mr-2 px-3 py-2 rounded-lg transition-colors text-brand-200 hover:bg-brand-800 hover:text-white">
+                                <i class="nav-icon fas fa-envelope w-4 text-center text-brand-300 text-xs"></i>
+                                <span class="font-medium text-sm">Correo</span>
+                            </a>
+                        </div>
+                    </div>
 
                     <a href="/admin/external-sites" data-nav-path="/admin/external-sites"                       class="nav-link flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg transition-colors text-brand-200 hover:bg-brand-800 hover:text-white">
                         <i class="nav-icon fas fa-globe w-5 text-center text-brand-300"></i>
@@ -551,6 +589,19 @@
                 if (icon) { icon.classList.remove('text-white'); icon.classList.add('text-brand-300'); }
             }
         });
+
+        // Resaltar el botón padre del grupo Sistema si se está en una ruta hija
+        var sistemaPaths = ['/correo', '/admin/sessions', '/admin/redis', '/admin/postgres'];
+        var enSistema = sistemaPaths.some(function(p) { return path.startsWith(p); });
+        if (enSistema) {
+            var btn = document.querySelector('[data-grupo="sistema"]');
+            if (btn) {
+                btn.classList.add('text-white');
+                btn.classList.remove('text-brand-200');
+                var icon = btn.querySelector('.fas.fa-cogs');
+                if (icon) { icon.classList.add('text-white'); icon.classList.remove('text-brand-300'); }
+            }
+        }
     });
     </script>
 

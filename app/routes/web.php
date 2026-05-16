@@ -104,6 +104,7 @@ Route::middleware('auth')->group(function () {
     Route::get('/user/storages', [App\Http\Controllers\FileController::class, 'storages']);
     Route::post('/files/upload', [App\Http\Controllers\FileController::class, 'upload']);
     Route::get('/files/{file}/download', [App\Http\Controllers\FileController::class, 'download']);
+    Route::get('/files/{file}/download-folder', [App\Http\Controllers\FileController::class, 'downloadFolder']);
     Route::get('/files/{file}/preview', [App\Http\Controllers\FileController::class, 'preview']);
     Route::get('/files/{file}/view', [App\Http\Controllers\FileController::class, 'view']);
     Route::post('/files/{file}/rotate', [App\Http\Controllers\FileController::class, 'rotate']);

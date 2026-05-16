@@ -528,6 +528,98 @@ class FileController extends Controller
         return $response;
     }
 
+    public function downloadFolder(Request $request, int $id)
+    {
+        $folder = File::findOrFail($id);
+
+        if (!$folder->is_folder) {
+            return response()->json(['error' => 'Not a folder'], 400);
+        }
+
+        if (!$this->checkFilePermission($folder, 'read')) {
+            return response()->json(['error' => 'Forbidden'], 403);
+        }
+
+        $storage = $folder->storageProvider;
+        if (!$storage || $storage->type !== 'local') {
+            return response()->json(['error' => 'Download not supported for this storage type'], 400);
+        }
+
+        $maxBytes = 2 * 1024 * 1024 * 1024; // 2 GB
+        $totalSize = $this->getFolderSizeRecursive($folder->id);
+        if ($totalSize > $maxBytes) {
+            $gb = number_format($totalSize / (1024 ** 3), 2);
+            return response()->json([
+                'error' => "La carpeta pesa {$gb} GB. Solo se permite descargar carpetas de hasta 2 GB.",
+                'size_exceeded' => true,
+            ], 413);
+        }
+
+        if ($request->boolean('check')) {
+            return response()->json(['ok' => true, 'size' => $totalSize]);
+        }
+
+        $realBasePath = realpath($storage->base_path);
+        if (!$realBasePath) {
+            return response()->json(['error' => 'Storage path not found'], 404);
+        }
+
+        $tmpFile = tempnam(sys_get_temp_dir(), 'tcloud_folder_');
+        $zip = new \ZipArchive();
+        if ($zip->open($tmpFile, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) !== true) {
+            return response()->json(['error' => 'Could not create ZIP'], 500);
+        }
+
+        $this->addFolderToZip($zip, $folder, $realBasePath, '');
+
+        $zip->close();
+
+        $zipName = $folder->name . '.zip';
+
+        return response()->download($tmpFile, $zipName, [
+            'Content-Type' => 'application/zip',
+            'X-Accel-Buffering' => 'no',
+        ])->deleteFileAfterSend(true);
+    }
+
+    private function getFolderSizeRecursive(int $folderId): int
+    {
+        $rows = DB::select("
+            WITH RECURSIVE folder_tree AS (
+                SELECT id FROM files WHERE id = ?
+                UNION ALL
+                SELECT f.id FROM files f
+                INNER JOIN folder_tree ft ON f.parent_id = ft.id
+                WHERE f.is_folder = true
+            )
+            SELECT COALESCE(SUM(f.size), 0) AS total
+            FROM files f
+            INNER JOIN folder_tree ft ON f.parent_id = ft.id
+            WHERE f.is_folder = false
+        ", [$folderId]);
+
+        return (int) ($rows[0]->total ?? 0);
+    }
+
+    private function addFolderToZip(\ZipArchive $zip, File $folder, string $realBasePath, string $zipPrefix): void
+    {
+        $children = File::where('parent_id', $folder->id)->get();
+
+        $folderPrefix = $zipPrefix . $folder->name . '/';
+        $zip->addEmptyDir($folderPrefix);
+
+        foreach ($children as $child) {
+            if ($child->is_folder) {
+                $this->addFolderToZip($zip, $child, $realBasePath, $folderPrefix);
+            } else {
+                $realFilePath = realpath($realBasePath . '/' . $child->path);
+                if ($realFilePath && str_starts_with($realFilePath, $realBasePath) && file_exists($realFilePath)) {
+                    $zip->addFile($realFilePath, $folderPrefix . $child->name);
+                }
+            }
+        }
+    }
+
     public function preview(int $id)
     {
         $file = File::findOrFail($id);

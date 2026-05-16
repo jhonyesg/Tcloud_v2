@@ -65,6 +65,7 @@ document.addEventListener('alpine:init', () => {
     renamingFileId: null,
     renamingFileName: '',
 deleteConfirmFile: null,
+        toast: null,
         ready: false,
         searchQuery: '',
         searchMode: false,
@@ -614,6 +615,28 @@ deleteConfirmFile: null,
             const idx = this.files.findIndex(f => f.id === file.id);
             if (idx !== -1) this.files[idx] = { ...this.files[idx], name: updated.name };
         }
+    },
+
+    showToast(msg, type = 'error') {
+        this.toast = { msg, type };
+        setTimeout(() => this.toast = null, 4000);
+    },
+
+    async downloadItem(file) {
+        if (!file.is_folder) {
+            window.location = '/files/' + file.id + '/download';
+            return;
+        }
+        const res = await fetch('/files/' + file.id + '/download-folder?check=1', {
+            credentials: 'include',
+            headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+        });
+        if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            this.showToast(data.error || 'No se puede descargar esta carpeta.');
+            return;
+        }
+        window.location = '/files/' + file.id + '/download-folder';
     },
 
     deleteFile(file) {
@@ -1876,11 +1899,11 @@ deleteConfirmFile: null,
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.121 14.121L19 19m-7-7l7-7m-7 7l-2.879 2.879M12 12L9.121 9.121m0 5.758a3 3 0 10-4.243 4.243 3 3 0 004.243-4.243zm0-5.758a3 3 0 10-4.243-4.243 3 3 0 004.243 4.243z"/>
                                     </svg>
                                 </button>
-                                <a x-show="!file.is_folder" :href="'/files/' + file.id + '/download'" @click.stop class="p-1.5 sm:p-2 bg-white hover:bg-green-100 rounded-lg shadow-sm transition-colors" title="Descargar">
+                                <button @click.stop="downloadItem(file)" class="p-1.5 sm:p-2 bg-white hover:bg-green-100 rounded-lg shadow-sm transition-colors" :title="file.is_folder ? 'Descargar carpeta como ZIP' : 'Descargar'">
                                     <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
                                     </svg>
-                                </a>
+                                </button>
                                 <button x-show="canRename()" @click.stop="startRename(file)" class="p-1.5 sm:p-2 bg-white hover:bg-amber-100 rounded-lg shadow-sm transition-colors" title="Renombrar">
                                     <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
@@ -2008,11 +2031,11 @@ deleteConfirmFile: null,
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.121 14.121L19 19m-7-7l7-7m-7 7l-2.879 2.879M12 12L9.121 9.121m0 5.758a3 3 0 10-4.243 4.243 3 3 0 004.243-4.243zm0-5.758a3 3 0 10-4.243-4.243 3 3 0 004.243 4.243z"/>
                                                 </svg>
                                             </button>
-                                            <a x-show="!file.is_folder" :href="'/files/' + file.id + '/download'" @click.stop class="p-1.5 sm:p-2 bg-green-100 hover:bg-green-200 text-green-600 rounded-lg transition-colors" title="Descargar">
+                                            <button @click.stop="downloadItem(file)" class="p-1.5 sm:p-2 bg-green-100 hover:bg-green-200 text-green-600 rounded-lg transition-colors" :title="file.is_folder ? 'Descargar carpeta como ZIP' : 'Descargar'">
                                                 <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
                                                 </svg>
-                                            </a>
+                                            </button>
                                             <button x-show="canRename()" @click.stop="startRename(file)" class="p-1.5 sm:p-2 bg-amber-100 hover:bg-amber-200 text-amber-600 rounded-lg transition-colors" title="Renombrar">
                                                 <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
@@ -2208,13 +2231,13 @@ deleteConfirmFile: null,
                                 <p class="font-medium text-slate-700" x-text="selectedFile.mime_type || 'Archivo'"></p>
                             </div>
                         </div>
-                        <div class="mt-3 flex gap-2" x-show="!selectedFile.is_folder">
-                            <a :href="'/files/' + selectedFile.id + '/download'" class="flex-1 flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded-lg transition-colors text-sm">
+                        <div class="mt-3 flex gap-2">
+                            <button @click="downloadItem(selectedFile)" class="flex-1 flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded-lg transition-colors text-sm" :title="selectedFile.is_folder ? 'Descargar como ZIP' : 'Descargar'">
                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
                                 </svg>
-                                Descargar
-                            </a>
+                                <span x-text="selectedFile.is_folder ? 'Descargar ZIP' : 'Descargar'"></span>
+                            </button>
                         </div>
                     </div>
 
@@ -3261,6 +3284,19 @@ deleteConfirmFile: null,
             </svg>
             ← Volver
         </button>
+    </div>
+
+    <!-- Toast global -->
+    <div x-cloak x-show="toast" x-transition
+         class="fixed bottom-6 left-1/2 -translate-x-1/2 z-[9999] flex items-center gap-3 px-5 py-3 rounded-xl shadow-xl text-white text-sm font-medium pointer-events-none"
+         :class="toast?.type === 'success' ? 'bg-green-600' : 'bg-red-600'">
+        <svg x-show="toast?.type !== 'success'" class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.293 4.293a1 1 0 011.414 0L21 13.586V19a2 2 0 01-2 2H5a2 2 0 01-2-2v-5.414L10.293 4.293z"/>
+        </svg>
+        <svg x-show="toast?.type === 'success'" class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+        </svg>
+        <span x-text="toast?.msg"></span>
     </div>
 </div>
 <style>
