@@ -108,3 +108,160 @@ Cada usuario puede tener permisos distintos por storage:
 - `read` — solo lectura y descarga
 - `write` — lectura + subida de archivos
 - `full` — todo lo anterior + renombrar y eliminar
+
+---
+
+## Guía de migración a otro servidor (Escenario A)
+
+> **Escenario A**: solo se migra la plataforma (app + BD + Docker). Los archivos físicos de los storages quedan en el mismo lugar o se montan en el nuevo servidor con el mismo path. Este es el caso habitual.
+
+### Qué se mueve
+
+| Componente | Tamaño aprox. | Cómo |
+|---|---|---|
+| Código (`Tcloud_v2/`) | ~50 MB | `rsync` |
+| Base de datos (`tcloudstorage`) | ~286 MB | `pg_dump` / `pg_restore` |
+| `.env` | KB | copia manual |
+| Docker (PG + Redis) | imagen pública | se descarga sola |
+
+Los archivos físicos (grabaciones, prensa, radio) **no se copian** — se montan desde su ubicación actual.
+
+---
+
+### Paso 1 — Tomar backup de la BD (hacerlo ANTES de migrar)
+
+```bash
+# Genera un archivo .dump comprimido en el volumen del contenedor
+docker exec tcloud_postgres pg_dump \
+  -U cloud -d tcloudstorage \
+  --no-owner --no-acl -Fc \
+  -f /var/lib/postgresql/data/backup_tcloudstorage_$(date +%Y-%m-%d_%H-%M-%S).dump
+
+# Verificar que se creó (~30-60 MB)
+ls -lh /www/wwwroot/cloud.mediaserver.com.co/Tcloud_v2/data/postgres_data/backup_*.dump
+```
+
+El archivo queda en `data/postgres_data/` (volumen montado), accesible desde el host.
+
+---
+
+### Paso 2 — Copiar todo al nuevo servidor
+
+```bash
+# Desde el servidor actual — ajusta el destino
+rsync -avz --exclude='data/postgres_data/' \
+  /www/wwwroot/cloud.mediaserver.com.co/Tcloud_v2/ \
+  usuario@nuevo-server:/www/wwwroot/cloud.mediaserver.com.co/Tcloud_v2/
+
+# Copiar el backup de BD por separado
+scp /www/wwwroot/cloud.mediaserver.com.co/Tcloud_v2/data/postgres_data/backup_*.dump \
+  usuario@nuevo-server:/tmp/
+```
+
+> Se excluye `data/postgres_data/` del rsync porque los datos de PG se restauran con `pg_restore`, no copiando el directorio binario.
+
+---
+
+### Paso 3 — Levantar Docker en el nuevo servidor
+
+```bash
+cd /www/wwwroot/cloud.mediaserver.com.co/Tcloud_v2
+
+# Crear la red si no existe
+docker network create clouding_network 2>/dev/null || true
+
+# Levantar PG y Redis
+docker compose -f docker-compose.production.yml up -d
+```
+
+---
+
+### Paso 4 — Restaurar la base de datos
+
+```bash
+# Copiar el backup al contenedor
+docker cp /tmp/backup_tcloudstorage_FECHA.dump tcloud_postgres:/tmp/
+
+# Restaurar (el contenedor debe estar corriendo con la BD vacía)
+docker exec tcloud_postgres pg_restore \
+  -U cloud -d tcloudstorage \
+  --no-owner --no-acl \
+  /tmp/backup_tcloudstorage_FECHA.dump
+
+# Verificar integridad
+docker exec tcloud_postgres psql -U cloud -d tcloudstorage \
+  -c "SELECT COUNT(*) FROM files; SELECT COUNT(*) FROM users;"
+```
+
+---
+
+### Paso 5 — Ajustar paths si cambiaron (solo si el path de los discos es diferente)
+
+Si en el nuevo servidor los archivos físicos están en un path distinto al actual (`/www/wwwroot/data.mediaserver.com.co/Tcloud/`), actualizar en la BD:
+
+```bash
+docker exec tcloud_postgres psql -U cloud -d tcloudstorage -c "
+  UPDATE storage_providers
+  SET base_path = replace(base_path,
+    '/www/wwwroot/data.mediaserver.com.co',
+    '/NUEVO/PATH/AQUI')
+  WHERE type = 'local';
+"
+```
+
+Si el path es idéntico en el nuevo servidor, **omitir este paso**.
+
+---
+
+### Paso 6 — Configurar la app
+
+```bash
+cd /www/wwwroot/cloud.mediaserver.com.co/Tcloud_v2/app
+
+# Revisar/ajustar .env (credenciales, dominio, etc.)
+# Instalar dependencias si no se copiaron con rsync
+composer install --no-dev --optimize-autoloader
+
+# Correr migraciones pendientes (si las hay)
+/www/server/php/84/bin/php artisan migrate
+
+# Limpiar cachés
+/www/server/php/84/bin/php artisan config:cache
+/www/server/php/84/bin/php artisan route:cache
+/www/server/php/84/bin/php artisan view:clear
+```
+
+---
+
+### Paso 7 — Verificación final
+
+```bash
+# Procesos PHP-FPM saludables (debe ser ~10 workers, máx 50)
+ps --ppid $(cat /www/server/php/84/var/run/php-fpm.pid) | wc -l
+
+# Redis responde
+docker exec clouding_redis redis-cli -a "$REDIS_PASSWORD" ping
+
+# PG responde
+docker exec tcloud_postgres psql -U cloud -d tcloudstorage -c "SELECT 1;"
+
+# Abrir en browser y hacer login
+```
+
+---
+
+### Checklist rápido
+
+```
+□ Backup de BD tomado (data/postgres_data/backup_*.dump)
+□ Código copiado al nuevo server (rsync)
+□ .env copiado y ajustado
+□ Docker network creada (clouding_network)
+□ Contenedores PG + Redis corriendo
+□ BD restaurada con pg_restore
+□ Paths de storage_providers verificados/ajustados
+□ composer install ejecutado
+□ php artisan migrate ejecutado
+□ Cachés limpiados (config:cache, route:cache)
+□ Login exitoso en browser
+```

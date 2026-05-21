@@ -19,13 +19,21 @@ set -euo pipefail
 CONTAINER="tcloud_postgres"
 DATABASE="tcloudstorage"
 DB_USER="cloud"
-BACKUP_DIR="/www/wwwroot/cloud.mediaserver.com.co/Tcloud_v2/backup/db"
-RETENTION_DAYS=20
-TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
+BACKUP_DIR="/www/wwwroot/cloud.mediaserver.com.co/Tcloud_v2/backups"
+RETENTION_DAYS=30
+TODAY=$(date +"%Y%m%d")
+TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 FILENAME="${DATABASE}_${TIMESTAMP}.sql.gz"
 
 # Create backup directory if it doesn't exist
 mkdir -p "$BACKUP_DIR"
+
+# Skip if a backup already exists for today (prevents duplicates from manual runs)
+EXISTING=$(find "$BACKUP_DIR" -name "${DATABASE}_${TODAY}*.sql.gz" -type f | wc -l)
+if [ "$EXISTING" -gt 0 ]; then
+    echo "[$(date)] Backup already exists for today (${EXISTING} file). Skipping."
+    exit 0
+fi
 
 # Run pg_dump inside the Docker container and compress with gzip
 echo "[$(date)] Starting backup: ${FILENAME}"
@@ -41,14 +49,14 @@ else
     exit 1
 fi
 
-# Delete backups older than RETENTION_DAYS
-DELETED=$(find "$BACKUP_DIR" -name "${DATABASE}_*.sql.gz" -type f -mtime +${RETENTION_DAYS} -print -delete | wc -l)
+# Delete backups older than RETENTION_DAYS (both .sql.gz and uncompressed .sql)
+DELETED=$(find "$BACKUP_DIR" \( -name "${DATABASE}_*.sql.gz" -o -name "${DATABASE}_*.sql" \) -type f -mtime +${RETENTION_DAYS} -print -delete | wc -l)
 if [ "$DELETED" -gt 0 ]; then
     echo "[$(date)] Cleaned up ${DELETED} old backup(s) (>${RETENTION_DAYS} days)"
 fi
 
 # Show current backup count and total size
-COUNT=$(find "$BACKUP_DIR" -name "${DATABASE}_*.sql.gz" -type f | wc -l)
+COUNT=$(find "$BACKUP_DIR" \( -name "${DATABASE}_*.sql.gz" -o -name "${DATABASE}_*.sql" \) -type f | wc -l)
 TOTAL_SIZE=$(du -sh "$BACKUP_DIR" 2>/dev/null | cut -f1)
 echo "[$(date)] Current backups: ${COUNT} files, total size: ${TOTAL_SIZE}"
 echo "[$(date)] Backup process finished"

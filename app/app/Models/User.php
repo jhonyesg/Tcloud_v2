@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
@@ -11,6 +12,8 @@ class User extends Model
     protected $table = 'users';
     protected $fillable = ['email', 'username', 'password_hash', 'role', 'personal_quota_bytes', 'personal_used_bytes', 'media_editor_enabled', 'media_editor_clip_limit', 'max_sessions', 'session_lifetime_minutes'];
     protected $hidden = ['password_hash'];
+
+    private ?Collection $cachedStorages = null;
 
     public function files(): HasMany
     {
@@ -33,9 +36,15 @@ class User extends Model
             ->withPivot('permissions', 'can_create_shares', 'assigned_at');
     }
 
+    private function loadedStorages(): Collection
+    {
+        $this->cachedStorages ??= $this->userStorages()->get();
+        return $this->cachedStorages;
+    }
+
     public function hasStoragePermission(int $storageId, string $permission): bool
     {
-        $userStorage = $this->userStorages()->where('storage_provider_id', $storageId)->first();
+        $userStorage = $this->loadedStorages()->firstWhere('storage_provider_id', $storageId);
         if (!$userStorage) return false;
 
         $permissions = ['read' => 1, 'write' => 2, 'upload' => 2, 'full' => 3];
@@ -47,7 +56,10 @@ class User extends Model
 
     public function canCreateSharesInStorage(int $storageId): bool
     {
-        return $this->userStorages()->where('storage_provider_id', $storageId)->where('can_create_shares', true)->exists();
+        return $this->loadedStorages()
+            ->where('storage_provider_id', $storageId)
+            ->where('can_create_shares', true)
+            ->isNotEmpty();
     }
 
     public function isAdmin(): bool
