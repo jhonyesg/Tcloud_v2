@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\File;
 use App\Models\StorageProvider;
+use Illuminate\Support\Facades\Cache;
 
 class StorageSyncService
 {
@@ -92,12 +93,28 @@ class StorageSyncService
             $deleted++;
         }
 
+        if ($parentId !== null && $parentFolder) {
+            // store directory mtime so fullSync can skip it next time when nothing changed
+            $dirMtime = \Carbon\Carbon::createFromTimestamp(filemtime($realPath));
+            $parentFolder->update(['file_modified_at' => $dirMtime]);
+
+            if ($created > 0 || $deleted > 0) {
+                $this->invalidateFolderCache($storage->id, $parentId);
+            }
+        }
+
         return File::where('storage_provider_id', $storage->id)
             ->where('parent_id', $parentId)
             ->orderBy('is_folder', 'desc')
             ->orderBy('created_at', 'desc')
             ->get()
             ->toArray();
+    }
+
+    public function invalidateFolderCache(int $storageId, ?int $parentId): void
+    {
+        $pid = $parentId ?? 'null';
+        Cache::increment("folder_gen:{$storageId}:{$pid}");
     }
 
     public function syncRootFolder(StorageProvider $storage, int $userId): array
@@ -157,12 +174,13 @@ class StorageSyncService
         return $count;
     }
 
-    public function fullSync(StorageProvider $storage, int $userId): array
+    public function fullSync(StorageProvider $storage, int $userId, bool $force = false): array
     {
         $stats = [
             'created' => 0,
             'updated' => 0,
             'deleted' => 0,
+            'skipped' => 0,
         ];
 
         $this->syncRootFolder($storage, $userId);
@@ -173,6 +191,19 @@ class StorageSyncService
             ->get();
 
         foreach ($foldersToSync as $folder) {
+            $realPath = realpath(rtrim($storage->base_path, '/') . '/' . ltrim($folder->path, '/'));
+
+            if (!$realPath || !is_dir($realPath)) {
+                $this->syncFolder($storage, $folder->id, $userId);
+                continue;
+            }
+
+            // skip si el directorio no cambio desde el ultimo sync (solo si no es force)
+            if (!$force && $folder->file_modified_at !== null && filemtime($realPath) <= $folder->file_modified_at->timestamp) {
+                $stats['skipped']++;
+                continue;
+            }
+
             $folderEntries = $this->syncFolder($storage, $folder->id, $userId);
             $stats['created'] += count(array_filter($folderEntries, fn($e) => !isset($e['id'])));
         }

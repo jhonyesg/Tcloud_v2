@@ -117,6 +117,17 @@ deleteConfirmFile: null,
         clipThumbsLoading: false,
         clipOutputMode: false,
         clipMobileTab: 'edit',
+        isNavigating: false,
+        navigatingToId: null,
+        isLoadingFiles: true,
+        isLoadingMore: false,
+        currentPage: 1,
+        hasMore: false,
+        _fetchController: null,
+        _fetchMoreController: null,
+        _prevFolder: null,
+        _prevFolderName: null,
+        _prevBreadcrumbs: [],
 
         async init() {
             await Promise.all([
@@ -147,6 +158,15 @@ deleteConfirmFile: null,
                 } else if (val.length === 0 && this.searchMode) {
                     this.searchMode = false;
                     this.loadFiles();
+                }
+            });
+            this.$nextTick(() => {
+                const sentinel = this.$refs.loadMoreSentinel;
+                if (sentinel && 'IntersectionObserver' in window) {
+                    const observer = new IntersectionObserver((entries) => {
+                        if (entries[0].isIntersecting) this.loadMore();
+                    }, { rootMargin: '200px' });
+                    observer.observe(sentinel);
                 }
             });
         },
@@ -240,7 +260,7 @@ deleteConfirmFile: null,
             this.currentFolderName = state.folderName || null;
             this.breadcrumbs = state.breadcrumbs || [];
             this.viewMode = 'files';
-            this.loadFiles();
+            this.loadFiles(false, true);
         } catch (e) {
             this.clearNavState();
         }
@@ -318,6 +338,8 @@ deleteConfirmFile: null,
         this.currentFolder = null;
         this.currentFolderName = null;
         this.breadcrumbs = [];
+        this.currentPage = 1;
+        this.hasMore = false;
         this.viewMode = 'files';
         this.loadFiles();
         this.saveNavState();
@@ -334,26 +356,95 @@ deleteConfirmFile: null,
         this.clearNavState();
     },
 
-    loadFiles(forceSync = false) {
+    loadFiles(forceSync = false, skipBreadcrumbs = false) {
         this.selectedFiles = [];
-        let url = '/files?';
-        if (this.currentFolder) url += 'parent_id=' + this.currentFolder;
+        this.isLoadingFiles = true;
+        this.currentPage = 1;
+        this.hasMore = false;
+        if (this._fetchController) this._fetchController.abort();
+        if (this._fetchMoreController) { this._fetchMoreController.abort(); this._fetchMoreController = null; }
+        this._fetchController = new AbortController();
+        let url = '/files?page=1';
+        if (this.currentFolder) url += '&parent_id=' + this.currentFolder;
         if (this.currentStorage) url += '&storage_id=' + this.currentStorage;
         if (forceSync) url += '&sync=1';
+        if (skipBreadcrumbs) url += '&nb=1';
 
         fetch(url, {
             credentials: 'include',
+            signal: this._fetchController.signal,
             headers: {
                 'Accept': 'application/json',
                 'X-Requested-With': 'XMLHttpRequest'
             }
-        }).then(res => res.ok && res.json()).then(data => {
-            this.files = data || [];
-            if (forceSync) {
-                const folders = (data || []).filter(f => f.is_folder).length;
-                const files = (data || []).filter(f => !f.is_folder).length;
-                this.showToast('Directorio actualizado — ' + folders + ' carpetas, ' + files + ' archivos', 'success');
+        }).then(res => {
+            if (!res.ok) {
+                this.currentFolder = this._prevFolder;
+                this.currentFolderName = this._prevFolderName;
+                this.breadcrumbs = [...this._prevBreadcrumbs];
+                this.isNavigating = false;
+                this.navigatingToId = null;
+                this.isLoadingFiles = false;
+                this.showToast('No se pudo cargar la carpeta (' + res.status + '). Intenta de nuevo.', 'error');
+                return null;
             }
+            return res.json();
+        }).then(data => {
+            if (data === null) return;
+            const serverData = Array.isArray(data?.files) ? data.files : (Array.isArray(data) ? data : []);
+            const serverBreadcrumbs = data?.breadcrumbs ?? [];
+            this.files = serverData;
+            this.currentPage = data?.pagination?.page ?? 1;
+            this.hasMore = data?.pagination?.has_more ?? false;
+            if (!skipBreadcrumbs) {
+                this.breadcrumbs = serverBreadcrumbs;
+            }
+            if (forceSync) {
+                const total = data?.pagination?.total ?? serverData.length;
+                const folders = serverData.filter(f => f.is_folder).length;
+                const files = serverData.filter(f => !f.is_folder).length;
+                this.showToast('Directorio actualizado — ' + folders + ' carpetas, ' + files + ' archivos (total: ' + total + ')', 'success');
+            }
+            this.isNavigating = false;
+            this.navigatingToId = null;
+            this.isLoadingFiles = false;
+        }).catch(err => {
+            if (err && err.name === 'AbortError') return;
+            this.currentFolder = this._prevFolder;
+            this.currentFolderName = this._prevFolderName;
+            this.breadcrumbs = [...this._prevBreadcrumbs];
+            this.isNavigating = false;
+            this.navigatingToId = null;
+            this.isLoadingFiles = false;
+            this.showToast('Error de red al navegar. Intenta de nuevo.', 'error');
+        });
+    },
+
+    loadMore() {
+        if (this.isLoadingMore || !this.hasMore) return;
+        this.isLoadingMore = true;
+        const nextPage = this.currentPage + 1;
+        if (this._fetchMoreController) this._fetchMoreController.abort();
+        this._fetchMoreController = new AbortController();
+        let url = '/files?page=' + nextPage;
+        if (this.currentFolder) url += '&parent_id=' + this.currentFolder;
+        if (this.currentStorage) url += '&storage_id=' + this.currentStorage;
+        url += '&nb=1';
+        fetch(url, {
+            credentials: 'include',
+            signal: this._fetchMoreController.signal,
+            headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+        }).then(r => r.ok ? r.json() : null)
+        .then(data => {
+            if (!data) { this.isLoadingMore = false; return; }
+            const newFiles = Array.isArray(data?.files) ? data.files : [];
+            this.files = [...this.files, ...newFiles];
+            this.currentPage = data?.pagination?.page ?? nextPage;
+            this.hasMore = data?.pagination?.has_more ?? false;
+            this.isLoadingMore = false;
+        }).catch(err => {
+            if (err && err.name === 'AbortError') return;
+            this.isLoadingMore = false;
         });
     },
 
@@ -362,13 +453,22 @@ deleteConfirmFile: null,
     },
 
     navigateToFolder(folderId, folderName) {
+        if (this.isNavigating || folderId === this.currentFolder) return;
+        this._prevFolder = this.currentFolder;
+        this._prevFolderName = this.currentFolderName;
+        this._prevBreadcrumbs = [...this.breadcrumbs];
         if (this.currentFolder !== null) {
             this.breadcrumbs.push({ id: this.currentFolder, name: this.currentFolderName || 'Raíz' });
         }
         this.currentFolder = folderId;
         this.currentFolderName = folderName;
         this.selectedFiles = [];
-        this.loadFiles();
+        this.files = [];
+        this.currentPage = 1;
+        this.hasMore = false;
+        this.isNavigating = true;
+        this.navigatingToId = folderId;
+        this.loadFiles(false, true);
         this.saveNavState();
     },
 
@@ -376,18 +476,22 @@ deleteConfirmFile: null,
         this.currentFolder = null;
         this.currentFolderName = null;
         this.breadcrumbs = [];
+        this.currentPage = 1;
+        this.hasMore = false;
         this.loadFiles();
         this.saveNavState();
     },
 
-    navigateToBreadcrumb(breadcrumb) {
-        const index = this.breadcrumbs.indexOf(breadcrumb);
-        if (index > -1) {
-            this.breadcrumbs = this.breadcrumbs.slice(0, index);
-        }
+    navigateToBreadcrumb(breadcrumb, index) {
+        if (this.isNavigating) return;
+        this.breadcrumbs = this.breadcrumbs.slice(0, index);
         this.currentFolder = breadcrumb.id;
         this.currentFolderName = breadcrumb.id === null ? null : breadcrumb.name;
-        this.loadFiles();
+        this.currentPage = 1;
+        this.hasMore = false;
+        this.isNavigating = true;
+        this.navigatingToId = breadcrumb.id;
+        this.loadFiles(false, true);
         this.saveNavState();
     },
 
@@ -1274,7 +1378,8 @@ deleteConfirmFile: null,
             headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
         });
         if (res.ok) {
-            this.files = await res.json();
+            const data = await res.json();
+            this.files = data?.files ?? data ?? [];
             this.searchMode = true;
         }
     },
@@ -2017,7 +2122,7 @@ deleteConfirmFile: null,
                             <svg class="w-3 h-3 text-slate-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
                             </svg>
-                            <button @click="navigateToBreadcrumb(crumb)" class="text-blue-600 hover:text-blue-700 truncate max-w-[80px] sm:max-w-[140px]" x-text="crumb.name"></button>
+                            <button @click="navigateToBreadcrumb(crumb, index)" class="text-blue-600 hover:text-blue-700 truncate max-w-[80px] sm:max-w-[140px]" x-text="crumb.name"></button>
                         </div>
                     </template>
                     {{-- Carpeta actual (no clickable) --}}
@@ -2243,7 +2348,7 @@ deleteConfirmFile: null,
                      @click.self="clearSelection()">
                     <template x-for="file in sortedFiles()" :key="file.id">
                         <div class="group relative bg-slate-50 hover:bg-blue-50 border border-slate-200 hover:border-blue-300 rounded-xl p-2 sm:p-4 cursor-pointer transition-all"
-                             :class="isSelected(file) ? 'ring-2 ring-blue-500 bg-blue-50 border-blue-300' : ''"
+                             :class="[isSelected(file) ? 'ring-2 ring-blue-500 bg-blue-50 border-blue-300' : '', navigatingToId === file.id ? 'opacity-60 pointer-events-none' : '']"
                              @click.ctrl.prevent.stop="toggleSelect(file)">
                             <div class="absolute top-1.5 left-1.5 z-10 opacity-0 group-hover:opacity-100 transition-opacity"
                                  :class="isSelected(file) ? 'opacity-100' : ''"
@@ -2253,10 +2358,16 @@ deleteConfirmFile: null,
                                        @click.stop="toggleSelect(file)">
                             </div>
                             <div class="flex flex-col items-center text-center" @click="file.is_folder ? navigateToFolder(file.id, file.name) : openViewer(file)">
-                                <div class="w-11 h-11 sm:w-16 sm:h-16 rounded-xl flex items-center justify-center mb-1.5 sm:mb-3" :class="getFileIcon(file).bg">
-                                    <template x-if="getFileIcon(file).icon === 'folder'">
+                                <div class="relative w-11 h-11 sm:w-16 sm:h-16 rounded-xl flex items-center justify-center mb-1.5 sm:mb-3" :class="getFileIcon(file).bg">
+                                    <template x-if="getFileIcon(file).icon === 'folder' && navigatingToId !== file.id">
                                         <svg class="w-10 h-10 text-amber-500" fill="currentColor" viewBox="0 0 20 20">
                                             <path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z"/>
+                                        </svg>
+                                    </template>
+                                    <template x-if="getFileIcon(file).icon === 'folder' && navigatingToId === file.id">
+                                        <svg class="w-8 h-8 text-amber-500 animate-spin" fill="none" viewBox="0 0 24 24">
+                                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
                                         </svg>
                                     </template>
                                     <template x-if="getFileIcon(file).icon === 'video'">
@@ -2399,7 +2510,7 @@ deleteConfirmFile: null,
                         <tbody class="divide-y divide-slate-200">
                             <template x-for="file in sortedFiles()" :key="file.id">
                                 <tr class="cursor-pointer transition-colors"
-                                    :class="isSelected(file) ? 'bg-blue-50' : 'hover:bg-slate-50'"
+                                    :class="[isSelected(file) ? 'bg-blue-50' : 'hover:bg-slate-50', navigatingToId === file.id ? 'opacity-60 pointer-events-none' : '']"
                                     @click="file.is_folder ? navigateToFolder(file.id, file.name) : openViewer(file)"
                                     @click.ctrl.prevent.stop="toggleSelect(file)">
                                     <td class="px-2 sm:px-3 py-2 sm:py-3 text-center w-8" @click.stop>
@@ -2410,9 +2521,15 @@ deleteConfirmFile: null,
                                     <td class="px-2 sm:px-4 py-2 sm:py-3 min-w-0">
                                         <div class="flex items-center gap-2 sm:gap-3 min-w-0">
                                             <div class="w-8 h-8 sm:w-10 sm:h-10 rounded-lg flex items-center justify-center flex-shrink-0" :class="getFileIcon(file).bg">
-                                                <template x-if="getFileIcon(file).icon === 'folder'">
+                                                <template x-if="getFileIcon(file).icon === 'folder' && navigatingToId !== file.id">
                                                     <svg class="w-6 h-6 text-amber-500" fill="currentColor" viewBox="0 0 20 20">
                                                         <path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z"/>
+                                                    </svg>
+                                                </template>
+                                                <template x-if="getFileIcon(file).icon === 'folder' && navigatingToId === file.id">
+                                                    <svg class="w-5 h-5 text-amber-500 animate-spin" fill="none" viewBox="0 0 24 24">
+                                                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                                                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
                                                     </svg>
                                                 </template>
                                                 <template x-if="getFileIcon(file).icon === 'video'">
@@ -2524,6 +2641,17 @@ deleteConfirmFile: null,
                     </table>
                 </div>
 
+                <!-- Indicador de carga de página adicional (scroll infinito) -->
+                <div x-show="viewMode === 'files' && isLoadingMore" class="flex justify-center items-center gap-2 py-4 text-slate-500 text-sm">
+                    <svg class="w-4 h-4 animate-spin text-blue-500" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                    </svg>
+                    Cargando más archivos…
+                </div>
+                <!-- Sentinel para IntersectionObserver — cuando es visible se dispara loadMore() -->
+                <div x-show="viewMode === 'files' && hasMore && !isLoadingMore" x-ref="loadMoreSentinel" class="h-4"></div>
+
                 <div x-show="viewMode === 'storages' && availableStorages.length === 0" class="text-center py-16">
                     <div class="w-20 h-20 bg-slate-100 rounded-full flex items-center justify-center mx-auto mb-4">
                         <svg class="w-10 h-10 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -2534,8 +2662,21 @@ deleteConfirmFile: null,
                     <p class="text-slate-500">Contacta al administrador para que te asigne storages.</p>
                 </div>
 
+                <!-- Skeleton de carga — mientras llega la respuesta del servidor -->
+                <div x-show="viewMode === 'files' && isLoadingFiles && files.length === 0" class="p-4">
+                    <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3 sm:gap-4">
+                        <template x-for="i in [1,2,3,4,5,6,7,8,9,10,11,12]" :key="i">
+                            <div class="bg-slate-100 rounded-xl p-2 sm:p-4 animate-pulse">
+                                <div class="w-11 h-11 sm:w-16 sm:h-16 bg-slate-200 rounded-xl mx-auto mb-3"></div>
+                                <div class="h-3 bg-slate-200 rounded w-3/4 mx-auto mb-1.5"></div>
+                                <div class="h-2 bg-slate-200 rounded w-1/2 mx-auto"></div>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+
                 <!-- Sin resultados de búsqueda -->
-                <div x-show="viewMode === 'files' && searchMode && files.length === 0" class="text-center py-16">
+                <div x-show="viewMode === 'files' && searchMode && files.length === 0 && !isLoadingFiles" class="text-center py-16">
                     <div class="w-20 h-20 bg-slate-100 rounded-full flex items-center justify-center mx-auto mb-4">
                         <svg class="w-10 h-10 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0"/>
@@ -2548,7 +2689,7 @@ deleteConfirmFile: null,
                     </button>
                 </div>
                 <!-- Carpeta vacía (sin búsqueda activa) -->
-                <div x-show="viewMode === 'files' && !searchMode && files.length === 0" class="text-center py-16">
+                <div x-show="viewMode === 'files' && !searchMode && files.length === 0 && !isLoadingFiles" class="text-center py-16">
                     <div class="w-20 h-20 bg-slate-100 rounded-full flex items-center justify-center mx-auto mb-4">
                         <svg class="w-10 h-10 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>

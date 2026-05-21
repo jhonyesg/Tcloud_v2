@@ -7,6 +7,7 @@ use App\Models\User;
 use App\Models\StorageProvider;
 use App\Services\StorageSyncService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Session;
@@ -84,35 +85,62 @@ class FileController extends Controller
                 return response()->json($files);
             }
 
-            $parentId = $request->has('parent_id') ? $request->parent_id : null;
-            $storageId = $request->has('storage_id') ? $request->storage_id : null;
+            $parentId  = $request->has('parent_id')  ? (int) $request->parent_id  : null;
+            $storageId = $request->has('storage_id') ? (int) $request->storage_id : null;
+            $page      = max(1, (int) $request->get('page', 1));
+            $perPage   = min(200, max(10, (int) $request->get('per_page', 100)));
+            $breadcrumbs = [];
 
             if ($parentId !== null) {
-                $parentFile = File::find($parentId);
-                if ($parentFile) {
-                    $storageId = $parentFile->storage_provider_id;
+                if ($request->boolean('nb')) {
+                    $storageId = $storageId ?? (int) DB::selectOne('SELECT storage_provider_id FROM files WHERE id = ?', [$parentId])?->storage_provider_id;
+                } else {
+                    $chain = DB::select("
+                        WITH RECURSIVE parent_chain AS (
+                            SELECT id, name, parent_id, storage_provider_id FROM files WHERE id = ?
+                            UNION ALL
+                            SELECT f.id, f.name, f.parent_id, f.storage_provider_id
+                            FROM files f INNER JOIN parent_chain pc ON f.id = pc.parent_id
+                        )
+                        SELECT id, name, storage_provider_id FROM parent_chain
+                    ", [$parentId]);
+                    if ($chain) {
+                        $storageId = $storageId ?? (int) $chain[0]->storage_provider_id;
+                        $breadcrumbs = array_reverse(array_map(fn($r) => ['id' => $r->id, 'name' => $r->name], $chain));
+                    }
                 }
             }
 
-            if ($storageId !== null) {
+            if ($storageId !== null && $request->boolean('sync')) {
                 $storage = StorageProvider::find($storageId);
                 if ($storage && $storage->type === 'local') {
                     $syncService = app(StorageSyncService::class);
                     $files = $syncService->syncFolder($storage, $parentId, $user->id);
-                    return response()->json($files);
+                    $syncService->invalidateFolderCache($storageId, $parentId);
+                    $pagination = ['page' => 1, 'per_page' => count($files), 'total' => count($files), 'has_more' => false];
+                    return response()->json(['files' => $files, 'breadcrumbs' => $breadcrumbs, 'pagination' => $pagination]);
                 }
+            }
+
+            // cache key includes a generation counter so invalidation is O(1)
+            $pid = $parentId ?? 'null';
+            $gen = Cache::get("folder_gen:{$storageId}:{$pid}", 0);
+            $cacheKey = "folder_listing:{$storageId}:{$pid}:{$gen}:{$page}";
+
+            if ($cached = Cache::get($cacheKey)) {
+                return response()->json($cached);
             }
 
             $query = File::query();
 
-            if ($request->has('parent_id')) {
-                $query->where('parent_id', $request->parent_id);
+            if ($parentId !== null) {
+                $query->where('parent_id', $parentId);
             } else {
                 $query->whereNull('parent_id');
             }
 
-            if ($request->has('storage_id')) {
-                $query->where('storage_provider_id', $request->storage_id);
+            if ($storageId !== null) {
+                $query->where('storage_provider_id', $storageId);
             }
 
             if (!$user->isAdmin()) {
@@ -123,8 +151,41 @@ class FileController extends Controller
                 });
             }
 
-            $files = $query->orderBy('is_folder', 'desc')->orderBy('created_at', 'desc')->get();
-            return response()->json($files);
+            $paginator = $query->orderBy('is_folder', 'desc')->orderBy('created_at', 'desc')->paginate($perPage, ['*'], 'page', $page);
+
+            // auto-scan on first visit if folder is empty in DB (new folder, cron hasn't run yet)
+            if ($paginator->total() === 0 && $page === 1 && $storageId !== null) {
+                $storage = StorageProvider::find($storageId);
+                if ($storage && $storage->type === 'local') {
+                    $syncService = app(StorageSyncService::class);
+                    $files = $syncService->syncFolder($storage, $parentId, $user->id);
+                    if (count($files) > 0) {
+                        $pagination = ['page' => 1, 'per_page' => count($files), 'total' => count($files), 'has_more' => false];
+                        return response()->json(['files' => $files, 'breadcrumbs' => $breadcrumbs, 'pagination' => $pagination]);
+                    }
+                }
+            }
+
+            $pagination = [
+                'page'     => $page,
+                'per_page' => $perPage,
+                'total'    => $paginator->total(),
+                'has_more' => $page * $perPage < $paginator->total(),
+            ];
+
+            $responseData = ['files' => $paginator->items(), 'breadcrumbs' => $breadcrumbs, 'pagination' => $pagination];
+
+            // TTL: root=60s, today's folder=300s, past folder=86400s
+            if ($parentId === null) {
+                $ttl = 60;
+            } else {
+                $folderModified = DB::selectOne('SELECT file_modified_at FROM files WHERE id = ?', [$parentId])?->file_modified_at;
+                $ttl = ($folderModified && \Carbon\Carbon::parse($folderModified)->isToday()) ? 300 : 86400;
+            }
+
+            Cache::put($cacheKey, $responseData, $ttl);
+
+            return response()->json($responseData);
         }
 
         return view('files.index');

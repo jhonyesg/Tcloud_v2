@@ -56,6 +56,67 @@ Panel con accesos directos a servicios externos vinculados a la plataforma.
 ### Multimedia
 Reproducción y navegación de canales y grabaciones puntuales disponibles para todos los usuarios autenticados.
 
+## Sincronización y Caché de Archivos
+
+El sistema maneja ~1M de archivos distribuidos en ~23,000 carpetas mediante tres mecanismos complementarios.
+
+### Smart sync con mtime
+
+El comando `storage:sync` compara el `mtime` del directorio en disco con `file_modified_at` en la BD antes de escanear. Si el directorio no cambió, lo omite completamente.
+
+```bash
+# Sincronización normal (omite carpetas sin cambios)
+php artisan storage:sync --all
+
+# Forzar rescaneo completo (ignora mtime)
+php artisan storage:sync --all --force
+
+# Sincronizar un storage específico
+php artisan storage:sync 3 --force
+```
+
+**Impacto:** El cron de 15 minutos pasó de ~4 minutos (escanear 23,000 carpetas) a ~14 segundos (solo carpetas del día actual que cambiaron). Las carpetas de días pasados se omiten porque su `mtime` no cambió.
+
+**Primera visita a una carpeta vacía:** Si la BD devuelve 0 archivos para una carpeta de storage local, el servidor hace un `syncFolder()` automático antes de responder. Esto garantiza que nuevas carpetas aparezcan completas sin esperar el siguiente cron.
+
+### Caché Redis con TTL diferenciado
+
+Los listados de carpetas se cachean en Redis con TTL según antigüedad:
+
+| Carpeta | TTL | Razón |
+|---|---|---|
+| Raíz del storage | 60 s | Puede recibir nuevas carpetas frecuentemente |
+| Carpeta del día actual | 300 s (5 min) | Archivos nuevos llegan cada ~15 min |
+| Carpetas de días pasados | 86400 s (24 h) | Contenido estático, no cambia |
+
+La invalidación usa contadores de generación (`folder_gen:{storageId}:{parentId}`) en lugar de escaneo de claves, haciendo cada invalidación O(1).
+
+**Impacto:** Navegación repetida a la misma carpeta: primera visita ~240 ms (DB), visitas posteriores < 2 ms (Redis).
+
+### Paginación con scroll infinito
+
+Las carpetas con muchos archivos (hasta 823 en el caso extremo) se sirven en páginas de 100 elementos. El frontend carga más al acercarse al final de la lista con `IntersectionObserver`.
+
+```
+GET /files?storage_id=3&parent_id=456&page=1&per_page=100
+```
+
+Respuesta incluye:
+```json
+{
+  "pagination": {
+    "page": 1,
+    "per_page": 100,
+    "total": 823,
+    "has_more": true
+  }
+}
+```
+
+**Impacto:** Payload inicial de 295 KB → ~35 KB. Las páginas siguientes se cargan en segundo plano al hacer scroll.
+
+---
+
 ## Instalación
 
 ```bash
