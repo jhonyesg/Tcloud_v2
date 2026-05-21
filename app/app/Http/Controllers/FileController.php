@@ -309,6 +309,9 @@ class FileController extends Controller
 
         $file->move($destDir, $filename);
 
+        $physicalPath = $destDir . '/' . $filename;
+        $modifiedAt = file_exists($physicalPath) ? \Carbon\Carbon::createFromTimestamp(filemtime($physicalPath)) : null;
+
         $storedFile = File::create([
             'name' => $filename,
             'path' => $path,
@@ -319,6 +322,7 @@ class FileController extends Controller
             'parent_id' => $parentId,
             'is_folder' => false,
             'is_personal' => $parentId === null,
+            'file_modified_at' => $modifiedAt,
         ]);
 
         if (str_starts_with($storage->base_path ?? '', '/home/www/Usuarios_tcloud/')) {
@@ -603,21 +607,129 @@ class FileController extends Controller
 
     private function addFolderToZip(\ZipArchive $zip, File $folder, string $realBasePath, string $zipPrefix): void
     {
-        $children = File::where('parent_id', $folder->id)->get();
-
         $folderPrefix = $zipPrefix . $folder->name . '/';
         $zip->addEmptyDir($folderPrefix);
 
-        foreach ($children as $child) {
-            if ($child->is_folder) {
-                $this->addFolderToZip($zip, $child, $realBasePath, $folderPrefix);
+        $folderRealPath = realpath($realBasePath . '/' . $folder->path);
+        if (!$folderRealPath || !is_dir($folderRealPath)) {
+            return;
+        }
+
+        $this->addPathToZip($zip, $folderRealPath, $realBasePath, $folderPrefix);
+    }
+
+    private function addPathToZip(\ZipArchive $zip, string $realPath, string $realBasePath, string $zipPrefix): void
+    {
+        $iterator = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($realPath, \RecursiveDirectoryIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::SELF_FIRST
+        );
+
+        foreach ($iterator as $item) {
+            $itemRealPath = $item->getRealPath();
+            if (!$itemRealPath || !str_starts_with($itemRealPath, $realBasePath)) {
+                continue;
+            }
+
+            $relativePath = substr($itemRealPath, strlen($realPath) + 1);
+            $zipEntry = $zipPrefix . str_replace(DIRECTORY_SEPARATOR, '/', $relativePath);
+
+            if ($item->isDir()) {
+                $zip->addEmptyDir($zipEntry . '/');
             } else {
-                $realFilePath = realpath($realBasePath . '/' . $child->path);
-                if ($realFilePath && str_starts_with($realFilePath, $realBasePath) && file_exists($realFilePath)) {
-                    $zip->addFile($realFilePath, $folderPrefix . $child->name);
-                }
+                $zip->addFile($itemRealPath, $zipEntry);
             }
         }
+    }
+
+    public function downloadMulti(Request $request)
+    {
+        $user = $this->getUser();
+        if (!$user) return response()->json(['error' => 'Unauthorized'], 401);
+
+        $request->validate([
+            'ids' => 'required|array|min:1',
+            'ids.*' => 'integer',
+        ]);
+
+        $maxBytes = 2 * 1024 * 1024 * 1024; // 2 GB
+        $totalSize = 0;
+        $fileModels = [];
+
+        foreach ($request->ids as $id) {
+            $file = File::find($id);
+            if (!$file) {
+                return response()->json(['error' => "Archivo no encontrado: ID {$id}"], 404);
+            }
+            if (!$this->checkFilePermission($file, 'read')) {
+                return response()->json(['error' => 'Sin permiso de lectura en uno o más archivos'], 403);
+            }
+            $totalSize += $file->is_folder ? $this->getFolderSizeRecursive($file->id) : $file->size;
+            $fileModels[] = $file;
+        }
+
+        if ($totalSize > $maxBytes) {
+            $gb = number_format($totalSize / (1024 ** 3), 2);
+            return response()->json([
+                'error' => "La selección pesa {$gb} GB. Solo se permite descargar hasta 2 GB.",
+                'size_exceeded' => true,
+            ], 413);
+        }
+
+        // Agrupar todos los archivos por storage para validar rutas base
+        $storages = [];
+        foreach ($fileModels as $file) {
+            $storage = $file->storageProvider;
+            if (!$storage || $storage->type !== 'local') {
+                return response()->json(['error' => 'Descarga solo soportada para storages locales'], 400);
+            }
+            $realBase = realpath($storage->base_path);
+            if (!$realBase) {
+                return response()->json(['error' => 'Storage path no encontrado'], 404);
+            }
+            $storages[$file->id] = $realBase;
+        }
+
+        $tmpFile = tempnam(sys_get_temp_dir(), 'tcloud_multi_');
+        $zip = new \ZipArchive();
+        if ($zip->open($tmpFile, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) !== true) {
+            return response()->json(['error' => 'No se pudo crear el ZIP'], 500);
+        }
+
+        $usedNames = [];
+
+        foreach ($fileModels as $file) {
+            $realBasePath = $storages[$file->id];
+
+            if ($file->is_folder) {
+                $this->addFolderToZip($zip, $file, $realBasePath, '');
+            } else {
+                $realFilePath = realpath($realBasePath . '/' . $file->path);
+                if (!$realFilePath || !str_starts_with($realFilePath, $realBasePath) || !file_exists($realFilePath)) {
+                    continue;
+                }
+
+                // Resolver conflictos de nombre en la raíz del ZIP
+                $ext = pathinfo($file->name, PATHINFO_EXTENSION);
+                $base = $ext ? pathinfo($file->name, PATHINFO_FILENAME) : $file->name;
+                $zipName = $file->name;
+                $counter = 2;
+                while (isset($usedNames[$zipName])) {
+                    $zipName = $ext ? "{$base}_{$counter}.{$ext}" : "{$base}_{$counter}";
+                    $counter++;
+                }
+                $usedNames[$zipName] = true;
+
+                $zip->addFile($realFilePath, $zipName);
+            }
+        }
+
+        $zip->close();
+
+        return response()->download($tmpFile, 'descarga.zip', [
+            'Content-Type' => 'application/zip',
+            'X-Accel-Buffering' => 'no',
+        ])->deleteFileAfterSend(true);
     }
 
     public function preview(int $id)
@@ -699,18 +811,42 @@ class FileController extends Controller
                 $this->deleteFile($child);
             }
         }
+
+        $storage = $folder->storageProvider;
+        if ($storage && $storage->type === 'local' && $folder->path) {
+            $dirPath = rtrim($storage->base_path, '/') . '/' . $folder->path;
+            if (is_dir($dirPath)) {
+                @rmdir($dirPath);
+            }
+        }
+
         $folder->delete();
     }
 
     private function deleteFile(File $file): void
     {
+        $storage = $file->storageProvider;
+
         $user = User::find($file->owner_id);
         if ($user && $file->size > 0) {
-            $storage = $file->storageProvider;
             if ($storage && str_starts_with($storage->base_path ?? '', '/home/www/Usuarios_tcloud/')) {
                 $user->decrement('personal_used_bytes', $file->size);
             }
         }
+
+        if ($storage && $storage->type === 'local' && $file->path) {
+            $fullPath = rtrim($storage->base_path, '/') . '/' . $file->path;
+            if (is_file($fullPath)) {
+                if (!unlink($fullPath)) {
+                    \Illuminate\Support\Facades\Log::error("FileController: unlink failed for [{$fullPath}]");
+                }
+            } else {
+                \Illuminate\Support\Facades\Log::warning("FileController: file not found on disk [{$fullPath}]");
+            }
+        } elseif (!$storage) {
+            \Illuminate\Support\Facades\Log::warning("FileController: no storage provider for file [{$file->id}] [{$file->path}]");
+        }
+
         $this->deleteClipThumbs($file->id);
         $file->delete();
     }
@@ -721,5 +857,236 @@ class FileController extends Controller
         if (!is_dir($dir)) return;
         foreach (glob($dir . '/*') ?: [] as $f) @unlink($f);
         @rmdir($dir);
+    }
+
+    public function copy(Request $request, int $id)
+    {
+        $user = $this->getUser();
+        if (!$user) return response()->json(['error' => 'Unauthorized'], 401);
+
+        $file = File::findOrFail($id);
+
+        if (!$user->hasStoragePermission($file->storage_provider_id, 'full') && !$user->isAdmin()) {
+            return response()->json(['error' => 'Full permission required'], 403);
+        }
+
+        $request->validate([
+            'destination_parent_id' => 'nullable|exists:files,id',
+        ]);
+
+        $storage = $file->storageProvider;
+        if (!$storage || $storage->type !== 'local') {
+            return response()->json(['error' => 'Only supported for local storage'], 400);
+        }
+
+        $realBase = realpath($storage->base_path);
+        if (!$realBase) {
+            return response()->json(['error' => 'Storage path not found'], 404);
+        }
+
+        $destParentId = $request->input('destination_parent_id');
+
+        $existing = File::where('storage_provider_id', $storage->id)
+            ->where('parent_id', $destParentId)
+            ->where('name', $file->name)
+            ->first();
+
+        if ($existing) {
+            return response()->json(['error' => 'Ya existe un archivo o carpeta con ese nombre en el destino'], 409);
+        }
+
+        if ($file->is_folder) {
+            $newFolder = $this->copyFolderRecursively($file, $realBase, $destParentId, $storage, $user->id);
+            return response()->json($newFolder, 201);
+        }
+
+        $srcPhysical = realpath($realBase . '/' . $file->path);
+        if (!$srcPhysical || !file_exists($srcPhysical) || !str_starts_with($srcPhysical, $realBase)) {
+            return response()->json(['error' => 'Source file not found on disk'], 404);
+        }
+
+        $newPath = $this->generatePath($destParentId, $file->name, $storage);
+        $dstPhysical = $realBase . '/' . $newPath;
+        $dstDir = dirname($dstPhysical);
+
+        if (!is_dir($dstDir)) {
+            mkdir($dstDir, 0755, true);
+        }
+
+        if (!copy($srcPhysical, $dstPhysical)) {
+            return response()->json(['error' => 'Error al copiar el archivo en disco'], 500);
+        }
+
+        $modifiedAt = file_exists($dstPhysical) ? \Carbon\Carbon::createFromTimestamp(filemtime($dstPhysical)) : null;
+
+        $newFile = File::create([
+            'name' => $file->name,
+            'path' => $newPath,
+            'size' => $file->size,
+            'mime_type' => $file->mime_type,
+            'storage_provider_id' => $storage->id,
+            'owner_id' => $user->id,
+            'parent_id' => $destParentId,
+            'is_folder' => false,
+            'is_personal' => false,
+            'file_modified_at' => $modifiedAt,
+        ]);
+
+        return response()->json($newFile, 201);
+    }
+
+    public function move(Request $request, int $id)
+    {
+        $user = $this->getUser();
+        if (!$user) return response()->json(['error' => 'Unauthorized'], 401);
+
+        $file = File::findOrFail($id);
+
+        if (!$user->hasStoragePermission($file->storage_provider_id, 'full') && !$user->isAdmin()) {
+            return response()->json(['error' => 'Full permission required'], 403);
+        }
+
+        $request->validate([
+            'destination_parent_id' => 'nullable|exists:files,id',
+        ]);
+
+        $storage = $file->storageProvider;
+        if (!$storage || $storage->type !== 'local') {
+            return response()->json(['error' => 'Only supported for local storage'], 400);
+        }
+
+        $realBase = realpath($storage->base_path);
+        if (!$realBase) {
+            return response()->json(['error' => 'Storage path not found'], 404);
+        }
+
+        $destParentId = $request->input('destination_parent_id');
+
+        if ((string) $destParentId === (string) $file->parent_id) {
+            return response()->json(['error' => 'El archivo ya está en esa carpeta'], 422);
+        }
+
+        if ($file->is_folder && $destParentId !== null) {
+            $isDescendant = $this->isDescendant($file->id, (int) $destParentId);
+            if ($isDescendant) {
+                return response()->json(['error' => 'No se puede mover una carpeta dentro de sí misma'], 422);
+            }
+        }
+
+        $existing = File::where('storage_provider_id', $storage->id)
+            ->where('parent_id', $destParentId)
+            ->where('name', $file->name)
+            ->where('id', '!=', $file->id)
+            ->first();
+
+        if ($existing) {
+            return response()->json(['error' => 'Ya existe un archivo o carpeta con ese nombre en el destino'], 409);
+        }
+
+        $srcPhysical = realpath($realBase . '/' . $file->path);
+        if (!$srcPhysical || !str_starts_with($srcPhysical, $realBase)) {
+            return response()->json(['error' => 'Source path not found on disk'], 404);
+        }
+
+        $newPath = $this->generatePath($destParentId, $file->name, $storage);
+        $dstPhysical = $realBase . '/' . $newPath;
+        $dstDir = $file->is_folder ? dirname($dstPhysical) : dirname($dstPhysical);
+
+        if (!is_dir($dstDir)) {
+            mkdir($dstDir, 0755, true);
+        }
+
+        if (!rename($srcPhysical, $dstPhysical)) {
+            return response()->json(['error' => 'Error al mover en disco'], 500);
+        }
+
+        if ($file->is_folder) {
+            $oldPrefix = $file->path . '/';
+            $newPrefix = $newPath . '/';
+            \Illuminate\Support\Facades\DB::statement(
+                "UPDATE files SET path = ? || SUBSTRING(path FROM ?) WHERE storage_provider_id = ? AND path LIKE ?",
+                [$newPrefix, strlen($oldPrefix) + 1, $storage->id, $oldPrefix . '%']
+            );
+        }
+
+        $file->update([
+            'path' => $newPath,
+            'parent_id' => $destParentId,
+        ]);
+
+        return response()->json($file->fresh());
+    }
+
+    private function copyFolderRecursively(File $src, string $realBase, ?int $destParentId, StorageProvider $storage, int $ownerId): File
+    {
+        $newPath = $this->generatePath($destParentId, $src->name, $storage);
+        $dstPhysical = $realBase . '/' . $newPath;
+
+        if (!is_dir($dstPhysical)) {
+            mkdir($dstPhysical, 0755, true);
+        }
+
+        $newFolder = File::create([
+            'name' => $src->name,
+            'path' => $newPath,
+            'size' => 0,
+            'mime_type' => 'folder',
+            'storage_provider_id' => $storage->id,
+            'owner_id' => $ownerId,
+            'parent_id' => $destParentId,
+            'is_folder' => true,
+            'is_personal' => false,
+        ]);
+
+        $children = File::where('parent_id', $src->id)->get();
+
+        foreach ($children as $child) {
+            if ($child->is_folder) {
+                $this->copyFolderRecursively($child, $realBase, $newFolder->id, $storage, $ownerId);
+            } else {
+                $srcPhysical = $realBase . '/' . $child->path;
+                $childNewPath = $newPath . '/' . $child->name;
+                $dstChildPhysical = $realBase . '/' . $childNewPath;
+
+                if (file_exists($srcPhysical)) {
+                    copy($srcPhysical, $dstChildPhysical);
+                }
+
+                $modifiedAt = file_exists($dstChildPhysical)
+                    ? \Carbon\Carbon::createFromTimestamp(filemtime($dstChildPhysical))
+                    : null;
+
+                File::create([
+                    'name' => $child->name,
+                    'path' => $childNewPath,
+                    'size' => $child->size,
+                    'mime_type' => $child->mime_type,
+                    'storage_provider_id' => $storage->id,
+                    'owner_id' => $ownerId,
+                    'parent_id' => $newFolder->id,
+                    'is_folder' => false,
+                    'is_personal' => false,
+                    'file_modified_at' => $modifiedAt,
+                ]);
+            }
+        }
+
+        return $newFolder;
+    }
+
+    private function isDescendant(int $ancestorId, int $targetId): bool
+    {
+        $rows = \Illuminate\Support\Facades\DB::select("
+            WITH RECURSIVE descendants AS (
+                SELECT id FROM files WHERE parent_id = ?
+                UNION ALL
+                SELECT f.id FROM files f
+                INNER JOIN descendants d ON f.parent_id = d.id
+                WHERE f.is_folder = true
+            )
+            SELECT id FROM descendants WHERE id = ?
+        ", [$ancestorId, $targetId]);
+
+        return count($rows) > 0;
     }
 }

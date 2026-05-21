@@ -26,12 +26,17 @@ document.addEventListener('alpine:init', () => {
     viewMode: 'storages',
     filesViewMode: localStorage.getItem('files_view_mode') || 'grid',
     selectedFiles: [],
+    downloadingMulti: false,
+    deleteSelectedConfirm: false,
     showUploadModal: false,
     showDetailModal: false,
     showNewFolderModal: false,
     selectedFile: null,
     breadcrumbs: [],
     fileShares: [],
+    shareActiveTab: 'all',
+    selectedShareIds: [],
+    bulkDeleteLoading: false,
     editingShareId: null,
     editingShareData: {},
     shareForm: {
@@ -42,7 +47,7 @@ document.addEventListener('alpine:init', () => {
     shareFeedback: { type: '', message: '' },
     viewerOpen: false,
     currentViewerFile: null,
-    sortField: 'created_at',
+    sortField: 'date',
     sortDir: 'desc',
     uploadQueue: [],
     dragOverMain: false,
@@ -63,6 +68,15 @@ document.addEventListener('alpine:init', () => {
     viewerTextSaved: false,
     viewerWrap: false,
     renamingFileId: null,
+    showCopyMoveModal: false,
+    copyMoveAction: null,
+    copyMoveSourceFile: null,
+    copyMoveDestFolderId: null,
+    copyMoveDestLabel: 'Raíz',
+    copyMoveFolders: [],
+    copyMoveBreadcrumb: [],
+    copyMoveLoading: false,
+    copyMoveError: null,
     renamingFileName: '',
 deleteConfirmFile: null,
         toast: null,
@@ -151,6 +165,48 @@ deleteConfirmFile: null,
 
     canDelete() {
         return this.currentStoragePermission === 'full';
+    },
+
+    canCopyMove() {
+        return this.currentStoragePermission === 'full';
+    },
+
+    isSelected(file) {
+        return this.selectedFiles.some(f => f.id === file.id);
+    },
+
+    toggleSelect(file) {
+        const idx = this.selectedFiles.findIndex(f => f.id === file.id);
+        if (idx === -1) {
+            this.selectedFiles.push(file);
+        } else {
+            this.selectedFiles.splice(idx, 1);
+        }
+    },
+
+    clearSelection() {
+        this.selectedFiles = [];
+    },
+
+    hasSelection() {
+        return this.selectedFiles.length > 0;
+    },
+
+    selectAll() {
+        if (this.selectedFiles.length === this.sortedFiles().length) {
+            this.selectedFiles = [];
+        } else {
+            this.selectedFiles = [...this.sortedFiles()];
+        }
+    },
+
+    allSelected() {
+        const sorted = this.sortedFiles();
+        return sorted.length > 0 && this.selectedFiles.length === sorted.length;
+    },
+
+    someSelected() {
+        return this.selectedFiles.length > 0 && this.selectedFiles.length < this.sortedFiles().length;
     },
 
     saveNavState() {
@@ -279,6 +335,7 @@ deleteConfirmFile: null,
     },
 
     loadFiles(forceSync = false) {
+        this.selectedFiles = [];
         let url = '/files?';
         if (this.currentFolder) url += 'parent_id=' + this.currentFolder;
         if (this.currentStorage) url += '&storage_id=' + this.currentStorage;
@@ -292,6 +349,11 @@ deleteConfirmFile: null,
             }
         }).then(res => res.ok && res.json()).then(data => {
             this.files = data || [];
+            if (forceSync) {
+                const folders = (data || []).filter(f => f.is_folder).length;
+                const files = (data || []).filter(f => !f.is_folder).length;
+                this.showToast('Directorio actualizado — ' + folders + ' carpetas, ' + files + ' archivos', 'success');
+            }
         });
     },
 
@@ -305,6 +367,7 @@ deleteConfirmFile: null,
         }
         this.currentFolder = folderId;
         this.currentFolderName = folderName;
+        this.selectedFiles = [];
         this.loadFiles();
         this.saveNavState();
     },
@@ -333,7 +396,7 @@ deleteConfirmFile: null,
         return map[status] || 'Error al subir el archivo (' + status + ')';
     },
 
-    uploadFile(file, queueIndex) {
+    uploadFile(file, queueIndex, parentIdOverride = undefined) {
         return new Promise((resolve) => {
             if (!this.currentStorage) {
                 this.uploadQueue[queueIndex].error = 'Debes estar dentro de un storage para subir';
@@ -342,7 +405,8 @@ deleteConfirmFile: null,
             }
             const formData = new FormData();
             formData.append('file', file);
-            formData.append('parent_id', this.currentFolder || '');
+            const parentId = parentIdOverride !== undefined ? parentIdOverride : this.currentFolder;
+            formData.append('parent_id', parentId ?? '');
             formData.append('storage_id', this.currentStorage);
             const xhr = new XMLHttpRequest();
             xhr.upload.onprogress = (e) => {
@@ -382,6 +446,133 @@ deleteConfirmFile: null,
         for (let i = 0; i < files.length; i++) {
             await this.uploadFile(files[i], startIndex + i);
         }
+    },
+
+    async uploadFolder(fileList) {
+        if (!fileList || fileList.length === 0) return;
+        if (!this.currentStorage) {
+            this.showToast('Debes estar dentro de un storage para subir');
+            return;
+        }
+        const files = Array.from(fileList);
+        const csrfToken = document.querySelector('meta[name="csrf-token"]').content;
+
+        // Mapa de ruta relativa de carpeta → id en DB
+        const pathToId = { '': this.currentFolder ?? null };
+
+        // Extraer rutas únicas de carpetas ordenadas de menor a mayor profundidad
+        const folderPaths = new Set();
+        files.forEach(f => {
+            const parts = (f.webkitRelativePath || f.name).split('/');
+            for (let i = 1; i < parts.length; i++) {
+                folderPaths.add(parts.slice(0, i).join('/'));
+            }
+        });
+        const sortedFolders = [...folderPaths].sort((a, b) => a.split('/').length - b.split('/').length);
+
+        // Crear carpetas en DB de padre a hijo
+        for (const folderPath of sortedFolders) {
+            const parts = folderPath.split('/');
+            const folderName = parts[parts.length - 1];
+            const parentPath = parts.slice(0, -1).join('/');
+            const parentId = pathToId[parentPath];
+
+            try {
+                const res = await fetch('/files', {
+                    method: 'POST',
+                    credentials: 'include',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json',
+                        'X-Requested-With': 'XMLHttpRequest',
+                        'X-CSRF-TOKEN': csrfToken,
+                    },
+                    body: JSON.stringify({ name: folderName, parent_id: parentId, storage_id: this.currentStorage, is_folder: true }),
+                });
+                if (res.ok) {
+                    const folder = await res.json();
+                    pathToId[folderPath] = folder.id;
+                } else if (res.status === 409) {
+                    // Carpeta ya existe — buscarla en DB
+                    const listUrl = '/files?' + (parentId ? 'parent_id=' + parentId : '') + '&storage_id=' + this.currentStorage;
+                    const listRes = await fetch(listUrl, { credentials: 'include', headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' } });
+                    if (listRes.ok) {
+                        const siblings = await listRes.json();
+                        const existing = siblings.find(f => f.name === folderName && f.is_folder);
+                        if (existing) pathToId[folderPath] = existing.id;
+                    }
+                }
+            } catch (_) { /* continuar */ }
+        }
+
+        // Encolar y subir archivos al parent correcto
+        this.showUploadModal = true;
+        const startIndex = this.uploadQueue.length;
+        files.forEach(f => {
+            const displayName = f.webkitRelativePath || f.name;
+            this.uploadQueue.push({ name: displayName, progress: 0, error: null, done: false });
+        });
+
+        for (let i = 0; i < files.length; i++) {
+            const f = files[i];
+            const relPath = f.webkitRelativePath || f.name;
+            const parts = relPath.split('/');
+            const parentPath = parts.slice(0, -1).join('/');
+            const parentId = pathToId[parentPath];
+            await this.uploadFile(f, startIndex + i, parentId);
+        }
+
+        this.loadFiles();
+    },
+
+    async handleDrop(event) {
+        const items = [...(event.dataTransfer?.items || [])];
+        const hasFolder = items.some(item => item.webkitGetAsEntry?.()?.isDirectory);
+
+        if (!hasFolder) {
+            this.uploadFiles(event.dataTransfer.files);
+            return;
+        }
+
+        // Recolectar todos los archivos con su ruta relativa via FileSystemEntry API
+        const collected = [];
+        const readEntry = (entry, prefix) => new Promise(resolve => {
+            if (entry.isFile) {
+                entry.file(file => {
+                    file._folderRelativePath = prefix + file.name;
+                    collected.push(file);
+                    resolve();
+                });
+            } else if (entry.isDirectory) {
+                const reader = entry.createReader();
+                const readBatch = () => {
+                    reader.readEntries(async entries => {
+                        if (!entries.length) { resolve(); return; }
+                        for (const e of entries) {
+                            await readEntry(e, prefix + entry.name + '/');
+                        }
+                        readBatch();
+                    });
+                };
+                readBatch();
+            } else {
+                resolve();
+            }
+        });
+
+        for (const item of items) {
+            const entry = item.webkitGetAsEntry?.();
+            if (entry) await readEntry(entry, '');
+        }
+
+        if (!collected.length) return;
+
+        // Adaptar para uploadFolder: necesitamos webkitRelativePath
+        const adapted = collected.map(f => {
+            Object.defineProperty(f, 'webkitRelativePath', { get: () => f._folderRelativePath });
+            return f;
+        });
+        await this.uploadFolder(adapted);
     },
 
     resetImgTransform() {
@@ -475,6 +666,9 @@ deleteConfirmFile: null,
         this.selectedFile = file;
         this.showDetailModal = true;
         this.fileShares = [];
+        this.shareActiveTab = 'all';
+        this.selectedShareIds = [];
+        this.bulkDeleteLoading = false;
         this.editingShareId = null;
         this.shareForm = { permissions: 'read', password: '', expires_at: '' };
         this.shareFeedback = { type: '', message: '' };
@@ -622,6 +816,44 @@ deleteConfirmFile: null,
         setTimeout(() => this.toast = null, 4000);
     },
 
+    async downloadSelected() {
+        if (!this.hasSelection() || this.downloadingMulti) return;
+        this.downloadingMulti = true;
+        try {
+            const ids = this.selectedFiles.map(f => f.id);
+            const res = await fetch('/files/download-multi', {
+                method: 'POST',
+                credentials: 'include',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || '',
+                },
+                body: JSON.stringify({ ids }),
+            });
+            if (!res.ok) {
+                const data = await res.json().catch(() => ({}));
+                this.showToast(data.error || 'Error al descargar la selección.');
+                return;
+            }
+            const blob = await res.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'descarga.zip';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            this.clearSelection();
+        } catch (e) {
+            this.showToast('Error de red al descargar.');
+        } finally {
+            this.downloadingMulti = false;
+        }
+    },
+
     async downloadItem(file) {
         if (!file.is_folder) {
             window.location = '/files/' + file.id + '/download';
@@ -643,6 +875,76 @@ deleteConfirmFile: null,
         this.deleteConfirmFile = file;
     },
 
+    async openCopyMoveModal(file, action) {
+        this.copyMoveSourceFile = file;
+        this.copyMoveAction = action;
+        this.copyMoveDestFolderId = null;
+        this.copyMoveDestLabel = 'Raíz';
+        this.copyMoveBreadcrumb = [];
+        this.copyMoveError = null;
+        this.copyMoveFolders = [];
+        this.showCopyMoveModal = true;
+        await this.loadCopyMoveFolders(null);
+    },
+
+    async loadCopyMoveFolders(parentId) {
+        this.copyMoveLoading = true;
+        const storageId = this.currentStorage;
+        let url = '/files?storage_id=' + storageId;
+        if (parentId !== null) url += '&parent_id=' + parentId;
+        const res = await fetch(url, { credentials: 'include', headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' } });
+        const data = await res.json().catch(() => []);
+        this.copyMoveFolders = (Array.isArray(data) ? data : []).filter(f => f.is_folder);
+        this.copyMoveLoading = false;
+    },
+
+    async navigateCopyMoveFolder(folder) {
+        this.copyMoveDestFolderId = folder.id;
+        this.copyMoveDestLabel = folder.name;
+        this.copyMoveBreadcrumb.push({ id: folder.id, name: folder.name });
+        await this.loadCopyMoveFolders(folder.id);
+    },
+
+    async navigateCopyMoveBreadcrumb(index) {
+        if (index === -1) {
+            this.copyMoveDestFolderId = null;
+            this.copyMoveDestLabel = 'Raíz';
+            this.copyMoveBreadcrumb = [];
+            await this.loadCopyMoveFolders(null);
+        } else {
+            const crumb = this.copyMoveBreadcrumb[index];
+            this.copyMoveDestFolderId = crumb.id;
+            this.copyMoveDestLabel = crumb.name;
+            this.copyMoveBreadcrumb = this.copyMoveBreadcrumb.slice(0, index + 1);
+            await this.loadCopyMoveFolders(crumb.id);
+        }
+    },
+
+    async confirmCopyMove() {
+        if (!this.copyMoveSourceFile) return;
+        this.copyMoveLoading = true;
+        this.copyMoveError = null;
+        const endpoint = '/files/' + this.copyMoveSourceFile.id + '/' + this.copyMoveAction;
+        const body = { destination_parent_id: this.copyMoveDestFolderId };
+        const res = await fetch(endpoint, {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || '' },
+            body: JSON.stringify(body),
+        });
+        const data = await res.json().catch(() => ({}));
+        this.copyMoveLoading = false;
+        if (!res.ok) {
+            this.copyMoveError = data.error || 'Error al realizar la operación';
+            return;
+        }
+        this.showCopyMoveModal = false;
+        this.copyMoveSourceFile = null;
+        const label = this.copyMoveAction === 'copy' ? 'copiado' : 'movido';
+        this.showToast('Archivo ' + label + ' correctamente');
+        await this.refreshFiles();
+    },
+
     async executeDeleteFile() {
         const file = this.deleteConfirmFile;
         this.deleteConfirmFile = null;
@@ -658,6 +960,33 @@ deleteConfirmFile: null,
         });
         if (res.ok) {
             this.files = this.files.filter(f => f.id !== file.id);
+        }
+    },
+
+    async executeDeleteSelected() {
+        this.deleteSelectedConfirm = false;
+        const toDelete = [...this.selectedFiles];
+        this.selectedFiles = [];
+        const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
+        let errors = 0;
+        for (const file of toDelete) {
+            const res = await fetch('/files/' + file.id, {
+                method: 'DELETE',
+                credentials: 'include',
+                headers: {
+                    'Accept': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'X-CSRF-TOKEN': csrfToken,
+                }
+            });
+            if (res.ok) {
+                this.files = this.files.filter(f => f.id !== file.id);
+            } else {
+                errors++;
+            }
+        }
+        if (errors > 0) {
+            this.showToast(errors + ' elemento(s) no se pudieron eliminar.');
         }
     },
 
@@ -724,6 +1053,64 @@ deleteConfirmFile: null,
             this.shareFeedback = { type: 'success', message: 'Enlace copiado al portapapeles' };
             setTimeout(() => this.shareFeedback = { type: '', message: '' }, 3000);
         });
+    },
+
+    filteredShares() {
+        if (this.shareActiveTab === 'all') return this.fileShares;
+        return this.fileShares.filter(s => s.permissions === this.shareActiveTab);
+    },
+
+    shareTabCount(tab) {
+        if (tab === 'all') return this.fileShares.length;
+        return this.fileShares.filter(s => s.permissions === tab).length;
+    },
+
+    toggleShareSelect(id) {
+        const idx = this.selectedShareIds.indexOf(id);
+        if (idx === -1) this.selectedShareIds.push(id);
+        else this.selectedShareIds.splice(idx, 1);
+    },
+
+    toggleSelectAllShares() {
+        const visible = this.filteredShares().map(s => s.id);
+        if (visible.every(id => this.selectedShareIds.includes(id))) {
+            this.selectedShareIds = this.selectedShareIds.filter(id => !visible.includes(id));
+        } else {
+            visible.forEach(id => { if (!this.selectedShareIds.includes(id)) this.selectedShareIds.push(id); });
+        }
+    },
+
+    allFilteredSharesSelected() {
+        const visible = this.filteredShares();
+        return visible.length > 0 && visible.every(s => this.selectedShareIds.includes(s.id));
+    },
+
+    someFilteredSharesSelected() {
+        const visible = this.filteredShares();
+        return visible.some(s => this.selectedShareIds.includes(s.id)) && !this.allFilteredSharesSelected();
+    },
+
+    async bulkDeleteShares() {
+        if (!this.selectedShareIds.length) return;
+        this.bulkDeleteLoading = true;
+        const ids = [...this.selectedShareIds];
+        const results = await Promise.all(ids.map(id =>
+            fetch('/shares/' + id, {
+                method: 'DELETE',
+                credentials: 'include',
+                headers: { 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content, 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+            }).then(r => ({ id, ok: r.ok }))
+        ));
+        const succeeded = results.filter(r => r.ok).map(r => r.id);
+        const failed = results.filter(r => !r.ok).length;
+        this.fileShares = this.fileShares.filter(s => !succeeded.includes(s.id));
+        this.selectedShareIds = this.selectedShareIds.filter(id => !succeeded.includes(id));
+        this.bulkDeleteLoading = false;
+        if (failed > 0) {
+            this.showToast(succeeded.length + ' eliminados, ' + failed + ' fallaron', 'error');
+        } else {
+            this.showToast(succeeded.length + ' enlace(s) eliminado(s)', 'success');
+        }
     },
 
     async deleteShareLink(shareId) {
@@ -823,8 +1210,8 @@ deleteConfirmFile: null,
                 return ((a.size || 0) - (b.size || 0)) * dir;
             }
             if (field === 'date') {
-                const da = new Date(a.file_modified_at || a.created_at || 0).getTime();
-                const db = new Date(b.file_modified_at || b.created_at || 0).getTime();
+                const da = a.file_modified_at ? new Date(a.file_modified_at).getTime() : 0;
+                const db = b.file_modified_at ? new Date(b.file_modified_at).getTime() : 0;
                 return (da - db) * dir;
             }
             return 0;
@@ -1679,7 +2066,7 @@ deleteConfirmFile: null,
              @dragenter.prevent="if(viewMode === 'files' && canUpload()) { dragDepth++; dragOverMain = true; }"
              @dragleave.prevent="dragDepth--; if(dragDepth <= 0) { dragDepth = 0; dragOverMain = false; }"
              @dragover.prevent
-             @drop.prevent="dragDepth = 0; dragOverMain = false; if(viewMode === 'files' && canUpload()) uploadFiles($event.dataTransfer.files)">
+             @drop.prevent="dragDepth = 0; dragOverMain = false; if(viewMode === 'files' && canUpload()) handleDrop($event)">
             <div x-show="dragOverMain && viewMode === 'files' && canUpload()"
                  class="absolute inset-0 z-40 bg-blue-500/20 border-4 border-dashed border-blue-500 rounded-xl flex items-center justify-center pointer-events-none">
                 <div class="bg-white rounded-xl px-8 py-6 shadow-xl text-center">
@@ -1815,9 +2202,56 @@ deleteConfirmFile: null,
                     </div>
                 </div>
 
-                <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2 sm:gap-4" x-show="viewMode === 'files' && files.length > 0 && filesViewMode === 'grid'">
+                {{-- Barra de selección múltiple --}}
+                <div x-show="hasSelection() && viewMode === 'files'" x-cloak
+                     x-transition:enter="transition ease-out duration-150"
+                     x-transition:enter-start="opacity-0 -translate-y-2"
+                     x-transition:enter-end="opacity-100 translate-y-0"
+                     class="flex items-center gap-3 bg-white border border-blue-200 rounded-xl px-4 py-2.5 mb-3 shadow-sm"
+                     @click.stop>
+                    <div class="flex items-center gap-2 flex-1 min-w-0">
+                        <svg class="w-4 h-4 text-blue-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                        </svg>
+                        <span class="text-sm font-medium text-slate-700"
+                              x-text="selectedFiles.length + (selectedFiles.length === 1 ? ' elemento seleccionado' : ' elementos seleccionados')"></span>
+                    </div>
+                    <button @click.stop="clearSelection()"
+                            class="text-xs text-slate-500 hover:text-slate-700 px-2 py-1 rounded hover:bg-slate-100 transition-colors flex-shrink-0">
+                        ✕ Limpiar
+                    </button>
+                    <button @click.stop="downloadSelected()"
+                            :disabled="downloadingMulti"
+                            :class="downloadingMulti ? 'bg-blue-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'"
+                            class="flex items-center gap-1.5 text-white text-xs font-medium px-3 py-1.5 rounded-lg transition-colors flex-shrink-0">
+                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+                        </svg>
+                        <span x-text="downloadingMulti ? 'Generando...' : 'Descargar ZIP'"></span>
+                    </button>
+                    <button x-show="canDelete()"
+                            @click.stop="deleteSelectedConfirm = true"
+                            class="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 text-white text-xs font-medium px-3 py-1.5 rounded-lg transition-colors flex-shrink-0">
+                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                        </svg>
+                        Eliminar
+                    </button>
+                </div>
+
+                <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2 sm:gap-4" x-show="viewMode === 'files' && files.length > 0 && filesViewMode === 'grid'"
+                     @click.self="clearSelection()">
                     <template x-for="file in sortedFiles()" :key="file.id">
-                        <div class="group bg-slate-50 hover:bg-blue-50 border border-slate-200 hover:border-blue-300 rounded-xl p-2 sm:p-4 cursor-pointer transition-all">
+                        <div class="group relative bg-slate-50 hover:bg-blue-50 border border-slate-200 hover:border-blue-300 rounded-xl p-2 sm:p-4 cursor-pointer transition-all"
+                             :class="isSelected(file) ? 'ring-2 ring-blue-500 bg-blue-50 border-blue-300' : ''"
+                             @click.ctrl.prevent.stop="toggleSelect(file)">
+                            <div class="absolute top-1.5 left-1.5 z-10 opacity-0 group-hover:opacity-100 transition-opacity"
+                                 :class="isSelected(file) ? 'opacity-100' : ''"
+                                 @click.stop="toggleSelect(file)">
+                                <input type="checkbox" :checked="isSelected(file)"
+                                       class="w-4 h-4 rounded accent-blue-600 cursor-pointer shadow-sm"
+                                       @click.stop="toggleSelect(file)">
+                            </div>
                             <div class="flex flex-col items-center text-center" @click="file.is_folder ? navigateToFolder(file.id, file.name) : openViewer(file)">
                                 <div class="w-11 h-11 sm:w-16 sm:h-16 rounded-xl flex items-center justify-center mb-1.5 sm:mb-3" :class="getFileIcon(file).bg">
                                     <template x-if="getFileIcon(file).icon === 'folder'">
@@ -1904,6 +2338,16 @@ deleteConfirmFile: null,
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
                                     </svg>
                                 </button>
+                                <button x-show="canCopyMove()" @click.stop="openCopyMoveModal(file, 'copy')" class="p-1.5 sm:p-2 bg-white hover:bg-blue-100 rounded-lg shadow-sm transition-colors" title="Copiar">
+                                    <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+                                    </svg>
+                                </button>
+                                <button x-show="canCopyMove()" @click.stop="openCopyMoveModal(file, 'move')" class="p-1.5 sm:p-2 bg-white hover:bg-indigo-100 rounded-lg shadow-sm transition-colors" title="Mover">
+                                    <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"/>
+                                    </svg>
+                                </button>
                                 <button x-show="canRename()" @click.stop="startRename(file)" class="p-1.5 sm:p-2 bg-white hover:bg-amber-100 rounded-lg shadow-sm transition-colors" title="Renombrar">
                                     <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
@@ -1919,10 +2363,18 @@ deleteConfirmFile: null,
                     </template>
                 </div>
 
-                <div class="overflow-x-auto" x-show="viewMode === 'files' && files.length > 0 && filesViewMode === 'list'">
+                <div class="overflow-x-auto" x-show="viewMode === 'files' && files.length > 0 && filesViewMode === 'list'"
+                     @click.self="clearSelection()">
                     <table class="w-full">
                         <thead class="bg-slate-50 border-b border-slate-200">
                             <tr>
+                                <th class="px-2 sm:px-3 py-2 sm:py-3 w-8 text-center select-none" @click.stop>
+                                    <input type="checkbox"
+                                           :checked="allSelected()"
+                                           :indeterminate.prop="someSelected()"
+                                           @click.stop="selectAll()"
+                                           class="w-4 h-4 rounded accent-blue-600 cursor-pointer">
+                                </th>
                                 <th class="px-2 sm:px-4 py-2 sm:py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider cursor-pointer select-none hover:bg-slate-100" @click="sortFiles('name')">
                                     <span class="flex items-center gap-1">
                                         Nombre
@@ -1946,7 +2398,15 @@ deleteConfirmFile: null,
                         </thead>
                         <tbody class="divide-y divide-slate-200">
                             <template x-for="file in sortedFiles()" :key="file.id">
-                                <tr class="hover:bg-slate-50 cursor-pointer" @click="file.is_folder ? navigateToFolder(file.id, file.name) : openViewer(file)">
+                                <tr class="cursor-pointer transition-colors"
+                                    :class="isSelected(file) ? 'bg-blue-50' : 'hover:bg-slate-50'"
+                                    @click="file.is_folder ? navigateToFolder(file.id, file.name) : openViewer(file)"
+                                    @click.ctrl.prevent.stop="toggleSelect(file)">
+                                    <td class="px-2 sm:px-3 py-2 sm:py-3 text-center w-8" @click.stop>
+                                        <input type="checkbox" :checked="isSelected(file)"
+                                               @click.stop="toggleSelect(file)"
+                                               class="w-4 h-4 rounded accent-blue-600 cursor-pointer">
+                                    </td>
                                     <td class="px-2 sm:px-4 py-2 sm:py-3 min-w-0">
                                         <div class="flex items-center gap-2 sm:gap-3 min-w-0">
                                             <div class="w-8 h-8 sm:w-10 sm:h-10 rounded-lg flex items-center justify-center flex-shrink-0" :class="getFileIcon(file).bg">
@@ -2018,7 +2478,7 @@ deleteConfirmFile: null,
                                         </div>
                                     </td>
                                     <td class="px-2 sm:px-4 py-2 sm:py-3 text-slate-500 text-sm hidden md:table-cell" x-text="file.is_folder ? '-' : formatSize(file.size)"></td>
-                                    <td class="px-2 sm:px-4 py-2 sm:py-3 text-slate-500 text-sm hidden lg:table-cell" x-text="formatDate(file.file_modified_at || file.created_at)"></td>
+                                    <td class="px-2 sm:px-4 py-2 sm:py-3 text-slate-500 text-sm hidden lg:table-cell" x-text="file.file_modified_at ? formatDate(file.file_modified_at) : '—'"></td>
                                     <td class="px-2 sm:px-4 py-2 sm:py-3 text-right">
                                         <div class="flex items-center justify-end gap-0.5 sm:gap-1">
                                             <button x-show="currentStorageCanShare" @click.stop="openDetailModal(file)" class="p-1.5 sm:p-2 hover:bg-slate-200 rounded-lg transition-colors" title="Compartir">
@@ -2034,6 +2494,16 @@ deleteConfirmFile: null,
                                             <button @click.stop="downloadItem(file)" class="p-1.5 sm:p-2 bg-green-100 hover:bg-green-200 text-green-600 rounded-lg transition-colors" :title="file.is_folder ? 'Descargar carpeta como ZIP' : 'Descargar'">
                                                 <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+                                                </svg>
+                                            </button>
+                                            <button x-show="canCopyMove()" @click.stop="openCopyMoveModal(file, 'copy')" class="p-1.5 sm:p-2 bg-blue-100 hover:bg-blue-200 text-blue-500 rounded-lg transition-colors" title="Copiar">
+                                                <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+                                                </svg>
+                                            </button>
+                                            <button x-show="canCopyMove()" @click.stop="openCopyMoveModal(file, 'move')" class="p-1.5 sm:p-2 bg-indigo-100 hover:bg-indigo-200 text-indigo-500 rounded-lg transition-colors" title="Mover">
+                                                <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"/>
                                                 </svg>
                                             </button>
                                             <button x-show="canRename()" @click.stop="startRename(file)" class="p-1.5 sm:p-2 bg-amber-100 hover:bg-amber-200 text-amber-600 rounded-lg transition-colors" title="Renombrar">
@@ -2113,15 +2583,21 @@ deleteConfirmFile: null,
                      :class="dragging ? 'border-blue-500 bg-blue-50' : ''"
                      @dragover.prevent="dragging = true"
                      @dragleave.prevent="dragging = false"
-                     @drop.prevent="dragging = false; uploadFiles($event.dataTransfer.files)">
+                     @drop.prevent="dragging = false; handleDrop($event)">
                     <svg class="w-12 h-12 text-slate-400 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
                     </svg>
                     <p class="text-slate-600 mb-4">Arrastra archivos aquí o</p>
-                    <label class="inline-block bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg cursor-pointer transition-colors">
-                        Seleccionar
-                        <input type="file" class="hidden" multiple @change="uploadFiles($event.target.files)">
-                    </label>
+                    <div class="flex items-center justify-center gap-2 flex-wrap">
+                        <label class="inline-block bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg cursor-pointer transition-colors">
+                            Seleccionar archivos
+                            <input type="file" class="hidden" multiple @change="uploadFiles($event.target.files)">
+                        </label>
+                        <label class="inline-block bg-slate-100 hover:bg-slate-200 text-slate-700 px-4 py-2 rounded-lg cursor-pointer transition-colors border border-slate-300">
+                            📁 Subir carpeta
+                            <input type="file" class="hidden" webkitdirectory @change="uploadFolder($event.target.files)">
+                        </label>
+                    </div>
                 </div>
                 <button @click="showUploadModal = false" class="mt-4 w-full bg-slate-100 hover:bg-slate-200 text-slate-700 px-4 py-2 rounded-lg transition-colors">
                     Cancelar
@@ -2223,8 +2699,8 @@ deleteConfirmFile: null,
                                 <p class="font-medium text-slate-700" x-text="formatSize(selectedFile.size)"></p>
                             </div>
                             <div>
-                                <p class="text-slate-500">Fecha de creación:</p>
-                                <p class="font-medium text-slate-700" x-text="formatDate(selectedFile.file_modified_at || selectedFile.created_at)"></p>
+                                <p class="text-slate-500">Fecha de modificación:</p>
+                                <p class="font-medium text-slate-700" x-text="selectedFile.file_modified_at ? formatDate(selectedFile.file_modified_at) : '—'"></p>
                             </div>
                             <div x-show="!selectedFile.is_folder">
                                 <p class="text-slate-500">Tipo:</p>
@@ -2271,23 +2747,78 @@ deleteConfirmFile: null,
                             </button>
                         </div>
 
+                        <!-- Permission tabs -->
+                        <div class="flex flex-wrap gap-1 mb-3">
+                            <template x-for="tab in [{key:'all',label:'Todos'},{key:'read',label:'Lectura'},{key:'write',label:'Escritura'},{key:'upload',label:'Subida'},{key:'full',label:'Completo'}]" :key="tab.key">
+                                <button
+                                    @click="shareActiveTab = tab.key; selectedShareIds = []"
+                                    :class="shareActiveTab === tab.key ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'"
+                                    class="px-2 py-1 rounded text-xs font-medium transition-colors flex items-center gap-1">
+                                    <span x-text="tab.label"></span>
+                                    <span class="rounded-full px-1.5 text-xs font-semibold" :class="shareActiveTab === tab.key ? 'bg-blue-500 text-white' : 'bg-slate-200 text-slate-600'" x-text="shareTabCount(tab.key)"></span>
+                                </button>
+                            </template>
+                        </div>
+
+                        <!-- Empty state -->
                         <div x-show="fileShares.length === 0" class="text-center py-6 text-slate-500 text-sm">
                             No hay enlaces compartidos para este archivo
                         </div>
+                        <div x-show="fileShares.length > 0 && filteredShares().length === 0" class="text-center py-6 text-slate-500 text-sm">
+                            No hay enlaces de este tipo
+                        </div>
 
-                        <div class="space-y-2" x-show="fileShares.length > 0">
-                            <template x-for="share in fileShares" :key="share.id">
+                        <!-- Bulk actions bar -->
+                        <div x-show="selectedShareIds.length > 0" class="flex items-center justify-between bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 mb-2">
+                            <span class="text-sm text-blue-700" x-text="selectedShareIds.length + ' seleccionado' + (selectedShareIds.length !== 1 ? 's' : '')"></span>
+                            <button @click="bulkDeleteShares()" :disabled="bulkDeleteLoading" class="flex items-center gap-1 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-2 py-1 rounded text-xs transition-colors">
+                                <template x-if="bulkDeleteLoading">
+                                    <svg class="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                                    </svg>
+                                </template>
+                                <template x-if="!bulkDeleteLoading">
+                                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                                    </svg>
+                                </template>
+                                <span x-text="bulkDeleteLoading ? 'Eliminando...' : 'Eliminar seleccionados'"></span>
+                            </button>
+                        </div>
+
+                        <!-- Shares list with checkboxes -->
+                        <div class="space-y-2" x-show="filteredShares().length > 0">
+                            <!-- Select all header -->
+                            <div class="flex items-center gap-2 px-2 py-1.5 bg-slate-50 rounded border border-slate-200">
+                                <input type="checkbox"
+                                       :checked="allFilteredSharesSelected()"
+                                       :indeterminate.prop="someFilteredSharesSelected() && !allFilteredSharesSelected()"
+                                       @change="toggleSelectAllShares()"
+                                       :disabled="bulkDeleteLoading"
+                                       class="w-3.5 h-3.5 text-blue-600 rounded">
+                                <span class="text-xs text-slate-500">Seleccionar todos</span>
+                            </div>
+
+                            <template x-for="share in filteredShares()" :key="share.id">
                                 <div class="border border-slate-200 rounded-lg p-3">
                                     <template x-if="editingShareId !== share.id">
                                         <div>
-                                            <div class="flex items-center justify-between mb-2">
-                                                <span class="px-2 py-0.5 rounded text-xs" :class="{
-                                                    'bg-gray-100 text-gray-800': share.permissions === 'read',
-                                                    'bg-blue-100 text-blue-800': share.permissions === 'write',
-                                                    'bg-yellow-100 text-yellow-800': share.permissions === 'upload',
-                                                    'bg-green-100 text-green-800': share.permissions === 'full'
-                                                }" x-text="share.permissions"></span>
-                                                <span class="text-xs text-slate-500" x-text="formatDate(share.created_at)"></span>
+                                            <div class="flex items-center gap-2 mb-2">
+                                                <input type="checkbox"
+                                                       :checked="selectedShareIds.includes(share.id)"
+                                                       @change="toggleShareSelect(share.id)"
+                                                       :disabled="bulkDeleteLoading"
+                                                       class="w-3.5 h-3.5 text-blue-600 rounded flex-shrink-0">
+                                                <div class="flex items-center justify-between flex-1 min-w-0">
+                                                    <span class="px-2 py-0.5 rounded text-xs" :class="{
+                                                        'bg-gray-100 text-gray-800': share.permissions === 'read',
+                                                        'bg-blue-100 text-blue-800': share.permissions === 'write',
+                                                        'bg-yellow-100 text-yellow-800': share.permissions === 'upload',
+                                                        'bg-green-100 text-green-800': share.permissions === 'full'
+                                                    }" x-text="share.permissions"></span>
+                                                    <span class="text-xs text-slate-500" x-text="formatDate(share.created_at)"></span>
+                                                </div>
                                             </div>
                                             <p class="text-sm text-slate-600 mb-2 truncate" :title="window.location.origin + '/s/' + share.token" x-text="truncateUrl(window.location.origin + '/s/' + share.token, 40)"></p>
                                             <div class="flex gap-2">
@@ -2571,7 +3102,100 @@ deleteConfirmFile: null,
         </div>
     </div>
 
+    {{-- Bulk delete confirmation modal --}}
+    <div x-show="deleteSelectedConfirm"
+         x-cloak
+         x-transition:enter="transition ease-out duration-200"
+         x-transition:enter-start="opacity-0"
+         x-transition:enter-end="opacity-100"
+         x-transition:leave="transition ease-in duration-150"
+         x-transition:leave-start="opacity-100"
+         x-transition:leave-end="opacity-0"
+         class="fixed inset-0 z-[60] bg-black/60 flex items-center justify-center p-4"
+         @keydown.escape.window="deleteSelectedConfirm = false">
+        <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6" @click.stop>
+            <div class="flex items-center justify-center w-16 h-16 bg-red-100 rounded-full mx-auto mb-4">
+                <svg class="w-8 h-8 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                </svg>
+            </div>
+            <h3 class="text-xl font-bold text-slate-800 text-center mb-2">¿Eliminar selección?</h3>
+            <p class="text-slate-500 text-center mb-6">
+                Se eliminarán
+                <span class="font-semibold text-slate-700" x-text="selectedFiles.length"></span>
+                <span x-text="selectedFiles.length === 1 ? ' elemento' : ' elementos'"></span>.
+                Esta acción no se puede deshacer.
+            </p>
+            <div class="flex gap-3">
+                <button @click="deleteSelectedConfirm = false" class="flex-1 px-4 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium rounded-xl transition-colors">
+                    Cancelar
+                </button>
+                <button @click="executeDeleteSelected()" class="flex-1 px-4 py-3 bg-red-600 hover:bg-red-700 text-white font-medium rounded-xl transition-colors">
+                    Eliminar
+                </button>
+            </div>
+        </div>
+    </div>
+
     {{-- Delete confirmation modal --}}
+    {{-- Modal copiar / mover --}}
+    <div x-cloak x-show="showCopyMoveModal"
+         x-transition:enter="transition ease-out duration-200" x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
+         x-transition:leave="transition ease-in duration-150" x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"
+         class="fixed inset-0 z-[60] bg-black/60 flex items-center justify-center p-4"
+         @keydown.escape.window="showCopyMoveModal = false">
+        <div class="bg-white rounded-xl shadow-xl w-full max-w-md flex flex-col" style="max-height:80vh" @click.away="showCopyMoveModal = false">
+            <div class="flex items-center justify-between px-5 pt-5 pb-3 border-b border-slate-100">
+                <h3 class="font-semibold text-slate-800 text-base" x-text="copyMoveAction === 'copy' ? 'Copiar a...' : 'Mover a...'"></h3>
+                <button @click="showCopyMoveModal = false" class="text-slate-400 hover:text-slate-600 transition-colors">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                </button>
+            </div>
+
+            {{-- Breadcrumb --}}
+            <div class="flex items-center gap-1 px-5 py-2 text-sm text-slate-500 flex-wrap border-b border-slate-100">
+                <button @click="navigateCopyMoveBreadcrumb(-1)" class="hover:text-blue-600 transition-colors font-medium">Raíz</button>
+                <template x-for="(crumb, i) in copyMoveBreadcrumb" :key="crumb.id">
+                    <span class="flex items-center gap-1">
+                        <svg class="w-3 h-3 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                        <button @click="navigateCopyMoveBreadcrumb(i)" class="hover:text-blue-600 transition-colors" x-text="crumb.name"></button>
+                    </span>
+                </template>
+            </div>
+
+            {{-- Lista de carpetas --}}
+            <div class="overflow-y-auto flex-1 px-3 py-2">
+                <div x-show="copyMoveLoading && copyMoveFolders.length === 0" class="text-center py-6 text-slate-400 text-sm">Cargando...</div>
+                <div x-show="!copyMoveLoading && copyMoveFolders.length === 0" class="text-center py-6 text-slate-400 text-sm">No hay subcarpetas aquí</div>
+                <template x-for="folder in copyMoveFolders" :key="folder.id">
+                    <button @click="navigateCopyMoveFolder(folder)"
+                            :disabled="copyMoveSourceFile && folder.id === copyMoveSourceFile.id"
+                            class="w-full flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-slate-100 transition-colors text-left disabled:opacity-40 disabled:cursor-not-allowed">
+                        <svg class="w-5 h-5 text-yellow-500 flex-shrink-0" fill="currentColor" viewBox="0 0 24 24"><path d="M10 4H2v16h20V6H12l-2-2z"/></svg>
+                        <span class="text-sm text-slate-700 truncate" x-text="folder.name"></span>
+                        <svg class="w-4 h-4 text-slate-300 ml-auto flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                    </button>
+                </template>
+            </div>
+
+            {{-- Error --}}
+            <div x-show="copyMoveError" class="mx-5 mb-2 px-3 py-2 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm" x-text="copyMoveError"></div>
+
+            {{-- Acciones --}}
+            <div class="flex gap-2 px-5 py-4 border-t border-slate-100">
+                <button @click="showCopyMoveModal = false" class="flex-1 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg transition-colors text-sm">
+                    Cancelar
+                </button>
+                <button @click="confirmCopyMove()"
+                        :disabled="copyMoveLoading"
+                        class="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors text-sm font-medium disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+                    <svg x-show="copyMoveLoading" class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
+                    <span x-text="copyMoveLoading ? 'Procesando...' : (copyMoveAction === 'copy' ? 'Copiar aquí' : 'Mover aquí')"></span>
+                </button>
+            </div>
+        </div>
+    </div>
+
     <div x-show="deleteConfirmFile !== null"
          x-cloak
          x-transition:enter="transition ease-out duration-200"

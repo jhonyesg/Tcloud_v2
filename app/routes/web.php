@@ -100,14 +100,17 @@ Route::middleware('auth')->group(function () {
     Route::get('/profile/show', [App\Http\Controllers\UserController::class, 'profileShow'])->name('profile.show');
     Route::get('/profile/edit', [App\Http\Controllers\UserController::class, 'profileEdit'])->name('profile.edit');
 
+    Route::post('/files/upload', [App\Http\Controllers\FileController::class, 'upload']);
+    Route::post('/files/download-multi', [App\Http\Controllers\FileController::class, 'downloadMulti']);
     Route::resource('files', App\Http\Controllers\FileController::class)->only(['index', 'store', 'show', 'update', 'destroy']);
     Route::get('/user/storages', [App\Http\Controllers\FileController::class, 'storages']);
-    Route::post('/files/upload', [App\Http\Controllers\FileController::class, 'upload']);
     Route::get('/files/{file}/download', [App\Http\Controllers\FileController::class, 'download']);
     Route::get('/files/{file}/download-folder', [App\Http\Controllers\FileController::class, 'downloadFolder']);
     Route::get('/files/{file}/preview', [App\Http\Controllers\FileController::class, 'preview']);
     Route::get('/files/{file}/view', [App\Http\Controllers\FileController::class, 'view']);
     Route::post('/files/{file}/rotate', [App\Http\Controllers\FileController::class, 'rotate']);
+    Route::post('/files/{file}/copy', [App\Http\Controllers\FileController::class, 'copy']);
+    Route::post('/files/{file}/move', [App\Http\Controllers\FileController::class, 'move']);
     Route::get('/files/{file}/text-content', [App\Http\Controllers\FileController::class, 'textContent']);
     Route::put('/files/{file}/text-content', [App\Http\Controllers\FileController::class, 'saveTextContent']);
 

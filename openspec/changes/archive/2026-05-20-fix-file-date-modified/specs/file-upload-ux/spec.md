@@ -1,7 +1,5 @@
-## Purpose
+## MODIFIED Requirements
 
-Definir el comportamiento del área de arrastrar y soltar (drag & drop) del módulo de archivos, incluyendo la subida de archivos individuales y carpetas completas desde el panel principal.
-## Requirements
 ### Requirement: Zona de drop en la vista principal de archivos
 El sistema SHALL mostrar un overlay visual cuando el usuario arrastra archivos o carpetas sobre el área principal del módulo "Mis Archivos", y SHALL subir el contenido al soltarlo sin necesidad de abrir el modal. Si lo arrastrado es una carpeta, se procesará con la FileSystemEntry API. El overlay y el handler de drop SOLO se activarán cuando el usuario tenga permisos de escritura (`write`, `upload` o `full`) en el storage activo. Al crear el registro en base de datos, el sistema SHALL establecer `file_modified_at` desde `filemtime()` del archivo físico tras el `move()`.
 
@@ -25,6 +23,8 @@ El sistema SHALL mostrar un overlay visual cuando el usuario arrastra archivos o
 - **WHEN** el usuario con permiso `read` arrastra archivos sobre el panel de archivos dentro de un storage
 - **THEN** el overlay NO aparece y no se inicia ninguna subida
 
+## ADDED Requirements
+
 ### Requirement: Fecha en columna muestra solo file_modified_at
 La columna "Fecha" en la tabla de archivos y el panel lateral SHALL mostrar `file_modified_at` si está disponible, o `"—"` si es NULL. El sistema NO SHALL usar `created_at` como fecha de display ni como criterio de sort para la columna "Fecha".
 
@@ -35,4 +35,3 @@ La columna "Fecha" en la tabla de archivos y el panel lateral SHALL mostrar `fil
 #### Scenario: Archivo sin file_modified_at
 - **WHEN** el archivo tiene `file_modified_at = null`
 - **THEN** la columna "Fecha" muestra `"—"` y el archivo queda al fondo al ordenar ASC por fecha
-
