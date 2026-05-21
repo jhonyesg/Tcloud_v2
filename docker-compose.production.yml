@@ -3,10 +3,22 @@ services:
     image: postgres:17-alpine
     container_name: tcloud_postgres
     restart: unless-stopped
+    security_opt:
+      - apparmor:unconfined
     environment:
       POSTGRES_DB: tcloudstorage
       POSTGRES_USER: cloud
       POSTGRES_PASSWORD: cloud123
+      TZ: America/Bogota
+      PGTZ: America/Bogota
+    command: >
+      postgres
+        -c shared_buffers=512MB
+        -c work_mem=16MB
+        -c maintenance_work_mem=256MB
+        -c effective_cache_size=2GB
+        -c random_page_cost=1.1
+        -c log_min_duration_statement=500
     volumes:
       - ./data/postgres_data:/var/lib/postgresql/data
     ports:

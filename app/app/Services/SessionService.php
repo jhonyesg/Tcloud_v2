@@ -7,6 +7,7 @@ use App\Models\User;
 use App\Models\UserSession;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Redis;
 use Illuminate\Support\Facades\Session;
@@ -70,6 +71,8 @@ class SessionService
 
     public function killSession(UserSession $session): void
     {
+        Cache::forget("session_valid:{$session->session_id}");
+
         try {
             Redis::del($session->session_id);
         } catch (\Exception $e) {
@@ -98,28 +101,25 @@ class SessionService
 
     public function cleanExpired(): int
     {
-        $sessions = UserSession::where('expires_at', '<', now())->get();
-        foreach ($sessions as $session) {
-            $session->delete();
-        }
-        return $sessions->count();
+        return UserSession::where('expires_at', '<', now())->delete();
     }
 
     public function cleanOrphans(): int
     {
-        $dbSessions = UserSession::all();
         $count = 0;
 
-        foreach ($dbSessions as $session) {
-            try {
-                $exists = Redis::exists($session->session_id);
-                if (!$exists) {
-                    $session->delete();
-                    $count++;
+        UserSession::chunk(100, function ($sessions) use (&$count) {
+            foreach ($sessions as $session) {
+                try {
+                    $exists = Redis::exists($session->session_id);
+                    if (!$exists) {
+                        $session->delete();
+                        $count++;
+                    }
+                } catch (\Exception) {
                 }
-            } catch (\Exception) {
             }
-        }
+        });
 
         return $count;
     }

@@ -52,22 +52,26 @@ class CanalController extends Controller
 
         $grabadores = $user->isAdmin()
             ? Grabador::where('activo', true)->get()
-            : $user->grabadores()->where('activo', true)->get();
+            : $user->grabadores()->where('activo', true)->withPivot('limite_canales')->get();
+
+        $grabadorIds = $grabadores->pluck('id');
+        $canalCounts = Canal::where('usuario_id', $user->id)
+            ->whereIn('grabador_id', $grabadorIds)
+            ->selectRaw('grabador_id, count(*) as total')
+            ->groupBy('grabador_id')
+            ->pluck('total', 'grabador_id');
 
         $asignaciones = [];
         foreach ($grabadores as $grabador) {
-            $acceso = $user->isAdmin()
-                ? (object) ['limite_canales' => 999]
-                : $user->grabadores()->where('grabador_id', $grabador->id)->first();
-
-            $canalesCreados = Canal::where('grabador_id', $grabador->id)
-                ->where('usuario_id', $user->id)
-                ->count();
+            $limite = $user->isAdmin()
+                ? 999
+                : ($grabador->pivot->limite_canales ?? 0);
+            $creados = (int) ($canalCounts[$grabador->id] ?? 0);
 
             $asignaciones[$grabador->id] = [
-                'limite' => $acceso->limite_canales ?? 0,
-                'creados' => $canalesCreados,
-                'disponibles' => ($acceso->limite_canales ?? 0) - $canalesCreados,
+                'limite' => $limite,
+                'creados' => $creados,
+                'disponibles' => $limite - $creados,
             ];
         }
 

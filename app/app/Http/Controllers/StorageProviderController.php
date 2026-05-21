@@ -223,7 +223,7 @@ class StorageProviderController extends Controller
             return response()->json($userStorages);
         }
 
-        $allUsers = \App\Models\User::all();
+        $allUsers = \App\Models\User::select('id', 'username', 'email')->orderBy('username')->get();
         $userStorages = $storage->userStorages()->with('user')->get()->map(function ($us) {
             return [
                 'user_id' => $us->user_id,
@@ -333,13 +333,17 @@ class StorageProviderController extends Controller
 
         $users = User::whereNotIn('id', $assignedIds)->get();
 
-        foreach ($users as $user) {
-            \App\Models\UserStorage::create([
+        if ($users->isNotEmpty()) {
+            $now = now();
+            $records = $users->map(fn($user) => [
                 'user_id'              => $user->id,
                 'storage_provider_id'  => $id,
                 'permissions'          => 'read',
                 'can_create_shares'    => false,
-            ]);
+                'assigned_at'          => $now,
+            ])->toArray();
+
+            \App\Models\UserStorage::insert($records);
         }
 
         return response()->json(['message' => 'All users assigned', 'count' => $users->count()]);

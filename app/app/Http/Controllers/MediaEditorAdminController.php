@@ -15,34 +15,30 @@ class MediaEditorAdminController extends Controller
 
     public function users(Request $request)
     {
-        $users = User::all()->map(function (User $user) {
-            $clipsThisMonth = MediaEditJob::where('user_id', $user->id)
-                ->where('status', 'done')
-                ->whereMonth('created_at', now()->month)
-                ->whereYear('created_at', now()->year)
-                ->count();
+        $currentMonth = now()->month;
+        $currentYear = now()->year;
 
-            $clipsTotal = MediaEditJob::where('user_id', $user->id)
-                ->where('status', 'done')
-                ->count();
-
-            $lastJob = MediaEditJob::where('user_id', $user->id)
-                ->orderByDesc('created_at')
-                ->first();
-
-            return [
-                'id' => $user->id,
-                'email' => $user->email,
-                'username' => $user->username,
-                'role' => $user->role,
-                'media_editor_enabled' => $user->media_editor_enabled,
-                'media_editor_clip_limit' => $user->media_editor_clip_limit,
-                'can_use_media_editor' => $user->canUseMediaEditor(),
-                'clips_this_month' => $clipsThisMonth,
-                'clips_total' => $clipsTotal,
-                'last_clip_at' => $lastJob?->created_at,
-            ];
-        });
+        $users = User::selectRaw('users.*,
+            (SELECT COUNT(*) FROM media_edit_jobs WHERE user_id = users.id AND status = \'done\'
+             AND EXTRACT(MONTH FROM created_at) = ? AND EXTRACT(YEAR FROM created_at) = ?) as clips_this_month,
+            (SELECT COUNT(*) FROM media_edit_jobs WHERE user_id = users.id AND status = \'done\') as clips_total,
+            (SELECT created_at FROM media_edit_jobs WHERE user_id = users.id ORDER BY created_at DESC LIMIT 1) as last_clip_at',
+            [$currentMonth, $currentYear])
+            ->get()
+            ->map(function (User $user) {
+                return [
+                    'id' => $user->id,
+                    'email' => $user->email,
+                    'username' => $user->username,
+                    'role' => $user->role,
+                    'media_editor_enabled' => $user->media_editor_enabled,
+                    'media_editor_clip_limit' => $user->media_editor_clip_limit,
+                    'can_use_media_editor' => $user->canUseMediaEditor(),
+                    'clips_this_month' => $user->clips_this_month,
+                    'clips_total' => $user->clips_total,
+                    'last_clip_at' => $user->last_clip_at,
+                ];
+            });
 
         return response()->json($users);
     }

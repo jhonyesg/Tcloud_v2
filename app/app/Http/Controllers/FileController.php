@@ -656,8 +656,9 @@ class FileController extends Controller
         $totalSize = 0;
         $fileModels = [];
 
+        $filesById = File::with('storageProvider')->whereIn('id', $request->ids)->get()->keyBy('id');
         foreach ($request->ids as $id) {
-            $file = File::find($id);
+            $file = $filesById->get($id);
             if (!$file) {
                 return response()->json(['error' => "Archivo no encontrado: ID {$id}"], 404);
             }
@@ -803,7 +804,7 @@ class FileController extends Controller
 
     private function deleteRecursive(File $folder): void
     {
-        $children = File::where('parent_id', $folder->id)->get();
+        $children = File::where('parent_id', $folder->id)->with('storageProvider')->get();
         foreach ($children as $child) {
             if ($child->is_folder) {
                 $this->deleteRecursive($child);

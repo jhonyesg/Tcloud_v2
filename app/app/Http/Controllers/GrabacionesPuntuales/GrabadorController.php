@@ -322,6 +322,6 @@ class GrabadorController extends Controller
     public function getUsers()
     {
         $this->requireAdmin();
-        return response()->json(User::where('role', '!=', 'admin')->get());
+        return response()->json(User::where('role', '!=', 'admin')->select('id', 'username', 'email')->orderBy('username')->get());
     }
 }
