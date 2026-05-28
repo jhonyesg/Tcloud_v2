@@ -1461,6 +1461,8 @@ deleteConfirmFile: null,
         this.clipThumbsLoading = false;
         this.clipOutputMode = false;
         this.clipMobileTab = 'edit';
+        this.clipInTimeInput = '';
+        this.clipOutTimeInput = '';
         this.showClipModal = true;
         this.$nextTick(() => this.initClipPlayer(file));
     },
@@ -1650,10 +1652,11 @@ deleteConfirmFile: null,
     clipTimelineMu() {
         this.clipDragging = false;
         this.clipDragType = null;
-        // snap: seek player to selection start
         if (this.clipSelStart !== null) {
             const el = document.getElementById('clip-media-el');
             if (el) el.currentTime = Math.min(this.clipSelStart, this.clipSelEnd ?? this.clipSelStart);
+            this.clipInTimeInput = this.formatClipTime(this.clipSelStart);
+            if (this.clipSelEnd !== null) this.clipOutTimeInput = this.formatClipTime(this.clipSelEnd);
         }
     },
 
@@ -1738,6 +1741,69 @@ deleteConfirmFile: null,
         }
         const vid = document.getElementById('clip-media-el');
         if (vid) { vid.currentTime = sourceT; this.clipCurrentTime = sourceT; }
+    },
+
+    clipSeek(delta) {
+        const el = document.getElementById('clip-media-el');
+        if (!el || !this.clipReady) return;
+        el.currentTime = Math.max(0, Math.min(this.clipDuration, el.currentTime + delta));
+    },
+
+    clipSetInPoint() {
+        if (!this.clipReady) return;
+        this.clipSelStart = this.clipCurrentTime;
+        this.clipInTimeInput = this.formatClipTime(this.clipCurrentTime);
+        if (this.clipSelEnd !== null && this.clipSelEnd <= this.clipSelStart + 0.05) {
+            this.clipSelEnd = null;
+            this.clipOutTimeInput = '';
+        }
+    },
+
+    clipSetOutPoint() {
+        if (!this.clipReady || this.clipSelStart === null) return;
+        if (this.clipCurrentTime <= this.clipSelStart + 0.05) return;
+        this.clipSelEnd = this.clipCurrentTime;
+        this.clipOutTimeInput = this.formatClipTime(this.clipCurrentTime);
+    },
+
+    clipParseTime(str) {
+        if (!str) return 0;
+        str = String(str).trim().replace(',', '.');
+        const parts = str.split(':');
+        let s = 0;
+        if (parts.length === 1) {
+            s = parseFloat(parts[0]) || 0;
+        } else if (parts.length === 2) {
+            s = (parseInt(parts[0]) || 0) * 60 + (parseFloat(parts[1]) || 0);
+        } else {
+            s = (parseInt(parts[0]) || 0) * 3600 + (parseInt(parts[1]) || 0) * 60 + (parseFloat(parts[2]) || 0);
+        }
+        return Math.max(0, Math.min(this.clipDuration || 0, s));
+    },
+
+    clipApplyInTime() {
+        const t = this.clipParseTime(this.clipInTimeInput);
+        this.clipSelStart = t;
+        this.clipInTimeInput = this.formatClipTime(t);
+        const el = document.getElementById('clip-media-el');
+        if (el) el.currentTime = t;
+        if (this.clipSelEnd !== null && this.clipSelEnd <= this.clipSelStart + 0.05) {
+            this.clipSelEnd = null;
+            this.clipOutTimeInput = '';
+        }
+    },
+
+    clipApplyOutTime() {
+        if (this.clipSelStart === null) return;
+        const t = this.clipParseTime(this.clipOutTimeInput);
+        if (t <= this.clipSelStart + 0.05) {
+            this.clipOutTimeInput = this.clipSelEnd !== null ? this.formatClipTime(this.clipSelEnd) : '';
+            return;
+        }
+        this.clipSelEnd = t;
+        this.clipOutTimeInput = this.formatClipTime(t);
+        const el = document.getElementById('clip-media-el');
+        if (el) el.currentTime = t;
     },
 
     clipOutputTicks() {
@@ -3518,20 +3584,35 @@ deleteConfirmFile: null,
                         <p class="text-xs text-slate-400 mt-1.5 leading-relaxed">Selecciona partes en el timeline<br>y usa <span class="text-green-600 font-semibold">Conservar</span> o <span class="text-red-500 font-semibold">Eliminar</span></p>
                     </div>
 
-                    <!-- Active selection (amber) -->
-                    <div x-show="clipSelStart !== null && clipSelEnd !== null"
+                    <!-- Solo IN marcado (azul, esperando OUT) -->
+                    <div x-show="clipSelStart !== null && (clipSelEnd === null || Math.abs((clipSelEnd??0)-clipSelStart) <= 0.05)"
                          class="rounded-xl px-3 py-2.5 mb-2"
-                         style="background:#fef3c7; border:2px solid #f59e0b;">
+                         style="background:#eff6ff; border:2px dashed #3b82f6;">
                         <div class="flex items-start gap-2">
-                            <div class="w-3 h-3 rounded-sm flex-shrink-0 mt-1 bg-amber-400"></div>
+                            <div class="w-3 h-3 rounded-sm flex-shrink-0 mt-1" style="background:#3b82f6;"></div>
                             <div class="flex-1 min-w-0">
                                 <p class="text-xs text-slate-500 truncate" x-text="clipFile?.name || 'Archivo'"></p>
-                                <p class="font-mono text-xs text-amber-700 font-semibold mt-0.5"
-                                   x-text="formatClipTime(Math.min(clipSelStart, clipSelEnd)) + ' → ' + formatClipTime(Math.max(clipSelStart, clipSelEnd))"></p>
-                                <p class="text-xs text-slate-500 mt-0.5"
-                                   x-text="formatClipTime(Math.abs(clipSelEnd - clipSelStart))"></p>
+                                <p class="font-mono text-xs font-semibold mt-0.5" style="color:#3b82f6;" x-text="'IN: ' + formatClipTime(clipSelStart ?? 0)"></p>
+                                <p class="text-xs text-slate-400 mt-0.5">Elige el punto de fin</p>
                             </div>
-                            <span class="text-xs text-amber-600 font-semibold flex-shrink-0">selección</span>
+                            <span class="text-xs font-semibold flex-shrink-0" style="color:#3b82f6;">IN</span>
+                        </div>
+                    </div>
+
+                    <!-- IN + OUT completo (azul → verde) -->
+                    <div x-show="clipSelStart !== null && clipSelEnd !== null && Math.abs(clipSelEnd - clipSelStart) > 0.05"
+                         class="rounded-xl px-3 py-2.5 mb-2"
+                         style="background:#f0fdf4; border-left:3px solid #3b82f6; border-right:3px solid #22c55e; border-top:1px solid #bbf7d0; border-bottom:1px solid #bbf7d0;">
+                        <div class="flex items-start gap-2">
+                            <div class="w-3 h-3 rounded-sm flex-shrink-0 mt-1" style="background:linear-gradient(to right,#3b82f6,#22c55e);"></div>
+                            <div class="flex-1 min-w-0">
+                                <p class="text-xs text-slate-500 truncate" x-text="clipFile?.name || 'Archivo'"></p>
+                                <p class="font-mono text-xs font-semibold mt-0.5 text-slate-700"
+                                   x-text="formatClipTime(clipSelStart ?? 0) + ' → ' + formatClipTime(clipSelEnd ?? 0)"></p>
+                                <p class="text-xs text-slate-500 mt-0.5"
+                                   x-text="formatClipTime(Math.abs((clipSelEnd??0) - (clipSelStart??0)))"></p>
+                            </div>
+                            <span class="text-xs font-semibold flex-shrink-0 text-slate-500">selección</span>
                         </div>
                     </div>
 
@@ -3726,6 +3807,14 @@ deleteConfirmFile: null,
                 </div>
                 <button @click="clipZoomIn()" class="w-6 h-6 sm:w-7 sm:h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors text-base leading-none">+</button>
                 <span class="text-slate-400 text-xs font-mono w-6 sm:w-8" x-text="clipZoomLevel + 'x'"></span>
+                <!-- Seek step buttons -->
+                <div class="w-px h-5 bg-slate-200 mx-0.5 sm:mx-1 flex-shrink-0"></div>
+                <button @click="clipSeek(-10)" :disabled="!clipReady" class="hidden sm:flex items-center justify-center w-7 h-7 rounded text-xs font-mono text-slate-500 hover:text-slate-700 hover:bg-slate-100 disabled:opacity-30 transition-colors flex-shrink-0" title="-10 segundos">-10</button>
+                <button @click="clipSeek(-5)" :disabled="!clipReady" class="flex items-center justify-center w-7 h-7 rounded text-xs font-mono text-slate-500 hover:text-slate-700 hover:bg-slate-100 disabled:opacity-30 transition-colors flex-shrink-0" title="-5 segundos">-5</button>
+                <button @click="clipSeek(-1)" :disabled="!clipReady" class="hidden sm:flex items-center justify-center w-7 h-7 rounded text-xs font-mono text-slate-500 hover:text-slate-700 hover:bg-slate-100 disabled:opacity-30 transition-colors flex-shrink-0" title="-1 segundo">-1</button>
+                <button @click="clipSeek(1)" :disabled="!clipReady" class="hidden sm:flex items-center justify-center w-7 h-7 rounded text-xs font-mono text-slate-500 hover:text-slate-700 hover:bg-slate-100 disabled:opacity-30 transition-colors flex-shrink-0" title="+1 segundo">+1</button>
+                <button @click="clipSeek(5)" :disabled="!clipReady" class="flex items-center justify-center w-7 h-7 rounded text-xs font-mono text-slate-500 hover:text-slate-700 hover:bg-slate-100 disabled:opacity-30 transition-colors flex-shrink-0" title="+5 segundos">+5</button>
+                <button @click="clipSeek(10)" :disabled="!clipReady" class="hidden sm:flex items-center justify-center w-7 h-7 rounded text-xs font-mono text-slate-500 hover:text-slate-700 hover:bg-slate-100 disabled:opacity-30 transition-colors flex-shrink-0" title="+10 segundos">+10</button>
                 <!-- Thumb loading indicator -->
                 <span x-show="clipThumbsLoading" class="text-xs text-slate-400 ml-1 sm:ml-2 flex items-center gap-1">
                     <svg class="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
@@ -3815,23 +3904,42 @@ deleteConfirmFile: null,
                                 <span class="text-white text-[10px] font-bold">✓</span>
                             </div>
 
-                            <!-- Selección activa -->
-                            <template x-if="clipSelStart!==null && clipSelEnd!==null && clipDuration>0">
-                                <div class="absolute top-1 bottom-7 z-[5] rounded-md"
-                                     style="background:rgba(245,158,11,0.40); border:2px solid #f59e0b; box-shadow:0 0 8px rgba(245,158,11,0.4);"
-                                     :style="clipSelStyle()">
-                                    <div class="absolute left-0 top-0 bottom-0 w-5 sm:w-4 cursor-ew-resize z-10 flex items-center justify-center"
-                                         style="background:#f59e0b; border-radius:6px 0 0 6px;"
-                                         @mousedown.stop="clipHandleMd('start',$event)"
-                                         @touchstart.stop="clipHandleMd('start',$event.touches[0]||$event)">
-                                        <div class="flex gap-0.5"><div class="w-px h-5" style="background:rgba(0,0,0,0.35)"></div><div class="w-px h-5" style="background:rgba(0,0,0,0.35)"></div></div>
-                                    </div>
-                                    <div class="absolute right-0 top-0 bottom-0 w-5 sm:w-4 cursor-ew-resize z-10 flex items-center justify-center"
-                                         style="background:#f59e0b; border-radius:0 6px 6px 0;"
-                                         @mousedown.stop="clipHandleMd('end',$event)"
-                                         @touchstart.stop="clipHandleMd('end',$event.touches[0]||$event)">
-                                        <div class="flex gap-0.5"><div class="w-px h-5" style="background:rgba(0,0,0,0.35)"></div><div class="w-px h-5" style="background:rgba(0,0,0,0.35)"></div></div>
-                                    </div>
+                            <!-- Rango IN→OUT (relleno azul) -->
+                            <template x-if="clipSelStart!==null && clipSelEnd!==null && Math.abs(clipSelEnd-clipSelStart)>0.05 && clipDuration>0">
+                                <div class="absolute top-1 bottom-7 z-[5] pointer-events-none"
+                                     style="background:rgba(59,130,246,0.15); border-top:1.5px solid rgba(59,130,246,0.35); border-bottom:1.5px solid rgba(59,130,246,0.35);"
+                                     :style="clipSelStyle()"></div>
+                            </template>
+
+                            <!-- Marcador IN (azul, arrastrable) -->
+                            <template x-if="clipSelStart !== null && clipDuration > 0">
+                                <div class="absolute top-0 bottom-0 z-[7]"
+                                     style="width:22px; cursor:ew-resize;"
+                                     :style="'left:' + (clipSelStart/clipDuration*100).toFixed(3) + '%; margin-left:-11px'"
+                                     @mousedown.stop="clipHandleMd('start',$event)"
+                                     @touchstart.stop="clipHandleMd('start',$event.touches[0]||$event)">
+                                    <!-- Línea gruesa -->
+                                    <div class="absolute inset-y-0 left-1/2 -translate-x-1/2 pointer-events-none" style="width:4px; background:#3b82f6; box-shadow:0 0 6px rgba(59,130,246,0.7);"></div>
+                                    <!-- Triángulo superior -->
+                                    <div class="absolute top-0 left-1/2 -translate-x-1/2 pointer-events-none" style="width:18px; height:18px; background:#3b82f6; clip-path:polygon(0 0,100% 0,50% 100%);"></div>
+                                    <!-- Etiqueta IN -->
+                                    <div class="absolute left-1/2 -translate-x-1/2 text-white font-bold pointer-events-none select-none" style="bottom:6px; background:#3b82f6; font-size:8px; padding:1px 4px; line-height:12px; border-radius:3px; white-space:nowrap; box-shadow:0 1px 3px rgba(0,0,0,0.2);">IN</div>
+                                </div>
+                            </template>
+
+                            <!-- Marcador OUT (verde, arrastrable) -->
+                            <template x-if="clipSelEnd !== null && clipSelStart !== null && Math.abs(clipSelEnd-clipSelStart)>0.05 && clipDuration>0">
+                                <div class="absolute top-0 bottom-0 z-[7]"
+                                     style="width:22px; cursor:ew-resize;"
+                                     :style="'left:' + (clipSelEnd/clipDuration*100).toFixed(3) + '%; margin-left:-11px'"
+                                     @mousedown.stop="clipHandleMd('end',$event)"
+                                     @touchstart.stop="clipHandleMd('end',$event.touches[0]||$event)">
+                                    <!-- Línea gruesa -->
+                                    <div class="absolute inset-y-0 left-1/2 -translate-x-1/2 pointer-events-none" style="width:4px; background:#22c55e; box-shadow:0 0 6px rgba(34,197,94,0.6);"></div>
+                                    <!-- Triángulo superior -->
+                                    <div class="absolute top-0 left-1/2 -translate-x-1/2 pointer-events-none" style="width:18px; height:18px; background:#22c55e; clip-path:polygon(0 0,100% 0,50% 100%);"></div>
+                                    <!-- Etiqueta OUT -->
+                                    <div class="absolute left-1/2 -translate-x-1/2 text-white font-bold pointer-events-none select-none" style="bottom:6px; background:#22c55e; font-size:8px; padding:1px 4px; line-height:12px; border-radius:3px; white-space:nowrap; box-shadow:0 1px 3px rgba(0,0,0,0.2);">OUT</div>
                                 </div>
                             </template>
 
@@ -3911,32 +4019,82 @@ deleteConfirmFile: null,
             </div>
 
             <!-- ── ACTION BAR (always visible) ── -->
-            <div class="flex items-center gap-2 px-2 sm:px-4 py-2 sm:py-2.5 flex-shrink-0 border-t" style="border-color:#e5e7eb; background:#f8fafc; min-height:48px;">
-                <!-- State: no selection -->
-                <div x-show="clipSelStart === null || clipSelEnd === null || Math.abs(clipSelEnd - clipSelStart) <= 0.05"
-                     class="flex items-center gap-2 sm:gap-3 w-full">
-                    <p class="text-slate-400 text-xs sm:text-sm">Arrastra en el timeline para seleccionar</p>
-                    <!-- Legend (desktop only) -->
-                    <div x-show="clipSequence.length > 0" class="hidden sm:flex items-center gap-3 ml-2">
-                        <div class="flex items-center gap-1.5">
-                            <div class="w-4 h-3 rounded-sm" style="background:rgba(22,163,74,0.55); border:1px solid #16a34a;"></div>
-                            <span class="text-slate-400 text-xs">Conservado</span>
-                        </div>
-                        <div class="flex items-center gap-1.5">
-                            <div class="w-4 h-3 rounded-sm" style="background:repeating-linear-gradient(135deg, rgba(220,38,38,0.3) 0px, rgba(220,38,38,0.3) 3px, rgba(255,255,255,0.5) 3px, rgba(255,255,255,0.5) 6px); border:1px solid #dc2626;"></div>
-                            <span class="text-slate-400 text-xs">Eliminado</span>
-                        </div>
+            <div class="flex flex-wrap items-center gap-1.5 sm:gap-2 px-2 sm:px-4 py-2 flex-shrink-0 border-t" style="border-color:#e5e7eb; background:#f8fafc; min-height:56px;">
+
+                <!-- ── IN point ── -->
+                <div class="flex items-center gap-1 flex-shrink-0">
+                    <button @click="clipSetInPoint()" :disabled="!clipReady"
+                            class="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold border transition-colors flex-shrink-0"
+                            :class="clipSelStart !== null
+                                ? 'bg-blue-600 border-blue-600 text-white hover:bg-blue-700'
+                                : (clipReady ? 'bg-white border-slate-300 text-slate-600 hover:border-blue-400 hover:bg-blue-50' : 'opacity-40 cursor-not-allowed bg-white border-slate-200 text-slate-300')"
+                            title="Aplica posición actual como punto de inicio">
+                        <svg class="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 3v18M6 3l5 3.5M6 9.5l5-3.5"/>
+                        </svg>
+                        Inicio
+                    </button>
+                    <!-- Campo editable IN -->
+                    <div x-show="clipSelStart !== null" class="flex items-center gap-0.5">
+                        <input type="text"
+                               x-model="clipInTimeInput"
+                               @keydown.enter.prevent="clipApplyInTime()"
+                               @blur="clipApplyInTime()"
+                               class="w-20 px-2 py-1.5 text-xs font-mono rounded-lg border text-blue-700 bg-blue-50 border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                               placeholder="0:00.0"
+                               title="Edita el tiempo de inicio y presiona Enter">
+                        <button @click="clipApplyInTime()"
+                                class="px-1.5 py-1.5 rounded text-xs font-bold text-blue-600 hover:bg-blue-100 transition-colors flex-shrink-0"
+                                title="Aplicar">✓</button>
                     </div>
                 </div>
-                <!-- State: active selection -->
-                <div x-show="clipSelStart !== null && clipSelEnd !== null && Math.abs(clipSelEnd - clipSelStart) > 0.05"
-                     class="flex items-center gap-1.5 sm:gap-2 w-full">
-                    <span class="font-mono text-xs sm:text-sm text-amber-600 font-semibold flex-shrink-0"
-                          x-text="formatClipTime(Math.min(clipSelStart??0,clipSelEnd??0)) + ' → ' + formatClipTime(Math.max(clipSelStart??0,clipSelEnd??0))"></span>
-                    <span class="text-slate-400 text-xs flex-shrink-0 hidden sm:inline"
-                          x-text="'(' + formatClipTime(Math.abs((clipSelEnd??0)-(clipSelStart??0))) + ')'"></span>
-                    <div class="flex-1"></div>
-                    <!-- Ver selección -->
+
+                <span class="text-slate-300 text-sm flex-shrink-0">→</span>
+
+                <!-- ── OUT point ── -->
+                <div class="flex items-center gap-1 flex-shrink-0">
+                    <button @click="clipSetOutPoint()" :disabled="!clipReady || clipSelStart === null"
+                            class="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold border transition-colors flex-shrink-0"
+                            :class="clipSelEnd !== null && clipSelStart !== null && Math.abs(clipSelEnd-clipSelStart) > 0.05
+                                ? 'bg-green-600 border-green-600 text-white hover:bg-green-700'
+                                : (clipSelStart !== null && clipReady ? 'bg-white border-slate-300 text-slate-600 hover:border-green-500 hover:bg-green-50' : 'opacity-40 cursor-not-allowed bg-white border-slate-200 text-slate-300')"
+                            title="Aplica posición actual como punto de fin">
+                        <svg class="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M18 3v18M18 3l-5 3.5M18 9.5l-5-3.5"/>
+                        </svg>
+                        Fin
+                    </button>
+                    <!-- Campo editable OUT -->
+                    <div x-show="clipSelStart !== null" class="flex items-center gap-0.5">
+                        <input type="text"
+                               x-model="clipOutTimeInput"
+                               @keydown.enter.prevent="clipApplyOutTime()"
+                               @blur="clipApplyOutTime()"
+                               :disabled="clipSelStart === null"
+                               class="w-20 px-2 py-1.5 text-xs font-mono rounded-lg border transition-colors focus:outline-none focus:ring-1"
+                               :class="clipSelEnd !== null && clipSelStart !== null && Math.abs(clipSelEnd-clipSelStart) > 0.05
+                                   ? 'text-green-700 bg-green-50 border-green-400 focus:ring-green-400'
+                                   : 'text-slate-500 bg-white border-slate-300 focus:ring-slate-300'"
+                               :placeholder="clipSelStart !== null ? formatClipTime(clipSelStart) : '0:00.0'"
+                               title="Edita el tiempo de fin y presiona Enter">
+                        <button @click="clipApplyOutTime()" x-show="clipSelStart !== null"
+                                class="px-1.5 py-1.5 rounded text-xs font-bold text-green-600 hover:bg-green-100 transition-colors flex-shrink-0"
+                                title="Aplicar">✓</button>
+                    </div>
+                </div>
+
+                <!-- Duration chip -->
+                <span x-show="clipSelStart !== null && clipSelEnd !== null && Math.abs(clipSelEnd-clipSelStart) > 0.05"
+                      class="text-xs font-mono text-slate-400 flex-shrink-0 hidden sm:inline"
+                      x-text="'(' + formatClipTime(Math.abs((clipSelEnd??0)-(clipSelStart??0))) + ')'"></span>
+
+                <!-- Divider -->
+                <div x-show="clipSelStart !== null && clipSelEnd !== null && Math.abs(clipSelEnd-clipSelStart) > 0.05"
+                     class="w-px h-6 bg-slate-200 flex-shrink-0"></div>
+
+                <!-- Action buttons -->
+                <div x-show="clipSelStart !== null && clipSelEnd !== null && Math.abs(clipSelEnd-clipSelStart) > 0.05"
+                     class="flex items-center gap-1 sm:gap-1.5 flex-shrink-0">
                     <button @click="clipPlaySelection()" :disabled="!clipReady"
                             class="flex items-center gap-1 sm:gap-1.5 text-xs px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-lg font-medium transition-colors flex-shrink-0 bg-slate-100 text-slate-600 hover:bg-slate-200 border border-slate-300">
                         <svg class="w-3 h-3 sm:w-3.5 sm:h-3.5" fill="currentColor" viewBox="0 0 20 20">
@@ -3944,24 +4102,42 @@ deleteConfirmFile: null,
                         </svg>
                         Ver
                     </button>
-                    <!-- CONSERVAR -->
                     <button @click="clipAddToSequence()"
-                            class="flex items-center gap-1 sm:gap-1.5 text-xs sm:text-sm px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg font-semibold transition-colors flex-shrink-0 bg-green-600 hover:bg-green-700 text-white shadow-sm active:bg-green-700">
+                            class="flex items-center gap-1 sm:gap-1.5 text-xs sm:text-sm px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg font-semibold transition-colors flex-shrink-0 bg-green-600 hover:bg-green-700 text-white shadow-sm">
                         <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/>
                         </svg>
                         Conservar
                     </button>
-                    <!-- ELIMINAR ESTA PARTE -->
                     <button @click="clipDeleteSelection()"
-                            class="flex items-center gap-1 sm:gap-1.5 text-xs sm:text-sm px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg font-semibold transition-colors flex-shrink-0 bg-red-600 hover:bg-red-700 text-white shadow-sm active:bg-red-700"
+                            class="flex items-center gap-1 sm:gap-1.5 text-xs sm:text-sm px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg font-semibold transition-colors flex-shrink-0 bg-red-600 hover:bg-red-700 text-white shadow-sm"
                             title="Elimina esta parte del resultado (conserva el resto)">
                         <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/>
                         </svg>
-                        <span class="hidden sm:inline">Eliminar esta parte</span>
+                        <span class="hidden sm:inline">Eliminar parte</span>
                         <span class="sm:hidden">Eliminar</span>
                     </button>
+                </div>
+
+                <!-- Hint (when incomplete, desktop) -->
+                <p x-show="clipSelStart === null || clipSelEnd === null || Math.abs((clipSelEnd??0)-(clipSelStart??0)) <= 0.05"
+                   class="flex-1 min-w-0 text-xs text-slate-400 truncate hidden sm:block ml-1">
+                    <span x-show="clipSelStart === null">Navega con los botones de la barra y pulsa <strong>Inicio</strong>, o arrastra en el timeline</span>
+                    <span x-show="clipSelStart !== null && (clipSelEnd === null || Math.abs((clipSelEnd??0)-clipSelStart) <= 0.05)">Inicio marcado — navega al punto de fin y pulsa <strong>Fin</strong>, o edita el campo y presiona Enter</span>
+                </p>
+
+                <!-- Legend (desktop, when sequence has items) -->
+                <div x-show="clipSequence.length > 0 && (clipSelStart === null || clipSelEnd === null || Math.abs((clipSelEnd??0)-(clipSelStart??0)) <= 0.05)"
+                     class="hidden sm:flex items-center gap-3 ml-auto flex-shrink-0">
+                    <div class="flex items-center gap-1.5">
+                        <div class="w-4 h-3 rounded-sm" style="background:rgba(22,163,74,0.55); border:1px solid #16a34a;"></div>
+                        <span class="text-slate-400 text-xs">Conservado</span>
+                    </div>
+                    <div class="flex items-center gap-1.5">
+                        <div class="w-4 h-3 rounded-sm" style="background:repeating-linear-gradient(135deg, rgba(220,38,38,0.3) 0px, rgba(220,38,38,0.3) 3px, rgba(255,255,255,0.5) 3px, rgba(255,255,255,0.5) 6px); border:1px solid #dc2626;"></div>
+                        <span class="text-slate-400 text-xs">Eliminado</span>
+                    </div>
                 </div>
             </div>
         </div>
