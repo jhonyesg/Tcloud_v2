@@ -328,7 +328,7 @@ class PublicShareController extends Controller
         return false;
     }
 
-    public function download(Request $request, string $token, int $fileId = null)
+    public function download(Request $request, string $token, ?int $fileId = null)
     {
         $share = Share::where('token', $token)->first();
 
@@ -374,7 +374,13 @@ class PublicShareController extends Controller
 
         $this->logAccess($share->id, $request->ip());
 
-        return response()->download($fullPath, $file->name);
+        // Use null name to skip Laravel's Str::ascii() call (broken vendor data files),
+        // and set Content-Disposition manually with RFC 5987 UTF-8 encoding.
+        $asciiName = preg_replace('/[^\x20-\x7E]/', '_', $file->name);
+        $encodedName = rawurlencode($file->name);
+        return response()->download($fullPath, null, [
+            'Content-Disposition' => 'attachment; filename="' . addslashes($asciiName) . '"; filename*=UTF-8\'\'' . $encodedName,
+        ]);
     }
 
     public function upload(Request $request, string $token)

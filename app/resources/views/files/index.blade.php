@@ -128,6 +128,8 @@ deleteConfirmFile: null,
         _prevFolder: null,
         _prevFolderName: null,
         _prevBreadcrumbs: [],
+        _emptyStateTimer: null,
+        showEmptyState: false,
 
         async init() {
             await Promise.all([
@@ -260,7 +262,7 @@ deleteConfirmFile: null,
             this.currentFolderName = state.folderName || null;
             this.breadcrumbs = state.breadcrumbs || [];
             this.viewMode = 'files';
-            this.loadFiles(false, true);
+            this.loadFiles(false, true, true);
         } catch (e) {
             this.clearNavState();
         }
@@ -341,7 +343,7 @@ deleteConfirmFile: null,
         this.currentPage = 1;
         this.hasMore = false;
         this.viewMode = 'files';
-        this.loadFiles();
+        this.loadFiles(false, false, true);
         this.saveNavState();
     },
 
@@ -356,9 +358,11 @@ deleteConfirmFile: null,
         this.clearNavState();
     },
 
-    loadFiles(forceSync = false, skipBreadcrumbs = false) {
+    loadFiles(forceSync = false, skipBreadcrumbs = false, thenSync = false) {
         this.selectedFiles = [];
         this.isLoadingFiles = true;
+        this.showEmptyState = false;
+        if (this._emptyStateTimer) { clearTimeout(this._emptyStateTimer); this._emptyStateTimer = null; }
         this.currentPage = 1;
         this.hasMore = false;
         if (this._fetchController) this._fetchController.abort();
@@ -385,6 +389,8 @@ deleteConfirmFile: null,
                 this.isNavigating = false;
                 this.navigatingToId = null;
                 this.isLoadingFiles = false;
+                this.showEmptyState = false;
+                if (this._emptyStateTimer) { clearTimeout(this._emptyStateTimer); this._emptyStateTimer = null; }
                 this.showToast('No se pudo cargar la carpeta (' + res.status + '). Intenta de nuevo.', 'error');
                 return null;
             }
@@ -408,6 +414,12 @@ deleteConfirmFile: null,
             this.isNavigating = false;
             this.navigatingToId = null;
             this.isLoadingFiles = false;
+            if (serverData.length === 0) {
+                this._emptyStateTimer = setTimeout(() => { this.showEmptyState = true; }, 1500);
+            } else {
+                this.showEmptyState = false;
+            }
+            if (thenSync) this.silentSync();
         }).catch(err => {
             if (err && err.name === 'AbortError') return;
             this.currentFolder = this._prevFolder;
@@ -416,6 +428,8 @@ deleteConfirmFile: null,
             this.isNavigating = false;
             this.navigatingToId = null;
             this.isLoadingFiles = false;
+            this.showEmptyState = false;
+            if (this._emptyStateTimer) { clearTimeout(this._emptyStateTimer); this._emptyStateTimer = null; }
             this.showToast('Error de red al navegar. Intenta de nuevo.', 'error');
         });
     },
@@ -452,6 +466,29 @@ deleteConfirmFile: null,
         this.loadFiles(true);
     },
 
+    async silentSync() {
+        if (this.currentPage > 1 || this.viewMode !== 'files' || !this.currentStorage) return;
+        let url = '/files?page=1&sync=1&nb=1';
+        if (this.currentFolder) url += '&parent_id=' + this.currentFolder;
+        if (this.currentStorage) url += '&storage_id=' + this.currentStorage;
+        try {
+            const res = await fetch(url, {
+                credentials: 'include',
+                headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+            });
+            if (!res.ok) return;
+            const data = await res.json();
+            const newFiles = Array.isArray(data?.files) ? data.files : [];
+            const fingerprint = (files) =>
+                files.map(f => f.id + ':' + f.name + ':' + (f.size ?? 0) + ':' + (f.updated_at ?? '')).join('|');
+            if (fingerprint(newFiles) !== fingerprint(this.files)) {
+                this.files = newFiles;
+                this.currentPage = data?.pagination?.page ?? 1;
+                this.hasMore = data?.pagination?.has_more ?? false;
+            }
+        } catch (_) {}
+    },
+
     navigateToFolder(folderId, folderName) {
         if (this.isNavigating || folderId === this.currentFolder) return;
         this._prevFolder = this.currentFolder;
@@ -464,11 +501,13 @@ deleteConfirmFile: null,
         this.currentFolderName = folderName;
         this.selectedFiles = [];
         this.files = [];
+        this.showEmptyState = false;
+        if (this._emptyStateTimer) { clearTimeout(this._emptyStateTimer); this._emptyStateTimer = null; }
         this.currentPage = 1;
         this.hasMore = false;
         this.isNavigating = true;
         this.navigatingToId = folderId;
-        this.loadFiles(false, true);
+        this.loadFiles(false, true, true);
         this.saveNavState();
     },
 
@@ -478,7 +517,7 @@ deleteConfirmFile: null,
         this.breadcrumbs = [];
         this.currentPage = 1;
         this.hasMore = false;
-        this.loadFiles();
+        this.loadFiles(false, false, true);
         this.saveNavState();
     },
 
@@ -491,7 +530,7 @@ deleteConfirmFile: null,
         this.hasMore = false;
         this.isNavigating = true;
         this.navigatingToId = breadcrumb.id;
-        this.loadFiles(false, true);
+        this.loadFiles(false, true, true);
         this.saveNavState();
     },
 
@@ -2024,7 +2063,7 @@ deleteConfirmFile: null,
 });
 </script>
 <div class="min-h-screen bg-slate-100" x-data="fileManager()" x-init="init()" x-show="ready" x-cloak>
-    <header class="bg-white shadow-sm border-b border-slate-200">
+    <header class="bg-white shadow-sm border-b border-slate-200 sticky top-0 z-10">
         <div class="px-3 py-3 sm:px-6 sm:py-4 flex items-center justify-between gap-2">
             <div class="flex items-center gap-2 sm:gap-3 min-w-0">
                 <div class="w-9 h-9 sm:w-10 sm:h-10 bg-[#2451B8] rounded-lg flex items-center justify-center flex-shrink-0">
@@ -2689,7 +2728,7 @@ deleteConfirmFile: null,
                     </button>
                 </div>
                 <!-- Carpeta vacía (sin búsqueda activa) -->
-                <div x-show="viewMode === 'files' && !searchMode && files.length === 0 && !isLoadingFiles" class="text-center py-16">
+                <div x-show="viewMode === 'files' && !searchMode && files.length === 0 && !isLoadingFiles && showEmptyState" class="text-center py-16">
                     <div class="w-20 h-20 bg-slate-100 rounded-full flex items-center justify-center mx-auto mb-4">
                         <svg class="w-10 h-10 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>

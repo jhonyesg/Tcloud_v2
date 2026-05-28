@@ -333,6 +333,68 @@ class CanalController extends Controller
         return view('grabaciones_puntuales.estado', compact('estados', 'grabadores'));
     }
 
+    public function sincronizar(Request $request): \Illuminate\Http\JsonResponse
+    {
+        $user = $this->getUser();
+        if (!$user || !$user->isAdmin()) {
+            return response()->json(['error' => 'No autorizado'], 403);
+        }
+
+        $grabadores = Grabador::where('activo', true)->get();
+        $actualizados = 0;
+        $sinMatch = 0;
+
+        foreach ($grabadores as $grabador) {
+            $remotos = $this->apiService->getCanalesRemotos($grabador);
+
+            if (empty($remotos)) {
+                continue;
+            }
+
+            // Índice por codigo y por nombre para match rápido
+            $porCodigo = [];
+            $porNombre = [];
+            foreach ($remotos as $remoto) {
+                if (!empty($remoto['codigo'])) {
+                    $porCodigo[$remoto['codigo']] = $remoto['id'];
+                }
+                if (!empty($remoto['nombre'])) {
+                    $porNombre[strtolower($remoto['nombre'])] = $remoto['id'];
+                }
+            }
+
+            $canalesLocales = Canal::where('grabador_id', $grabador->id)->get();
+
+            foreach ($canalesLocales as $canal) {
+                $codigoLocal = strtolower(str_replace([' ', '_'], '_', $canal->slot_nombre));
+                $nombreLocal = strtolower($canal->slot_nombre);
+
+                $apiId = $porCodigo[$codigoLocal] ?? $porNombre[$nombreLocal] ?? null;
+
+                if ($apiId !== null) {
+                    if ((int) $canal->api_canal_id !== (int) $apiId) {
+                        $canal->update(['api_canal_id' => $apiId]);
+                        $actualizados++;
+                    }
+                } else {
+                    $sinMatch++;
+                }
+            }
+        }
+
+        $msg = "Sincronización completa: {$actualizados} " . ($actualizados === 1 ? 'canal actualizado' : 'canales actualizados');
+        if ($sinMatch > 0) {
+            $msg .= ", {$sinMatch} sin coincidencia en la API";
+        }
+
+        return response()->json([
+            'success' => true,
+            'actualizados' => $actualizados,
+            'sin_match' => $sinMatch,
+            'message' => $msg,
+        ]);
+    }
+
     public function detalle(Canal $canal)
     {
         $user = $this->getUser();

@@ -54,6 +54,9 @@ $filesJsonRaw = json_encode($previewableFiles->values());
 @endphp
 
 <script type="application/json" id="files-data">{!! $filesJsonRaw !!}</script>
+@if($file->is_folder && isset($folderContents))
+<script type="application/json" id="folder-items-data">{!! json_encode($folderContents->values()) !!}</script>
+@endif
 
 <div id="share-app"
      x-data="shareModal()" x-cloak>
@@ -67,13 +70,14 @@ function shareModal() {
                 deleteFileName: '',
                 currentIndex: 0,
                 files: [],
-                folderContents: [],
                 token: '{{ $share->token }}',
                 videoLoading: false,
                 pdfFullscreen: false,
-                sortColumn: 'name',
-                sortDirection: 'asc',
+                sortField: 'name',
+                sortDir: 'asc',
                 shareViewMode: localStorage.getItem('share_view_mode') || 'list',
+                folderItems: [],
+                sharePermissions: '{{ $share->permissions }}',
                 shareRenamingId: null,
                 shareRenamingName: '',
                 imgScale: 1,
@@ -91,7 +95,10 @@ function shareModal() {
                     this.files = JSON.parse(el.textContent);
                 } catch(e) {}
             }
-            this.loadFolderContents();
+            const folderEl = document.getElementById('folder-items-data');
+            if (folderEl) {
+                try { this.folderItems = JSON.parse(folderEl.textContent); } catch(e) {}
+            }
             const uploadMsg = sessionStorage.getItem('upload_notification');
             if (uploadMsg) {
                 sessionStorage.removeItem('upload_notification');
@@ -110,65 +117,79 @@ function shareModal() {
             if (modal) modal.style.display = visible ? 'flex' : 'none';
         },
 
-        loadFolderContents() {
-            const container = document.querySelector('#folder-contents');
-            if (container) {
-                const items = container.querySelectorAll('[data-file-id]');
-                this.folderContents = Array.from(items).map(item => ({
-                    id: item.getAttribute('data-file-id'),
-                    name: item.querySelector('.font-medium')?.textContent || '',
-                    sizeText: item.querySelector('.text-xs.text-slate-500')?.textContent || '',
-                    size: parseFloat(item.querySelector('.text-xs.text-slate-500')?.textContent?.replace(/,/g, '') || 0),
-                    isFolder: item.querySelector('.text-xs.text-slate-500')?.textContent === 'Carpeta',
-                    element: item
-                }));
-            }
-        },
-
         setShareViewMode(mode) {
             this.shareViewMode = mode;
             localStorage.setItem('share_view_mode', mode);
         },
 
-        sortBy(column) {
-            if (this.sortColumn === column) {
-                this.sortDirection = this.sortDirection === 'asc' ? 'desc' : 'asc';
+        sortFolderFiles(field) {
+            if (this.sortField === field) {
+                this.sortDir = this.sortDir === 'asc' ? 'desc' : 'asc';
             } else {
-                this.sortColumn = column;
-                this.sortDirection = 'asc';
+                this.sortField = field;
+                this.sortDir = 'asc';
             }
-
-            const container = document.querySelector('#folder-contents');
-            if (!container) return;
-
-            const items = Array.from(container.querySelectorAll('[data-file-id]'));
-            items.sort((a, b) => {
-                const aIsFolder = a.querySelector('.text-xs.text-slate-500')?.textContent === 'Carpeta';
-                const bIsFolder = b.querySelector('.text-xs.text-slate-500')?.textContent === 'Carpeta';
-
-                // Always keep folders first
-                if (aIsFolder && !bIsFolder) return -1;
-                if (!aIsFolder && bIsFolder) return 1;
-
-                let cmp = 0;
-                if (column === 'name') {
-                    const aName = a.querySelector('.font-medium')?.textContent?.toLowerCase() || '';
-                    const bName = b.querySelector('.font-medium')?.textContent?.toLowerCase() || '';
-                    cmp = aName.localeCompare(bName);
-                } else if (column === 'size') {
-                    const aSizeText = a.querySelector('.text-xs.text-slate-500')?.textContent || '';
-                    const bSizeText = b.querySelector('.text-xs.text-slate-500')?.textContent || '';
-                    const aSize = parseFloat(aSizeText.replace(/,/g, '')) || 0;
-                    const bSize = parseFloat(bSizeText.replace(/,/g, '')) || 0;
-                    cmp = aSize - bSize;
-                }
-
-                return this.sortDirection === 'asc' ? cmp : -cmp;
-            });
-
-            items.forEach(item => container.appendChild(item));
         },
-        
+
+        sortedFolderItems() {
+            const arr = [...this.folderItems];
+            const field = this.sortField;
+            const dir = this.sortDir === 'asc' ? 1 : -1;
+            return arr.sort((a, b) => {
+                if (a.is_folder && !b.is_folder) return -1;
+                if (!a.is_folder && b.is_folder) return 1;
+                if (field === 'name') {
+                    const na = (a.name || '').toLowerCase();
+                    const nb = (b.name || '').toLowerCase();
+                    return na < nb ? -dir : na > nb ? dir : 0;
+                }
+                if (field === 'size') {
+                    return ((a.size || 0) - (b.size || 0)) * dir;
+                }
+                if (field === 'date') {
+                    const da = a.file_modified_at ? new Date(a.file_modified_at).getTime() : 0;
+                    const db = b.file_modified_at ? new Date(b.file_modified_at).getTime() : 0;
+                    return (da - db) * dir;
+                }
+                return 0;
+            });
+        },
+
+        formatSize(bytes) {
+            const n = Number(bytes);
+            if (!n && n !== 0) return '—';
+            if (n === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.min(Math.floor(Math.log(n) / Math.log(k)), sizes.length - 1);
+            return parseFloat((n / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        },
+
+        formatDate(dateString) {
+            if (!dateString) return '—';
+            const date = new Date(dateString);
+            return date.toLocaleDateString('es-ES', { year: 'numeric', month: 'short', day: 'numeric' });
+        },
+
+        getPreviewIndex(item) {
+            if (item.is_folder) return -1;
+            return this.files.findIndex(f => f.id === item.id);
+        },
+
+        isItemPreviewable(item) {
+            if (item.is_folder) return false;
+            const mime = item.mime_type || '';
+            return mime.startsWith('image/') || mime.startsWith('video/') || mime.startsWith('audio/') || mime === 'application/pdf';
+        },
+
+        canRename() {
+            return ['write', 'full'].includes(this.sharePermissions);
+        },
+
+        canDelete() {
+            return ['write', 'full'].includes(this.sharePermissions);
+        },
+
         openPreview(index) {
             this.setCurrentIndex(index);
             this.showModal = true;
@@ -298,7 +319,7 @@ function shareModal() {
             }
 
             const file = this._uploadQueue.shift();
-            const existing = this.folderContents.find(f => f.name.trim() === file.name.trim());
+            const existing = this.folderItems.find(f => f.name.trim() === file.name.trim());
 
             if (existing) {
                 const action = await this._askReplace(file.name);
@@ -375,7 +396,7 @@ function shareModal() {
                         progressBar.classList.remove('bg-green-600');
                         progressBar.classList.add('bg-red-500');
                     } else {
-                        this.folderContents.push({ id: null, name: file.name });
+                        this.folderItems.push({ id: null, name: file.name, is_folder: false, size: 0, mime_type: null, file_modified_at: null });
                         this._uploadSuccess = (this._uploadSuccess || 0) + 1;
                     }
                     resolve();
@@ -392,14 +413,13 @@ function shareModal() {
         },
 
         refreshFolderContents() {
-            return fetch(window.location.href, { headers: { 'Accept': 'text/html' } })
+            return fetch('/s/' + this.token + '?refresh=1', { headers: { 'Accept': 'text/html' } })
                 .then(r => r.text())
                 .then(html => {
                     const doc = new DOMParser().parseFromString(html, 'text/html');
-                    const newContents = doc.querySelector('#folder-contents');
-                    if (newContents) {
-                        document.querySelector('#folder-contents').innerHTML = newContents.innerHTML;
-                        this.loadFolderContents();
+                    const el = doc.getElementById('folder-items-data');
+                    if (el) {
+                        try { this.folderItems = JSON.parse(el.textContent); } catch(e) {}
                     }
                 });
         },
@@ -438,11 +458,8 @@ function shareModal() {
             formData.append('name', newName);
             const r = await fetch(url, { method: 'POST', body: formData, headers: { 'Accept': 'application/json' } });
             if (r.ok) {
-                const row = document.querySelector('[data-file-id="' + id + '"]');
-                if (row) {
-                    const nameEl = row.querySelector('.share-file-name');
-                    if (nameEl) nameEl.textContent = newName;
-                }
+                const idx = this.folderItems.findIndex(f => f.id == id);
+                if (idx !== -1) this.folderItems[idx] = { ...this.folderItems[idx], name: newName };
                 this.showNotification('¡Nombre actualizado!', 'success');
             }
         },
@@ -468,8 +485,8 @@ function shareModal() {
                         const nameEl = row.querySelector('p.font-medium');
                         if (nameEl) nameEl.textContent = newName;
                     }
-                    const item = this.folderContents.find(f => f.id == fileId);
-                    if (item) item.name = newName;
+                    const idx = this.folderItems.findIndex(f => f.id == fileId);
+                    if (idx !== -1) this.folderItems[idx] = { ...this.folderItems[idx], name: newName };
                     this.showNotification('¡Nombre actualizado!', 'success');
                 } else {
                     r.json().then(d => this.showNotification('Error: ' + (d.error || 'No se pudo renombrar'), 'error'));
@@ -518,11 +535,8 @@ function shareModal() {
         },
 
         removeFileFromUI(fileId) {
-            const fileElement = document.querySelector(`[data-file-id="${fileId}"]`);
-            if (fileElement) {
-                fileElement.remove();
-            }
             this.files = this.files.filter(f => f.id != fileId);
+            this.folderItems = this.folderItems.filter(f => f.id != fileId);
         },
         
         next() {
@@ -723,170 +737,123 @@ function refreshFolder() {
 
                         {{-- Folder Contents LIST VIEW --}}
                         <div x-show="shareViewMode === 'list'">
-                        {{-- Sortable header row --}}
-                        <div class="flex items-center justify-between px-4 py-2 bg-slate-100 rounded-lg text-sm font-semibold text-slate-600 select-none">
-                            <button @click="sortBy('name')" class="flex items-center gap-1 hover:text-blue-600 transition-colors">
-                                Nombre
-                                <svg x-show="sortColumn === 'name' && sortDirection === 'asc'" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7"/></svg>
-                                <svg x-show="sortColumn === 'name' && sortDirection === 'desc'" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
-                            </button>
-                            <button @click="sortBy('size')" class="flex items-center gap-1 hover:text-blue-600 transition-colors w-32 justify-end">
-                                Tamaño
-                                <svg x-show="sortColumn === 'size' && sortDirection === 'asc'" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7"/></svg>
-                                <svg x-show="sortColumn === 'size' && sortDirection === 'desc'" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
-                            </button>
-                        </div>
-
-                        <div id="folder-contents" class="space-y-2">
-                            @php $previewableIndex = 0; @endphp
-                            @foreach($folderContents as $item)
-                                @php
-                                    $isPreviewable = false;
-                                    $mime = $item->mime_type ?? '';
-                                    if (str_starts_with($mime, 'image/') || str_starts_with($mime, 'video/') || str_starts_with($mime, 'audio/') || $mime === 'application/pdf') {
-                                        $isPreviewable = true;
-                                    }
-                                    $filePreviewIndex = (!$item->is_folder && $isPreviewable) ? $previewableIndex++ : null;
-                                @endphp
-                                <div class="flex items-center justify-between bg-slate-50 hover:bg-slate-100 rounded-lg p-4 transition-colors {{ ($item->is_folder || $filePreviewIndex !== null) ? 'cursor-pointer' : '' }}"
-                                     @if($item->is_folder) onclick="window.location='{{ route('share.folder', ['token' => $share->token, 'folder_id' => $item->id]) }}'"
-                                     @elseif($filePreviewIndex !== null) @click="openPreview({{ $filePreviewIndex }})"
-                                     @endif
-                                     data-file-id="{{ $item->id }}">
-                                    {{-- Icon + Name --}}
-                                    <div class="flex items-center gap-3 min-w-0">
-                                        <div class="w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0
-                                            @if($item->is_folder) bg-amber-100
-                                            @elseif(str_starts_with($mime, 'video/')) bg-rose-100
-                                            @elseif(str_starts_with($mime, 'audio/')) bg-purple-100
-                                            @elseif(str_starts_with($mime, 'image/')) bg-cyan-100
-                                            @elseif($mime === 'application/pdf') bg-red-100
-                                            @else bg-slate-200 @endif">
-                                            @if($item->is_folder)
-                                                <svg class="w-6 h-6 text-amber-500" fill="currentColor" viewBox="0 0 20 20"><path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z"/></svg>
-                                            @elseif(str_starts_with($mime, 'video/'))
-                                                <svg class="w-6 h-6 text-rose-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                                            @elseif(str_starts_with($mime, 'audio/'))
-                                                <svg class="w-6 h-6 text-purple-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2z"/></svg>
-                                            @elseif($mime === 'application/pdf')
-                                                <svg class="w-6 h-6 text-red-500" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clip-rule="evenodd"/></svg>
-                                            @elseif(str_starts_with($mime, 'image/'))
-                                                <svg class="w-6 h-6 text-cyan-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
-                                            @else
-                                                <svg class="w-6 h-6 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>
-                                            @endif
-                                        </div>
-                                        <div class="min-w-0">
-                                            <span x-show="shareRenamingId !== {{ $item->id }}" class="share-file-name font-medium text-slate-700 truncate block">{{ $item->name }}</span>
-                                            <input x-show="shareRenamingId === {{ $item->id }}"
-                                                   id="share-rename-{{ $item->id }}"
-                                                   x-model="shareRenamingName"
-                                                   @click.stop
-                                                   @keydown.enter.stop="shareSaveRename({{ $item->id }}, '{{ route('share.rename', ['token' => $share->token, 'file_id' => $item->id]) }}')"
-                                                   @keydown.escape.stop="shareRenamingId = null"
-                                                   @blur="shareSaveRename({{ $item->id }}, '{{ route('share.rename', ['token' => $share->token, 'file_id' => $item->id]) }}')"
-                                                   class="border border-blue-400 px-2 py-0.5 rounded text-sm w-40 font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500">
-                                            <p class="text-xs text-slate-500">{{ $item->is_folder ? 'Carpeta' : number_format($item->size / 1024, 1) . ' KB' }}</p>
-                                        </div>
-                                    </div>
-                                    {{-- Actions --}}
-                                    <div class="flex items-center gap-1 flex-shrink-0">
-                                        @if(!$item->is_folder)
-                                            <a href="{{ route('share.file-download', ['token' => $share->token, 'file_id' => $item->id]) }}" download @click.stop class="p-2 bg-blue-100 hover:bg-blue-200 text-blue-600 rounded-lg transition-colors" title="Descargar">
-                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
-                                            </a>
-                                        @endif
-                                        @if(in_array($share->permissions, ['write', 'full']) && !$item->is_folder)
-                                            <button @click.stop="shareStartRename({{ $item->id }}, '{{ addslashes($item->name) }}')" class="p-2 bg-amber-100 hover:bg-amber-200 text-amber-600 rounded-lg transition-colors" title="Renombrar">
-                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
-                                            </button>
-                                            <button @click.stop="confirmDelete('{{ route('share.delete', ['token' => $share->token, 'file_id' => $item->id]) }}', {{ $item->id }}, '{{ addslashes($item->name) }}')" type="button" class="p-2 bg-red-100 hover:bg-red-200 text-red-600 rounded-lg transition-colors" title="Eliminar">
-                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
-                                            </button>
-                                        @endif
-                                    </div>
-                                </div>
-                            @endforeach
-
-                            @if($folderContents->isEmpty())
-                                <div class="text-center py-12 text-slate-500">
-                                    <svg class="w-16 h-16 mx-auto mb-4 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
-                                    </svg>
-                                    <p>Esta carpeta está vacía</p>
-                                </div>
-                            @endif
+                        <div class="overflow-x-auto">
+                        <table class="w-full">
+                            <thead class="bg-slate-50 border-b border-slate-200">
+                                <tr>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider cursor-pointer select-none hover:bg-slate-100" @click="sortFolderFiles('name')">
+                                        <span class="flex items-center gap-1">Nombre <span x-show="sortField === 'name'" x-text="sortDir === 'asc' ? '↑' : '↓'" class="text-blue-500"></span></span>
+                                    </th>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider hidden md:table-cell cursor-pointer select-none hover:bg-slate-100" @click="sortFolderFiles('size')">
+                                        <span class="flex items-center gap-1">Tamaño <span x-show="sortField === 'size'" x-text="sortDir === 'asc' ? '↑' : '↓'" class="text-blue-500"></span></span>
+                                    </th>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider hidden lg:table-cell cursor-pointer select-none hover:bg-slate-100" @click="sortFolderFiles('date')">
+                                        <span class="flex items-center gap-1">Fecha <span x-show="sortField === 'date'" x-text="sortDir === 'asc' ? '↑' : '↓'" class="text-blue-500"></span></span>
+                                    </th>
+                                    <th class="px-4 py-3 text-right text-xs font-medium text-slate-500 uppercase tracking-wider">Acciones</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-200" id="folder-contents">
+                                <template x-for="item in sortedFolderItems()" :key="item.id">
+                                    <tr class="transition-colors hover:bg-slate-50"
+                                        :class="(item.is_folder || isItemPreviewable(item)) ? 'cursor-pointer' : ''"
+                                        @click="item.is_folder ? (window.location='/s/'+token+'/folder/'+item.id) : (getPreviewIndex(item) >= 0 ? openPreview(getPreviewIndex(item)) : null)">
+                                        {{-- Name --}}
+                                        <td class="px-4 py-3 min-w-0">
+                                            <div class="flex items-center gap-3 min-w-0">
+                                                <div class="w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0"
+                                                     :class="item.is_folder ? 'bg-amber-100' : (item.mime_type && item.mime_type.startsWith('video/')) ? 'bg-rose-100' : (item.mime_type && item.mime_type.startsWith('audio/')) ? 'bg-purple-100' : (item.mime_type && item.mime_type.startsWith('image/')) ? 'bg-cyan-100' : item.mime_type === 'application/pdf' ? 'bg-red-100' : 'bg-slate-200'">
+                                                    <svg x-show="item.is_folder" class="w-6 h-6 text-amber-500" fill="currentColor" viewBox="0 0 20 20"><path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z"/></svg>
+                                                    <svg x-show="!item.is_folder && item.mime_type && item.mime_type.startsWith('video/')" class="w-6 h-6 text-rose-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                                                    <svg x-show="!item.is_folder && item.mime_type && item.mime_type.startsWith('audio/')" class="w-6 h-6 text-purple-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2z"/></svg>
+                                                    <svg x-show="!item.is_folder && item.mime_type === 'application/pdf'" class="w-6 h-6 text-red-500" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clip-rule="evenodd"/></svg>
+                                                    <svg x-show="!item.is_folder && item.mime_type && item.mime_type.startsWith('image/')" class="w-6 h-6 text-cyan-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                                                    <svg x-show="!item.is_folder && (!item.mime_type || (!item.mime_type.startsWith('video/') && !item.mime_type.startsWith('audio/') && !item.mime_type.startsWith('image/') && item.mime_type !== 'application/pdf'))" class="w-6 h-6 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>
+                                                </div>
+                                                <div class="min-w-0">
+                                                    <span x-show="shareRenamingId !== item.id" class="share-file-name font-medium text-slate-700 truncate block" x-text="item.name"></span>
+                                                    <input x-show="shareRenamingId === item.id"
+                                                           :id="'share-rename-' + item.id"
+                                                           x-model="shareRenamingName"
+                                                           @click.stop
+                                                           @keydown.enter.stop="shareSaveRename(item.id, '/s/'+token+'/rename/'+item.id)"
+                                                           @keydown.escape.stop="shareRenamingId = null"
+                                                           @blur="shareSaveRename(item.id, '/s/'+token+'/rename/'+item.id)"
+                                                           class="border border-blue-400 px-2 py-0.5 rounded text-sm w-40 font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                                </div>
+                                            </div>
+                                        </td>
+                                        {{-- Size (hidden on mobile) --}}
+                                        <td class="px-4 py-3 text-slate-500 text-sm hidden md:table-cell" x-text="item.is_folder ? '-' : formatSize(item.size)"></td>
+                                        {{-- Date (hidden on tablet) --}}
+                                        <td class="px-4 py-3 text-slate-500 text-sm hidden lg:table-cell" x-text="item.file_modified_at ? formatDate(item.file_modified_at) : '—'"></td>
+                                        {{-- Actions --}}
+                                        <td class="px-4 py-3 text-right">
+                                            <div class="flex items-center justify-end gap-1">
+                                                <a x-show="!item.is_folder" :href="'/s/'+token+'/download/'+item.id" download @click.stop class="p-2 bg-blue-100 hover:bg-blue-200 text-blue-600 rounded-lg transition-colors" title="Descargar">
+                                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+                                                </a>
+                                                <button x-show="canRename() && !item.is_folder" @click.stop="shareStartRename(item.id, item.name)" class="p-2 bg-amber-100 hover:bg-amber-200 text-amber-600 rounded-lg transition-colors" title="Renombrar">
+                                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+                                                </button>
+                                                <button x-show="canDelete() && !item.is_folder" @click.stop="confirmDelete('/s/'+token+'/delete/'+item.id, item.id, item.name)" type="button" class="p-2 bg-red-100 hover:bg-red-200 text-red-600 rounded-lg transition-colors" title="Eliminar">
+                                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+                                                </button>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                </template>
+                                <template x-if="folderItems.length === 0">
+                                    <tr><td colspan="4" class="text-center py-12 text-slate-500">
+                                        <svg class="w-16 h-16 mx-auto mb-4 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
+                                        <p>Esta carpeta está vacía</p>
+                                    </td></tr>
+                                </template>
+                            </tbody>
+                        </table>
                         </div>
                         </div>{{-- end list view wrapper --}}
 
                         {{-- GRID VIEW --}}
                         <div x-show="shareViewMode === 'grid'">
-                            @php $gridPreviewIdx = 0; @endphp
-                            @if($folderContents->isEmpty())
-                                <div class="text-center py-12 text-slate-500">
-                                    <svg class="w-16 h-16 mx-auto mb-4 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
-                                    </svg>
-                                    <p>Esta carpeta está vacía</p>
-                                </div>
-                            @else
-                                <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-                                    @foreach($folderContents as $item)
-                                        @php
-                                            $mime = $item->mime_type ?? '';
-                                            $isPreviewable = str_starts_with($mime, 'image/') || str_starts_with($mime, 'video/') || str_starts_with($mime, 'audio/') || $mime === 'application/pdf';
-                                            $gridIdx = (!$item->is_folder && $isPreviewable) ? $gridPreviewIdx++ : null;
-                                        @endphp
-                                        <div class="group bg-slate-50 hover:bg-blue-50 border border-slate-200 hover:border-blue-300 rounded-xl p-4 cursor-pointer transition-all"
-                                             @if($item->is_folder) onclick="window.location='{{ route('share.folder', ['token' => $share->token, 'folder_id' => $item->id]) }}'"
-                                             @elseif($gridIdx !== null) @click="openPreview({{ $gridIdx }})"
-                                             @endif>
-                                            <div class="flex flex-col items-center text-center">
-                                                <div class="w-16 h-16 rounded-xl flex items-center justify-center mb-3
-                                                    @if($item->is_folder) bg-amber-100
-                                                    @elseif(str_starts_with($mime, 'video/')) bg-rose-100
-                                                    @elseif(str_starts_with($mime, 'audio/')) bg-purple-100
-                                                    @elseif(str_starts_with($mime, 'image/')) bg-cyan-100
-                                                    @elseif($mime === 'application/pdf') bg-red-100
-                                                    @else bg-slate-200 @endif">
-                                                    @if($item->is_folder)
-                                                        <svg class="w-10 h-10 text-amber-500" fill="currentColor" viewBox="0 0 20 20"><path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z"/></svg>
-                                                    @elseif(str_starts_with($mime, 'video/'))
-                                                        <svg class="w-10 h-10 text-rose-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                                                    @elseif(str_starts_with($mime, 'audio/'))
-                                                        <svg class="w-10 h-10 text-purple-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2z"/></svg>
-                                                    @elseif(str_starts_with($mime, 'image/'))
-                                                        <svg class="w-10 h-10 text-cyan-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
-                                                    @elseif($mime === 'application/pdf')
-                                                        <svg class="w-10 h-10 text-red-500" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clip-rule="evenodd"/></svg>
-                                                    @else
-                                                        <svg class="w-10 h-10 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>
-                                                    @endif
-                                                </div>
-                                                <p class="font-medium text-slate-700 text-sm truncate w-full" title="{{ $item->name }}">{{ $item->name }}</p>
-                                                <p class="text-xs text-slate-400 mt-1">{{ $item->is_folder ? 'Carpeta' : number_format($item->size / 1024, 1) . ' KB' }}</p>
+                            <div x-show="folderItems.length === 0" class="text-center py-12 text-slate-500">
+                                <svg class="w-16 h-16 mx-auto mb-4 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
+                                </svg>
+                                <p>Esta carpeta está vacía</p>
+                            </div>
+                            <div x-show="folderItems.length > 0" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+                                <template x-for="item in sortedFolderItems()" :key="item.id">
+                                    <div class="group bg-slate-50 hover:bg-blue-50 border border-slate-200 hover:border-blue-300 rounded-xl p-4 cursor-pointer transition-all"
+                                         @click="item.is_folder ? (window.location='/s/'+token+'/folder/'+item.id) : (getPreviewIndex(item) >= 0 ? openPreview(getPreviewIndex(item)) : null)">
+                                        <div class="flex flex-col items-center text-center">
+                                            <div class="w-16 h-16 rounded-xl flex items-center justify-center mb-3"
+                                                 :class="item.is_folder ? 'bg-amber-100' : (item.mime_type && item.mime_type.startsWith('video/')) ? 'bg-rose-100' : (item.mime_type && item.mime_type.startsWith('audio/')) ? 'bg-purple-100' : (item.mime_type && item.mime_type.startsWith('image/')) ? 'bg-cyan-100' : item.mime_type === 'application/pdf' ? 'bg-red-100' : 'bg-slate-200'">
+                                                <svg x-show="item.is_folder" class="w-10 h-10 text-amber-500" fill="currentColor" viewBox="0 0 20 20"><path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z"/></svg>
+                                                <svg x-show="!item.is_folder && item.mime_type && item.mime_type.startsWith('video/')" class="w-10 h-10 text-rose-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                                                <svg x-show="!item.is_folder && item.mime_type && item.mime_type.startsWith('audio/')" class="w-10 h-10 text-purple-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2z"/></svg>
+                                                <svg x-show="!item.is_folder && item.mime_type === 'application/pdf'" class="w-10 h-10 text-red-500" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clip-rule="evenodd"/></svg>
+                                                <svg x-show="!item.is_folder && item.mime_type && item.mime_type.startsWith('image/')" class="w-10 h-10 text-cyan-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                                                <svg x-show="!item.is_folder && (!item.mime_type || (!item.mime_type.startsWith('video/') && !item.mime_type.startsWith('audio/') && !item.mime_type.startsWith('image/') && item.mime_type !== 'application/pdf'))" class="w-10 h-10 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>
                                             </div>
-                                            @if(!$item->is_folder)
-                                                <div class="flex items-center justify-center mt-3 opacity-0 group-hover:opacity-100 transition-opacity gap-1">
-                                                    @if($gridIdx !== null)
-                                                        <button @click.stop="openPreview({{ $gridIdx }})" class="p-2 bg-white hover:bg-green-100 rounded-lg shadow-sm transition-colors" title="Ver">
-                                                            <svg class="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
-                                                        </button>
-                                                    @endif
-                                                    <a href="{{ route('share.file-download', ['token' => $share->token, 'file_id' => $item->id]) }}" download @click.stop class="p-2 bg-white hover:bg-blue-100 rounded-lg shadow-sm transition-colors" title="Descargar">
-                                                        <svg class="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
-                                                    </a>
-                                                    @if(in_array($share->permissions, ['write', 'full']))
-                                                        <button @click.stop="confirmDelete('{{ route('share.delete', ['token' => $share->token, 'file_id' => $item->id]) }}', {{ $item->id }}, '{{ $item->name }}')" class="p-2 bg-white hover:bg-red-100 rounded-lg shadow-sm transition-colors" title="Eliminar">
-                                                            <svg class="w-4 h-4 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
-                                                        </button>
-                                                    @endif
-                                                </div>
-                                            @endif
+                                            <p class="font-medium text-slate-700 text-sm truncate w-full" x-text="item.name" :title="item.name"></p>
+                                            <p class="text-xs text-slate-400 mt-1" x-text="item.is_folder ? 'Carpeta' : formatSize(item.size)"></p>
+                                            <p class="text-xs text-slate-400" x-show="!item.is_folder && item.file_modified_at" x-text="formatDate(item.file_modified_at)"></p>
                                         </div>
-                                    @endforeach
-                                </div>
-                            @endif
+                                        <div x-show="!item.is_folder" class="flex items-center justify-center mt-3 opacity-0 group-hover:opacity-100 transition-opacity gap-1">
+                                            <button x-show="isItemPreviewable(item)" @click.stop="openPreview(getPreviewIndex(item))" class="p-2 bg-white hover:bg-green-100 rounded-lg shadow-sm transition-colors" title="Ver">
+                                                <svg class="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+                                            </button>
+                                            <a :href="'/s/'+token+'/download/'+item.id" download @click.stop class="p-2 bg-white hover:bg-blue-100 rounded-lg shadow-sm transition-colors" title="Descargar">
+                                                <svg class="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+                                            </a>
+                                            <button x-show="canDelete()" @click.stop="confirmDelete('/s/'+token+'/delete/'+item.id, item.id, item.name)" class="p-2 bg-white hover:bg-red-100 rounded-lg shadow-sm transition-colors" title="Eliminar">
+                                                <svg class="w-4 h-4 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+                                            </button>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
                         </div>{{-- end grid view wrapper --}}
 
                     @else

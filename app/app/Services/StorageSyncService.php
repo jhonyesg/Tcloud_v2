@@ -97,10 +97,10 @@ class StorageSyncService
             // store directory mtime so fullSync can skip it next time when nothing changed
             $dirMtime = \Carbon\Carbon::createFromTimestamp(filemtime($realPath));
             $parentFolder->update(['file_modified_at' => $dirMtime]);
+        }
 
-            if ($created > 0 || $deleted > 0) {
-                $this->invalidateFolderCache($storage->id, $parentId);
-            }
+        if ($created > 0 || $deleted > 0) {
+            $this->invalidateFolderCache($storage->id, $parentId);
         }
 
         return File::where('storage_provider_id', $storage->id)

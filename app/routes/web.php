@@ -134,6 +134,7 @@ Route::middleware('auth')->group(function () {
         Route::post('/grabadores/{grabador}/remover-usuario/{user}', [App\Http\Controllers\GrabacionesPuntuales\GrabadorController::class, 'removerUsuario'])->name('grabadores.remover-usuario');
         Route::resource('grabadores', App\Http\Controllers\GrabacionesPuntuales\GrabadorController::class);
 
+        Route::post('/canales/sincronizar', [App\Http\Controllers\GrabacionesPuntuales\CanalController::class, 'sincronizar'])->name('canales.sincronizar');
         Route::resource('canales', App\Http\Controllers\GrabacionesPuntuales\CanalController::class)->parameters([
             'canales' => 'canal',
         ]);

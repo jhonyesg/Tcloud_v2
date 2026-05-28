@@ -32,18 +32,22 @@ class AuthController extends Controller
             'password' => 'required',
         ]);
 
-        $login = $request->login;
+        $login = strtolower(trim($request->login));
         $user = str_contains($login, '@')
-            ? User::where('email', $login)->first()
-            : User::where('username', $login)->first();
+            ? User::whereRaw('LOWER(email) = ?', [$login])->first()
+            : User::whereRaw('LOWER(username) = ?', [$login])->first();
 
-        if (!$user || !Hash::check($request->password, $user->password_hash)) {
-            return back()->with('error', 'Credenciales inválidas');
+        if (!$user) {
+            return back()->withInput($request->only('login'))->with('error', 'No existe una cuenta con ese usuario o correo electrónico.');
+        }
+
+        if (!Hash::check($request->password, $user->password_hash)) {
+            return back()->withInput($request->only('login'))->with('error', 'La contraseña es incorrecta. Verifica e intenta de nuevo.');
         }
 
         $maxSessions = $this->sessionService->getEffectiveMaxSessions($user);
         if ($maxSessions > 0 && $this->sessionService->countActiveSessions($user) >= $maxSessions) {
-            return back()->with('error', 'Límite de sesiones simultáneas superado. Cierra una sesión desde otro dispositivo e intenta de nuevo.');
+            return back()->withInput($request->only('login'))->with('error', 'Límite de sesiones simultáneas superado. Cierra una sesión desde otro dispositivo e intenta de nuevo.');
         }
 
         Session::regenerate();

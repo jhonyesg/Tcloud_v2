@@ -19,14 +19,24 @@
         </h1>
         <p class="text-xs sm:text-sm text-slate-500 mt-1">Canales de grabación configurados</p>
     </div>
-    @if(!$user || !$user->isAdmin())
-        <a href="{{ route('canales.create') }}"
-           class="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl font-medium text-sm transition-colors shadow-sm">
-            <i class="fas fa-plus text-xs"></i>
-            <span class="hidden sm:inline">Crear Canal</span>
-            <span class="sm:hidden">Crear</span>
-        </a>
-    @endif
+    <div class="flex items-center gap-2">
+        @if($user && $user->isAdmin())
+            <button id="btn-sincronizar"
+                    data-url="{{ route('canales.sincronizar') }}"
+                    class="flex items-center gap-2 bg-teal-600 hover:bg-teal-700 text-white px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl font-medium text-sm transition-colors shadow-sm">
+                <i class="fas fa-sync-alt text-xs"></i>
+                <span class="hidden sm:inline">Sincronizar IDs</span>
+                <span class="sm:hidden">Sync</span>
+            </button>
+        @else
+            <a href="{{ route('canales.create') }}"
+               class="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl font-medium text-sm transition-colors shadow-sm">
+                <i class="fas fa-plus text-xs"></i>
+                <span class="hidden sm:inline">Crear Canal</span>
+                <span class="sm:hidden">Crear</span>
+            </a>
+        @endif
+    </div>
 </div>
 
 {{-- Barra de búsqueda --}}
@@ -412,10 +422,52 @@
         });
     });
 
-    // --- Botón Ejecutar AJAX ---
     const csrfToken = document.querySelector('meta[name="csrf-token"]')
         ? document.querySelector('meta[name="csrf-token"]').getAttribute('content')
         : '';
+
+    // --- Botón Sincronizar IDs ---
+    const btnSync = document.getElementById('btn-sincronizar');
+    if (btnSync) {
+        btnSync.addEventListener('click', function () {
+            const url = this.dataset.url;
+            const iconEl = this.querySelector('i');
+            const spanSm = this.querySelector('span.hidden');
+            const spanMob = this.querySelector('span.sm\\:hidden');
+
+            btnSync.disabled = true;
+            if (iconEl) iconEl.classList.add('fa-spin');
+            if (spanSm) spanSm.textContent = 'Sincronizando...';
+            if (spanMob) spanMob.textContent = '...';
+
+            fetch(url, {
+                method: 'POST',
+                headers: {
+                    'X-CSRF-TOKEN': csrfToken,
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Accept': 'application/json',
+                },
+            })
+            .then(function (res) { return res.json(); })
+            .then(function (data) {
+                mostrarToast(data.message || (data.success ? 'Sincronización completa' : 'Error en la sincronización'), data.success);
+                if (data.success && data.actualizados > 0) {
+                    setTimeout(function () { window.location.reload(); }, 1800);
+                }
+            })
+            .catch(function () {
+                mostrarToast('No se pudo conectar con el servidor', false);
+            })
+            .finally(function () {
+                btnSync.disabled = false;
+                if (iconEl) iconEl.classList.remove('fa-spin');
+                if (spanSm) spanSm.textContent = 'Sincronizar IDs';
+                if (spanMob) spanMob.textContent = 'Sync';
+            });
+        });
+    }
+
+    // --- Botón Ejecutar AJAX ---
 
     document.querySelectorAll('.btn-ejecutar').forEach(function (btn) {
         btn.addEventListener('click', function () {

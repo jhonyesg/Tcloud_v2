@@ -333,9 +333,38 @@
             </div>
         </div>
 
-        <div id="errorMessage" class="error-message hidden p-3 rounded-xl text-sm mb-4"></div>
+        @if(session('error'))
+        <div class="error-message p-3 rounded-xl text-sm mb-4 flex items-start gap-2">
+            <svg class="w-4 h-4 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <span>{{ session('error') }}</span>
+        </div>
+        @endif
 
-        <form action="/login" method="POST" class="space-y-5">
+        @if($errors->any())
+        <div class="error-message p-3 rounded-xl text-sm mb-4 flex items-start gap-2">
+            <svg class="w-4 h-4 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <ul class="list-none space-y-0.5">
+                @foreach($errors->all() as $error)
+                    <li>{{ $error }}</li>
+                @endforeach
+            </ul>
+        </div>
+        @endif
+
+        @if(session('success'))
+        <div class="p-3 rounded-xl text-sm mb-4 flex items-start gap-2" style="background: rgba(34,197,94,0.15); border: 1px solid rgba(34,197,94,0.3); color: #86efac;">
+            <svg class="w-4 h-4 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <span>{{ session('success') }}</span>
+        </div>
+        @endif
+
+        <form id="loginForm" action="/login" method="POST" class="space-y-5">
             @csrf
             <div>
                 <label for="login" class="block text-xs font-medium mb-2 uppercase tracking-widest" style="color: rgba(255, 255, 255, 0.6); font-size: 0.7rem;">
@@ -343,7 +372,8 @@
                 </label>
                 <input type="text" id="login" name="login" required autocomplete="username"
                        class="glass-input block w-full border rounded-xl transition-all duration-200"
-                       placeholder="tu@ejemplo.com o jsuarez">
+                       placeholder="tu@ejemplo.com o jsuarez"
+                       value="{{ old('login') }}">
             </div>
 
             <div>
@@ -366,9 +396,16 @@
                 </div>
             </div>
 
-            <button type="submit"
+            <button type="submit" id="submitBtn"
                     class="btn-primary relative flex items-center justify-center w-full py-3.5 text-white rounded-xl font-semibold text-sm shadow-lg transition-all duration-200 hover:-translate-y-0.5 hover:shadow-xl overflow-hidden">
-                Iniciar Sesión
+                <span id="btnText">Iniciar Sesión</span>
+                <span id="btnSpinner" class="hidden flex items-center gap-2">
+                    <svg class="spinner w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                    </svg>
+                    Verificando...
+                </span>
             </button>
         </form>
     </div>
@@ -528,6 +565,21 @@
             passwordInput.setAttribute('type', type);
             eyeIcon.classList.toggle('hidden');
             eyeOffIcon.classList.toggle('hidden');
+        });
+    }
+
+    const loginForm = document.getElementById('loginForm');
+    const submitBtn = document.getElementById('submitBtn');
+    const btnText = document.getElementById('btnText');
+    const btnSpinner = document.getElementById('btnSpinner');
+
+    if (loginForm && submitBtn) {
+        loginForm.addEventListener('submit', function(e) {
+            btnText.classList.add('hidden');
+            btnSpinner.classList.remove('hidden');
+            submitBtn.disabled = true;
+            submitBtn.style.opacity = '0.8';
+            submitBtn.style.cursor = 'not-allowed';
         });
     }
 })();

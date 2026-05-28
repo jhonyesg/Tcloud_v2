@@ -153,10 +153,13 @@ class FileController extends Controller
 
             $paginator = $query->orderBy('is_folder', 'desc')->orderBy('created_at', 'desc')->paginate($perPage, ['*'], 'page', $page);
 
+            $isAutoScan = false;
+
             // auto-scan on first visit if folder is empty in DB (new folder, cron hasn't run yet)
             if ($paginator->total() === 0 && $page === 1 && $storageId !== null) {
                 $storage = StorageProvider::find($storageId);
                 if ($storage && $storage->type === 'local') {
+                    $isAutoScan = true;
                     $syncService = app(StorageSyncService::class);
                     $files = $syncService->syncFolder($storage, $parentId, $user->id);
                     if (count($files) > 0) {
@@ -183,7 +186,10 @@ class FileController extends Controller
                 $ttl = ($folderModified && \Carbon\Carbon::parse($folderModified)->isToday()) ? 300 : 86400;
             }
 
-            Cache::put($cacheKey, $responseData, $ttl);
+            // Skip caching empty auto-scan results to prevent poisoning Redis with transient failures
+            if (!($isAutoScan && empty($responseData['files']))) {
+                Cache::put($cacheKey, $responseData, $ttl);
+            }
 
             return response()->json($responseData);
         }
@@ -640,10 +646,13 @@ class FileController extends Controller
         $zip->close();
 
         $zipName = $folder->name . '.zip';
+        $asciiZipName = preg_replace('/[^\x20-\x7E]/', '_', $zipName);
+        $encodedZipName = rawurlencode($zipName);
 
-        return response()->download($tmpFile, $zipName, [
+        return response()->download($tmpFile, null, [
             'Content-Type' => 'application/zip',
             'X-Accel-Buffering' => 'no',
+            'Content-Disposition' => 'attachment; filename="' . addslashes($asciiZipName) . '"; filename*=UTF-8\'\'' . $encodedZipName,
         ])->deleteFileAfterSend(true);
     }
 
