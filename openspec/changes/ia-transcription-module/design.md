@@ -74,6 +74,33 @@ El layout actual (`layouts/app.blade.php`) tiene 4 grupos en el sidebar: Navegac
 **Decisión:** Entrada "Mis Avisos" dentro de Multimedia, condicionada por `User::alertsInteligentes()->exists()` (paralelo a la línea 339 de Sites Externos).
 **Razón:** Reusa patrón existente, sin nuevos grupos en sidebar. El cliente ve "Medios Puntuales" Y "Mis Avisos" si tiene ambos habilitados.
 
+### D10: Diccionario de correcciones — single table con status
+**Decisión:** Tabla única `corrections` con columnas `status ∈ {pending, approved, rejected, merged}` y `proposed_by`/`approved_by` para auditoría.
+**Alternativas:**
+- (a) Dos tablas separadas (`corrections_approved` + `correction_proposals`)
+- (b) Diccionario global sin moderación (cualquiera escribe)
+- (c) Diccionario per-user
+
+**Razón:**
+- (a) genera migraciones y modelos duplicados, más fricción para queries tipo "todas las correcciones que afectan X"
+- (b) está descartado por el usuario explícitamente: "evitamos que alimenten de manera basura" — el filtro humano del admin es el control de calidad
+- (c) complica el matching (¿cuál diccionario aplico a un segmento?) sin un beneficio claro: las correcciones son por concepto (`presedente → presidente`), no por usuario
+- Single table + status enum + admin como gatekeeper = flujo descubrible, auditable y consistente con el principio de "el admin es la fuente de verdad"
+
+### D11: Aplicación de correcciones — `text_raw` + `text` en TranscriptionSegment
+**Decisión:** `TranscriptionSegment` tiene DOS columnas de texto: `text_raw` (SRT original, inmutable, auditoría) y `text` (vivo, usado para búsqueda y matching, corregido al parsear).
+**Alternativas:** Single `text` column (se pierde el original al re-aplicar correcciones).
+**Razón:** El SRT original es valioso para:
+- Resolver disputas ("el transcriptor realmente dijo X" vs "el admin corrigió a Y")
+- Re-procesar si las correcciones se aprueban después de generar el segmento
+- Auditoría/legal (qué se le envió al cliente por email)
+
+`text_raw` ocupa ~3 KB extra por segmento (mismo SRT duplicado). Para 1M de archivos sigue siendo manejable.
+
+### D12: Comunicación transcriptor → TCloud vía LAN
+**Decisión:** `TRANSCRIPTOR_CALLBACK_HOST` apunta a la IP LAN de TCloud (`http://192.168.0.118`), no al dominio público.
+**Razón:** El transcriptor está en LAN y NO sale a internet (confirmado por el usuario). TCloud sí tiene IP pública (`cloud.mediaserver.com.co`) pero esa URL es inalcanzable desde el transcriptor. La LAN interna `192.168.0.0/24` es compartida, así que la IP directa funciona. Sin TLS interno (HTTP plano) — la red ya está aislada y el `TRANSCRIPTOR_WEBHOOK_TOKEN` valida identidad.
+
 ## Data Model
 
 ```
@@ -104,7 +131,8 @@ transcription_segments
   segment_index     integer                -- 1, 2, 3... (orden del SRT)
   start_seconds     numeric(10,3)
   end_seconds       numeric(10,3)
-  text              text                   -- índice GIN trigram para búsqueda rápida
+  text_raw          text                   -- SRT original, inmutable
+  text              text                   -- "vivo", corregido por el diccionario; índice GIN trigram
 
 keywords
   id                bigint PK
@@ -146,6 +174,93 @@ user_alerts_inteligentes  (pivot: user ↔ módulo)
   keywords_quota    integer                -- ej. 100, 200, 0=sin módulo
   emails_quota      integer                -- cuántos correos puede registrar
   created_at / updated_at
+
+corrections  (diccionario moderado cliente → admin)
+  id                bigint PK
+  wrong_text        varchar(500)           -- "presedente" (original del transcriptor)
+  correct_text      varchar(500)           -- "presidente" (corrección)
+  wrong_normalized  varchar(500)           -- ascii lowercase, index
+  status            varchar(20)            -- pending|approved|rejected|merged
+  proposed_by       FK → users             -- quien la propuso (cliente o admin)
+  approved_by       FK → users nullable    -- admin que aprobó (null si pending)
+  approved_at       timestamp nullable
+  rejected_reason   text nullable
+  source_segment_id FK → transcription_segments nullable  -- origen opcional
+  applies_count     integer default 0      -- métrica de cuántas veces se ha aplicado
+  created_at / updated_at
+  ---
+  ÍNDICES:
+    corrections_wrong_active_unique PARTIAL UNIQUE (wrong_normalized)
+      WHERE status='approved'          -- solo 1 active por wrong_normalized
+    corrections_pending_idx (status) WHERE status='pending'  -- cola admin
+    corrections_wrong_normalized_idx (wrong_normalized)
+```
+
+## Architecture — flujo del diccionario de correcciones
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ LADO CLIENTE (workflow diario)                                               │
+│                                                                             │
+│   Cliente en /mis-avisos ve un match con snippet:                           │
+│     "...el presedente de la repúblic..."                                    │
+│                                                                             │
+│   [✏ Reportar corrección]  ──▶  modal Alpine:                               │
+│     wrong_text = "presedente"   (readonly, del segmento)                    │
+│     correct_text = [____________]                                          │
+│     [Enviar para revisión]                                                 │
+│                │                                                            │
+│                ▼                                                            │
+│   POST /mis-avisos/corrections  ──▶  CorrectionService::propose()           │
+│                                          crea fila status=pending           │
+│                                          proposed_by=cliente.id            │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  │ (cola de pendientes)
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ LADO ADMIN                                                                  │
+│                                                                             │
+│   Sidebar IA muestra "Correcciones" con badge "Pendientes (N)"              │
+│                                                                             │
+│   Admin abre /ia/correcciones:                                              │
+│     Tab "Pendientes": tabla con wrong→correct, proponente, fecha            │
+│       [Aprobar]  ──▶  CorrectionService::approve()                          │
+│                       ├─ si ya existe approved para mismo wrong_normalized: │
+│                       │     actualiza correct_text de la approved existente │
+│                       │     y marca la propuesta como status=merged         │
+│                       └─ si no: marca la propuesta como status=approved     │
+│                                                                             │
+│       [Rechazar] ──▶  CorrectionService::reject(reason)                     │
+│                       status=rejected, rejected_reason se guarda           │
+│                                                                             │
+│     Tab "Aprobadas": tabla con métricas (applies_count, último proponente)  │
+│                                                                             │
+│   [+ Nueva corrección] (admin agrega directo sin pasar por aprobación)      │
+│     ──▶  CorrectionService::upsertApproved(wrong, correct)                  │
+│           (admin es de confianza, entra directo al diccionario activo)      │
+│                                                                             │
+│   [↻ Re-aplicar a todas las transcripciones]                                │
+│     ──▶  php artisan transcription:apply-corrections                        │
+│           corre todos los TranscriptionSegment en chunks de 500             │
+│           reaplica el diccionario aprobado                                  │
+│           incrementa applies_count por cada corrección aplicada             │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼ (al llegar SRT nuevo)
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ EN EL WEBHOOK (integración con M1)                                          │
+│                                                                             │
+│   TranscriptionCallbackController::handle():                                │
+│     1. descarga SRT                                                         │
+│     2. SrtParser::parse() → segments con text_raw                           │
+│     3. CorrectionService::applyToSegments($segments)                        │
+│        └─ para cada segmento: text = applyCorrections(text_raw)             │
+│        └─ inserta con text_raw y text                                      │
+│     4. actualiza Transcription state=done                                   │
+│     5. KeywordMatcher::run($transcription)                                  │
+│        └─ matchea contra text (corregido), NO contra text_raw               │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Architecture
@@ -226,21 +341,28 @@ user_alerts_inteligentes  (pivot: user ↔ módulo)
 - `resources/views/ia/api-transcriptor/job-detail.blade.php` — Detalle del job (state, SRT viewer, retry)
 - `resources/views/ia/avisos-inteligentes/index.blade.php` — Tabla de usuarios con módulo, activar/desactivar, cupo
 - `resources/views/ia/avisos-inteligentes/user-detail.blade.php` — Keywords del usuario, correos, matches, enviar test
-- `resources/views/mis-avisos/index.blade.php` — Vista del cliente con sus keywords (form inline) + tabla de alertas recibidas
+- `resources/views/ia/correcciones/index.blade.php` — Admin: 2 pestañas (Pendientes / Aprobadas) + botón "Nueva corrección" + botón "Re-aplicar a todas las transcripciones"
+- `resources/views/mis-avisos/index.blade.php` — Vista del cliente con sus keywords (form inline) + tabla de alertas recibidas + botón "Reportar corrección" en cada snippet
+- `resources/views/mis-avisos/_correction-modal.blade.php` — Partial Alpine.js con form para proponer corrección
+- `resources/views/mis-avisos/corrections-mine.blade.php` — Cliente: historial de SUS propuestas con estado (pending/approved/rejected)
 - `resources/views/layouts/app.blade.php` — Nuevo grupo "IA" en sidebar (admin only) + entrada condicional "Mis Avisos" en Multimedia
 
 ## AppServiceProvider
 
-Extender el view composer existente para inyectar `$userMisAvisosEnabled` (boolean) y `$userExternalSites` ya está:
+Extender el view composer existente para inyectar:
 ```php
 $user = session('user');
 $misAvisosEnabled = false;
+$correctionsPendingCount = 0;
 if ($user) {
     $misAvisosEnabled = \App\Models\UserAlertsInteligente::where('user_id', $user->id)
-        ->where('enabled', true)
-        ->exists();
+        ->where('enabled', true)->exists();
+    if (($user->role ?? null) === 'admin') {
+        $correctionsPendingCount = \App\Models\Correction::where('status', 'pending')->count();
+    }
 }
 $view->with('misAvisosEnabled', $misAvisosEnabled);
+$view->with('correctionsPendingCount', $correctionsPendingCount);
 ```
 
 ## Services detail
@@ -302,6 +424,48 @@ class AlertDispatcher {
 }
 ```
 
+### CorrectionService
+```php
+class CorrectionService {
+    public static function applyToText(string $text): string
+        // Carga todas las Corrections::approved() una vez (cache por request)
+        // Aplica en orden de length DESC del wrong_normalized
+        // para evitar que un substring corto sobreescriba uno largo
+        // Retorna el texto corregido (NO modifica BD)
+
+    public function applyToSegments(array $segments): void
+        // Para cada segment: text = self::applyToText(text_raw)
+        // Útil al parsear SRT nuevo en el webhook
+
+    public function propose(User $by, string $wrong, string $correct, ?int $segmentId = null): Correction
+        // Crea fila con status=pending
+        // proposed_by = $by->id
+        // wrong_normalized = Str::lower(Str::ascii($wrong))
+        // Si ya existe pending o approved para mismo wrong_normalized → upsert actualizando
+
+    public function approve(Correction $c, User $by): Correction
+        // Si ya existe approved para el mismo wrong_normalized:
+        //     actualiza correct_text de la approved existente
+        //     marca $c como status=merged
+        // Si no:
+        //     marca $c como status=approved, approved_by, approved_at
+
+    public function reject(Correction $c, User $by, ?string $reason): Correction
+        // status=rejected, rejected_reason
+
+    public function upsertApproved(string $wrong, string $correct, User $by): Correction
+        // Usado cuando admin agrega directo (no pasa por pending)
+        // Upsert por wrong_normalized en approved
+
+    public function applyRetroactively(callable $progressCb = null): int
+        // Itera TranscriptionSegment en chunks de 500 (configurable)
+        // Por cada chunk: DB::transaction con UPDATE text = applyToText(text_raw)
+        // Incrementa applies_count de cada corrección aplicada
+        // Retorna total de segments actualizados
+        // $progressCb($current, $total) invocado cada chunk
+}
+```
+
 ## Risks / Trade-offs
 
 - **[Risk] Webhook perdido si TCloud está caído** → Mitigación: polling de respaldo cada 5 min sobre jobs `processing` con `created + 30 min` que aún no tienen `finished_at`. Si tras 3 polls siguen sin terminar, se marcan como `error` y se reintentan manualmente.
@@ -311,6 +475,10 @@ class AlertDispatcher {
 - **[Risk] Privacidad: cliente A ve keyword "presidente" que también tiene cliente B** → Aceptado: las keywords son libres (no confidenciales). El contenido matcheado solo se muestra al cliente dueño de la keyword (cada `KeywordMatch` tiene `user_id`).
 - **[Risk] Doble envío si el webhook llega ANTES que el polling tome el job** → Mitigación: `convertAndTranscribe` actualiza `state=done` ANTES de disparar matching; el polling chequea `state` y si ya es `done`/`error`, lo saltea.
 - **[Risk] ffmpeg tarda mucho en archivos de 2+ horas** → Mitigación: timeout de 600 s en `Process::run`, `tries=1` para este job (reintentar no ayuda si el input es muy grande). Se documenta que archivos >4 h requieren `storage_priority` mayor.
+- **[Risk] Cliente mete corrección basura que pasa el filtro admin** → Mitigación: el admin es el gatekeeper. La corrección solo entra al diccionario cuando el admin hace `approve`. Mientras está en `pending`, NO se aplica a nada. El admin ve proponente, fecha y segmento origen antes de aprobar.
+- **[Risk] Comando retroactivo tarda horas con 1M de segments** → Mitigación: chunk de 500 + transacciones cortas + `--dry-run` para estimar. Output con progreso. Si se interrumpe, los chunks anteriores quedan guardados.
+- **[Risk] Conflicto si dos admins aprueban pendientes distintas del mismo wrong_normalized simultáneamente** → Mitigación: índice parcial único `(wrong_normalized) WHERE status='approved'` en Postgres. La segunda transacción falla con SQLSTATE 23505; el controller captura y refresca mostrando el ganador.
+- **[Risk] Las correcciones aprobadas cambian el texto que se muestra en emails históricos** → Aceptado como limitation: los emails ya enviados tienen el texto original (en su HTML/PDF), no se re-generan. La BD guarda `text_raw` para auditoría y los nuevos emails/matches usan el `text` corregido.
 
 ## Migration Plan
 
