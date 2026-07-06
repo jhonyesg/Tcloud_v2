@@ -1,5 +1,7 @@
 @extends('layouts.app')
 
+@section('skip_session_manager', '1')
+
 @section('title', 'Vista Previa - ' . $file->name)
 
 @section('content')

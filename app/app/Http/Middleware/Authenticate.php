@@ -13,9 +13,11 @@ class Authenticate
     {
         if (!Session::has('user_id')) {
             if ($request->expectsJson()) {
-                return response()->json(['error' => 'No authenticated'], 401);
+                return response()
+                    ->json(['error' => 'No authenticated'], 401)
+                    ->header('X-Session-Expired', '1');
             }
-            return redirect('/login');
+            return redirect('/login')->withHeaders(['X-Session-Expired' => '1']);
         }
 
         $userId = Session::get('user_id');

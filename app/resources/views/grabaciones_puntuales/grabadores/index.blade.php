@@ -44,7 +44,7 @@
     },
 
     async loadGrabadores() {
-        const res = await fetch('/grabaciones-puntuales/grabadores', {
+        const res = await apiFetch('/grabaciones-puntuales/grabadores', {
             credentials: 'include',
             headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
         });
@@ -52,7 +52,7 @@
     },
 
     async loadUsers() {
-        const res = await fetch('/grabaciones-puntuales/grabadores/users', {
+        const res = await apiFetch('/grabaciones-puntuales/grabadores/users', {
             credentials: 'include',
             headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
         });
@@ -65,7 +65,7 @@
     },
 
     async createGrabador() {
-        const res = await fetch('/grabaciones-puntuales/grabadores', {
+        const res = await apiFetch('/grabaciones-puntuales/grabadores', {
             method: 'POST',
             credentials: 'include',
             headers: {
@@ -90,7 +90,7 @@
         this.testing = true;
         this.testResult = null;
         this.showTestModal = true;
-        const res = await fetch('/grabaciones-puntuales/grabadores/' + grabador.id + '/probar', {
+        const res = await apiFetch('/grabaciones-puntuales/grabadores/' + grabador.id + '/probar', {
             credentials: 'include',
             headers: { 'Accept': 'application/json' }
         });
@@ -121,7 +121,7 @@
 
     async assignUser() {
         if (!this.userSearchSelected || !this.nombreBase || !this.rutaBase) return;
-        const res = await fetch('/grabaciones-puntuales/grabadores/' + this.usersModalGrabador.id + '/asignar-usuario', {
+        const res = await apiFetch('/grabaciones-puntuales/grabadores/' + this.usersModalGrabador.id + '/asignar-usuario', {
             method: 'POST',
             credentials: 'include',
             headers: {
@@ -163,7 +163,7 @@
     },
 
     async updateLimit(userId, newLimit) {
-        const res = await fetch('/grabaciones-puntuales/grabadores/' + this.usersModalGrabador.id + '/actualizar-asignacion/' + userId, {
+        const res = await apiFetch('/grabaciones-puntuales/grabadores/' + this.usersModalGrabador.id + '/actualizar-asignacion/' + userId, {
             method: 'POST',
             credentials: 'include',
             headers: {
@@ -182,7 +182,7 @@
 
     async removeUser(userId) {
         if (!confirm('¿Remover este usuario del grabador?')) return;
-        const res = await fetch('/grabaciones-puntuales/grabadores/' + this.usersModalGrabador.id + '/remover-usuario/' + userId, {
+        const res = await apiFetch('/grabaciones-puntuales/grabadores/' + this.usersModalGrabador.id + '/remover-usuario/' + userId, {
             method: 'POST',
             credentials: 'include',
             headers: { 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content, 'Accept': 'application/json' }
@@ -214,7 +214,7 @@
     },
 
     async updateGrabador() {
-        const res = await fetch('/grabaciones-puntuales/grabadores/' + this.editingGrabador.id, {
+        const res = await apiFetch('/grabaciones-puntuales/grabadores/' + this.editingGrabador.id, {
             method: 'PUT',
             credentials: 'include',
             headers: {
@@ -249,7 +249,7 @@
     },
 
     async updateUserAssignment() {
-        const res = await fetch('/grabaciones-puntuales/grabadores/' + this.usersModalGrabador.id + '/actualizar-asignacion/' + this.editingUserId, {
+        const res = await apiFetch('/grabaciones-puntuales/grabadores/' + this.usersModalGrabador.id + '/actualizar-asignacion/' + this.editingUserId, {
             method: 'POST',
             credentials: 'include',
             headers: {
@@ -271,7 +271,7 @@
 
     async deleteGrabador() {
         if (!this.deletingGrabador) return;
-        const res = await fetch('/grabaciones-puntuales/grabadores/' + this.deletingGrabador.id, {
+        const res = await apiFetch('/grabaciones-puntuales/grabadores/' + this.deletingGrabador.id, {
             method: 'DELETE',
             credentials: 'include',
             headers: { 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content, 'Accept': 'application/json' }

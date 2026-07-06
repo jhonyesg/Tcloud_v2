@@ -186,6 +186,7 @@ class GrabadorController extends Controller
                     'grabador_id' => $grabador->id,
                     'user_id' => $request->user_id,
                     'limite_canales' => 10,
+                    'ruta_base' => $rutaBase,
                     'created_at' => now(),
                     'updated_at' => now(),
                 ]);
@@ -251,6 +252,9 @@ class GrabadorController extends Controller
         $pivotUpdate = ['updated_at' => now()];
         if ($nuevoLimite !== null) {
             $pivotUpdate['limite_canales'] = $nuevoLimite;
+        }
+        if ($request->filled('ruta_base')) {
+            $pivotUpdate['ruta_base'] = rtrim($request->ruta_base, '/');
         }
 
         DB::table('grabador_usuario')

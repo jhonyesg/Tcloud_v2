@@ -16,7 +16,7 @@
     userSearchOpen: false,
 
     async loadUsers() {
-        const res = await fetch('/admin/storages/' + this.storageId + '/users', {
+        const res = await apiFetch('/admin/storages/' + this.storageId + '/users', {
             credentials: 'include',
             headers: {
                 'Accept': 'application/json',
@@ -29,7 +29,7 @@
     },
 
     async loadAllUsers() {
-        const res = await fetch('/admin/users/search?q=', {
+        const res = await apiFetch('/admin/users/search?q=', {
             credentials: 'include',
             headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
         });
@@ -69,7 +69,7 @@
         const canCreateShares = formData.get('can_create_shares') === '1';
 
         for (const user of this.selectedUsers) {
-            const res = await fetch('/admin/storages/' + this.storageId + '/users', {
+            const res = await apiFetch('/admin/storages/' + this.storageId + '/users', {
                 method: 'POST',
                 credentials: 'include',
                 headers: {
@@ -94,7 +94,7 @@
     },
 
     async updateAssignment(formData, userId) {
-        const res = await fetch('/admin/storages/' + this.storageId + '/users/' + userId, {
+        const res = await apiFetch('/admin/storages/' + this.storageId + '/users/' + userId, {
             method: 'PUT',
             credentials: 'include',
             headers: {
@@ -116,7 +116,7 @@
 
     async removeAssignment(userId) {
         if (!confirm('¿Estás seguro de remover este usuario?')) return;
-        const res = await fetch('/admin/storages/' + this.storageId + '/users/' + userId, {
+        const res = await apiFetch('/admin/storages/' + this.storageId + '/users/' + userId, {
             method: 'DELETE',
             credentials: 'include',
             headers: {

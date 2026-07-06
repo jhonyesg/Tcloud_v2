@@ -1,5 +1,7 @@
 @extends('layouts.app')
 
+@section('skip_session_manager', '1')
+
 @section('title', 'Enlace Expirado - Tcloud')
 
 @section('content')

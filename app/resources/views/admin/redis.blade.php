@@ -25,7 +25,7 @@
     async loadStatus() {
         this.loading = true;
         try {
-            const res = await fetch('/admin/redis/status', {
+            const res = await apiFetch('/admin/redis/status', {
                 credentials: 'include',
                 headers: { 'Accept': 'application/json' }
             });
@@ -43,7 +43,7 @@
             : '¿Activar Redis para sesiones? Al reiniciar PHP-FPM las sesiones pasarán a Redis.';
         if (!confirm(msg)) return;
         this.toggling = true;
-        const res = await fetch('/admin/redis/toggle-driver', {
+        const res = await apiFetch('/admin/redis/toggle-driver', {
             method: 'POST',
             credentials: 'include',
             headers: { 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content, 'Accept': 'application/json' }
@@ -58,7 +58,7 @@
 
     async cleanExpired() {
         if (!confirm('¿Eliminar todas las sesiones expiradas de la BD?')) return;
-        const res = await fetch('/admin/redis/clean-expired', {
+        const res = await apiFetch('/admin/redis/clean-expired', {
             method: 'POST',
             credentials: 'include',
             headers: { 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content, 'Accept': 'application/json' }
@@ -70,7 +70,7 @@
 
     async cleanOrphans() {
         if (!confirm('¿Eliminar registros de BD cuya sesión ya no existe en Redis?')) return;
-        const res = await fetch('/admin/redis/clean-orphans', {
+        const res = await apiFetch('/admin/redis/clean-orphans', {
             method: 'POST',
             credentials: 'include',
             headers: { 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content, 'Accept': 'application/json' }
@@ -83,7 +83,7 @@
     async testConfig() {
         this.configTesting = true;
         this.configTestResult = null;
-        const res = await fetch('/admin/redis/config/test', {
+        const res = await apiFetch('/admin/redis/config/test', {
             method: 'POST',
             credentials: 'include',
             headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content, 'Accept': 'application/json' },
@@ -98,7 +98,7 @@
             if (!confirm('No se ha verificado la conexión. ¿Guardar de todas formas?')) return;
         }
         this.configSaving = true;
-        const res = await fetch('/admin/redis/config/save', {
+        const res = await apiFetch('/admin/redis/config/save', {
             method: 'POST',
             credentials: 'include',
             headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content, 'Accept': 'application/json' },

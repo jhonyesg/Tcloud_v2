@@ -153,7 +153,7 @@
 
         const formData = new FormData(form);
 
-        fetch(form.action, {
+        apiFetch(form.action, {
             method: 'POST',
             headers: {
                 'X-Requested-With': 'XMLHttpRequest',

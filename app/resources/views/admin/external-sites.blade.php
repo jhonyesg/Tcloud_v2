@@ -296,7 +296,7 @@ function externalSitesAdmin() {
 
         async load() {
             this.loading = true;
-            const res = await fetch('/admin/external-sites', { credentials: 'include', headers: { 'Accept': 'application/json' } });
+            const res = await apiFetch('/admin/external-sites', { credentials: 'include', headers: { 'Accept': 'application/json' } });
             if (res.ok) this.sites = await res.json();
             this.loading = false;
         },
@@ -316,7 +316,7 @@ function externalSitesAdmin() {
         async saveSite() {
             const method = this.editingId ? 'PUT' : 'POST';
             const url = this.editingId ? `/admin/external-sites/${this.editingId}` : '/admin/external-sites';
-            const res = await fetch(url, {
+            const res = await apiFetch(url, {
                 method,
                 credentials: 'include',
                 headers: {
@@ -338,7 +338,7 @@ function externalSitesAdmin() {
 
         async deleteSite(site) {
             if (!confirm(`¿Eliminar el site "${site.name}"? Se quitará de todos los usuarios.`)) return;
-            const res = await fetch(`/admin/external-sites/${site.id}`, {
+            const res = await apiFetch(`/admin/external-sites/${site.id}`, {
                 method: 'DELETE',
                 credentials: 'include',
                 headers: { 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content, 'Accept': 'application/json' },
@@ -357,21 +357,21 @@ function externalSitesAdmin() {
         },
 
         async loadAssigned() {
-            const res = await fetch(`/admin/external-sites/${this.currentSite.id}/users`, {
+            const res = await apiFetch(`/admin/external-sites/${this.currentSite.id}/users`, {
                 credentials: 'include', headers: { 'Accept': 'application/json' },
             });
             if (res.ok) { const d = await res.json(); this.assignedUsers = d.users; }
         },
 
         async searchUsers() {
-            const res = await fetch(`/admin/users/search?q=${encodeURIComponent(this.userSearch)}`, {
+            const res = await apiFetch(`/admin/users/search?q=${encodeURIComponent(this.userSearch)}`, {
                 credentials: 'include', headers: { 'Accept': 'application/json' },
             });
             if (res.ok) { const d = await res.json(); this.userResults = d.users || d; }
         },
 
         async assignUser(u) {
-            const res = await fetch(`/admin/external-sites/${this.currentSite.id}/users`, {
+            const res = await apiFetch(`/admin/external-sites/${this.currentSite.id}/users`, {
                 method: 'POST',
                 credentials: 'include',
                 headers: {
@@ -386,7 +386,7 @@ function externalSitesAdmin() {
         },
 
         async removeUser(u) {
-            const res = await fetch(`/admin/external-sites/${this.currentSite.id}/users/${u.id}`, {
+            const res = await apiFetch(`/admin/external-sites/${this.currentSite.id}/users/${u.id}`, {
                 method: 'DELETE',
                 credentials: 'include',
                 headers: { 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content, 'Accept': 'application/json' },

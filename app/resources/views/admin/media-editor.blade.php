@@ -20,7 +20,7 @@
     },
 
     async loadStats() {
-        const res = await fetch('/admin/media-editor/stats', {
+        const res = await apiFetch('/admin/media-editor/stats', {
             credentials: 'include',
             headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
         });
@@ -28,7 +28,7 @@
     },
 
     async loadUsers() {
-        const res = await fetch('/admin/media-editor/users', {
+        const res = await apiFetch('/admin/media-editor/users', {
             credentials: 'include',
             headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
         });
@@ -39,7 +39,7 @@
         if (user.role === 'admin') return;
         this.savingId = user.id;
         const newVal = !user.media_editor_enabled;
-        const res = await fetch('/admin/media-editor/users/' + user.id, {
+        const res = await apiFetch('/admin/media-editor/users/' + user.id, {
             method: 'POST',
             credentials: 'include',
             headers: {
@@ -64,7 +64,7 @@
     async saveLimit(user) {
         this.savingId = user.id;
         const limit = parseInt(user.media_editor_clip_limit) || 0;
-        const res = await fetch('/admin/media-editor/users/' + user.id, {
+        const res = await apiFetch('/admin/media-editor/users/' + user.id, {
             method: 'POST',
             credentials: 'include',
             headers: {

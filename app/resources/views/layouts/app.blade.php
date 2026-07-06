@@ -30,6 +30,9 @@
             }
         }
     </script>
+    @if(empty(trim($__env->yieldContent('skip_session_manager'))))
+    <script src="/js/session-manager.js?v={{ filemtime(public_path('js/session-manager.js')) }}"></script>
+    @endif
     <script defer src="/js/alpine.min.js"></script>
     <link rel="stylesheet" href="/css/fontawesome.min.css">
     <style>
@@ -518,33 +521,89 @@
                     </button>
                 </div>
 
-                <div x-data="{ loading: false, error: '', success: '', current_password: '', new_password: '', new_password_confirmation: '' }">
+                <div x-data="{ loading: false, error: '', success: '', current_password: '', new_password: '', new_password_confirmation: '', show_current: false, show_new: false, show_confirm: false }">
                     <div x-show="error" class="bg-red-900/30 border border-red-700/50 text-red-300 p-3 rounded-xl text-sm mb-4" x-text="error"></div>
                     <div x-show="success" class="bg-green-900/30 border border-green-700/50 text-green-300 p-3 rounded-xl text-sm mb-4" x-text="success"></div>
 
-                    <form @submit.prevent="loading = true; error = ''; success = ''">
+                    <form @submit.prevent="
+                        loading = true; error = ''; success = '';
+                        if (new_password !== new_password_confirmation) {
+                            error = 'La nueva contraseña y su confirmación no coinciden';
+                            loading = false;
+                            return;
+                        }
+                        fetch('/profile', {
+                            method: 'POST',
+                            headers: {
+                                'Accept': 'application/json',
+                                'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
+                                'X-Requested-With': 'XMLHttpRequest',
+                            },
+                            body: new FormData($event.target),
+                        })
+                        .then(async r => {
+                            const data = await r.json().catch(() => ({}));
+                            if (!r.ok) {
+                                const msg = (data.errors && Object.values(data.errors).flat()[0])
+                                    || data.error
+                                    || data.message
+                                    || ('Error ' + r.status);
+                                throw new Error(msg);
+                            }
+                            return data;
+                        })
+                        .then(() => {
+                            success = 'Contraseña actualizada correctamente';
+                            current_password = '';
+                            new_password = '';
+                            new_password_confirmation = '';
+                        })
+                        .catch(e => { error = e.message; })
+                        .finally(() => { loading = false; });
+                    ">
                         @csrf
                         <input type="hidden" name="_method" value="PUT">
                         
                         <div class="mb-4">
                             <label class="block text-brand-300 text-xs font-medium mb-2 uppercase tracking-wider">Contraseña Actual</label>
-                            <input type="password" name="current_password" x-model="current_password" required
-                                   class="w-full bg-brand-900/50 border border-brand-700/50 text-white rounded-xl px-4 py-3 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 transition-all placeholder:text-brand-400/50"
-                                   placeholder="Ingrese su contraseña actual">
+                            <div class="relative">
+                                <input :type="show_current ? 'text' : 'password'" name="current_password" x-model="current_password" required
+                                       class="w-full bg-brand-900/50 border border-brand-700/50 text-white rounded-xl pl-4 pr-12 py-3 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 transition-all placeholder:text-brand-400/50"
+                                       placeholder="Ingrese su contraseña actual">
+                                <button type="button" @click="show_current = !show_current"
+                                        class="absolute inset-y-0 right-0 flex items-center px-4 text-brand-300 hover:text-white transition-colors"
+                                        :aria-label="show_current ? 'Ocultar contraseña' : 'Mostrar contraseña'">
+                                    <i :class="show_current ? 'fas fa-eye-slash' : 'fas fa-eye'"></i>
+                                </button>
+                            </div>
                         </div>
 
                         <div class="mb-4">
                             <label class="block text-brand-300 text-xs font-medium mb-2 uppercase tracking-wider">Nueva Contraseña</label>
-                            <input type="password" name="new_password" x-model="new_password" required minlength="8"
-                                   class="w-full bg-brand-900/50 border border-brand-700/50 text-white rounded-xl px-4 py-3 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 transition-all placeholder:text-brand-400/50"
-                                   placeholder="Mínimo 8 caracteres">
+                            <div class="relative">
+                                <input :type="show_new ? 'text' : 'password'" name="new_password" x-model="new_password" required minlength="8"
+                                       class="w-full bg-brand-900/50 border border-brand-700/50 text-white rounded-xl pl-4 pr-12 py-3 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 transition-all placeholder:text-brand-400/50"
+                                       placeholder="Mínimo 8 caracteres">
+                                <button type="button" @click="show_new = !show_new"
+                                        class="absolute inset-y-0 right-0 flex items-center px-4 text-brand-300 hover:text-white transition-colors"
+                                        :aria-label="show_new ? 'Ocultar contraseña' : 'Mostrar contraseña'">
+                                    <i :class="show_new ? 'fas fa-eye-slash' : 'fas fa-eye'"></i>
+                                </button>
+                            </div>
                         </div>
 
                         <div class="mb-6">
                             <label class="block text-brand-300 text-xs font-medium mb-2 uppercase tracking-wider">Confirmar Nueva Contraseña</label>
-                            <input type="password" name="new_password_confirmation" x-model="new_password_confirmation" required
-                                   class="w-full bg-brand-900/50 border border-brand-700/50 text-white rounded-xl px-4 py-3 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 transition-all placeholder:text-brand-400/50"
-                                   placeholder="Repita la nueva contraseña">
+                            <div class="relative">
+                                <input :type="show_confirm ? 'text' : 'password'" name="new_password_confirmation" x-model="new_password_confirmation" required
+                                       class="w-full bg-brand-900/50 border border-brand-700/50 text-white rounded-xl pl-4 pr-12 py-3 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 transition-all placeholder:text-brand-400/50"
+                                       placeholder="Repita la nueva contraseña">
+                                <button type="button" @click="show_confirm = !show_confirm"
+                                        class="absolute inset-y-0 right-0 flex items-center px-4 text-brand-300 hover:text-white transition-colors"
+                                        :aria-label="show_confirm ? 'Ocultar contraseña' : 'Mostrar contraseña'">
+                                    <i :class="show_confirm ? 'fas fa-eye-slash' : 'fas fa-eye'"></i>
+                                </button>
+                            </div>
                         </div>
 
                         <div class="flex gap-3">

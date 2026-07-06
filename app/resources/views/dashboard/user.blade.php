@@ -168,7 +168,7 @@
 
         async loadSessions() {
             this.loading = true;
-            const res = await fetch('/user/sessions', { credentials: 'include', headers: { 'Accept': 'application/json' } });
+            const res = await apiFetch('/user/sessions', { credentials: 'include', headers: { 'Accept': 'application/json' } });
             if (res.ok) {
                 const data = await res.json();
                 this.sessions = data.sessions;
@@ -178,7 +178,7 @@
 
         async closeSession(id) {
             if (!confirm('¿Cerrar esta sesión?')) return;
-            const res = await fetch('/user/sessions/' + id, {
+            const res = await apiFetch('/user/sessions/' + id, {
                 method: 'DELETE',
                 credentials: 'include',
                 headers: { 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content }
@@ -194,7 +194,7 @@
 
         async closeOthers() {
             if (!confirm('¿Cerrar todas las sesiones excepto la actual?')) return;
-            const res = await fetch('/user/sessions/others', {
+            const res = await apiFetch('/user/sessions/others', {
                 method: 'DELETE',
                 credentials: 'include',
                 headers: { 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content }

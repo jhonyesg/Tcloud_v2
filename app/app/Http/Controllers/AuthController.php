@@ -90,6 +90,12 @@ class AuthController extends Controller
         ]);
     }
 
+    public function ping(Request $request)
+    {
+        Session::put('_last_ping', now()->timestamp);
+        return response()->json(['ok' => true]);
+    }
+
     public function forgotPassword(Request $request)
     {
         $request->validate([

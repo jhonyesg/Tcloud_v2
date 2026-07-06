@@ -92,6 +92,8 @@ deleteConfirmFile: null,
         clipDuration: 0,
         clipCurrentTime: 0,
         clipPlaying: false,
+        clipInTimeInput: '',
+        clipOutTimeInput: '',
         clipReady: false,
         clipSelStart: null,
         clipSelEnd: null,
@@ -134,7 +136,7 @@ deleteConfirmFile: null,
         async init() {
             await Promise.all([
                 this.loadStorages(),
-                fetch('/auth/me', { credentials: 'include', headers: { 'Accept': 'application/json' } })
+                apiFetch('/auth/me', { credentials: 'include', headers: { 'Accept': 'application/json' } })
                     .then(r => r.ok ? r.json() : null)
                     .then(d => { if (d) this.canUseMediaEditor = !!d.can_use_media_editor; })
             ]);
@@ -315,7 +317,7 @@ deleteConfirmFile: null,
     },
 
     async loadStorages() {
-        const res = await fetch('/user/storages', {
+        const res = await apiFetch('/user/storages', {
             credentials: 'include',
             headers: {
                 'Accept': 'application/json',
@@ -374,7 +376,7 @@ deleteConfirmFile: null,
         if (forceSync) url += '&sync=1';
         if (skipBreadcrumbs) url += '&nb=1';
 
-        fetch(url, {
+        apiFetch(url, {
             credentials: 'include',
             signal: this._fetchController.signal,
             headers: {
@@ -444,7 +446,7 @@ deleteConfirmFile: null,
         if (this.currentFolder) url += '&parent_id=' + this.currentFolder;
         if (this.currentStorage) url += '&storage_id=' + this.currentStorage;
         url += '&nb=1';
-        fetch(url, {
+        apiFetch(url, {
             credentials: 'include',
             signal: this._fetchMoreController.signal,
             headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
@@ -472,7 +474,7 @@ deleteConfirmFile: null,
         if (this.currentFolder) url += '&parent_id=' + this.currentFolder;
         if (this.currentStorage) url += '&storage_id=' + this.currentStorage;
         try {
-            const res = await fetch(url, {
+            const res = await apiFetch(url, {
                 credentials: 'include',
                 headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
             });
@@ -621,7 +623,7 @@ deleteConfirmFile: null,
             const parentId = pathToId[parentPath];
 
             try {
-                const res = await fetch('/files', {
+                const res = await apiFetch('/files', {
                     method: 'POST',
                     credentials: 'include',
                     headers: {
@@ -638,7 +640,7 @@ deleteConfirmFile: null,
                 } else if (res.status === 409) {
                     // Carpeta ya existe — buscarla en DB
                     const listUrl = '/files?' + (parentId ? 'parent_id=' + parentId : '') + '&storage_id=' + this.currentStorage;
-                    const listRes = await fetch(listUrl, { credentials: 'include', headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' } });
+                    const listRes = await apiFetch(listUrl, { credentials: 'include', headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' } });
                     if (listRes.ok) {
                         const siblings = await listRes.json();
                         const existing = siblings.find(f => f.name === folderName && f.is_folder);
@@ -732,7 +734,7 @@ deleteConfirmFile: null,
         if (norm === 0) return;
         this.imgSaving = true;
         try {
-            const res = await fetch('/files/' + this.currentViewerFile.id + '/rotate', {
+            const res = await apiFetch('/files/' + this.currentViewerFile.id + '/rotate', {
                 method: 'POST',
                 credentials: 'include',
                 headers: {
@@ -778,7 +780,7 @@ deleteConfirmFile: null,
 
     async createFolder(name) {
         if (!name || !name.trim()) return;
-        const res = await fetch('/files', {
+        const res = await apiFetch('/files', {
             method: 'POST',
             credentials: 'include',
             headers: {
@@ -851,7 +853,7 @@ deleteConfirmFile: null,
         this.viewerTextSaving = true;
         this.viewerTextSaved = false;
         try {
-            const res = await fetch('/files/' + this.currentViewerFile.id + '/text-content', {
+            const res = await apiFetch('/files/' + this.currentViewerFile.id + '/text-content', {
                 method: 'PUT',
                 credentials: 'include',
                 headers: {
@@ -896,7 +898,7 @@ deleteConfirmFile: null,
                 this.$refs.audioplayer.load();
             } else if (this.isText(mime, file.name)) {
                 this.viewerTextLoading = true;
-                fetch('/files/' + file.id + '/text-content', { credentials: 'include', headers: { 'Accept': 'application/json' } })
+                apiFetch('/files/' + file.id + '/text-content', { credentials: 'include', headers: { 'Accept': 'application/json' } })
                     .then(r => r.json())
                     .then(d => { this.viewerTextContent = d.content ?? d.error ?? 'Error al cargar'; this.viewerTextLoading = false; })
                     .catch(() => { this.viewerTextContent = 'Error al cargar el archivo'; this.viewerTextLoading = false; });
@@ -936,7 +938,7 @@ deleteConfirmFile: null,
         const newName = this.renamingFileName.trim();
         this.renamingFileId = null;
         if (!newName || newName === file.name) return;
-        const res = await fetch('/files/' + file.id, {
+        const res = await apiFetch('/files/' + file.id, {
             method: 'PUT',
             credentials: 'include',
             headers: {
@@ -964,7 +966,7 @@ deleteConfirmFile: null,
         this.downloadingMulti = true;
         try {
             const ids = this.selectedFiles.map(f => f.id);
-            const res = await fetch('/files/download-multi', {
+            const res = await apiFetch('/files/download-multi', {
                 method: 'POST',
                 credentials: 'include',
                 headers: {
@@ -1002,7 +1004,7 @@ deleteConfirmFile: null,
             window.location = '/files/' + file.id + '/download';
             return;
         }
-        const res = await fetch('/files/' + file.id + '/download-folder?check=1', {
+        const res = await apiFetch('/files/' + file.id + '/download-folder?check=1', {
             credentials: 'include',
             headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         });
@@ -1035,7 +1037,7 @@ deleteConfirmFile: null,
         const storageId = this.currentStorage;
         let url = '/files?storage_id=' + storageId;
         if (parentId !== null) url += '&parent_id=' + parentId;
-        const res = await fetch(url, { credentials: 'include', headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' } });
+        const res = await apiFetch(url, { credentials: 'include', headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' } });
         const data = await res.json().catch(() => []);
         this.copyMoveFolders = (Array.isArray(data) ? data : []).filter(f => f.is_folder);
         this.copyMoveLoading = false;
@@ -1069,7 +1071,7 @@ deleteConfirmFile: null,
         this.copyMoveError = null;
         const endpoint = '/files/' + this.copyMoveSourceFile.id + '/' + this.copyMoveAction;
         const body = { destination_parent_id: this.copyMoveDestFolderId };
-        const res = await fetch(endpoint, {
+        const res = await apiFetch(endpoint, {
             method: 'POST',
             credentials: 'include',
             headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || '' },
@@ -1092,7 +1094,7 @@ deleteConfirmFile: null,
         const file = this.deleteConfirmFile;
         this.deleteConfirmFile = null;
         if (!file) return;
-        const res = await fetch('/files/' + file.id, {
+        const res = await apiFetch('/files/' + file.id, {
             method: 'DELETE',
             credentials: 'include',
             headers: {
@@ -1113,7 +1115,7 @@ deleteConfirmFile: null,
         const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
         let errors = 0;
         for (const file of toDelete) {
-            const res = await fetch('/files/' + file.id, {
+            const res = await apiFetch('/files/' + file.id, {
                 method: 'DELETE',
                 credentials: 'include',
                 headers: {
@@ -1146,7 +1148,7 @@ deleteConfirmFile: null,
     },
 
     async loadFileShares(fileId) {
-        const res = await fetch('/shares?file_id=' + fileId, {
+        const res = await apiFetch('/shares?file_id=' + fileId, {
             credentials: 'include',
             headers: {
                 'Accept': 'application/json',
@@ -1161,7 +1163,7 @@ deleteConfirmFile: null,
 
     async generateShareLink() {
         this.shareFeedback = { type: '', message: '' };
-        const res = await fetch('/shares', {
+        const res = await apiFetch('/shares', {
             method: 'POST',
             credentials: 'include',
             headers: {
@@ -1238,7 +1240,7 @@ deleteConfirmFile: null,
         this.bulkDeleteLoading = true;
         const ids = [...this.selectedShareIds];
         const results = await Promise.all(ids.map(id =>
-            fetch('/shares/' + id, {
+            apiFetch('/shares/' + id, {
                 method: 'DELETE',
                 credentials: 'include',
                 headers: { 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content, 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
@@ -1259,7 +1261,7 @@ deleteConfirmFile: null,
     async deleteShareLink(shareId) {
         if (!confirm('¿Eliminar este enlace?')) return;
 
-        const res = await fetch('/shares/' + shareId, {
+        const res = await apiFetch('/shares/' + shareId, {
             method: 'DELETE',
             credentials: 'include',
             headers: {
@@ -1285,7 +1287,7 @@ deleteConfirmFile: null,
     },
 
     async saveShareLink(shareId) {
-        const res = await fetch('/shares/' + shareId, {
+        const res = await apiFetch('/shares/' + shareId, {
             method: 'PUT',
             credentials: 'include',
             headers: {
@@ -1412,7 +1414,7 @@ deleteConfirmFile: null,
         if (!this.currentStorage || this.searchQuery.length < 2) return;
         let url = '/files?q=' + encodeURIComponent(this.searchQuery) + '&storage_id=' + this.currentStorage;
         if (this.currentFolder) url += '&parent_id=' + this.currentFolder;
-        const res = await fetch(url, {
+        const res = await apiFetch(url, {
             credentials: 'include',
             headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
         });
@@ -1503,7 +1505,7 @@ deleteConfirmFile: null,
         this.clipThumbsLoading = true;
         this.clipThumbnails = [];
         try {
-            const res = await fetch('/files/' + this.clipFile.id + '/clip-thumbs', {
+            const res = await apiFetch('/files/' + this.clipFile.id + '/clip-thumbs', {
                 credentials: 'include',
                 headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
             });
@@ -1991,7 +1993,7 @@ deleteConfirmFile: null,
                 item.type === 'segment'
                     ? { fileId: item.fileId, start: item.start, end: item.end }
                     : { fileId: item.fileId });
-            const res = await fetch('/files/' + this.clipFile.id + '/clip', {
+            const res = await apiFetch('/files/' + this.clipFile.id + '/clip', {
                 method: 'POST',
                 credentials: 'include',
                 headers: {
@@ -2036,7 +2038,7 @@ deleteConfirmFile: null,
                 item.type === 'segment'
                     ? { fileId: item.fileId, start: item.start, end: item.end }
                     : { fileId: item.fileId });
-            const res = await fetch('/files/' + this.clipFile.id + '/clip?preview=1', {
+            const res = await apiFetch('/files/' + this.clipFile.id + '/clip?preview=1', {
                 method: 'POST',
                 credentials: 'include',
                 headers: {
@@ -2084,7 +2086,7 @@ deleteConfirmFile: null,
         this.showClipHistory = true;
         this.clipHistory = [];
         try {
-            const res = await fetch('/media-clip/history', {
+            const res = await apiFetch('/media-clip/history', {
                 credentials: 'include',
                 headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
             });
@@ -2095,7 +2097,7 @@ deleteConfirmFile: null,
 
     async clipReclip(jobId) {
         try {
-            const res = await fetch('/media-clip/' + jobId + '/reclip', {
+            const res = await apiFetch('/media-clip/' + jobId + '/reclip', {
                 credentials: 'include',
                 headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
             });

@@ -12,14 +12,28 @@ class TcloudApiService
     {
         try {
             $esRadio = $grabador->tipo === 'radio';
+            $rutaDescarga = $canal->ruta_destino;
+            if (empty($rutaDescarga)) {
+                $rutaBase = \DB::table('grabador_usuario')
+                    ->where('grabador_id', $grabador->id)
+                    ->where('user_id', $canal->usuario_id)
+                    ->value('ruta_base');
+                if ($rutaBase) {
+                    $rutaDescarga = rtrim($rutaBase, '/') . '/' . $canal->slot_nombre;
+                } elseif ($canal->link_origen) {
+                    \Log::warning('TcloudApiService::crearCanal sin ruta_base en pivote, usando fallback', [
+                        'canal_id' => $canal->id,
+                        'motivo' => 'sin_ruta_local_ni_pivote',
+                    ]);
+                    $rutaDescarga = $this->generarRutaDescarga($grabador, $canal);
+                }
+            }
             $payload = [
                 'codigo' => $this->generarCodigo($canal->slot_nombre),
                 'nombre' => $canal->slot_nombre,
                 'categoria' => $esRadio ? 'radio' : 'nacional',
                 'link_origen' => $canal->link_origen,
-                'ruta_descarga' => $canal->ruta_destino
-                    ? $canal->ruta_destino
-                    : ($canal->link_origen ? $this->generarRutaDescarga($grabador, $canal) : ''),
+                'ruta_descarga' => $rutaDescarga,
                 'duracion_grabacion' => $canal->duracion_grabacion ?? '00:21:00',
                 'formato_salida' => $canal->formato_salida ?? ($esRadio ? '.mp3' : '.mp4'),
                 'ffmpeg_args_pre' => $canal->ffmpeg_args_pre ?? '-re',
@@ -116,6 +130,26 @@ class TcloudApiService
             'success' => false,
             'error' => $response->body(),
         ];
+    }
+
+    public function buscarPorCodigo(Grabador $grabador, string $codigo): ?array
+    {
+        $remotos = $this->getCanalesRemotos($grabador);
+        foreach ($remotos as $remoto) {
+            if (isset($remoto['codigo']) && $remoto['codigo'] === $codigo) {
+                return $remoto;
+            }
+        }
+        return null;
+    }
+
+    public function eliminarPorCodigo(Grabador $grabador, string $codigo): array
+    {
+        $remoto = $this->buscarPorCodigo($grabador, $codigo);
+        if (!$remoto || empty($remoto['id'])) {
+            return ['success' => true, 'noop' => true];
+        }
+        return $this->eliminarCanal($grabador, (int) $remoto['id']);
     }
 
     public function getCanalesRemotos(Grabador $grabador): array

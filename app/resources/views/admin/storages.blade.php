@@ -76,7 +76,7 @@
     },
     
     async loadStorages() {
-        const res = await fetch('/admin/storages', {
+        const res = await apiFetch('/admin/storages', {
             credentials: 'include',
             headers: {
                 'Accept': 'application/json',
@@ -109,7 +109,7 @@
         delete data.s3_secret;
         delete data.bucket;
         
-        const res = await fetch('/admin/storages', {
+        const res = await apiFetch('/admin/storages', {
             method: 'POST',
             credentials: 'include',
             headers: {
@@ -134,7 +134,7 @@
             data.config = {};
         }
         
-        const res = await fetch('/admin/storages/' + id, {
+        const res = await apiFetch('/admin/storages/' + id, {
             method: 'PUT',
             credentials: 'include',
             headers: {
@@ -155,7 +155,7 @@
     },
     
     async deleteStorage(id) {
-        const res = await fetch('/admin/storages/' + id, {
+        const res = await apiFetch('/admin/storages/' + id, {
             method: 'DELETE',
             credentials: 'include',
             headers: {
@@ -179,7 +179,7 @@
     async testStorage(storage) {
         this.testingStorage = storage.id;
         
-        const res = await fetch('/admin/storages/' + storage.id + '/test', {
+        const res = await apiFetch('/admin/storages/' + storage.id + '/test', {
             method: 'GET',
             credentials: 'include',
             headers: {
@@ -202,7 +202,7 @@
     },
 
     async loadUsersModal() {
-        const res = await fetch('/admin/storages/' + this.usersModalStorage.id + '/users', {
+        const res = await apiFetch('/admin/storages/' + this.usersModalStorage.id + '/users', {
             credentials: 'include',
             headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
         });
@@ -212,7 +212,7 @@
     },
 
     async loadAllUsers() {
-        const res = await fetch('/admin/users/search?q=', {
+        const res = await apiFetch('/admin/users/search?q=', {
             credentials: 'include',
             headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
         });
@@ -224,7 +224,7 @@
     async toggleAssignAll() {
         if (this.allAssigned) {
             if (!confirm('¿Remover todos los usuarios de este storage?')) return;
-            const res = await fetch('/admin/storages/' + this.usersModalStorage.id + '/users/all/remove', {
+            const res = await apiFetch('/admin/storages/' + this.usersModalStorage.id + '/users/all/remove', {
                 method: 'DELETE',
                 credentials: 'include',
                 headers: { 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content, 'Accept': 'application/json' }
@@ -236,7 +236,7 @@
             }
         } else {
             if (!confirm('¿Asignar todos los usuarios al storage con permisos de lectura?')) return;
-            const res = await fetch('/admin/storages/' + this.usersModalStorage.id + '/users/assign-all', {
+            const res = await apiFetch('/admin/storages/' + this.usersModalStorage.id + '/users/assign-all', {
                 method: 'POST',
                 credentials: 'include',
                 headers: { 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content, 'Accept': 'application/json' }
@@ -263,7 +263,7 @@
 
     async assignUserFromModal() {
         if (!this.userSearchSelected) return;
-        const res = await fetch('/admin/storages/' + this.usersModalStorage.id + '/users', {
+        const res = await apiFetch('/admin/storages/' + this.usersModalStorage.id + '/users', {
             method: 'POST',
             credentials: 'include',
             headers: {
@@ -298,7 +298,7 @@
 
     async updateAssignmentFromModal() {
         if (!this.editingAssignment) return;
-        const res = await fetch('/admin/storages/' + this.usersModalStorage.id + '/users/' + this.editingAssignment.user_id, {
+        const res = await apiFetch('/admin/storages/' + this.usersModalStorage.id + '/users/' + this.editingAssignment.user_id, {
             method: 'PUT',
             credentials: 'include',
             headers: {
@@ -322,7 +322,7 @@
 
     async removeAssignmentFromModal(userId) {
         if (!confirm('¿Remover este usuario del storage?')) return;
-        const res = await fetch('/admin/storages/' + this.usersModalStorage.id + '/users/' + userId, {
+        const res = await apiFetch('/admin/storages/' + this.usersModalStorage.id + '/users/' + userId, {
             method: 'DELETE',
             credentials: 'include',
             headers: { 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content }

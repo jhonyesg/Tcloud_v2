@@ -113,17 +113,53 @@ class CanalController extends Controller
             return back()->with('error', 'Ya existe un canal con ese nombre en este grabador');
         }
 
+        $rutaBase = \DB::table('grabador_usuario')
+            ->where('grabador_id', $grabador->id)
+            ->where('user_id', $user->id)
+            ->value('ruta_base');
+
         $canal = Canal::create([
             'grabador_id' => $grabador->id,
             'usuario_id' => $user->id,
             'slot_nombre' => $request->slot_nombre,
+            'ruta_destino' => $rutaBase ? rtrim($rutaBase, '/') . '/' . $request->slot_nombre : null,
             'activo' => true,
         ]);
 
-        $this->apiService->crearCanal($grabador, $canal);
+        $resultado = $this->apiService->crearCanal($grabador, $canal);
+
+        if (!$resultado['success'] && $this->esErrorCodigoDuplicado($resultado['error'] ?? '')) {
+            $codigo = $this->generarCodigoLocal($request->slot_nombre);
+            $remoto = $this->apiService->buscarPorCodigo($grabador, $codigo);
+            if ($remoto && !empty($remoto['id'])) {
+                $canal->update([
+                    'api_canal_id' => (int) $remoto['id'],
+                    'link_origen' => $canal->link_origen ?: ($remoto['link_origen'] ?? null),
+                    'detalle' => $canal->detalle ?: ($remoto['detalle'] ?? null),
+                    'ruta_destino' => $canal->ruta_destino ?: ($remoto['ruta_descarga'] ?? $canal->ruta_destino),
+                ]);
+                return redirect()->route('canales.index')
+                    ->with('success', "Canal '{$canal->slot_nombre}' creado y vinculado al canal existente en el grabador (ID {$remoto['id']})");
+            }
+        }
+
+        if (!$resultado['success']) {
+            return back()->with('warning', "Canal guardado localmente, pero no se pudo registrar en el grabador: " . ($resultado['error'] ?? 'Error desconocido'));
+        }
 
         return redirect()->route('canales.index')
             ->with('success', 'Canal creado exitosamente');
+    }
+
+    private function generarCodigoLocal(string $slotNombre): string
+    {
+        return strtolower(str_replace([' ', '_'], '_', $slotNombre));
+    }
+
+    private function esErrorCodigoDuplicado(string $error): bool
+    {
+        return stripos($error, 'ya existe') !== false
+            || stripos($error, 'código') !== false && stripos($error, 'duplicate') !== false;
     }
 
     public function edit(Canal $canal)
@@ -185,6 +221,17 @@ class CanalController extends Controller
 
         $canal->update($campos);
 
+        if (empty($canal->ruta_destino) && $canal->usuario_id && $canal->grabador_id) {
+            $rutaBase = \DB::table('grabador_usuario')
+                ->where('grabador_id', $canal->grabador_id)
+                ->where('user_id', $canal->usuario_id)
+                ->value('ruta_base');
+            if ($rutaBase) {
+                $canal->ruta_destino = rtrim($rutaBase, '/') . '/' . $canal->slot_nombre;
+                $canal->save();
+            }
+        }
+
         if ($canal->link_origen && !$canal->api_canal_id) {
             $grabador = $canal->grabador;
             $resultado = $this->apiService->crearCanal($grabador, $canal);
@@ -195,12 +242,27 @@ class CanalController extends Controller
                     'message' => 'Canal registrado en el grabador exitosamente',
                     'canal' => $canal->fresh(),
                 ]);
-            } else {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Canal guardado pero no se pudo registrar en el grabador: ' . ($resultado['error'] ?? 'Error desconocido'),
-                ], 422);
+            } elseif ($this->esErrorCodigoDuplicado($resultado['error'] ?? '')) {
+                $codigo = $this->generarCodigoLocal($canal->slot_nombre);
+                $remoto = $this->apiService->buscarPorCodigo($grabador, $codigo);
+                if ($remoto && !empty($remoto['id'])) {
+                    $canal->update([
+                        'api_canal_id' => (int) $remoto['id'],
+                        'link_origen' => $canal->link_origen ?: ($remoto['link_origen'] ?? null),
+                        'detalle' => $canal->detalle ?: ($remoto['detalle'] ?? null),
+                        'ruta_destino' => $canal->ruta_destino ?: ($remoto['ruta_descarga'] ?? $canal->ruta_destino),
+                    ]);
+                    return response()->json([
+                        'success' => true,
+                        'message' => "Canal vinculado al existente en el grabador (ID {$remoto['id']})",
+                        'canal' => $canal->fresh(),
+                    ]);
+                }
             }
+            return response()->json([
+                'success' => false,
+                'message' => 'Canal guardado pero no se pudo registrar en el grabador: ' . ($resultado['error'] ?? 'Error desconocido'),
+            ], 422);
         } elseif ($canal->api_canal_id) {
             $grabador = $canal->grabador;
             $datos = [
@@ -263,13 +325,15 @@ class CanalController extends Controller
 
         if ($canal->api_canal_id) {
             $this->apiService->eliminarCanal($canal->grabador, $canal->api_canal_id);
+        } elseif ($canal->link_origen) {
+            $codigo = $this->generarCodigoLocal($canal->slot_nombre);
+            $this->apiService->eliminarPorCodigo($canal->grabador, $codigo);
         }
 
         $canal->update([
             'api_canal_id' => null,
             'link_origen' => null,
             'detalle' => null,
-            'ruta_destino' => null,
         ]);
 
         if ($request->ajax() || $request->wantsJson()) {

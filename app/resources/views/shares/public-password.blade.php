@@ -1,5 +1,7 @@
 @extends('layouts.app')
 
+@section('skip_session_manager', '1')
+
 @section('title', 'Acceso Protegido - Tcloud')
 
 @section('content')

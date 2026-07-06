@@ -392,7 +392,7 @@
         fd.append('_method', 'DELETE');
         fd.append('_token', csrfToken);
 
-        fetch(urlLimpiar, {
+        apiFetch(urlLimpiar, {
             method: 'POST',
             headers: {
                 'X-CSRF-TOKEN': csrfToken,
@@ -440,7 +440,7 @@
             if (spanSm) spanSm.textContent = 'Sincronizando...';
             if (spanMob) spanMob.textContent = '...';
 
-            fetch(url, {
+            apiFetch(url, {
                 method: 'POST',
                 headers: {
                     'X-CSRF-TOKEN': csrfToken,
@@ -478,7 +478,7 @@
             boton.disabled = true;
             boton.textContent = 'Ejecutando...';
 
-            fetch(url, {
+            apiFetch(url, {
                 method: 'POST',
                 headers: {
                     'X-CSRF-TOKEN': csrfToken,

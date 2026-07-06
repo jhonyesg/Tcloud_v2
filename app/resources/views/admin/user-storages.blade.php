@@ -13,7 +13,7 @@
 
     async loadData() {
         const userId = {{ $targetUser->id }};
-        const res = await fetch('/admin/users/' + userId + '/storages', {
+        const res = await apiFetch('/admin/users/' + userId + '/storages', {
             credentials: 'include',
             headers: {
                 'Accept': 'application/json',
@@ -30,7 +30,7 @@
 
     async assignStorage(formData) {
         const userId = {{ $targetUser->id }};
-        const res = await fetch('/admin/users/' + userId + '/storages', {
+        const res = await apiFetch('/admin/users/' + userId + '/storages', {
             method: 'POST',
             credentials: 'include',
             headers: {
@@ -51,7 +51,7 @@
 
     async updateAssignment(formData, storageId) {
         const userId = {{ $targetUser->id }};
-        const res = await fetch('/admin/users/' + userId + '/storages/' + storageId, {
+        const res = await apiFetch('/admin/users/' + userId + '/storages/' + storageId, {
             method: 'PUT',
             credentials: 'include',
             headers: {
@@ -74,7 +74,7 @@
     async removeAssignment(storageId) {
         if (!confirm('¿Estás seguro de remover este storage?')) return;
         const userId = {{ $targetUser->id }};
-        const res = await fetch('/admin/users/' + userId + '/storages/' + storageId, {
+        const res = await apiFetch('/admin/users/' + userId + '/storages/' + storageId, {
             method: 'DELETE',
             credentials: 'include',
             headers: {

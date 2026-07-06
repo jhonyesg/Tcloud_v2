@@ -18,7 +18,7 @@
 
     async loadSessions() {
         this.loading = true;
-        const res = await fetch('/admin/sessions', {
+        const res = await apiFetch('/admin/sessions', {
             credentials: 'include',
             headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
         });
@@ -48,7 +48,7 @@
     async killSession(id) {
         if (!confirm('¿Cerrar esta sesión?')) return;
         const isCurrentSession = this.sessions.some(s => s.id === id && s.is_current);
-        const res = await fetch('/admin/sessions/' + id, {
+        const res = await apiFetch('/admin/sessions/' + id, {
             method: 'DELETE',
             credentials: 'include',
             headers: { 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content }
@@ -66,7 +66,7 @@
     async killUserSessions(userId, userEmail) {
         if (!confirm('¿Cerrar TODAS las sesiones de ' + userEmail + '?')) return;
         const killingOwnSession = this.sessions.some(s => s.user_id === userId && s.is_current);
-        const res = await fetch('/admin/sessions/user/' + userId, {
+        const res = await apiFetch('/admin/sessions/user/' + userId, {
             method: 'DELETE',
             credentials: 'include',
             headers: { 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content }
@@ -84,7 +84,7 @@
 
     async saveGlobalSettings() {
         this.savingSettings = true;
-        const res = await fetch('/admin/sessions/settings', {
+        const res = await apiFetch('/admin/sessions/settings', {
             method: 'POST',
             credentials: 'include',
             headers: {

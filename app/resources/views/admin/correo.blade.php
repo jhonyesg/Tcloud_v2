@@ -378,7 +378,7 @@ function correoData() {
         
         async loadConfig() {
             try {
-                const res = await fetch('/admin/correo/config');
+                const res = await apiFetch('/admin/correo/config');
                 const data = await res.json();
                 if (data.data) {
                     this.config = {
@@ -412,7 +412,7 @@ function correoData() {
                 const payload = { ...this.config };
                 if (!payload.password) delete payload.password;
                 
-                const res = await fetch('/admin/correo/config', {
+                const res = await apiFetch('/admin/correo/config', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
@@ -433,7 +433,7 @@ function correoData() {
             this.testing = true;
             this.testResult = null;
             try {
-                const res = await fetch('/admin/correo/config/test', { method: 'POST' });
+                const res = await apiFetch('/admin/correo/config/test', { method: 'POST' });
                 this.testResult = await res.json();
             } catch (e) {
                 this.testResult = { success: false, message: 'Error: ' + e.message };
@@ -443,7 +443,7 @@ function correoData() {
         
         async loadPlantillas() {
             try {
-                const res = await fetch('/admin/correo/plantillas');
+                const res = await apiFetch('/admin/correo/plantillas');
                 const data = await res.json();
                 this.plantillas = data.data || [];
             } catch (e) {
@@ -453,7 +453,7 @@ function correoData() {
 
         async loadLogs() {
             try {
-                const res = await fetch('/admin/correo/logs');
+                const res = await apiFetch('/admin/correo/logs');
                 const data = await res.json();
                 this.logs = data.data || [];
             } catch (e) {
@@ -505,7 +505,7 @@ function correoData() {
                 const payload = { ...this.plantillaModal.data };
                 if (this.plantillaModal.isEdit) delete payload.name;
                 
-                const res = await fetch(url, {
+                const res = await apiFetch(url, {
                     method,
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
@@ -538,7 +538,7 @@ function correoData() {
             if (!this.confirmDelete.plantilla) return;
             this.confirmDelete.loading = true;
             try {
-                const res = await fetch(`/admin/correo/plantillas/${this.confirmDelete.plantilla.id}`, { method: 'DELETE' });
+                const res = await apiFetch(`/admin/correo/plantillas/${this.confirmDelete.plantilla.id}`, { method: 'DELETE' });
                 if (res.ok) {
                     this.message = { text: 'Plantilla eliminada correctamente', type: 'success' };
                     await this.loadPlantillas();
@@ -576,7 +576,7 @@ function correoData() {
             this.testModal.previewLoading = true;
             this.testModal.previewResult = null;
             try {
-                const res = await fetch(`/admin/correo/plantillas/${this.testModal.plantilla.id}/preview`, {
+                const res = await apiFetch(`/admin/correo/plantillas/${this.testModal.plantilla.id}/preview`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ variables: this.testModal.variables })
@@ -601,7 +601,7 @@ function correoData() {
             this.testModal.sending = true;
             this.testModal.result = null;
             try {
-                const res = await fetch(`/admin/correo/plantillas/${this.testModal.plantilla.id}/send-test`, {
+                const res = await apiFetch(`/admin/correo/plantillas/${this.testModal.plantilla.id}/send-test`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ to: this.testModal.to, variables: this.testModal.variables })

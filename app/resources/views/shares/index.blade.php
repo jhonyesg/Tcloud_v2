@@ -352,7 +352,7 @@ function sharesApp() {
         async loadShares() {
             this.loading = true;
             try {
-                const res = await fetch('/shares', {
+                const res = await apiFetch('/shares', {
                     credentials: 'include',
                     headers: { 'Accept': 'application/json' }
                 });
@@ -402,7 +402,7 @@ function sharesApp() {
         async deleteShare() {
             this.deleteModal.loading = true;
             try {
-                const res = await fetch('/shares/' + this.deleteModal.shareId, {
+                const res = await apiFetch('/shares/' + this.deleteModal.shareId, {
                     method: 'DELETE',
                     credentials: 'include',
                     headers: {

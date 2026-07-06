@@ -12,7 +12,7 @@
     deletingUser: null,
     
     async loadUsers() {
-        const res = await fetch('/admin/users', {
+        const res = await apiFetch('/admin/users', {
             credentials: 'include',
             headers: {
                 'Accept': 'application/json',
@@ -27,7 +27,7 @@
     },
     
     async createUser(formData) {
-        const res = await fetch('/admin/users', {
+        const res = await apiFetch('/admin/users', {
             method: 'POST',
             credentials: 'include',
             headers: {
@@ -47,7 +47,7 @@
     },
     
     async updateUser(formData, id) {
-        const res = await fetch('/admin/users/' + id, {
+        const res = await apiFetch('/admin/users/' + id, {
             method: 'PUT',
             credentials: 'include',
             headers: {
@@ -68,7 +68,7 @@
     },
     
     async deleteUser(id) {
-        const res = await fetch('/admin/users/' + id, {
+        const res = await apiFetch('/admin/users/' + id, {
             method: 'DELETE',
             credentials: 'include',
             headers: {
@@ -91,7 +91,7 @@
     },
 
     async toggleMediaEditor(user) {
-        const res = await fetch('/admin/users/' + user.id + '/toggle-media-editor', {
+        const res = await apiFetch('/admin/users/' + user.id + '/toggle-media-editor', {
             method: 'POST',
             credentials: 'include',
             headers: {

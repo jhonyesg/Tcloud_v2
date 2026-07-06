@@ -11,6 +11,7 @@ Route::get('/login', [App\Http\Controllers\AuthController::class, 'showLogin'])-
 Route::post('/login', [App\Http\Controllers\AuthController::class, 'login']);
 Route::post('/logout', [App\Http\Controllers\AuthController::class, 'logout'])->middleware('auth');
 Route::get('/auth/me', [App\Http\Controllers\AuthController::class, 'me'])->middleware('auth');
+Route::post('/auth/ping', [App\Http\Controllers\AuthController::class, 'ping'])->middleware('auth');
 Route::post('/auth/forgot-password', [App\Http\Controllers\AuthController::class, 'forgotPassword']);
 Route::get('/auth/reset-password/{token}', [App\Http\Controllers\AuthController::class, 'showResetPassword'])->name('reset-password');
 Route::post('/auth/reset-password', [App\Http\Controllers\AuthController::class, 'resetPassword']);

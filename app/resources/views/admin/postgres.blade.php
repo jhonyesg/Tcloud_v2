@@ -411,7 +411,7 @@ function jsonData() {
 
         saveConfig: function() {
             var self = this;
-            fetch('/admin/postgres/config', {
+            apiFetch('/admin/postgres/config', {
                 method: 'POST',
                 credentials: 'include',
                 headers: {
@@ -429,7 +429,7 @@ function jsonData() {
             var self = this;
             this.testing = true;
             this.testResult = null;
-            fetch('/admin/postgres/test', {
+            apiFetch('/admin/postgres/test', {
                 method: 'POST',
                 credentials: 'include',
                 headers: {
@@ -455,7 +455,7 @@ function jsonData() {
         loadSchema: function() {
             var self = this;
             this.schemaLoading = true;
-            fetch('/admin/postgres/schema', {
+            apiFetch('/admin/postgres/schema', {
                 credentials: 'include',
                 headers: { 'Accept': 'application/json' }
             })
@@ -993,7 +993,7 @@ function jsonData() {
             if (this.schemaTables.length > 0) { this.queryTables = this.schemaTables; return; }
             var self = this;
             this.queryTablesLoading = true;
-            fetch('/admin/postgres/schema', { credentials: 'include', headers: { 'Accept': 'application/json' } })
+            apiFetch('/admin/postgres/schema', { credentials: 'include', headers: { 'Accept': 'application/json' } })
             .then(function(res) { return res.json(); })
             .then(function(data) {
                 if (data.success) { self.queryTables = data.tables; self.schemaTables = data.tables; }
@@ -1030,7 +1030,7 @@ function jsonData() {
             this.queryElapsedMs = null;
             var t0 = Date.now();
 
-            fetch('/admin/postgres/query', {
+            apiFetch('/admin/postgres/query', {
                 method: 'POST',
                 credentials: 'include',
                 headers: {
@@ -1065,7 +1065,7 @@ function jsonData() {
             this.backupInlineStatus = null;
             this.backupInlineMsg    = '';
 
-            fetch('/admin/postgres/backup', { method: 'GET', credentials: 'include' })
+            apiFetch('/admin/postgres/backup', { method: 'GET', credentials: 'include' })
             .then(function(res) {
                 if (!res.ok) {
                     return res.text().then(function(t) { throw new Error(t || 'Error del servidor'); });
@@ -1101,7 +1101,7 @@ function jsonData() {
             this.backupModal   = { show: true, status: 'loading', message: '' };
             this.backupLoading = true;
 
-            fetch('/admin/postgres/ftp/backup', {
+            apiFetch('/admin/postgres/ftp/backup', {
                 method: 'POST',
                 credentials: 'include',
                 headers: {
@@ -1126,7 +1126,7 @@ function jsonData() {
 
         saveFtpConfig: function() {
             var self = this;
-            fetch('/admin/postgres/ftp/config', {
+            apiFetch('/admin/postgres/ftp/config', {
                 method: 'POST',
                 credentials: 'include',
                 headers: {
