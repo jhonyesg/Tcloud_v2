@@ -323,6 +323,30 @@
                         <span x-show="sidebarOpen" x-transition class="font-medium text-sm">Sites Externos</span>
                     </a>
 
+                    {{-- Grupo IA (admin only) --}}
+                    <div class="px-3 mt-6 mb-2" x-show="sidebarOpen">
+                        <span class="text-xs font-semibold text-brand-400 uppercase tracking-wider">IA</span>
+                    </div>
+                    <div x-show="!sidebarOpen" class="mx-2 my-3 border-t border-brand-800"></div>
+
+                    <a href="/ia/api-transcriptor" data-nav-path="/ia/api-transcriptor" class="nav-link flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg transition-colors text-brand-200 hover:bg-brand-800 hover:text-white {{ request()->is('ia/api-transcriptor*') ? 'bg-brand-700 text-white' : '' }}">
+                        <i class="nav-icon fas fa-microphone-alt w-5 text-center text-brand-300"></i>
+                        <span x-show="sidebarOpen" x-transition class="font-medium text-sm">API Transcriptor</span>
+                    </a>
+
+                    <a href="/ia/avisos-inteligentes" data-nav-path="/ia/avisos-inteligentes" class="nav-link flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg transition-colors text-brand-200 hover:bg-brand-800 hover:text-white {{ request()->is('ia/avisos-inteligentes*') ? 'bg-brand-700 text-white' : '' }}">
+                        <i class="nav-icon fas fa-bell w-5 text-center text-brand-300"></i>
+                        <span x-show="sidebarOpen" x-transition class="font-medium text-sm">Avisos Inteligentes</span>
+                    </a>
+
+                    <a href="/ia/correcciones" data-nav-path="/ia/correcciones" class="nav-link flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg transition-colors text-brand-200 hover:bg-brand-800 hover:text-white {{ request()->is('ia/correcciones*') ? 'bg-brand-700 text-white' : '' }}">
+                        <i class="nav-icon fas fa-spell-check w-5 text-center text-brand-300"></i>
+                        <span x-show="sidebarOpen" x-transition class="font-medium text-sm">Correcciones</span>
+                        @if(isset($correctionsPendingCount) && $correctionsPendingCount > 0)
+                            <span class="ml-auto bg-red-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">{{ $correctionsPendingCount }}</span>
+                        @endif
+                    </a>
+
                     @endif
 
                     <!-- Medios Puntuales - Visible para todos los usuarios autenticados -->
@@ -335,6 +359,13 @@
                         <i class="nav-icon fas fa-broadcast-tower w-5 text-center text-brand-300"></i>
                         <span x-show="sidebarOpen" x-transition class="font-medium text-sm">Medios Puntuales</span>
                     </a>
+
+                    @if(isset($misAvisosEnabled) && $misAvisosEnabled)
+                    <a href="/mis-avisos" data-nav-path="/mis-avisos"                       class="nav-link flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg transition-colors text-brand-200 hover:bg-brand-800 hover:text-white {{ request()->is('mis-avisos*') ? 'bg-brand-700 text-white' : '' }}">
+                        <i class="nav-icon fas fa-search w-5 text-center text-brand-300"></i>
+                        <span x-show="sidebarOpen" x-transition class="font-medium text-sm">Mis Avisos</span>
+                    </a>
+                    @endif
 
                     @if(isset($userExternalSites) && $userExternalSites->count() > 0)
                     <!-- Sites Externos -->

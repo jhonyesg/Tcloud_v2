@@ -157,3 +157,64 @@ Route::post('/s/{token}/create-folder', [App\Http\Controllers\PublicShareControl
 Route::post('/s/{token}/rename/{file_id}', [App\Http\Controllers\PublicShareController::class, 'rename'])->name('share.rename');
 Route::post('/s/{token}/delete/{file_id}', [App\Http\Controllers\PublicShareController::class, 'delete'])->name('share.delete');
 Route::get('/s/{token}/preview/{file_id}', [App\Http\Controllers\PublicShareController::class, 'preview'])->name('share.preview');
+
+// Modulo IA — Webhook del transcriptor (sin auth, validado internamente por token)
+Route::post('/webhooks/transcription', [App\Http\Controllers\Ia\TranscriptionCallbackController::class, 'handle']);
+
+// Modulo IA — admin (M1, M2, M4)
+Route::middleware(['auth', 'admin'])->prefix('ia')->group(function () {
+    // M1: API Transcriptor
+    Route::get('/api-transcriptor', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'index']);
+    Route::get('/api-transcriptor/jobs/{id}', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'show']);
+    Route::post('/api-transcriptor/jobs/{id}/retry', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'retry']);
+    Route::post('/api-transcriptor/jobs/{id}/dispatch-now', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'dispatchNow']);
+    Route::post('/api-transcriptor/jobs/{id}/refresh-status', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'refreshStatus']);
+    Route::post('/api-transcriptor/jobs/{id}/reprocess', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'reprocess']);
+    Route::post('/api-transcriptor/jobs/{id}/cancel', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'cancelJob']);
+    Route::delete('/api-transcriptor/jobs/{id}', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'destroy']);
+    Route::post('/api-transcriptor/storages/{id}/toggle', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'toggleStorage']);
+    Route::get('/api-transcriptor/storages/{id}/files', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'storageFiles']);
+    Route::post('/api-transcriptor/storages/{id}/scan', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'scanStorage']);
+    Route::post('/api-transcriptor/storages/{id}/process-folder', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'processFolder']);
+    Route::post('/api-transcriptor/storages/{id}/process-day', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'processDay']);
+    Route::post('/api-transcriptor/process-batch', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'processBatch']);
+    Route::get('/api-transcriptor/batch-status/{runId}', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'batchStatus'])->where('runId', '[A-Za-z0-9_\-]+');
+    Route::post('/api-transcriptor/transcribe/{fileId}', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'transcribeFile']);
+    Route::get('/api-transcriptor/jobs/{id}/status', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'jobStatus']);
+    Route::get('/api-transcriptor/transcribe/progress/{key}', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'transcribeProgress'])->where('key', '[A-Za-z0-9_\-]+');
+    Route::post('/api-transcriptor/storages/{id}/sync', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'syncStorage']);
+    Route::get('/api-transcriptor/health', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'health']);
+    Route::get('/api-transcriptor/stats', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'stats']);
+
+    // M2: Avisos Inteligentes
+    Route::get('/avisos-inteligentes', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'index']);
+    Route::get('/avisos-inteligentes/{userId}', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'show']);
+    Route::post('/avisos-inteligentes/{userId}', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'updateUser']);
+    Route::post('/avisos-inteligentes/{userId}/emails', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'storeEmail']);
+    Route::delete('/avisos-inteligentes/{userId}/emails/{email}', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'destroyEmail'])
+        ->where('email', '.+');
+    Route::post('/avisos-inteligentes/{userId}/keywords', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'storeKeyword']);
+    Route::delete('/avisos-inteligentes/{userId}/keywords/{keywordId}', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'destroyKeyword']);
+    Route::post('/avisos-inteligentes/{userId}/emails/{email}/test', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'testEmail'])
+        ->where('email', '.+');
+    Route::get('/avisos-inteligentes/{userId}/matches', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'matches']);
+
+    // M4: Correcciones
+    Route::get('/correcciones', [App\Http\Controllers\Ia\CorreccionesController::class, 'index']);
+    Route::get('/correcciones/pending', [App\Http\Controllers\Ia\CorreccionesController::class, 'pending']);
+    Route::post('/correcciones/{id}/approve', [App\Http\Controllers\Ia\CorreccionesController::class, 'approve']);
+    Route::post('/correcciones/{id}/reject', [App\Http\Controllers\Ia\CorreccionesController::class, 'reject']);
+    Route::post('/correcciones', [App\Http\Controllers\Ia\CorreccionesController::class, 'store']);
+    Route::delete('/correcciones/{id}', [App\Http\Controllers\Ia\CorreccionesController::class, 'destroy']);
+    Route::post('/correcciones/apply-retroactive', [App\Http\Controllers\Ia\CorreccionesController::class, 'applyRetroactive']);
+    Route::get('/correcciones/preview-retroactive', [App\Http\Controllers\Ia\CorreccionesController::class, 'previewRetroactive']);
+});
+
+// Modulo IA — cliente (M3): Mis Avisos + propuestas de corrección
+Route::middleware(['auth', 'misavisos'])->group(function () {
+    Route::get('/mis-avisos', [App\Http\Controllers\MisAvisosController::class, 'index']);
+    Route::post('/mis-avisos/keywords', [App\Http\Controllers\MisAvisosController::class, 'storeKeyword']);
+    Route::delete('/mis-avisos/keywords/{keywordId}', [App\Http\Controllers\MisAvisosController::class, 'destroyKeyword']);
+    Route::get('/mis-avisos/corrections/mine', [App\Http\Controllers\CorreccionPropuestaController::class, 'mine']);
+    Route::post('/mis-avisos/corrections', [App\Http\Controllers\CorreccionPropuestaController::class, 'store']);
+});

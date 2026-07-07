@@ -25,3 +25,12 @@ Schedule::command('correo:cleanup-logs --days=90')->weekly()->sundays()->at('03:
 
 // Corrección de cuotas personales — detecta y corrige drift (corre 1 vez/semana)
 Schedule::command('files:recalc-personal-quota')->weekly()->sundays()->at('03:30');
+
+// Modulo IA — transcripción
+// Escaneo de archivos nuevos para encolar transcripción (cada 2 min)
+Schedule::command('transcription:scan-new')->everyTwoMinutes()->withoutOverlapping();
+// Polling de respaldo para webhooks perdidos (cada 5 min)
+Schedule::command('transcription:scan-stale')->everyFiveMinutes()->withoutOverlapping();
+// Limpieza de archivos temporales en tmpfs (/dev/shm) cada hora
+Schedule::command('transcription:cleanup-tmpfs')->hourly();
+// transcription:apply-corrections queda solo manual (no se agenda)
