@@ -6,6 +6,10 @@
 <style>
 .query-sidebar { max-height: 180px; }
 @media (min-width: 640px) { .query-sidebar { max-height: 520px; } }
+.pg-rel-badge { background:#ede9fe; color:#4f46e5; padding:2px 8px; border-radius:12px; font-size:11px; font-weight:600; }
+.pg-rel-badge-in { background:#d1fae5; color:#065f46; padding:2px 8px; border-radius:12px; font-size:11px; font-weight:600; }
+.pg-tour-overlay { background:rgba(0,0,0,.55); }
+[x-cloak] { display:none !important; }
 </style>
 <div class="p-3 sm:p-6 pb-24 sm:pb-8" x-data="jsonData()" x-init="init()">
     <div class="flex justify-between items-center mb-4 sm:mb-6">
@@ -82,23 +86,177 @@
 
             <template x-if="activeTab === 'diagram'">
                 <div>
-                    <div class="mb-4 flex justify-between items-center flex-wrap gap-2">
-                        <p class="text-sm text-gray-500">Arrastra las tablas para organizar &bull; Rueda del mouse para hacer zoom</p>
-                        <div class="flex items-center gap-2">
+                    <div class="mb-3 flex justify-between items-center flex-wrap gap-2">
+                        <p class="text-sm text-gray-500">Arrastra las tablas para organizar &bull; Rueda del mouse para zoom &bull; Click en una tabla para ver detalles</p>
+                        <div class="flex items-center gap-2 flex-wrap">
                             <button @click="diagramZoomOut()" title="Alejar" class="w-8 h-8 flex items-center justify-center border border-gray-300 bg-white rounded hover:bg-gray-50 text-gray-700 font-bold text-lg leading-none">−</button>
                             <span class="text-sm text-gray-600 w-14 text-center tabular-nums" x-text="diagramState ? Math.round(diagramState.zoom * 100) + '%' : '100%'"></span>
                             <button @click="diagramZoomIn()" title="Acercar" class="w-8 h-8 flex items-center justify-center border border-gray-300 bg-white rounded hover:bg-gray-50 text-gray-700 font-bold text-lg leading-none">+</button>
                             <button @click="diagramResetZoom()" title="Restablecer zoom" class="px-2 h-8 border border-gray-300 bg-white rounded hover:bg-gray-50 text-gray-600 text-xs">Reset</button>
+                            <button @click="autoArrange()" title="Reorganizar tablas por jerarquia de dependencias"
+                                    class="bg-teal-600 text-white px-3 h-8 rounded text-xs hover:bg-teal-700 flex items-center gap-1">
+                                <i class="fas fa-sitemap"></i> Auto-organizar
+                            </button>
+                            <button @click="toggleFlowAnimation()" title="Animar flujo de datos por las relaciones FK"
+                                    :class="flowAnimating ? 'bg-amber-500 text-white' : 'bg-white text-gray-600'"
+                                    class="px-3 h-8 border border-gray-300 rounded hover:bg-gray-50 text-xs flex items-center gap-1">
+                                <i class="fas fa-route"></i> Flujo
+                            </button>
+                            <button @click="startGuidedTour()" title="Tour guiado interactivo"
+                                    class="bg-purple-600 text-white px-3 h-8 rounded text-xs hover:bg-purple-700 flex items-center gap-1">
+                                <i class="fas fa-map-marked-alt"></i> Tour
+                            </button>
                             <button @click="saveDiagramPositions()" class="bg-indigo-600 text-white px-3 py-1 rounded text-sm hover:bg-indigo-700 flex items-center gap-1">
-                                <i class="fas fa-save"></i> Guardar Organizacion
+                                <i class="fas fa-save"></i> Guardar
                             </button>
                         </div>
                     </div>
+
+                    <!-- Leyenda de colores -->
+                    <div class="mb-3 flex items-center gap-4 text-xs text-gray-500 flex-wrap">
+                        <span class="flex items-center gap-1"><span class="inline-block w-3 h-3 rounded-full bg-amber-400"></span> PK</span>
+                        <span class="flex items-center gap-1"><span class="inline-block w-3 h-3 rounded-full bg-indigo-500"></span> FK</span>
+                        <span class="flex items-center gap-1"><span class="inline-block w-10 h-0.5 bg-indigo-400"></span> Relación (N:1)</span>
+                        <span x-show="flowAnimating" class="flex items-center gap-1 text-amber-600 font-medium"><i class="fas fa-circle-notch fa-spin"></i> Animando flujo...</span>
+                    </div>
+
                     <div x-show="schemaLoading" class="text-center py-8 text-gray-500">
                         <i class="fas fa-spinner fa-spin text-2xl"></i>
                         <p class="mt-2">Cargando esquema...</p>
                     </div>
-                    <div x-show="!schemaLoading" id="diagram-container" class="overflow-auto border rounded bg-gray-100 relative" style="height: 640px;">
+                    <div x-show="!schemaLoading" class="flex gap-3" style="height: 640px;">
+                        <!-- Panel lateral de detalle -->
+                        <div x-show="selectedTable !== null" x-transition
+                             class="w-80 flex-shrink-0 overflow-y-auto bg-white border rounded shadow-sm p-4">
+                            <template x-if="selectedTable !== null">
+                                <div>
+                                    <div class="flex items-center justify-between mb-3">
+                                        <h3 class="font-bold text-indigo-700 text-base break-all" x-text="selectedTable.name"></h3>
+                                        <button @click="selectedTable = null" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times"></i></button>
+                                    </div>
+                                    <div class="space-y-1 mb-4 text-xs">
+                                        <p><span class="text-gray-400">Filas (estimado):</span> <span class="font-semibold text-gray-700" x-text="selectedTable.rowCount.toLocaleString()"></span></p>
+                                        <p><span class="text-gray-400">Columnas:</span> <span class="font-semibold text-gray-700" x-text="selectedTable.columns.length"></span></p>
+                                        <p><span class="text-gray-400">PK:</span>
+                                            <template x-if="selectedTable.primaryKey && selectedTable.primaryKey.length > 0">
+                                                <span class="font-mono font-semibold text-amber-600" x-text="selectedTable.primaryKey.join(', ')"></span>
+                                            </template>
+                                            <template x-if="!selectedTable.primaryKey || selectedTable.primaryKey.length === 0">
+                                                <span class="text-gray-300">sin PK</span>
+                                            </template>
+                                        </p>
+                                    </div>
+
+                                    <!-- Columnas -->
+                                    <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Columnas</p>
+                                    <div class="space-y-0.5 mb-4 max-h-48 overflow-y-auto pr-1">
+                                        <template x-for="col in selectedTable.columns" :key="col.name">
+                                            <div class="flex items-center justify-between text-xs py-1 px-2 rounded hover:bg-indigo-50">
+                                                <span class="flex items-center gap-1.5 min-w-0">
+                                                    <span x-show="col.isPK" class="text-amber-500 font-bold" title="Primary Key">⚿</span>
+                                                    <span class="truncate font-medium text-gray-700" x-text="col.name"></span>
+                                                </span>
+                                                <span class="text-gray-400 text-[10px] font-mono whitespace-nowrap ml-2" x-text="(col.type||'').replace('character varying','varchar').replace('timestamp without time zone','timestamp').replace('timestamp with time zone','timestamptz').replace('double precision','float8')"></span>
+                                            </div>
+                                        </template>
+                                    </div>
+
+                                    <!-- FKs salientes -->
+                                    <template x-if="selectedTable.foreignKeys.length > 0">
+                                        <div class="mb-4">
+                                            <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Referencia a (FK salientes)</p>
+                                            <div class="space-y-1.5">
+                                                <template x-for="(fk, idx) in selectedTable.foreignKeys" :key="idx">
+                                                    <div class="text-xs p-2 bg-violet-50 rounded border border-violet-100">
+                                                        <div class="flex items-center gap-1 mb-1">
+                                                            <span class="pg-rel-badge" x-text="selectedTable.name + '.' + fk.column"></span>
+                                                            <span class="text-gray-400">→</span>
+                                                            <span class="pg-rel-badge-in" x-text="fk.references"></span>
+                                                        </div>
+                                                        <p class="text-[10px] text-gray-400">
+                                                            ON DELETE: <span class="font-medium" x-text="fk.onDelete"></span> ·
+                                                            ON UPDATE: <span class="font-medium" x-text="fk.onUpdate"></span>
+                                                        </p>
+                                                    </div>
+                                                </template>
+                                            </div>
+                                        </div>
+                                    </template>
+
+                                    <!-- FKs entrantes -->
+                                    <template x-if="selectedTable.incomingFKs && selectedTable.incomingFKs.length > 0">
+                                        <div class="mb-4">
+                                            <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Referenciada por (FK entrantes)</p>
+                                            <div class="space-y-1.5">
+                                                <template x-for="(fk, idx) in selectedTable.incomingFKs" :key="idx">
+                                                    <div class="text-xs p-2 bg-emerald-50 rounded border border-emerald-100">
+                                                        <div class="flex items-center gap-1 mb-1">
+                                                            <span class="pg-rel-badge" x-text="fk.fromTable + '.' + fk.fromColumn"></span>
+                                                            <span class="text-gray-400">→</span>
+                                                            <span class="pg-rel-badge-in" x-text="fk.references"></span>
+                                                        </div>
+                                                        <p class="text-[10px] text-gray-400">
+                                                            ON DELETE: <span class="font-medium" x-text="fk.onDelete"></span>
+                                                        </p>
+                                                        <button @click="selectTableByName(fk.fromTable)" class="text-[10px] text-indigo-500 hover:underline mt-1">Ver tabla <span x-text="fk.fromTable"></span></button>
+                                                    </div>
+                                                </template>
+                                            </div>
+                                        </div>
+                                    </template>
+
+                                    <!-- JOIN sugerido -->
+                                    <template x-if="selectedTable.foreignKeys.length > 0">
+                                        <div>
+                                            <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">JOIN sugerido</p>
+                                            <div class="bg-gray-900 text-gray-100 rounded p-3 text-[10px] font-mono leading-relaxed overflow-x-auto">
+                                                <template x-for="(fk, idx) in selectedTable.foreignKeys" :key="'j'+idx">
+                                                    <div class="mb-2">
+                                                        <span class="text-emerald-400">SELECT</span> *<br>
+                                                        <span class="text-emerald-400">FROM</span> <span class="text-indigo-300" x-text="selectedTable.name"></span> s<br>
+                                                        <span class="text-emerald-400">JOIN</span> <span class="text-indigo-300" x-text="fk.references.split('.')[0]"></span> r<br>
+                                                        &nbsp;&nbsp;<span class="text-emerald-400">ON</span> s.<span x-text="fk.column"></span> = r.<span x-text="fk.references.split('.')[1]"></span>;
+                                                    </div>
+                                                </template>
+                                            </div>
+                                        </div>
+                                    </template>
+                                </div>
+                            </template>
+                        </div>
+                        <div id="diagram-container" class="flex-1 overflow-auto border rounded bg-gray-100 relative">
+                        </div>
+                    </div>
+
+                    <!-- Tour guiado overlay -->
+                    <div x-cloak x-show="tour.active" class="pg-tour-overlay fixed inset-0 z-40 flex items-end sm:items-center justify-center p-4"
+                         @click.self="dismissTour()">
+                        <div class="bg-white rounded-lg shadow-2xl w-full max-w-lg p-6 relative" @click.stop>
+                            <div class="flex items-start justify-between mb-3">
+                                <div>
+                                    <p class="text-xs font-semibold text-purple-500 uppercase tracking-wider">
+                                        Tour Guiado · Paso <span x-text="tour.step + 1"></span> de <span x-text="tour.total"></span>
+                                    </p>
+                                    <h3 class="text-lg font-bold text-gray-800 mt-1" x-text="tour.title"></h3>
+                                </div>
+                                <button @click="dismissTour()" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times"></i></button>
+                            </div>
+                            <div class="progress-bar bg-gray-200 rounded-full h-1.5 mb-4 overflow-hidden">
+                                <div class="bg-purple-600 h-full rounded-full transition-all duration-500" :style="'width:' + ((tour.step + 1) / tour.total * 100) + '%'"></div>
+                            </div>
+                            <div class="text-sm text-gray-600 leading-relaxed mb-4" x-html="tour.content"></div>
+                            <div class="flex justify-between items-center">
+                                <button @click="tourPrev()" x-show="tour.step > 0"
+                                        class="text-sm text-gray-500 hover:text-gray-700 flex items-center gap-1">
+                                    <i class="fas fa-arrow-left"></i> Anterior
+                                </button>
+                                <span x-show="tour.step === 0" class="text-sm text-gray-300">Inicio</span>
+                                <button @click="tourNext()" class="bg-purple-600 text-white px-4 py-2 rounded text-sm hover:bg-purple-700 flex items-center gap-1">
+                                    <span x-text="tour.step < tour.total - 1 ? 'Siguiente' : 'Finalizar'"></span>
+                                    <i class="fas fa-arrow-right"></i>
+                                </button>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </template>
@@ -361,6 +519,19 @@ function jsonData() {
         toastSuccess: true,
         savedPositions: {},
         diagramState: null,
+        selectedTable: null,
+        flowAnimating: false,
+        flowRAF: null,
+        flowParticles: [],
+        flowGroup: null,
+        tour: {
+            active: false,
+            step: 0,
+            total: 0,
+            title: '',
+            content: '',
+            steps: [],
+        },
 
         quickQueryGroups: [
             {
@@ -518,20 +689,74 @@ function jsonData() {
             var tableLookup  = {};
             var tableHeights = {};
             var positions    = {};
-            var cols         = Math.ceil(Math.sqrt(tables.length));
 
             for (var i = 0; i < tables.length; i++) {
                 var t = tables[i];
                 tableLookup[t.name]  = t;
                 tableHeights[t.name] = Math.max(t.columns.length * ROW_H + HEADER_H + PAD_TOP + 8, 80);
+            }
 
-                if (this.savedPositions[t.name]) {
-                    positions[t.name] = this.savedPositions[t.name];
-                } else {
-                    var c = i % cols;
-                    var r = Math.floor(i / cols);
-                    positions[t.name] = { x: 60 + c * (TABLE_W + COL_GAP), y: 60 + r * 320 };
+            // ── Hierarchical layout (topological sort by FK deps) ──────
+            // Tables referenced by others (no outgoing FKs or referenced first) go on top levels.
+            // Tables that reference them go on lower levels.
+            var levelMap = {};
+            var self = this;
+
+            function computeLevel(name, visiting) {
+                if (levelMap[name] !== undefined) return levelMap[name];
+                var t = tableLookup[name];
+                if (!t || t.foreignKeys.length === 0) { levelMap[name] = 0; return 0; }
+                if (visiting[name]) return 0; // cycle guard
+                visiting[name] = true;
+                var maxDep = 0;
+                for (var f = 0; f < t.foreignKeys.length; f++) {
+                    var ref = t.foreignKeys[f].references.split('.')[0];
+                    if (tableLookup[ref]) {
+                        maxDep = Math.max(maxDep, computeLevel(ref, visiting) + 1);
+                    }
                 }
+                visiting[name] = false;
+                levelMap[name] = maxDep;
+                return maxDep;
+            }
+            for (var i = 0; i < tables.length; i++) {
+                computeLevel(tables[i].name, {});
+            }
+
+            // Group tables by level
+            var maxLevel = 0;
+            var levelGroups = {};
+            for (var i = 0; i < tables.length; i++) {
+                var lvl = levelMap[tables[i].name] || 0;
+                if (!levelGroups[lvl]) levelGroups[lvl] = [];
+                levelGroups[lvl].push(tables[i]);
+                if (lvl > maxLevel) maxLevel = lvl;
+            }
+
+            // Position tables: level 0 at top, increasing Y per level
+            var ROW_GAP = 80;
+            var yCursor = 60;
+            for (var lvl = 0; lvl <= maxLevel; lvl++) {
+                var group = levelGroups[lvl] || [];
+                var rowMaxH = 0;
+                var tablesPerRow = Math.min(group.length, Math.max(3, Math.ceil(Math.sqrt(tables.length / (maxLevel + 1) * 1.5))));
+                for (var gi = 0; gi < group.length; gi++) {
+                    var tName = group[gi].name;
+                    var c = gi % tablesPerRow;
+                    var r = Math.floor(gi / tablesPerRow);
+                    if (this.savedPositions[tName]) {
+                        positions[tName] = this.savedPositions[tName];
+                    } else {
+                        positions[tName] = {
+                            x: 60 + c * (TABLE_W + COL_GAP),
+                            y: yCursor + r * 360
+                        };
+                    }
+                    rowMaxH = Math.max(rowMaxH, tableHeights[tName] + 40);
+                }
+                // Add tallest row height + gap for next level
+                var rowsInLevel = Math.ceil(group.length / tablesPerRow);
+                yCursor += rowsInLevel * 360 + ROW_GAP;
             }
 
             // Tooltip element (created once, reused)
@@ -645,7 +870,8 @@ function jsonData() {
                 badge.setAttribute('font-size', '10');
                 badge.setAttribute('text-anchor', 'end');
                 badge.setAttribute('font-family', 'system-ui,sans-serif');
-                badge.textContent = table.columns.length + ' col' + (table.columns.length !== 1 ? 's' : '');
+                badge.textContent = table.columns.length + ' col' + (table.columns.length !== 1 ? 's' : '') +
+                    (table.rowCount ? ' · ~' + table.rowCount.toLocaleString() + ' filas' : '');
                 g.appendChild(badge);
 
                 // Build FK column set for quick lookup
@@ -659,7 +885,7 @@ function jsonData() {
                     var col  = table.columns[ci];
                     var rowY = HEADER_H + PAD_TOP + ci * ROW_H;
                     var isFK = fkSet.hasOwnProperty(col.name);
-                    var isPK = !isFK && (col.name === 'id' || col.name === table.name + '_id');
+                    var isPK = col.isPK || (!isFK && (col.name === 'id' || col.name === table.name + '_id'));
 
                     // Row background stripe
                     var rowBg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
@@ -729,6 +955,15 @@ function jsonData() {
 
             container.appendChild(svg);
 
+            // Auto-size SVG to fit all tables
+            var maxX = 0, maxY = 0;
+            for (var tn in positions) {
+                maxX = Math.max(maxX, positions[tn].x + TABLE_W + 100);
+                maxY = Math.max(maxY, positions[tn].y + (tableHeights[tn] || 200) + 100);
+            }
+            svg.setAttribute('width',  Math.max(maxX, 2000));
+            svg.setAttribute('height', Math.max(maxY, 1600));
+
             // Save diagram state BEFORE rendering FK lines (renderFKLines reads from it)
             this.diagramState = {
                 positions:    positions,
@@ -749,7 +984,7 @@ function jsonData() {
 
             this.renderFKLines();
 
-            // ── Drag ──────────────────────────────────────────────────────
+            // ── Drag + Click + Hover ──────────────────────────────────────
             var appData   = this;
             var dragState = null;
 
@@ -764,11 +999,23 @@ function jsonData() {
                         startX:  parseFloat(m[1]),
                         startY:  parseFloat(m[2]),
                         mouseX:  e.clientX,
-                        mouseY:  e.clientY
+                        mouseY:  e.clientY,
+                        moved:   false
                     };
                     g.style.cursor = 'grabbing';
                     // Hide tooltip while dragging
                     appData.diagramState.tooltip.style.display = 'none';
+                });
+
+                // Hover: highlight related tables + FK lines
+                g.addEventListener('mouseenter', function() {
+                    if (dragState) return;
+                    var name = g.getAttribute('data-table');
+                    appData.highlightRelationships(name);
+                });
+                g.addEventListener('mouseleave', function() {
+                    if (dragState) return;
+                    appData.clearHighlight();
                 });
             });
 
@@ -777,6 +1024,9 @@ function jsonData() {
                 var z  = appData.diagramState.zoom;
                 var dx = (e.clientX - dragState.mouseX) / z;
                 var dy = (e.clientY - dragState.mouseY) / z;
+                if (Math.abs(e.clientX - dragState.mouseX) > 3 || Math.abs(e.clientY - dragState.mouseY) > 3) {
+                    dragState.moved = true;
+                }
                 var nx = dragState.startX + dx;
                 var ny = dragState.startY + dy;
                 dragState.g.setAttribute('transform', 'translate(' + nx + ',' + ny + ')');
@@ -787,7 +1037,12 @@ function jsonData() {
             var muFn = function() {
                 if (!dragState) return;
                 var m = dragState.g.getAttribute('transform').match(/translate\(([^,]+),([^)]+)\)/);
-                appData.savedPositions[dragState.name] = { x: parseFloat(m[1]), y: parseFloat(m[2]) };
+                // If not moved → treat as click → open detail panel
+                if (!dragState.moved) {
+                    appData.selectTableByName(dragState.name);
+                } else {
+                    appData.savedPositions[dragState.name] = { x: parseFloat(m[1]), y: parseFloat(m[2]) };
+                }
                 dragState.g.style.cursor = 'move';
                 dragState = null;
             };
@@ -853,36 +1108,59 @@ function jsonData() {
                     var srcH    = heights[table.name] || 200;
                     var tgtH    = heights[refName]    || 200;
 
-                    // ── Routing: choose best port (L/R/T/B) ──────────────
+                    // ── Routing: orthogonal-style to avoid crossing tables ──
                     var x1, y1, x2, y2, cp1x, cp1y, cp2x, cp2y;
                     var hOverlap = Math.min(srcPos.x + W, tgtPos.x + W) > Math.max(srcPos.x, tgtPos.x);
 
                     if (hOverlap) {
-                        // Tables overlap horizontally → route vertically
-                        if (srcPos.y + srcH / 2 < tgtPos.y + tgtH / 2) {
-                            x1 = srcPos.x + W / 2; y1 = srcPos.y + srcH;
-                            x2 = tgtPos.x + W / 2; y2 = tgtPos.y;
+                        // Tables overlap horizontally → route around the side
+                        // Go from the right/left edge, curve out, then back in
+                        var goRight = (srcPos.x + W / 2) < (tgtPos.x + W / 2);
+                        if (goRight) {
+                            x1 = srcPos.x + W; y1 = srcRowY;
+                            x2 = tgtPos.x + W; y2 = tgtRowY;
                         } else {
-                            x1 = srcPos.x + W / 2; y1 = srcPos.y;
-                            x2 = tgtPos.x + W / 2; y2 = tgtPos.y + tgtH;
+                            x1 = srcPos.x;     y1 = srcRowY;
+                            x2 = tgtPos.x;     y2 = tgtRowY;
                         }
-                        var vgap = Math.max(40, Math.abs(y2 - y1) * 0.4);
-                        cp1x = x1; cp1y = y1 + (y2 > y1 ? vgap : -vgap);
-                        cp2x = x2; cp2y = y2 - (y2 > y1 ? vgap : -vgap);
+                        var curveOut = 70;
+                        if (goRight) {
+                            cp1x = x1 + curveOut; cp1y = y1;
+                            cp2x = x2 + curveOut; cp2y = y2;
+                        } else {
+                            cp1x = x1 - curveOut; cp1y = y1;
+                            cp2x = x2 - curveOut; cp2y = y2;
+                        }
                     } else if (srcMidX <= tgtMidX) {
-                        // Source is to the LEFT → right→left
+                        // Source is to the LEFT → right edge to left edge
                         x1 = srcPos.x + W; y1 = srcRowY;
                         x2 = tgtPos.x;     y2 = tgtRowY;
-                        var hgap = Math.max(50, (x2 - x1) * 0.45);
-                        cp1x = x1 + hgap; cp1y = y1;
-                        cp2x = x2 - hgap; cp2y = y2;
+                        // Route around: if tables at similar Y, bow outward
+                        var yDiff = Math.abs(y1 - y2);
+                        var hgap = Math.max(60, (x2 - x1) * 0.45);
+                        if (yDiff < 30) {
+                            // Similar Y → bow down to avoid passing through tables in between
+                            var bow = 60 + yDiff;
+                            cp1x = x1 + hgap; cp1y = y1 + bow;
+                            cp2x = x2 - hgap; cp2y = y2 + bow;
+                        } else {
+                            cp1x = x1 + hgap; cp1y = y1;
+                            cp2x = x2 - hgap; cp2y = y2;
+                        }
                     } else {
-                        // Source is to the RIGHT → left→right
+                        // Source is to the RIGHT → left edge to right edge
                         x1 = srcPos.x;         y1 = srcRowY;
                         x2 = tgtPos.x + W;     y2 = tgtRowY;
-                        var hgap = Math.max(50, (x1 - x2) * 0.45);
-                        cp1x = x1 - hgap; cp1y = y1;
-                        cp2x = x2 + hgap; cp2y = y2;
+                        var yDiff2 = Math.abs(y1 - y2);
+                        var hgap = Math.max(60, (x1 - x2) * 0.45);
+                        if (yDiff2 < 30) {
+                            var bow2 = 60 + yDiff2;
+                            cp1x = x1 - hgap; cp1y = y1 + bow2;
+                            cp2x = x2 + hgap; cp2y = y2 + bow2;
+                        } else {
+                            cp1x = x1 - hgap; cp1y = y1;
+                            cp2x = x2 + hgap; cp2y = y2;
+                        }
                     }
 
                     var d = 'M ' + x1 + ' ' + y1 +
@@ -908,7 +1186,7 @@ function jsonData() {
                     hitPath.style.cursor = 'crosshair';
 
                     // Tooltip handlers via closure
-                    (function(srcTableName, srcColName, refTableName, refColName, vp) {
+                    (function(srcTableName, srcColName, refTableName, refColName, vp, delRule, updRule) {
                         hitPath.addEventListener('mouseenter', function(e) {
                             vp.setAttribute('stroke', '#4338ca');
                             vp.setAttribute('stroke-width', '3');
@@ -928,7 +1206,11 @@ function jsonData() {
                                         refTableName + '.' + refColName +
                                     '</span>' +
                                 '</div>' +
-                                '<div style="color:#6b7280;font-size:11px;margin-bottom:10px;">Cardinalidad: Muchos &#8594; Uno &nbsp;(N : 1)</div>' +
+                                '<div style="color:#6b7280;font-size:11px;margin-bottom:6px;">Cardinalidad: Muchos &#8594; Uno &nbsp;(N : 1)</div>' +
+                                '<div style="font-size:10px;color:#9ca3af;margin-bottom:8px;">' +
+                                    'ON DELETE: <span style="font-weight:600;color:' + (delRule === 'CASCADE' ? '#dc2626' : '#6b7280') + ';">' + delRule + '</span>' +
+                                    ' &middot; ON UPDATE: <span style="font-weight:600;color:' + (updRule === 'CASCADE' ? '#dc2626' : '#6b7280') + ';">' + updRule + '</span>' +
+                                '</div>' +
                                 '<div style="font-size:11px;color:#4b5563;font-weight:600;margin-bottom:4px;">Ejemplo JOIN:</div>' +
                                 '<div style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:6px;padding:8px 10px;font-family:\'Courier New\',monospace;font-size:11px;color:#374151;line-height:1.8;">' +
                                     'SELECT *<br>' +
@@ -958,11 +1240,22 @@ function jsonData() {
                             vp.setAttribute('marker-end', 'url(#fk-arrow)');
                             tooltip.style.display = 'none';
                         });
-                    }(table.name, fk.column, refName, refCol, visPath));
+                    }(table.name, fk.column, refName, refCol, visPath, fk.onDelete || 'NO ACTION', fk.onUpdate || 'NO ACTION'));
 
                     st.fkGroup.appendChild(hitPath);
                     st.fkGroup.appendChild(visPath);
                 }
+            }
+        },
+
+        /* ─── AUTO-ARRANGE (hierarchical layout reset) ──────────────── */
+
+        autoArrange: function() {
+            this.savedPositions = {};
+            try { localStorage.removeItem('postgres_diagram_positions'); } catch (e) {}
+            if (this.schemaTables.length > 0) {
+                this.renderDiagram(this.schemaTables);
+                this.showToast(true, 'Tablas reorganizadas por jerarquia');
             }
         },
 
@@ -1138,7 +1431,286 @@ function jsonData() {
             })
             .then(function(res) { return res.json(); })
             .then(function(data) { self.showToast(data.success, data.message); });
-        }
+        },
+
+        /* ─── INTERACTIVE: TABLE SELECT & DETAIL PANEL ──────────────── */
+
+        highlightRelationships: function(name) {
+            if (!this.diagramState || !this.diagramState.zoomGroup) return;
+            var related = {};
+            related[name] = true;
+            var table = this.schemaTables.find(function(t) { return t.name === name; });
+            if (table) {
+                table.foreignKeys.forEach(function(fk) { related[fk.references.split('.')[0]] = true; });
+                (table.incomingFKs || []).forEach(function(fk) { related[fk.fromTable] = true; });
+            }
+            var groups = this.diagramState.zoomGroup.querySelectorAll('g[data-table]');
+            groups.forEach(function(g) {
+                var tn = g.getAttribute('data-table');
+                if (related[tn]) {
+                    g.style.opacity = '1';
+                    g.style.filter = 'url(#tbl-shadow)';
+                } else {
+                    g.style.opacity = '0.2';
+                }
+            });
+            var paths = this.diagramState.fkGroup.querySelectorAll('path');
+            paths.forEach(function(p) {
+                if (p.getAttribute('stroke') === 'transparent') return;
+                var d = p.getAttribute('d') || '';
+                p.setAttribute('stroke-opacity', '0.15');
+            });
+        },
+
+        clearHighlight: function() {
+            if (!this.diagramState || !this.diagramState.zoomGroup) return;
+            var groups = this.diagramState.zoomGroup.querySelectorAll('g[data-table]');
+            groups.forEach(function(g) {
+                g.style.opacity = '1';
+                g.style.filter = 'url(#tbl-shadow)';
+            });
+            var paths = this.diagramState.fkGroup.querySelectorAll('path');
+            paths.forEach(function(p) {
+                if (p.getAttribute('stroke') === 'transparent') return;
+                p.setAttribute('stroke-opacity', '1');
+            });
+        },
+
+        selectTableByName: function(name) {
+            var self = this;
+            var found = this.schemaTables.find(function(t) { return t.name === name; });
+            if (found) {
+                this.selectedTable = found;
+                this.focusTableInDiagram(name);
+            }
+        },
+
+        focusTableInDiagram: function(name) {
+            if (!this.diagramState) return;
+            var pos = this.diagramState.positions[name];
+            if (!pos) return;
+            var container = document.getElementById('diagram-container');
+            if (!container) return;
+            var z = this.diagramState.zoom;
+            container.scrollTo({
+                left: pos.x * z - container.clientWidth / 2 + (this.diagramState.tableW * z) / 2,
+                top:  pos.y * z - container.clientHeight / 2 + 100,
+                behavior: 'smooth',
+            });
+            this.highlightTable(name);
+        },
+
+        highlightTable: function(name) {
+            if (!this.diagramState || !this.diagramState.zoomGroup) return;
+            var groups = this.diagramState.zoomGroup.querySelectorAll('g[data-table]');
+            groups.forEach(function(g) {
+                if (g.getAttribute('data-table') === name) {
+                    g.style.filter = 'url(#tbl-shadow) drop-shadow(0 0 10px rgba(99,102,241,.7))';
+                } else {
+                    g.style.opacity = '0.35';
+                }
+            });
+            var self = this;
+            setTimeout(function() {
+                groups.forEach(function(g) {
+                    g.style.filter = 'url(#tbl-shadow)';
+                    g.style.opacity = '1';
+                });
+            }, 2000);
+        },
+
+        getRelatedTables: function(name) {
+            var related = {};
+            var self = this;
+            var table = this.schemaTables.find(function(t) { return t.name === name; });
+            if (!table) return [];
+            table.foreignKeys.forEach(function(fk) {
+                related[fk.references.split('.')[0]] = true;
+            });
+            (table.incomingFKs || []).forEach(function(fk) {
+                related[fk.fromTable] = true;
+            });
+            return Object.keys(related);
+        },
+
+        /* ─── FLOW ANIMATION (emulación de viaje de datos) ──────────── */
+
+        toggleFlowAnimation: function() {
+            if (this.flowAnimating) {
+                this.stopFlowAnimation();
+            } else {
+                this.startFlowAnimation();
+            }
+        },
+
+        startFlowAnimation: function() {
+            if (!this.diagramState || !this.diagramState.fkGroup) return;
+            this.flowAnimating = true;
+
+            var st = this.diagramState;
+            if (!this.flowGroup) {
+                this.flowGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+                this.flowGroup.setAttribute('id', 'flow-particles');
+                st.zoomGroup.appendChild(this.flowGroup);
+            }
+            while (this.flowGroup.firstChild) this.flowGroup.removeChild(this.flowGroup.firstChild);
+
+            var paths = st.fkGroup.querySelectorAll('path[stroke="#6366f1"]');
+            this.flowParticles = [];
+            for (var i = 0; i < paths.length; i++) {
+                var p = paths[i];
+                var len = p.getTotalLength();
+                if (len < 1) continue;
+                var circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                circle.setAttribute('r', '4');
+                circle.setAttribute('fill', '#f59e0b');
+                circle.setAttribute('opacity', '0.9');
+                circle.style.filter = 'drop-shadow(0 0 4px rgba(245,158,11,.8))';
+                this.flowGroup.appendChild(circle);
+                this.flowParticles.push({
+                    path: p,
+                    circle: circle,
+                    length: len,
+                    offset: Math.random() * len,
+                    speed: 30 + Math.random() * 40,
+                });
+            }
+
+            this.animateFlow(0);
+        },
+
+        animateFlow: function(timestamp) {
+            if (!this.flowAnimating || this.flowParticles.length === 0) return;
+            if (!this._flowLastT) this._flowLastT = timestamp;
+            var dt = (timestamp - this._flowLastT) / 1000;
+            this._flowLastT = timestamp;
+
+            for (var i = 0; i < this.flowParticles.length; i++) {
+                var pt = this.flowParticles[i];
+                pt.offset += pt.speed * dt;
+                if (pt.offset > pt.length) pt.offset = pt.offset % pt.length;
+                var pos = pt.path.getPointAtLength(pt.offset);
+                pt.circle.setAttribute('cx', pos.x);
+                pt.circle.setAttribute('cy', pos.y);
+            }
+            var self = this;
+            this.flowRAF = requestAnimationFrame(function(t) { self.animateFlow(t); });
+        },
+
+        stopFlowAnimation: function() {
+            this.flowAnimating = false;
+            this._flowLastT = null;
+            if (this.flowRAF) cancelAnimationFrame(this.flowRAF);
+            if (this.flowGroup) {
+                while (this.flowGroup.firstChild) this.flowGroup.removeChild(this.flowGroup.firstChild);
+            }
+        },
+
+        /* ─── GUIDED TOUR ──────────────────────────────────────────── */
+
+        startGuidedTour: function() {
+            if (this.schemaTables.length === 0) {
+                this.showToast(false, 'Carga el esquema primero');
+                return;
+            }
+            var self = this;
+            var steps = [];
+
+            steps.push({
+                title: 'Bienvenido al Diagrama Interactivo',
+                content: 'Este diagrama muestra todas las tablas de la base de datos PostgreSQL y sus relaciones. ' +
+                         'Cada caja es una tabla, las líneas indican claves foráneas (FK) que conectan tablas. ' +
+                         'Arrastra las tablas para reorganizar, usa la rueda del mouse para zoom. ' +
+                         'Puedes hacer <strong>click en cualquier tabla</strong> para ver detalles completos.',
+            });
+
+            var sorted = this.schemaTables.slice().sort(function(a, b) {
+                return (b.incomingFKs ? b.incomingFKs.length : 0) - (a.incomingFKs ? a.incomingFKs.length : 0);
+            });
+
+            var top = sorted.slice(0, Math.min(5, sorted.length));
+
+            steps.push({
+                title: 'Leyenda de colores',
+                content: '<ul class="space-y-1">' +
+                    '<li><span class="text-amber-500 font-bold">⚿</span> = Primary Key (clave primaria, identificador único)</li>' +
+                    '<li><span class="text-indigo-500 font-bold">●</span> = Foreign Key (clave foránea, referencia a otra tabla)</li>' +
+                    '<li>Líneas <span class="text-indigo-400 font-bold">índigo</span> = relación N:1 (muchos a uno)</li>' +
+                    '<li>Pasa el mouse sobre una línea para ver el detalle de la relación y un JOIN de ejemplo.</li>' +
+                    '</ul>',
+            });
+
+            top.forEach(function(t) {
+                var fkCount = t.foreignKeys.length;
+                var inCount = t.incomingFKs ? t.incomingFKs.length : 0;
+                var content = '<p><strong>' + t.name + '</strong> tiene <strong>' + t.columns.length + '</strong> columnas y aproximadamente <strong>' + t.rowCount.toLocaleString() + '</strong> filas.</p>';
+                if (t.primaryKey && t.primaryKey.length > 0) {
+                    content += '<p class="mt-1">Clave primaria: <code class="bg-amber-100 text-amber-700 px-1 rounded">' + t.primaryKey.join(', ') + '</code></p>';
+                }
+                content += '<p class="mt-1">FK salientes: <strong>' + fkCount + '</strong> · FK entrantes: <strong>' + inCount + '</strong></p>';
+                if (fkCount > 0) {
+                    content += '<p class="mt-2 text-xs text-gray-400">Esta tabla referencia a:</p><ul class="text-xs mt-1 space-y-0.5">';
+                    t.foreignKeys.forEach(function(fk) {
+                        content += '<li><span class="text-indigo-600">' + fk.column + '</span> → <span class="text-emerald-600">' + fk.references + '</span></li>';
+                    });
+                    content += '</ul>';
+                }
+                content += '<p class="mt-2 text-xs text-purple-500">Click en "Siguiente" para enfocar esta tabla en el diagrama.</p>';
+                steps.push({
+                    title: 'Tabla destacada: ' + t.name,
+                    content: content,
+                    focusTable: t.name,
+                });
+            });
+
+            steps.push({
+                title: 'Exploración libre',
+                content: 'Ya conoces las tablas más conectadas. Ahora puedes: ' +
+                    '<ul class="mt-2 space-y-1">' +
+                    '<li>Click en cualquier tabla del diagrama para ver su panel de detalle</li>' +
+                    '<li>Pasar el mouse sobre las líneas FK para ver relaciones y JOINs</li>' +
+                    '<li>Activar <strong>Flujo</strong> para ver una animación de cómo viajan los datos por las relaciones</li>' +
+                    '<li>Arrastrar y reorganizar las tablas a tu gusto</li>' +
+                    '</ul>',
+            });
+
+            this.tour.steps = steps;
+            this.tour.total = steps.length;
+            this.tour.step = 0;
+            this.tour.active = true;
+            this.applyTourStep();
+        },
+
+        applyTourStep: function() {
+            var s = this.tour.steps[this.tour.step];
+            if (!s) return;
+            this.tour.title = s.title;
+            this.tour.content = s.content;
+            if (s.focusTable) {
+                this.selectTableByName(s.focusTable);
+            }
+        },
+
+        tourNext: function() {
+            if (this.tour.step < this.tour.total - 1) {
+                this.tour.step++;
+                this.applyTourStep();
+            } else {
+                this.dismissTour();
+            }
+        },
+
+        tourPrev: function() {
+            if (this.tour.step > 0) {
+                this.tour.step--;
+                this.applyTourStep();
+            }
+        },
+
+        dismissTour: function() {
+            this.tour.active = false;
+            this.tour.step = 0;
+        },
     };
 }
 </script>
