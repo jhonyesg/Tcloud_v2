@@ -8,10 +8,13 @@ use App\Models\File;
 use App\Models\StorageProvider;
 use App\Models\Transcription;
 use App\Services\Ia\TranscriptorApiClient;
+use App\Services\Ia\TranscriptionSubmitService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Session;
+use Predis\Connection\ConnectionException as PredisConnectionException;
 
 class ApiTranscriptorController extends Controller
 {
@@ -40,10 +43,9 @@ class ApiTranscriptorController extends Controller
 
         $jobs = $query->limit(200)->get();
 
-        // Habilitados primero, luego por prioridad descendente y nombre.
-        $storages = StorageProvider::select(['id', 'name', 'type', 'transcription_enabled', 'transcription_priority'])
+        // Habilitados primero, luego por nombre.
+        $storages = StorageProvider::select(['id', 'name', 'type', 'transcription_enabled'])
             ->orderByRaw('transcription_enabled DESC')
-            ->orderByDesc('transcription_priority')
             ->orderBy('name')
             ->get();
 
@@ -70,26 +72,20 @@ class ApiTranscriptorController extends Controller
         $fileId = $job->file_id;
         $job->delete();
 
-        // Ejecutar síncronamente (sin depender de queue worker).
+        // Crear transcripción pending nueva y enviar síncronamente.
         set_time_limit(600);
-        try {
-            $jobInstance = new ConvertAndTranscribeJob($fileId);
-            $reflection = new \ReflectionMethod($jobInstance, 'handle');
-            $reflection->setAccessible(true);
-            $reflection->invoke($jobInstance,
-                app(\App\Services\Ia\AudioConverter::class),
-                app(\App\Services\Ia\TranscriptorApiClient::class)
-            );
-        } catch (\Throwable $e) {
-            $t = Transcription::where('file_id', $fileId)->first();
-            if ($t) {
-                $t->update([
-                    'state' => Transcription::STATE_ERROR,
-                    'error_message' => $e->getMessage(),
-                    'finished_at' => now(),
-                ]);
-            }
-            return response()->json(['error' => $e->getMessage()], 500);
+        $transcription = Transcription::firstOrCreate(
+            ['file_id' => $fileId],
+            [
+                'state' => Transcription::STATE_PENDING,
+                'generate_alerts' => true,
+                'language' => config('transcriptor.language', 'es'),
+                'started_at' => now(),
+            ]
+        );
+        $result = app(TranscriptionSubmitService::class)->submit($transcription);
+        if (!$result['ok']) {
+            return response()->json(['error' => $result['error']], 500);
         }
 
         $transcription = Transcription::where('file_id', $fileId)->first();
@@ -99,8 +95,105 @@ class ApiTranscriptorController extends Controller
             'transcription_id' => $transcription?->id,
             'state' => $transcription?->state,
             'job_id' => $transcription?->job_id,
-        ]);
+        ], 200);
     }
+
+    /**
+     * Bulk dispatch: encola N `ConvertAndTranscribeJob` a Redis en una sola
+     * request HTTP. Diseñado para reemplazar el patrón anterior donde se hacían
+     * N POSTs a `/dispatch-now` (uno por job), lo cual saturaba el pool de
+     * Postgres con N conexiones simultáneas durante el ffmpeg + curl POST
+     * (30-60s por job).
+     *
+     * Body opcional: { ids?: int[] } — si se omite, auto-selecciona hasta 2000
+     * `Transcription` en `pending|queued|processing` con `job_id IS NULL`.
+     *
+     * Responde 200 con { enqueued, skipped_queued, errors } siempre que la
+     * request se procese. Si Redis no responde, responde 503 con mensaje claro.
+     */
+    public function bulkDispatch(Request $request)
+    {
+        $validated = $request->validate([
+            'ids' => 'nullable|array|max:2000',
+            'ids.*' => 'integer|min:1',
+        ]);
+
+        $ids = $validated['ids'] ?? null;
+        if (empty($ids)) {
+            $ids = Transcription::query()
+                ->whereIn('state', [
+                    Transcription::STATE_PENDING,
+                    Transcription::STATE_QUEUED,
+                    Transcription::STATE_PROCESSING,
+                ])
+                ->whereNull('job_id')
+                ->orderBy('created_at')
+                ->limit(2000)
+                ->pluck('id')
+                ->all();
+        }
+
+        $ids = array_values(array_unique(array_map('intval', $ids)));
+        if (empty($ids)) {
+            return response()->json([
+                'enqueued' => 0,
+                'skipped_queued' => 0,
+                'errors' => 0,
+                'message' => 'No hay transcripciones elegibles para encolar.',
+            ], 200);
+        }
+
+        $rows = Transcription::with('file:id,storage_provider_id')
+            ->whereIn('id', $ids)
+            ->get();
+
+        $dispatchableStates = [
+            Transcription::STATE_PENDING,
+            Transcription::STATE_QUEUED,
+            Transcription::STATE_PROCESSING,
+        ];
+
+        $enqueued = 0;
+        $skipped_queued = 0;
+        $errors = 0;
+
+        foreach ($rows as $tx) {
+            // Omitir terminales o ya enviadas: cuentan como skipped, no como error.
+            if (!in_array($tx->state, $dispatchableStates, true) || !empty($tx->job_id)) {
+                $skipped_queued++;
+                continue;
+            }
+
+            $storageId = $tx->file?->storage_provider_id;
+
+            try {
+                ConvertAndTranscribeJob::dispatch(
+                    $tx->file_id,
+                    (bool) $tx->generate_alerts
+                );
+                $enqueued++;
+            } catch (PredisConnectionException $e) {
+                Log::warning('bulkDispatch Redis error tx=' . $tx->id . ': ' . $e->getMessage());
+                return response()->json([
+                    'error' => 'Redis no disponible: ' . $e->getMessage(),
+                    'enqueued' => $enqueued,
+                    'skipped_queued' => $skipped_queued,
+                    'errors' => ++$errors,
+                    'partial' => true,
+                ], 503);
+            } catch (\Throwable $e) {
+                $errors++;
+                Log::warning('bulkDispatch tx=' . $tx->id . ': ' . $e->getMessage());
+            }
+        }
+
+        return response()->json([
+            'enqueued' => $enqueued,
+            'skipped_queued' => $skipped_queued,
+            'errors' => $errors,
+        ], 200);
+    }
+
 
     /**
      * Reprocesa un job de forma INMEDIATA (síncrona) sin importar su estado.
@@ -135,28 +228,21 @@ class ApiTranscriptorController extends Controller
         $job->segments()->delete();
         $job->delete();
 
-        // Ejecutar el job síncrono.
+        // Crear transcripción pending nueva y enviar síncronamente.
         set_time_limit(600);
-        $progressKey = null;
-        try {
-            $jobInstance = new ConvertAndTranscribeJob($fileId, $generateAlerts);
-            $reflection = new \ReflectionMethod($jobInstance, 'handle');
-            $reflection->setAccessible(true);
-            $reflection->invoke($jobInstance,
-                app(\App\Services\Ia\AudioConverter::class),
-                app(\App\Services\Ia\TranscriptorApiClient::class)
-            );
-        } catch (\Throwable $e) {
-            $t = Transcription::where('file_id', $fileId)->first();
-            if ($t) {
-                $t->update([
-                    'state' => Transcription::STATE_ERROR,
-                    'error_message' => $e->getMessage(),
-                    'finished_at' => now(),
-                ]);
-            }
+        $transcription = Transcription::firstOrCreate(
+            ['file_id' => $fileId],
+            [
+                'state' => Transcription::STATE_PENDING,
+                'generate_alerts' => $generateAlerts,
+                'language' => config('transcriptor.language', 'es'),
+                'started_at' => now(),
+            ]
+        );
+        $result = app(TranscriptionSubmitService::class)->submit($transcription);
+        if (!$result['ok']) {
             return response()->json([
-                'error' => $e->getMessage(),
+                'error' => $result['error'],
                 'file_id' => $fileId,
             ], 500);
         }
@@ -181,8 +267,21 @@ class ApiTranscriptorController extends Controller
     {
         $job = Transcription::findOrFail($id);
 
-        if (!in_array($job->state, [Transcription::STATE_QUEUED, Transcription::STATE_PROCESSING], true)) {
-            return response()->json(['error' => 'Solo se cancelan jobs pendientes'], 409);
+        if (!in_array($job->state, [Transcription::STATE_PENDING, Transcription::STATE_QUEUED, Transcription::STATE_PROCESSING], true)) {
+            return response()->json(['error' => 'Solo se cancelan jobs pendientes o en cola'], 409);
+        }
+
+        // Rama para state='pending': borrar localmente sin tocar la API externa
+        // (no hay job_id upstream que cancelar).
+        if ($job->state === Transcription::STATE_PENDING) {
+            $jobId = $job->id;
+            $job->delete();
+            return response()->json([
+                'message' => 'Fila pendiente borrada (no fue enviada a la API externa)',
+                'state' => 'deleted',
+                'transcription_id' => null,
+                'deleted_id' => $jobId,
+            ], 200);
         }
 
         $errorMsg = 'Cancelado manualmente';
@@ -223,20 +322,16 @@ class ApiTranscriptorController extends Controller
 
         $request->validate([
             'transcription_enabled' => 'nullable|boolean',
-            'transcription_priority' => 'nullable|integer|min:0',
         ]);
 
         $data = [];
         if ($request->has('transcription_enabled')) {
             $data['transcription_enabled'] = $request->boolean('transcription_enabled');
         }
-        if ($request->has('transcription_priority')) {
-            $data['transcription_priority'] = (int) $request->input('transcription_priority');
-        }
 
         $storage->update($data);
 
-        return response()->json($storage->only(['id', 'name', 'transcription_enabled', 'transcription_priority']));
+        return response()->json($storage->only(['id', 'name', 'transcription_enabled']));
     }
 
     /**
@@ -329,16 +424,23 @@ class ApiTranscriptorController extends Controller
             }
         }
 
-        // Marca los archivos que ya tienen transcripción.
-        $transcribedIds = $files->isNotEmpty()
-            ? Transcription::whereIn('file_id', $files->pluck('id'))->pluck('file_id')->toArray()
-            : [];
+        // Marca los archivos que ya tienen transcripción y trae el id/state de la
+        // Transcription asociada para construir el link al detalle del job en la UI.
+        // (Transcription.file_id tiene constraint UNIQUE en DB, así que cada File tiene
+        // a lo sumo una fila aquí; keyBy es defensivo ante esa invariante.)
+        $transcriptionsByFile = $files->isNotEmpty()
+            ? Transcription::whereIn('file_id', $files->pluck('id'))
+                ->orderByDesc('id')
+                ->get(['id', 'file_id', 'state'])
+                ->keyBy('file_id')
+            : collect();
 
         // Resolver nombres de las carpetas padre (para agrupar en modos today/search).
         $parentIds = $files->pluck('parent_id')->filter()->unique()->values()->all();
         $parentNames = $parentIds ? File::whereIn('id', $parentIds)->pluck('name', 'id') : collect();
 
-        $filesData = $files->map(function ($f) use ($transcribedIds, $parentNames) {
+        $filesData = $files->map(function ($f) use ($transcriptionsByFile, $parentNames) {
+            $tx = $transcriptionsByFile->get($f->id);
             return [
                 'id' => $f->id,
                 'name' => $f->name,
@@ -347,7 +449,9 @@ class ApiTranscriptorController extends Controller
                 'parent_id' => $f->parent_id,
                 'folder_name' => $f->parent_id ? ($parentNames[$f->parent_id] ?? null) : null,
                 'military_time' => self::extractMilitaryTime((string) $f->name),
-                'has_transcription' => in_array($f->id, $transcribedIds, true),
+                'has_transcription' => $tx !== null,
+                'transcription_id' => $tx?->id,
+                'transcription_state' => $tx?->state,
             ];
         });
 
@@ -420,16 +524,29 @@ class ApiTranscriptorController extends Controller
         $dispatched = 0;
         $errors = 0;
         set_time_limit(max(600, $batch * 120));
+        $submitter = app(TranscriptionSubmitService::class);
         foreach ($files as $file) {
             try {
-                $jobInstance = new ConvertAndTranscribeJob($file->id);
-                $reflection = new \ReflectionMethod($jobInstance, 'handle');
-                $reflection->setAccessible(true);
-                $reflection->invoke($jobInstance,
-                    app(\App\Services\Ia\AudioConverter::class),
-                    app(\App\Services\Ia\TranscriptorApiClient::class)
+                $transcription = Transcription::firstOrCreate(
+                    ['file_id' => $file->id],
+                    [
+                        'state' => Transcription::STATE_PENDING,
+                        'generate_alerts' => true,
+                        'language' => config('transcriptor.language', 'es'),
+                        'original_name' => $file->name,
+                        'started_at' => now(),
+                    ]
                 );
-                $dispatched++;
+                // Solo enviar si está pending sin job_id (evita reenviar done/queued).
+                if ($transcription->state === Transcription::STATE_PENDING && empty($transcription->job_id)) {
+                    $result = $submitter->submit($transcription);
+                    if ($result['ok']) {
+                        $dispatched++;
+                    } else {
+                        $errors++;
+                        \Illuminate\Support\Facades\Log::error("scanStorage file {$file->id}: {$result['error']}");
+                    }
+                }
             } catch (\Throwable $e) {
                 \Illuminate\Support\Facades\Log::error("scanStorage file {$file->id}: {$e->getMessage()}");
                 $errors++;
@@ -446,7 +563,7 @@ class ApiTranscriptorController extends Controller
 
     /**
      * Procesa todos los archivos sin transcripción de una carpeta específica.
-     * Encola jobs con dispatch() + prioridad manual.
+     * Crea transcripciones pending que el schedule scan-and-submit enviará.
      */
     public function processFolder(Request $request, int $id)
     {
@@ -456,6 +573,7 @@ class ApiTranscriptorController extends Controller
         if ($parentId === '' || $parentId === 'null') $parentId = null;
         $parentId = $parentId !== null ? (int) $parentId : null;
 
+        // --- Archivos sin transcripción (candidatos a crear) ---
         $files = File::where('storage_provider_id', $id)
             ->where('is_folder', false)
             ->where('parent_id', $parentId)
@@ -471,21 +589,61 @@ class ApiTranscriptorController extends Controller
         $dispatched = 0;
         foreach ($files as $file) {
             try {
-                $priority = ConvertAndTranscribeJob::calculatePriority(
-                    (int) $storage->transcription_priority, false, true
+                $tx = Transcription::firstOrCreate(
+                    ['file_id' => $file->id],
+                    [
+                        'original_name' => $file->name,
+                        'state' => Transcription::STATE_PENDING,
+                        'generate_alerts' => $generateAlerts,
+                        'language' => config('transcriptor.language', 'es'),
+                        'started_at' => now(),
+                    ]
                 );
-                ConvertAndTranscribeJob::dispatchWithPriority($file->id, $generateAlerts, $priority);
-                $dispatched++;
+                if ($tx->wasRecentlyCreated) $dispatched++;
             } catch (\Throwable $e) {
                 \Illuminate\Support\Facades\Log::error("processFolder file {$file->id}: {$e->getMessage()}");
             }
+        }
+
+        // --- Resumen de archivos que YA tienen transcripción ---
+        $txStates = DB::table('files')
+            ->select('transcriptions.state', DB::raw('COUNT(*) as cnt'))
+            ->join('transcriptions', 'files.id', '=', 'transcriptions.file_id')
+            ->where('files.storage_provider_id', $id)
+            ->where('files.is_folder', false)
+            ->where('files.parent_id', $parentId)
+            ->groupBy('transcriptions.state')
+            ->pluck('cnt', 'state')
+            ->toArray();
+
+        $summary = $txStates;
+
+        // Contar pending sin job_id
+        $pendingWithoutJobId = (int) DB::table('files')
+            ->join('transcriptions', 'files.id', '=', 'transcriptions.file_id')
+            ->where('files.storage_provider_id', $id)
+            ->where('files.is_folder', false)
+            ->where('files.parent_id', $parentId)
+            ->where('transcriptions.state', Transcription::STATE_PENDING)
+            ->whereNull('transcriptions.job_id')
+            ->count();
+
+        $message = $dispatched > 0
+            ? "Pendientes creados: {$dispatched} de {$files->count()} candidatos."
+            : 'No hay archivos nuevos sin transcripción en esta carpeta.';
+
+        if ($pendingWithoutJobId > 0) {
+            $message .= " {$pendingWithoutJobId} ya están pendientes (serán enviados automáticamente por el schedule).";
         }
 
         return response()->json([
             'storage_id' => $storage->id,
             'dispatched' => $dispatched,
             'candidates' => $files->count(),
+            'already_summary' => $summary,
+            'pending_without_job_id' => $pendingWithoutJobId,
             'generate_alerts' => $generateAlerts,
+            'message' => $message,
         ]);
     }
 
@@ -539,11 +697,17 @@ class ApiTranscriptorController extends Controller
         $dispatched = 0;
         foreach ($files as $file) {
             try {
-                $priority = ConvertAndTranscribeJob::calculatePriority(
-                    (int) $storage->transcription_priority, $isToday, true
+                $tx = Transcription::firstOrCreate(
+                    ['file_id' => $file->id],
+                    [
+                        'original_name' => $file->name,
+                        'state' => Transcription::STATE_PENDING,
+                        'generate_alerts' => $generateAlerts,
+                        'language' => config('transcriptor.language', 'es'),
+                        'started_at' => now(),
+                    ]
                 );
-                ConvertAndTranscribeJob::dispatchWithPriority($file->id, $generateAlerts, $priority);
-                $dispatched++;
+                if ($tx->wasRecentlyCreated) $dispatched++;
             } catch (\Throwable $e) {
                 \Illuminate\Support\Facades\Log::error("processDay file {$file->id}: {$e->getMessage()}");
             }
@@ -560,7 +724,7 @@ class ApiTranscriptorController extends Controller
 
     /**
      * Procesamiento por lotes BACKGROUND: lanza el comando artisan
-     * transcription:process-batch en un proceso separado (nohup) y devuelve
+     * transcription:scan-and-submit en un proceso separado (nohup) y devuelve
      * inmediatamente un run_id. El frontend consulta /batch-status/{runId}
      * para ver el progreso en vivo. Así se puede cerrar/recargar la página.
      */
@@ -588,14 +752,14 @@ class ApiTranscriptorController extends Controller
             'updated_at' => now()->toIso8601String(),
         ], now()->addHours(2));
 
-        // Lanzar el comando en background con nohup.
+        // Lanzar el NUEVO comando scan-and-submit en background con nohup.
         $artisan = base_path('artisan');
         $php = PHP_BINDIR . '/php';
         if (!is_file($php)) $php = 'php';
         $logFile = storage_path('logs/transcription-batch-' . $runId . '.log');
         $cmd = escapeshellarg($php) . ' ' . escapeshellarg($artisan)
-             . ' transcription:process-batch --batch=' . (int) $batch
-             . ' --alerts=' . ($generateAlerts ? 1 : 0)
+             . ' transcription:scan-and-submit --days=0'
+             . ' --batch=' . (int) $batch
              . ' --run-id=' . escapeshellarg($runId)
              . ' >> ' . escapeshellarg($logFile) . ' 2>&1 &';
 
@@ -613,7 +777,7 @@ class ApiTranscriptorController extends Controller
         return response()->json([
             'run_id' => $runId,
             'batch' => $batch,
-            'message' => 'Lote iniciado en background',
+            'message' => 'Lote iniciado en background (scan-and-submit)',
         ], 200);
     }
 
@@ -639,8 +803,19 @@ class ApiTranscriptorController extends Controller
     {
         if (PHP_OS_FAMILY === 'Windows') {
             pclose(popen('start /B ' . $cmd, 'r'));
-        } else {
-            exec($cmd);
+            return;
+        }
+        // Linux: usar proc_open con descriptores a /dev/null para que PHP NO espere
+        // al hijo. exec() de PHP bloquea hasta que el proceso libera stdout/stderr,
+        // lo cual colgaba la request HTTP cuando el hijo escribía logs.
+        $descriptors = [
+            0 => ['file', '/dev/null', 'r'],
+            1 => ['file', '/dev/null', 'w'],
+            2 => ['file', '/dev/null', 'w'],
+        ];
+        $proc = @proc_open($cmd, $descriptors, $pipes);
+        if (is_resource($proc)) {
+            proc_close($proc);
         }
     }
 
@@ -669,36 +844,24 @@ class ApiTranscriptorController extends Controller
             $existing->delete();
         }
 
-        // Envío MANUAL: ejecutar el job SÍNCRONAMENTE para que el modal de progreso
-        // muestre los pasos reales (ffmpeg → API) sin esperar al worker.
-        // Aumentamos el timeout HTTP del job para esta ejecución.
+        // Envío MANUAL: crear transcripción pending y enviar síncronamente.
         set_time_limit(600);
-        $progressKey = null;
-        try {
-            $job = new ConvertAndTranscribeJob($file->id);
-            // Invocar el job directamente para recuperar el progress_key
-            $reflection = new \ReflectionMethod($job, 'handle');
-            $reflection->setAccessible(true);
-            $result = $reflection->invoke($job,
-                app(\App\Services\Ia\AudioConverter::class),
-                app(\App\Services\Ia\TranscriptorApiClient::class)
-            );
-            $progressKey = $result['progress_key'] ?? null;
-        } catch (\Throwable $e) {
-            // Registrar el error en la Transcription si existe
-            $t = Transcription::where('file_id', $file->id)->first();
-            if ($t) {
-                $t->update([
-                    'state' => Transcription::STATE_ERROR,
-                    'error_message' => $e->getMessage(),
-                    'finished_at' => now(),
-                ]);
-            }
+        $transcription = Transcription::firstOrCreate(
+            ['file_id' => $file->id],
+            [
+                'state' => Transcription::STATE_PENDING,
+                'generate_alerts' => true,
+                'language' => config('transcriptor.language', 'es'),
+                'original_name' => $file->name,
+                'started_at' => now(),
+            ]
+        );
+        $result = app(TranscriptionSubmitService::class)->submit($transcription);
+        if (!$result['ok']) {
             return response()->json([
-                'error' => $e->getMessage(),
+                'error' => $result['error'],
                 'file_id' => $file->id,
                 'file_name' => $file->name,
-                'progress_key' => $progressKey,
             ], 500);
         }
 
@@ -711,7 +874,6 @@ class ApiTranscriptorController extends Controller
             'transcription_id' => $transcription?->id,
             'state' => $transcription?->state,
             'job_id' => $transcription?->job_id,
-            'progress_key' => $progressKey,
         ], 200);
     }
 
@@ -724,9 +886,9 @@ class ApiTranscriptorController extends Controller
     {
         $job = Transcription::with('file')->findOrFail($id);
 
-        if (!in_array($job->state, [Transcription::STATE_QUEUED, Transcription::STATE_PROCESSING], true)) {
+        if (!in_array($job->state, [Transcription::STATE_PENDING, Transcription::STATE_QUEUED, Transcription::STATE_PROCESSING], true)) {
             return response()->json([
-                'error' => "Solo se puede enviar ahora jobs en cola/processing (estado actual: {$job->state})",
+                'error' => "Solo se puede enviar ahora jobs en pending/queued/processing (estado actual: {$job->state})",
             ], 409);
         }
 
@@ -746,31 +908,49 @@ class ApiTranscriptorController extends Controller
             ]);
         }
 
-        // Borrar la transcripción actual (sin job_id) y ejecutar el job síncrono.
         $fileId = $file->id;
+
+        // Rama específica para state='pending': la fila ya existe, no es necesario
+        // borrarla y recrearla (evita ventana de carrera con el scheduler).
+        if ($job->state === Transcription::STATE_PENDING) {
+            set_time_limit(600);
+            $result = app(TranscriptionSubmitService::class)->submit($job);
+            if (!$result['ok']) {
+                return response()->json([
+                    'error' => $result['error'],
+                    'file_id' => $fileId,
+                ], 500);
+            }
+
+            $job->refresh();
+
+            return response()->json([
+                'message' => 'Job enviado a la API externa',
+                'file_id' => $fileId,
+                'file_name' => $file->name,
+                'transcription_id' => $job->id,
+                'state' => $job->state ?? Transcription::STATE_PENDING,
+                'job_id' => $job->job_id,
+            ], 200);
+        }
+
+        // Borrar la transcripción actual (sin job_id) y reenviar síncrono.
         $job->delete();
 
         set_time_limit(600);
-        $progressKey = null;
-        try {
-            $jobInstance = new ConvertAndTranscribeJob($fileId);
-            $reflection = new \ReflectionMethod($jobInstance, 'handle');
-            $reflection->setAccessible(true);
-            $reflection->invoke($jobInstance,
-                app(\App\Services\Ia\AudioConverter::class),
-                app(\App\Services\Ia\TranscriptorApiClient::class)
-            );
-        } catch (\Throwable $e) {
-            $t = Transcription::where('file_id', $fileId)->first();
-            if ($t) {
-                $t->update([
-                    'state' => Transcription::STATE_ERROR,
-                    'error_message' => $e->getMessage(),
-                    'finished_at' => now(),
-                ]);
-            }
+        $transcription = Transcription::firstOrCreate(
+            ['file_id' => $fileId],
+            [
+                'state' => Transcription::STATE_PENDING,
+                'generate_alerts' => true,
+                'language' => config('transcriptor.language', 'es'),
+                'started_at' => now(),
+            ]
+        );
+        $result = app(TranscriptionSubmitService::class)->submit($transcription);
+        if (!$result['ok']) {
             return response()->json([
-                'error' => $e->getMessage(),
+                'error' => $result['error'],
                 'file_id' => $fileId,
             ], 500);
         }
@@ -967,6 +1147,7 @@ class ApiTranscriptorController extends Controller
     public static function stateClass(string $state): string
     {
         return [
+            'pending' => 'bg-slate-200 text-slate-700',
             'queued' => 'bg-slate-100 text-slate-600',
             'processing' => 'bg-blue-100 text-blue-700',
             'done' => 'bg-green-100 text-green-700',
@@ -978,6 +1159,7 @@ class ApiTranscriptorController extends Controller
     public static function stateDot(string $state): string
     {
         return [
+            'pending' => 'bg-slate-500',
             'queued' => 'bg-slate-400',
             'processing' => 'bg-blue-500',
             'done' => 'bg-green-500',

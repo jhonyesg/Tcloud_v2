@@ -158,9 +158,6 @@ Route::post('/s/{token}/rename/{file_id}', [App\Http\Controllers\PublicShareCont
 Route::post('/s/{token}/delete/{file_id}', [App\Http\Controllers\PublicShareController::class, 'delete'])->name('share.delete');
 Route::get('/s/{token}/preview/{file_id}', [App\Http\Controllers\PublicShareController::class, 'preview'])->name('share.preview');
 
-// Modulo IA — Webhook del transcriptor (sin auth, validado internamente por token)
-Route::post('/webhooks/transcription', [App\Http\Controllers\Ia\TranscriptionCallbackController::class, 'handle']);
-
 // Modulo IA — admin (M1, M2, M4)
 Route::middleware(['auth', 'admin'])->prefix('ia')->group(function () {
     // M1: API Transcriptor
@@ -168,6 +165,7 @@ Route::middleware(['auth', 'admin'])->prefix('ia')->group(function () {
     Route::get('/api-transcriptor/jobs/{id}', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'show']);
     Route::post('/api-transcriptor/jobs/{id}/retry', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'retry']);
     Route::post('/api-transcriptor/jobs/{id}/dispatch-now', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'dispatchNow']);
+    Route::post('/api-transcriptor/jobs/bulk-dispatch', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'bulkDispatch']);
     Route::post('/api-transcriptor/jobs/{id}/refresh-status', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'refreshStatus']);
     Route::post('/api-transcriptor/jobs/{id}/reprocess', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'reprocess']);
     Route::post('/api-transcriptor/jobs/{id}/cancel', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'cancelJob']);

@@ -5,6 +5,7 @@
 set -e
 
 PROJECT_DIR="/www/wwwroot/bkcloud.mediaserver.com.co/Tcloud_v2"
+DOCKER_DIR="/www/wwwroot/data.mediaserver.com.co/Tcloud/dockers"
 PHP_BIN="/www/server/php/84/bin/php"
 NGINX_BIN="/www/server/nginx/sbin/nginx"
 
@@ -14,18 +15,8 @@ echo "=== TCloud Production Deploy ==="
 echo "[1/7] Checking Docker containers..."
 if ! docker ps --format '{{.Names}}' | grep -q tcloud_postgres; then
     echo "  Starting PostgreSQL..."
-    cd "$PROJECT_DIR"
-    docker run -d \
-      --name tcloud_postgres \
-      --restart unless-stopped \
-      -e POSTGRES_DB=tcloudstorage \
-      -e POSTGRES_USER=cloud \
-      -e POSTGRES_PASSWORD=cloud123 \
-      -v "$PROJECT_DIR/data/postgres_data:/var/lib/postgresql/data" \
-      -p 127.0.0.1:5432:5432 \
-      --network clouding_network \
-      --security-opt apparmor=unconfined \
-      postgres:17-alpine
+    cd "$DOCKER_DIR/postgres"
+    docker compose -f docker-compose.yml -f docker-compose.override.yml up -d
     sleep 5
 fi
 
@@ -62,7 +53,7 @@ echo "[4/7] Setting permissions..."
 chown -R www:www "$PROJECT_DIR/app/storage/"
 chown -R www:www "$PROJECT_DIR/app/bootstrap/cache/"
 chown -R www:www "$PROJECT_DIR/data/storage/"
-chown -R 70:70 "$PROJECT_DIR/data/postgres_data/"
+chown -R 70:70 "$DOCKER_DIR/postgres/data/"
 chmod -R 775 "$PROJECT_DIR/app/storage/"
 chmod -R 775 "$PROJECT_DIR/app/bootstrap/cache/"
 
@@ -94,6 +85,6 @@ echo "App URL: https://bkcloud.mediaserver.com.co"
 echo "Login:   jsuarez@mediaclouding.com"
 echo ""
 echo "Docker commands:"
-echo "  PostgreSQL: docker restart tcloud_postgres"
-echo "  Redis:      docker restart clouding_redis"
+echo "  PostgreSQL: cd $DOCKER_DIR/postgres && docker compose up -d"
+echo "  Redis:      cd $DOCKER_DIR/redis && docker compose up -d"
 echo "  Logs:       docker logs tcloud_postgres -f"

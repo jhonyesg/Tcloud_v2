@@ -14,6 +14,13 @@ use Illuminate\Support\Facades\Session;
 
 class SessionService
 {
+    private function sessionExistsInRedis(string $sessionId): bool
+    {
+        $key = config('cache.prefix', 'tcloud_cache_') . $sessionId;
+
+        return Redis::connection('default')->exists($key) > 0;
+    }
+
     public function getEffectiveMaxSessions(User $user): int
     {
         if ($user->max_sessions !== null) {
@@ -42,7 +49,7 @@ class SessionService
         $count = 0;
         foreach ($sessions as $session) {
             try {
-                if (Redis::exists($session->session_id)) {
+                if ($this->sessionExistsInRedis($session->session_id)) {
                     $count++;
                 }
             } catch (\Exception) {
@@ -74,9 +81,10 @@ class SessionService
         Cache::forget("session_valid:{$session->session_id}");
 
         try {
-            Redis::del($session->session_id);
+            $key = config('cache.prefix', 'tcloud_cache_') . $session->session_id;
+            Redis::connection('default')->del($key);
         } catch (\Exception $e) {
-            Log::warning('SessionService: failed to delete Redis key', [
+            Log::warning('SessionService: failed to delete session from Redis', [
                 'session_id' => $session->session_id,
                 'error'      => $e->getMessage(),
             ]);
@@ -111,8 +119,7 @@ class SessionService
         UserSession::chunk(100, function ($sessions) use (&$count) {
             foreach ($sessions as $session) {
                 try {
-                    $exists = Redis::exists($session->session_id);
-                    if (!$exists) {
+                    if (!$this->sessionExistsInRedis($session->session_id)) {
                         $session->delete();
                         $count++;
                     }

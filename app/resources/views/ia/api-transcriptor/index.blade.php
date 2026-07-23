@@ -100,14 +100,14 @@
                 <i class="fas fa-heartbeat" :class="health?.ok ? 'text-green-600' : 'text-red-600'"></i>
             </div>
             <div>
-                <p class="text-xs text-slate-500 uppercase tracking-wide">API Transcriptor</p>
+                <p class="text-xs text-slate-500 uppercase tracking-wide">Transcripción de API</p>
                 <p class="text-sm font-medium" :class="health?.ok ? 'text-green-700' : 'text-red-700'"
                    x-text="loading ? '...' : (health?.ok ? 'En línea' : 'No disponible')"></p>
             </div>
         </div>
         <template x-for="(count, state) in (stats?.local || {})" :key="state">
             <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
-                <p class="text-xs text-slate-500 uppercase tracking-wide" x-text="'Jobs ' + state"></p>
+                <p class="text-xs text-slate-500 uppercase tracking-wide" x-text="(stateLabels[state] ? 'Trabajos ' + stateLabels[state] : 'Trabajos ' + state)"></p>
                 <p class="text-2xl font-bold text-slate-800" x-text="count"></p>
             </div>
         </template>
@@ -137,7 +137,6 @@
                     <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Storage</th>
                     <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Tipo</th>
                     <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Transcripción</th>
-                    <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Prioridad</th>
                     <th class="px-4 py-3 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">Acciones</th>
                 </tr>
             </thead>
@@ -154,18 +153,6 @@
                                 <span :class="s.transcription_enabled ? 'translate-x-5' : 'translate-x-1'"
                                       class="absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform"></span>
                             </button>
-                        </td>
-                        <td class="px-4 py-3">
-                            <select x-model.number="s.transcription_priority" @change="savePriority(s)"
-                                    class="border border-slate-300 rounded-lg px-2 py-1 text-xs focus:ring-2 focus:ring-brand-500 outline-none"
-                                    :class="s.transcription_enabled ? 'bg-white' : 'bg-slate-50 text-slate-400'">
-                                <option :value="0">0 — Sin</option>
-                                <option :value="1">1 — Baja</option>
-                                <option :value="5">5 — Media</option>
-                                <option :value="10">10 — Alta</option>
-                                <option :value="20">20 — Más alta</option>
-                                <option :value="50">50 — Máxima</option>
-                            </select>
                         </td>
                         <td class="px-4 py-3 text-right">
                             <div class="flex items-center justify-end gap-1.5">
@@ -325,24 +312,48 @@
                                         <td class="px-3 py-2">
                                             <div class="flex items-center gap-2 min-w-0">
                                                 <i class="fas fa-file-audio text-slate-400 flex-shrink-0"></i>
-                                                <span class="text-slate-700 truncate" x-text="f.name" :title="f.name"></span>
+                                                <template x-if="f.transcription_id">
+                                                    <a :href="'/ia/api-transcriptor/jobs/' + f.transcription_id"
+                                                       class="text-brand-600 hover:underline font-medium truncate"
+                                                       :title="f.name + ' — Ver transcripción (' + (f.transcription_state || '') + ')'"
+                                                       x-text="f.name"></a>
+                                                </template>
+                                                <template x-if="!f.transcription_id">
+                                                    <span class="text-slate-700 truncate" x-text="f.name" :title="f.name"></span>
+                                                </template>
                                             </div>
                                         </td>
                                         <td class="px-2 py-2 font-mono text-slate-600" x-text="f.military_time ? (f.military_time.substr(0,2) + ':' + f.military_time.substr(2,2) + ':' + f.military_time.substr(4,2)) : '—'"></td>
                                         <td class="px-2 py-2 text-slate-500" x-text="formatSize(f.size)"></td>
                                         <td class="px-2 py-2 text-slate-500" x-text="formatDate(f.file_modified_at)"></td>
                                         <td class="px-2 py-2 text-center">
-                                            <span x-show="f.has_transcription" class="text-[10px] px-1.5 py-0.5 bg-green-100 text-green-700 rounded-full whitespace-nowrap">
-                                                <i class="fas fa-check text-[8px] mr-0.5"></i> Hecho
-                                            </span>
-                                            <span x-show="!f.has_transcription" class="text-[10px] px-1.5 py-0.5 bg-slate-100 text-slate-500 rounded-full">Pendiente</span>
+                                            <span x-show="!f.transcription_id" class="text-[10px] px-1.5 py-0.5 bg-slate-100 text-slate-500 rounded-full">Pendiente</span>
                                         </td>
                                         <td class="px-2 py-2 text-right">
-                                            <button @click="openProgress(f)"
-                                                    class="text-[10px] px-2 py-1 bg-brand-600 hover:bg-brand-700 text-white rounded whitespace-nowrap transition-colors"
-                                                    :class="f.has_transcription && 'opacity-50'">
-                                                <i class="fas fa-paper-plane text-[8px] mr-0.5"></i> Enviar
-                                            </button>
+                                            <template x-if="!f.transcription_id">
+                                                <button @click="openProgress(f)"
+                                                        class="text-[10px] px-2 py-1 bg-brand-600 hover:bg-brand-700 text-white rounded whitespace-nowrap transition-colors">
+                                                    <i class="fas fa-paper-plane text-[8px] mr-0.5"></i> Enviar
+                                                </button>
+                                            </template>
+                                            <template x-if="f.transcription_id && f.transcription_state === 'done'">
+                                                <a :href="'/ia/api-transcriptor/jobs/' + f.transcription_id"
+                                                   class="text-[10px] px-2 py-1 bg-brand-600 hover:bg-brand-700 text-white rounded whitespace-nowrap transition-colors inline-flex items-center">
+                                                    <i class="fas fa-file-alt text-[8px] mr-0.5"></i> Ver transcripción
+                                                </a>
+                                            </template>
+                                            <template x-if="f.transcription_id && ['pending','queued','processing'].includes(f.transcription_state)">
+                                                <a :href="'/ia/api-transcriptor/jobs/' + f.transcription_id"
+                                                   class="text-[10px] px-2 py-1 bg-amber-500 hover:bg-amber-600 text-white rounded whitespace-nowrap transition-colors inline-flex items-center">
+                                                    <i class="fas fa-spinner text-[8px] mr-0.5"></i> En proceso…
+                                                </a>
+                                            </template>
+                                            <template x-if="f.transcription_id && ['error','dead'].includes(f.transcription_state)">
+                                                <a :href="'/ia/api-transcriptor/jobs/' + f.transcription_id"
+                                                   class="text-[10px] px-2 py-1 bg-red-600 hover:bg-red-700 text-white rounded whitespace-nowrap transition-colors inline-flex items-center">
+                                                    <i class="fas fa-exclamation-triangle text-[8px] mr-0.5"></i> Ver error
+                                                </a>
+                                            </template>
                                         </td>
                                     </tr>
                                 </template>
@@ -368,24 +379,48 @@
                                                 </div>
                                                 <div class="flex items-center gap-2 min-w-0">
                                                     <i class="fas fa-file-audio text-slate-400 flex-shrink-0"></i>
-                                                    <span class="text-slate-700 truncate" x-text="f.name" :title="f.name"></span>
+                                                    <template x-if="f.transcription_id">
+                                                        <a :href="'/ia/api-transcriptor/jobs/' + f.transcription_id"
+                                                           class="text-brand-600 hover:underline font-medium truncate"
+                                                           :title="f.name + ' — Ver transcripción (' + (f.transcription_state || '') + ')'"
+                                                           x-text="f.name"></a>
+                                                    </template>
+                                                    <template x-if="!f.transcription_id">
+                                                        <span class="text-slate-700 truncate" x-text="f.name" :title="f.name"></span>
+                                                    </template>
                                                 </div>
                                             </td>
                                             <td class="px-2 py-2 font-mono text-slate-600" :class="fi === 0 ? 'border-t border-slate-200' : ''" x-text="f.military_time ? (f.military_time.substr(0,2) + ':' + f.military_time.substr(2,2) + ':' + f.military_time.substr(4,2)) : '—'"></td>
                                             <td class="px-2 py-2 text-slate-500" :class="fi === 0 ? 'border-t border-slate-200' : ''" x-text="formatSize(f.size)"></td>
                                             <td class="px-2 py-2 text-slate-500" :class="fi === 0 ? 'border-t border-slate-200' : ''" x-text="formatDate(f.file_modified_at)"></td>
                                             <td class="px-2 py-2 text-center" :class="fi === 0 ? 'border-t border-slate-200' : ''">
-                                                <span x-show="f.has_transcription" class="text-[10px] px-1.5 py-0.5 bg-green-100 text-green-700 rounded-full whitespace-nowrap">
-                                                    <i class="fas fa-check text-[8px] mr-0.5"></i> Hecho
-                                                </span>
-                                                <span x-show="!f.has_transcription" class="text-[10px] px-1.5 py-0.5 bg-slate-100 text-slate-500 rounded-full">Pendiente</span>
+                                                <span x-show="!f.transcription_id" class="text-[10px] px-1.5 py-0.5 bg-slate-100 text-slate-500 rounded-full">Pendiente</span>
                                             </td>
                                             <td class="px-2 py-2 text-right" :class="fi === 0 ? 'border-t border-slate-200' : ''">
-                                                <button @click="openProgress(f)"
-                                                        class="text-[10px] px-2 py-1 bg-brand-600 hover:bg-brand-700 text-white rounded whitespace-nowrap transition-colors"
-                                                        :class="f.has_transcription && 'opacity-50'">
-                                                    <i class="fas fa-paper-plane text-[8px] mr-0.5"></i> Enviar
-                                                </button>
+                                                <template x-if="!f.transcription_id">
+                                                    <button @click="openProgress(f)"
+                                                            class="text-[10px] px-2 py-1 bg-brand-600 hover:bg-brand-700 text-white rounded whitespace-nowrap transition-colors">
+                                                        <i class="fas fa-paper-plane text-[8px] mr-0.5"></i> Enviar
+                                                    </button>
+                                                </template>
+                                                <template x-if="f.transcription_id && f.transcription_state === 'done'">
+                                                    <a :href="'/ia/api-transcriptor/jobs/' + f.transcription_id"
+                                                       class="text-[10px] px-2 py-1 bg-brand-600 hover:bg-brand-700 text-white rounded whitespace-nowrap transition-colors inline-flex items-center">
+                                                        <i class="fas fa-file-alt text-[8px] mr-0.5"></i> Ver transcripción
+                                                    </a>
+                                                </template>
+                                                <template x-if="f.transcription_id && ['pending','queued','processing'].includes(f.transcription_state)">
+                                                    <a :href="'/ia/api-transcriptor/jobs/' + f.transcription_id"
+                                                       class="text-[10px] px-2 py-1 bg-amber-500 hover:bg-amber-600 text-white rounded whitespace-nowrap transition-colors inline-flex items-center">
+                                                        <i class="fas fa-spinner text-[8px] mr-0.5"></i> En proceso…
+                                                    </a>
+                                                </template>
+                                                <template x-if="f.transcription_id && ['error','dead'].includes(f.transcription_state)">
+                                                    <a :href="'/ia/api-transcriptor/jobs/' + f.transcription_id"
+                                                       class="text-[10px] px-2 py-1 bg-red-600 hover:bg-red-700 text-white rounded whitespace-nowrap transition-colors inline-flex items-center">
+                                                        <i class="fas fa-exclamation-triangle text-[8px] mr-0.5"></i> Ver error
+                                                    </a>
+                                                </template>
                                             </td>
                                         </tr>
                                     </template>
@@ -399,18 +434,23 @@
                     <span x-text="(filesMode === 'browse' ? folders.length + ' carpetas, ' : '') + filesTotal + ' archivos' + (filesTranscribed ? ' · ' + filesTranscribed + ' transcritos' : '')"></span>
                     <div class="flex items-center gap-3">
                         <button x-show="filesMode === 'browse'" @click="confirmProcessFolder()"
-                                class="text-brand-600 hover:underline">
+                                class="text-brand-600 hover:underline"
+                                title="Crea transcripciones pendientes para todos los archivos sin transcribir de la carpeta actual. El envío real lo hace 'Escanear y encolar' o el schedule automático.">
                             <i class="fas fa-folder-open text-[10px] mr-1"></i> Procesar carpeta
                         </button>
                         <button x-show="filesMode === 'today' || filesMode === 'yesterday'" @click="confirmProcessDay()"
-                                class="text-brand-600 hover:underline">
+                                class="text-brand-600 hover:underline"
+                                title="Crea transcripciones pendientes para todos los archivos del día (HOY o AYER) sin transcribir. El envío real lo hace 'Escanear y encolar' o el schedule automático.">
                             <i class="fas fa-calendar-day text-[10px] mr-1"></i> Procesar día
                         </button>
-                        <button @click="syncStorage(currentStorage)" :disabled="syncing" class="text-slate-600 hover:underline disabled:opacity-40">
+                        <button @click="syncStorage(currentStorage)" :disabled="syncing"
+                                class="text-slate-600 hover:underline disabled:opacity-40"
+                                title="Escanea el disco del storage y registra en la base de datos los archivos nuevos que aún no aparecen aquí. No transcribe, solo descubre.">
                             <i class="fas fa-cloud-download-alt text-[10px] mr-1" :class="syncing ? 'fa-spin' : ''"></i>
                             <span x-text="syncing ? 'Sincronizando...' : 'Sincronizar archivos'"></span>
                         </button>
-                        <button @click="scanStorage(currentStorage)" class="text-brand-600 hover:underline">
+                        <button @click="scanStorage(currentStorage)" class="text-brand-600 hover:underline"
+                                title="Toma los últimos N archivos pendientes (sin transcripción y con más de 60s de antigüedad) y los envía al transcriptor. Los workers Redis los procesan en paralelo.">
                             <i class="fas fa-sync-alt text-[10px] mr-1"></i> Escanear y encolar últimos <span x-text="batch"></span>
                         </button>
                     </div>
@@ -511,6 +551,7 @@
             <select x-model="stateFilter" @change="load()"
                     class="border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:ring-2 focus:ring-brand-500 outline-none">
                 <option value="">Todos</option>
+                <option value="pending">pending</option>
                 <option value="done">done</option>
                 <option value="error">error</option>
                 <option value="dead">dead</option>
@@ -523,6 +564,35 @@
                 <span>Sincronizando Pendientes</span>
             </span>
         </div>
+
+        {{-- Panel colapsable: desglose por estado de BD (lee /ia/api-transcriptor/stats) --}}
+        <details class="mb-3 text-xs">
+            <summary class="cursor-pointer text-slate-500 hover:text-slate-700 select-none flex items-center gap-1.5">
+                <i class="fas fa-chart-pie text-[10px]"></i>
+                Estado por BD (resumen)
+                <span class="text-slate-400">— click para expandir</span>
+            </summary>
+            <div class="mt-2 p-3 bg-slate-50 border border-slate-200 rounded-lg">
+                <template x-if="!stats || !stats.local">
+                    <p class="text-slate-400 italic">Cargando contadores...</p>
+                </template>
+                <template x-if="stats && stats.local">
+                    <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+                        <template x-for="s in ['pending','queued','processing','done','error','dead']" :key="s">
+                            <div class="flex items-center gap-2 px-2 py-1.5 bg-white border border-slate-200 rounded">
+                                <span class="w-2 h-2 rounded-full flex-shrink-0" :class="stateDot(s)"></span>
+                                <span class="text-slate-600 font-mono" x-text="s"></span>
+                                <span class="ml-auto font-semibold text-slate-800" x-text="(stats.local[s] || 0).toLocaleString()"></span>
+                            </div>
+                        </template>
+                    </div>
+                </template>
+                <p class="mt-2 text-[10px] text-slate-400">
+                    <i class="fas fa-info-circle mr-0.5"></i>
+                    Los estados <b>pending</b> indican transcripciones creadas pero aún no enviadas a la API externa. Si tienes muchas, ejecuta <code class="bg-slate-100 px-1 rounded">php artisan transcriptor:diagnose-pending</code>.
+                </p>
+            </div>
+        </details>
 
         <!-- Tabla de jobs (vista unificada) -->
 
@@ -553,37 +623,32 @@
             <div x-show="bulkDispatchResult" class="flex items-center gap-3 flex-wrap">
                 <template x-if="bulkDispatchResult">
                     <div class="flex items-center gap-2"
-                         :class="bulkDispatchResult.errors > 0 ? 'text-amber-700' : 'text-green-700'">
-                        <i :class="bulkDispatchResult.errors > 0 ? 'fas fa-exclamation-triangle' : 'fas fa-check-circle'"></i>
-                        <span class="flex items-center gap-2 flex-wrap">
-                            <template x-if="bulkDispatchResult.sentNew > 0">
+                         :class="(bulkDispatchResult.errors || 0) > 0 ? 'text-amber-700' : 'text-green-700'">
+                        <i :class="(bulkDispatchResult.errors || 0) > 0 ? 'fas fa-exclamation-triangle' : 'fas fa-check-circle'"></i>
+                        <span class="flex items-center gap-2 flex-wrap text-xs">
+                            <template x-if="bulkDispatchResult.enqueued > 0">
                                 <span>
-                                    <strong x-text="bulkDispatchResult.sentNew"></strong> despachados por 1ª vez
+                                    <strong x-text="bulkDispatchResult.enqueued"></strong> trabajos encolados a Redis
                                 </span>
                             </template>
-                            <template x-if="bulkDispatchResult.refreshedDone > 0">
-                                <span class="text-green-700">
-                                    <strong x-text="bulkDispatchResult.refreshedDone"></strong> refrescados a <em>done</em>
-                                </span>
-                            </template>
-                            <template x-if="bulkDispatchResult.refreshedProcessing > 0">
-                                <span class="text-slate-600">
-                                    · <strong x-text="bulkDispatchResult.refreshedProcessing"></strong> siguen en <em>processing</em>
-                                </span>
-                            </template>
-                            <template x-if="bulkDispatchResult.refreshedError > 0">
-                                <span class="text-amber-700">
-                                    · <strong x-text="bulkDispatchResult.refreshedError"></strong> marcados con error
+                            <template x-if="bulkDispatchResult.skipped_queued > 0">
+                                <span class="text-slate-500">
+                                    · <strong x-text="bulkDispatchResult.skipped_queued"></strong> omitidos (ya enviados o terminales)
                                 </span>
                             </template>
                             <template x-if="bulkDispatchResult.errors > 0">
                                 <span class="text-amber-700">
-                                    · <strong x-text="bulkDispatchResult.errors"></strong> con error de conexión
+                                    · <strong x-text="bulkDispatchResult.errors"></strong> con error de cola
                                 </span>
                             </template>
-                            <span x-show="bulkDispatchResult.skipped > 0" class="text-slate-500">
-                                · <span x-text="bulkDispatchResult.skipped"></span> ya enviados (omitidos)
-                            </span>
+                            <template x-if="!bulkDispatchResult.message && bulkDispatchResult.enqueued > 0">
+                                <span class="text-slate-500">
+                                    · Los workers supervisord los procesarán en background. El progreso se refleja arriba en "Estado por BD".
+                                </span>
+                            </template>
+                            <template x-if="bulkDispatchResult.message">
+                                <span class="text-slate-500" x-text="bulkDispatchResult.message"></span>
+                            </template>
                         </span>
                     </div>
                 </template>
@@ -627,7 +692,7 @@
             <tbody class="divide-y divide-slate-100">
                 <template x-for="job in jobs" :key="job.id">
                     <tr class="hover:bg-slate-50"
-                        x-show="(jobsSubTab === 'pending' && (job.state === 'queued' || job.state === 'processing')) || (jobsSubTab === 'completed' && (job.state === 'done' || job.state === 'error' || job.state === 'dead'))">
+                        x-show="(jobsSubTab === 'pending' && ['pending','queued','processing'].includes(job.state)) || (jobsSubTab === 'completed' && ['done','error','dead'].includes(job.state))">
                         <td x-show="jobsSubTab === 'pending' && selectJobMode" class="px-2 py-3 text-center" @click.stop>
                             <input type="checkbox"
                                    class="w-3.5 h-3.5 rounded border-slate-300 text-brand-600 focus:ring-brand-500 cursor-pointer disabled:opacity-40"
@@ -657,7 +722,7 @@
                         <td class="px-4 py-3 text-right">
                             <div class="inline-flex items-center gap-1.5">
                                 {{-- Pendientes: Enviar ahora (sin job_id) / Refrescar estado (con job_id) --}}
-                                <button x-show="jobsSubTab === 'pending' && (job.state === 'queued' || job.state === 'processing')"
+                                <button x-show="jobsSubTab === 'pending' && ['pending','queued','processing'].includes(job.state)"
                                         @click="job.job_id ? refreshJobStatus(job) : dispatchJobNow(job)"
                                         :disabled="refreshingJobs && refreshingJobs.has(Number(job.id))"
                                         class="inline-flex items-center justify-center px-2.5 h-8 bg-brand-600 hover:bg-brand-700 text-white rounded-lg transition-colors text-xs font-medium whitespace-nowrap disabled:opacity-50"
@@ -665,8 +730,15 @@
                                     <i :class="(refreshingJobs && refreshingJobs.has(Number(job.id))) ? 'fas fa-spinner fa-spin' : 'fas fa-paper-plane'" class="text-[10px] mr-1"></i>
                                     <span x-text="job.job_id ? 'Refrescar estado' : 'Enviar ahora'"></span>
                                 </button>
-                                {{-- Pendientes: Cancelar --}}
-                                <button x-show="jobsSubTab === 'pending'"
+                                {{-- Pendientes (pending): Borrar (sin job_id, delete local) --}}
+                                <button x-show="jobsSubTab === 'pending' && job.state === 'pending'"
+                                        @click="cancelJob(job)"
+                                        class="inline-flex items-center justify-center w-8 h-8 bg-red-50 hover:bg-red-100 text-red-600 rounded-lg transition-colors"
+                                        title="Borrar fila pendiente (no fue enviada a la API externa)">
+                                    <i class="fas fa-trash text-xs"></i>
+                                </button>
+                                {{-- Pendientes (queued|processing): Cancelar upstream --}}
+                                <button x-show="jobsSubTab === 'pending' && (job.state === 'queued' || job.state === 'processing')"
                                         @click="cancelJob(job)"
                                         class="inline-flex items-center justify-center w-8 h-8 bg-amber-50 hover:bg-amber-100 text-amber-600 rounded-lg transition-colors"
                                         title="Cancelar job">
@@ -845,7 +917,7 @@
                 <div class="flex items-start justify-between mb-4">
                     <div>
                         <h2 class="text-lg font-bold text-slate-800 mb-1">Escanear storages</h2>
-                        <p class="text-xs text-slate-500">Busca archivos en storages habilitados que aún no tienen una fila en <code class="text-[10px] bg-slate-100 px-1 rounded">transcriptions</code> y los despacha. No toca los registros ya en Pendientes — para esos usá la barrita de arriba de la tabla.</p>
+                        <p class="text-xs text-slate-500">Busca archivos en storages habilitados que aún no tienen transcripción y los envía al transcriptor. El lote es <strong>por storage</strong>: cada storage procesa hasta el cupo configurado. Los más recientes primero.</p>
                     </div>
                     <button x-show="!batchRunning" @click="showBatchModal = false" class="text-slate-400 hover:text-slate-600">
                         <i class="fas fa-times"></i>
@@ -857,18 +929,17 @@
                     <div>
                         <label class="block text-sm font-medium text-slate-700 mb-1">Tamaño del lote</label>
                         <div class="flex items-center gap-3">
-                            <input type="range" min="5" max="200" step="5" x-model.number="batchSize"
+                            <input type="range" min="10" max="500" step="10" x-model.number="batchSize"
                                    class="flex-1 accent-brand-600">
                             <span class="text-2xl font-bold text-brand-600 w-16 text-center" x-text="batchSize"></span>
                         </div>
                         <div class="flex gap-2 mt-2">
-                            <button @click="batchSize = 10" class="px-2 py-1 text-xs bg-slate-100 hover:bg-slate-200 rounded">10</button>
-                            <button @click="batchSize = 25" class="px-2 py-1 text-xs bg-slate-100 hover:bg-slate-200 rounded">25</button>
-                            <button @click="batchSize = 50" class="px-2 py-1 text-xs bg-brand-100 text-brand-700 hover:bg-brand-200 rounded font-medium">50</button>
-                            <button @click="batchSize = 100" class="px-2 py-1 text-xs bg-slate-100 hover:bg-slate-200 rounded">100</button>
+                            <button @click="batchSize = 50" class="px-2 py-1 text-xs bg-slate-100 hover:bg-slate-200 rounded">50</button>
+                            <button @click="batchSize = 100" class="px-2 py-1 text-xs bg-brand-100 text-brand-700 hover:bg-brand-200 rounded font-medium">100</button>
                             <button @click="batchSize = 200" class="px-2 py-1 text-xs bg-slate-100 hover:bg-slate-200 rounded">200</button>
+                            <button @click="batchSize = 500" class="px-2 py-1 text-xs bg-slate-100 hover:bg-slate-200 rounded">500</button>
                         </div>
-                        <p class="text-xs text-slate-400 mt-2"><i class="fas fa-info-circle mr-1"></i>Storages con mayor prioridad reciben más archivos del lote. Los más recientes primero.</p>
+                        <p class="text-xs text-slate-400 mt-2"><i class="fas fa-info-circle mr-1"></i>Cupo por storage. Con 100, cada storage envía hasta 100 archivos por ciclo. Los más recientes primero.</p>
                     </div>
                     {{-- Checkbox alertas --}}
                     <div class="flex items-center gap-3 p-3 bg-slate-50 rounded-lg">
@@ -948,9 +1019,6 @@
                                     <div class="flex items-center gap-2">
                                         <i class="fas fa-database text-slate-400 text-xs"></i>
                                         <span class="font-medium text-slate-700" x-text="s.name"></span>
-                                        <span class="text-[10px] px-1.5 py-0.5 rounded-full font-semibold"
-                                              :class="s.priority > 0 ? 'bg-brand-100 text-brand-700' : 'bg-slate-200 text-slate-500'"
-                                              x-text="'P' + s.priority"></span>
                                     </div>
                                     <div class="flex items-center gap-3 text-xs">
                                         <span class="text-slate-500" x-text="s.quota + ' asignados'"></span>
@@ -1009,6 +1077,14 @@ function apiTranscriptor() {
         stateFilter: '',
         health: null,
         stats: null,
+        stateLabels: {
+            pending: 'pendientes',
+            queued: 'en cola',
+            processing: 'en proceso',
+            done: 'completados',
+            error: 'con error',
+            dead: 'fallidos',
+        },
         // modal archivos
         showFiles: false,
         currentStorage: null,
@@ -1040,7 +1116,7 @@ function apiTranscriptor() {
         // Modal de procesamiento por lotes
         showBatchModal: false,
         batchRunning: false,
-        batchSize: 50,
+        batchSize: {{ (int) config('transcriptor.scan_batch', 100) }},
         batchAlerts: false,
         batchResult: null,
         batchRunId: null,
@@ -1051,7 +1127,7 @@ function apiTranscriptor() {
         processConfirmText: '',
         processConfirmAction: null,
         processAlerts: false,
-        batch: {{ (int) config('transcriptor.scan_batch', 5) }},
+        batch: {{ (int) config('transcriptor.scan_batch', 100) }},
         // Multi-selección de archivos para envío en lote
         selectedFileIds: new Set(),
         bulkSending: false,
@@ -1076,10 +1152,10 @@ function apiTranscriptor() {
             return this.storages.filter(s => s.transcription_enabled);
         },
         get jobsPendingCount() {
-            return this.jobs.filter(j => j.state === 'queued' || j.state === 'processing').length;
+            return this.jobs.filter(j => ['pending', 'queued', 'processing'].includes(j.state)).length;
         },
         get jobsCompletedCount() {
-            return this.jobs.filter(j => j.state === 'done' || j.state === 'error' || j.state === 'dead').length;
+            return this.jobs.filter(j => ['done', 'error', 'dead'].includes(j.state)).length;
         },
         filteredJobsCount() {
             if (this.jobsSubTab === 'pending') return this.jobsPendingCount;
@@ -1186,13 +1262,13 @@ function apiTranscriptor() {
         },
         // --- Bulk dispatch de jobs pendientes (Trabajos → Pendientes) ---
         dispatchableJobs() {
-            return (this.jobs || []).filter(j => j.state === 'queued' || j.state === 'processing');
+            return (this.jobs || []).filter(j => ['pending', 'queued', 'processing'].includes(j.state));
         },
         dispatchableJobsCount() {
             return this.dispatchableJobs().length;
         },
         isDispatchable(job) {
-            return job && (job.state === 'queued' || job.state === 'processing');
+            return job && ['pending', 'queued', 'processing'].includes(job.state);
         },
         toggleJobSelected(jobId) {
             const id = Number(jobId);
@@ -1563,77 +1639,78 @@ function apiTranscriptor() {
             if (this.bulkDispatching) return;
             let targets;
             if (this.selectJobMode && this.selectedJobIds.size > 0) {
-                // Modo selección: sólo los ids explícitamente marcados.
                 targets = (this.jobs || []).filter(j =>
                     this.selectedJobIds.has(Number(j.id)) && this.isDispatchable(j)
                 );
             } else {
-                // Modo por defecto: todos los dispatchable.
                 targets = this.dispatchableJobs();
             }
             if (targets.length === 0) {
                 this.bulkDispatchResult = {
-                    sentNew: 0, refreshedDone: 0, refreshedProcessing: 0,
-                    refreshedError: 0, errors: 0, skipped: 0,
+                    enqueued: 0, skipped_queued: 0, errors: 0,
+                    message: 'No hay trabajos dispatchable seleccionados.',
                 };
                 return;
             }
             this.bulkDispatching = true;
             this.bulkDispatchResult = null;
             const csrf = document.querySelector('meta[name=csrf-token]').content;
-            // Cada job va a su endpoint correcto:
-            //   - sin job_id → /dispatch-now (ffmpeg + POST externo)
-            //   - con job_id → /refresh-status (poll upstream, descarga SRT si listo)
-            const results = await Promise.allSettled(targets.map(j => {
-                const endpoint = j.job_id
-                    ? '/ia/api-transcriptor/jobs/' + j.id + '/refresh-status'
-                    : '/ia/api-transcriptor/jobs/' + j.id + '/dispatch-now';
-                return fetch(endpoint, {
+            const ids = targets.map(j => Number(j.id));
+            try {
+                const res = await fetch('/ia/api-transcriptor/jobs/bulk-dispatch', {
                     method: 'POST',
                     credentials: 'same-origin',
-                    headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': csrf },
-                }).then(async r => ({
-                    ok: r.ok,
-                    status: r.status,
-                    job: j,
-                    payload: await r.json().catch(() => ({})),
-                }));
-            }));
-            let sentNew = 0, refreshedDone = 0, refreshedProcessing = 0,
-                refreshedError = 0, errors = 0, skipped = 0;
-            for (const r of results) {
-                if (r.status === 'rejected') { errors++; continue; }
-                const v = r.value;
-                if (!v.ok) {
-                    if (v.payload && v.payload.already_submitted) skipped++;
-                    else errors++;
-                    continue;
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json',
+                        'X-CSRF-TOKEN': csrf,
+                    },
+                    body: JSON.stringify({ ids }),
+                });
+                const data = await res.json().catch(() => ({}));
+                if (res.status === 503) {
+                    // Redis caído parcial
+                    this.bulkDispatchResult = {
+                        enqueued: data.enqueued ?? 0,
+                        skipped_queued: data.skipped_queued ?? 0,
+                        errors: data.errors ?? 1,
+                        message: 'Redis no disponible — reintenta en unos segundos.',
+                    };
+                    alert(this.bulkDispatchResult.message);
+                    return;
                 }
-                if (v.payload && v.payload.already_submitted) {
-                    skipped++;
-                } else if (v.job.job_id) {
-                    // refresh-status
-                    const st = v.payload && v.payload.state;
-                    if (st === 'done') refreshedDone++;
-                    else if (st === 'processing') refreshedProcessing++;
-                    else if (st === 'error' || st === 'dead') refreshedError++;
-                    else refreshedProcessing++;
-                } else {
-                    // dispatch-now nuevo
-                    sentNew++;
+                if (res.status === 422) {
+                    const msg = (data.message || data.errors?.ids?.[0] || 'Validación fallida') + '';
+                    this.bulkDispatchResult = { enqueued: 0, skipped_queued: 0, errors: 1, message: msg };
+                    alert(msg);
+                    return;
                 }
+                if (!res.ok) {
+                    this.bulkDispatchResult = {
+                        enqueued: 0, skipped_queued: 0, errors: 1,
+                        message: data.error || `Error HTTP ${res.status}`,
+                    };
+                    alert(this.bulkDispatchResult.message);
+                    return;
+                }
+                this.bulkDispatchResult = {
+                    enqueued: data.enqueued ?? 0,
+                    skipped_queued: data.skipped_queued ?? 0,
+                    errors: data.errors ?? 0,
+                };
+            } catch (e) {
+                this.bulkDispatchResult = {
+                    enqueued: 0, skipped_queued: 0, errors: 1,
+                    message: (e && e.message) || 'Error de conexión',
+                };
+                alert(this.bulkDispatchResult.message);
+            } finally {
+                this.selectedJobIds = new Set();
+                this.selectJobMode = false;
+                this.bulkDispatching = false;
+                await this.load();
+                await this.loadStats();
             }
-            this.bulkDispatchResult = {
-                sentNew, refreshedDone, refreshedProcessing,
-                refreshedError, errors, skipped,
-            };
-            // Salir del modo selección; la limpieza fina la hace load() al
-            // reconciliar selectedJobIds con los dispatchable actuales.
-            this.selectedJobIds = new Set();
-            this.selectJobMode = false;
-            this.bulkDispatching = false;
-            await this.load();
-            await this.loadStats();
         },
         async refreshJobStatus(job) {
             if (!job || !job.id) return;
@@ -1681,8 +1758,17 @@ function apiTranscriptor() {
             this.batchRunning = true;
             this.batchResult = null;
             this.batchProgress = null;
+            // Watchdog: si la respuesta HTTP tarda >5s, asumimos que el proceso fue
+            // iniciado y entramos a polling igual. El backend usa proc_open + /dev/null
+            // para no bloquear, pero la red o el browser pueden introducir latencia.
+            const startPolling = (runId) => {
+                this.batchRunId = runId;
+                if (this.batchPollTimer) clearInterval(this.batchPollTimer);
+                this.batchPollTimer = setInterval(() => this.pollBatch(), 2000);
+                this.pollBatch();
+            };
             try {
-                const res = await apiFetch('/ia/api-transcriptor/process-batch', {
+                const fetchPromise = apiFetch('/ia/api-transcriptor/process-batch', {
                     method: 'POST', credentials: 'same-origin',
                     headers: {
                         'Content-Type': 'application/json',
@@ -1691,19 +1777,34 @@ function apiTranscriptor() {
                     },
                     body: JSON.stringify({ batch: this.batchSize, generate_alerts: this.batchAlerts }),
                 });
+                const res = await Promise.race([
+                    fetchPromise,
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('watchdog-timeout')), 5000))
+                ]);
                 const data = await res.json().catch(() => ({}));
                 if (!res.ok) {
                     alert(data.error || 'Error al iniciar el lote');
                     this.batchRunning = false;
                     return;
                 }
-                this.batchRunId = data.run_id;
-                // Iniciar polling del progreso cada 2s.
-                this.batchPollTimer = setInterval(() => this.pollBatch(), 2000);
-                this.pollBatch();
+                startPolling(data.run_id);
             } catch (e) {
-                alert('Error de conexión: ' + (e?.message || ''));
-                this.batchRunning = false;
+                // Timeout del watchdog: la request probablemente está en vuelo o el
+                // server la está procesando. Asumimos "started" y entramos a polling
+                // usando el runId que el server habrá publicado en cache al iniciar.
+                if (e?.message === 'watchdog-timeout') {
+                    // Esperar un poco a que el server registre el runId y luego iniciar polling.
+                    setTimeout(() => {
+                        // Si el server responde tarde pero con run_id, este startPolling
+                        // se ejecutará. Si nunca respondió, el polling verá cache vacío
+                        // y mostrará error después de varios intentos.
+                        this.batchRunId = this.batchRunId || ('timeout_' + Date.now());
+                        startPolling(this.batchRunId);
+                    }, 1500);
+                } else {
+                    alert('Error de conexión: ' + (e?.message || ''));
+                    this.batchRunning = false;
+                }
             }
         },
         confirmProcessFolder() {
@@ -1804,7 +1905,13 @@ function apiTranscriptor() {
             }
         },
         async cancelJob(job) {
-            if (!confirm('¿Cancelar este job? Se cancelará también en la API externa si está en cola.')) return;
+            let confirmMsg;
+            if (job.state === 'pending') {
+                confirmMsg = '¿Borrar esta fila pendiente? El archivo subyacente NO se elimina, solo la entrada de transcripción que aún no fue enviada.';
+            } else {
+                confirmMsg = '¿Cancelar este job? Se cancelará también en la API externa si está en cola.';
+            }
+            if (!confirm(confirmMsg)) return;
             try {
                 const res = await apiFetch('/ia/api-transcriptor/jobs/' + job.id + '/cancel', {
                     method: 'POST', credentials: 'same-origin',
@@ -1812,6 +1919,7 @@ function apiTranscriptor() {
                 });
                 const d = await res.json().catch(() => ({}));
                 if (!res.ok) { alert(d.error || 'No se pudo cancelar'); return; }
+                if (d.message) console.info('[transcriptor]', d.message);
                 await this.load();
             } catch (e) { alert('Error de conexión'); }
         },
@@ -1909,22 +2017,14 @@ function apiTranscriptor() {
                 method: 'POST',
                 credentials: 'same-origin',
                 headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content },
-                body: JSON.stringify({ transcription_enabled: newValue, transcription_priority: s.transcription_priority || 0 }),
+                body: JSON.stringify({ transcription_enabled: newValue }),
             });
             if (res.ok) { const updated = await res.json(); Object.assign(s, updated); }
             else { s.transcription_enabled = !newValue; alert('No se pudo cambiar el estado del storage'); }
         },
-        async savePriority(s) {
-            const res = await apiFetch('/ia/api-transcriptor/storages/' + s.id + '/toggle', {
-                method: 'POST',
-                credentials: 'same-origin',
-                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content },
-                body: JSON.stringify({ transcription_priority: s.transcription_priority || 0 }),
-            });
-            if (!res.ok) { alert('No se pudo guardar la prioridad'); }
-        },
         stateClass(state) {
             return {
+                pending: 'bg-slate-200 text-slate-700',
                 queued: 'bg-slate-100 text-slate-600',
                 processing: 'bg-blue-100 text-blue-700',
                 done: 'bg-green-100 text-green-700',
@@ -1934,6 +2034,7 @@ function apiTranscriptor() {
         },
         stateDot(state) {
             return {
+                pending: 'bg-slate-500',
                 queued: 'bg-slate-400',
                 processing: 'bg-blue-500',
                 done: 'bg-green-500',

@@ -4,8 +4,8 @@
 El sistema SHALL permitir al admin marcar cada `StorageProvider` con la bandera `transcription_enabled = true` para indicar que sus archivos deben enviarse a la API de transcripción.
 
 #### Scenario: Admin habilita un storage para transcripción
-- **WHEN** el admin edita un StorageProvider y marca `transcription_enabled = true` con `transcription_priority` numérico
-- **THEN** el sistema persiste ambos campos y el scanner comienza a considerar archivos de ese storage en el siguiente ciclo
+- **WHEN** el admin edita un StorageProvider y marca `transcription_enabled = true`
+- **THEN** el sistema persiste el campo y el scanner comienza a considerar archivos de ese storage en el siguiente ciclo
 
 #### Scenario: Admin deshabilita un storage
 - **WHEN** el admin marca `transcription_enabled = false`
@@ -112,12 +112,8 @@ El sistema SHALL convertir el archivo de entrada a Opus 64 kbps, mono, 16 kHz us
 
 ---
 
-### Requirement: Jobs se encolan con prioridad en Redis procesados por 10 workers paralelos
-El sistema SHALL encolar `ConvertAndTranscribeJob` en Redis con una prioridad calculada como `storage_priority * 10 + (es_hoy ? 100 : 0) + (es_manual ? 5 : 0)`, y SHALL mantener 10 queue workers procesando la cola en paralelo via supervisor.
-
-#### Scenario: Job de hoy con storage priority alta se procesa primero
-- **WHEN** hay dos jobs en cola: uno de hoy (storage priority=10) y uno histórico (storage priority=10)
-- **THEN** el job de hoy (priority=200) se procesa antes que el histórico (priority=105)
+### Requirement: Jobs se encolan en Redis y los procesan 10 workers paralelos
+El sistema SHALL encolar `ConvertAndTranscribeJob` en Redis en la cola única `transcription` y SHALL mantener 10 queue workers procesando esa cola en paralelo via supervisor. El orden de procesamiento queda determinado por el orden de dispatch (FIFO) y la concurrencia del supervisor.
 
 #### Scenario: 10 workers procesan en paralelo
 - **WHEN** hay 50 jobs en cola y 10 workers activos

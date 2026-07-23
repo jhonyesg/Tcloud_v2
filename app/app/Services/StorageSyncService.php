@@ -187,7 +187,6 @@ class StorageSyncService
 
         $foldersToSync = File::where('storage_provider_id', $storage->id)
             ->where('is_folder', true)
-            ->whereNotNull('parent_id')
             ->get();
 
         foreach ($foldersToSync as $folder) {

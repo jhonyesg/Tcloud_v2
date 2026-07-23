@@ -10,7 +10,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 class Transcription extends Model
 {
     protected $fillable = [
-        'file_id', 'original_name', 'job_id', 'node_url', 'state', 'generate_alerts', 'language',
+        'file_id', 'original_name', 'job_id', 'node_url', 'node_id', 'state', 'generate_alerts', 'language',
         'srt_content', 'duration_seconds', 'word_count',
         'started_at', 'finished_at', 'error_message', 'retries',
     ];

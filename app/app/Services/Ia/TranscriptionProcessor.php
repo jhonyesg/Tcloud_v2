@@ -27,6 +27,15 @@ class TranscriptionProcessor
      */
     public function processDone(Transcription $transcription): void
     {
+        $this->processDoneWithSrt($transcription, null);
+    }
+
+    /**
+     * Procesa el SRT done de una transcripción. Si se pasa $srt explícito
+     * se usa directamente (evita un GET doble cuando el polling ya lo descargó).
+     */
+    public function processDoneWithSrt(Transcription $transcription, ?string $srt): void
+    {
         if ($transcription->state === Transcription::STATE_DONE) {
             // Ya procesado; no duplicar (idempotencia del matcher).
             return;
@@ -36,7 +45,9 @@ class TranscriptionProcessor
             throw new \RuntimeException('Transcription sin job_id/node_url para descargar SRT.');
         }
 
-        $srt = $this->client->getSrt($transcription->job_id, $transcription->node_url);
+        if ($srt === null) {
+            $srt = $this->client->getSrt($transcription->job_id, $transcription->node_url);
+        }
         $segments = $this->parser->parse($srt);
 
         // Aplicar correcciones approved: setea `text` desde `text_raw`.
