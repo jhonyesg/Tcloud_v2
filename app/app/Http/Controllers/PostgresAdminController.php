@@ -97,6 +97,68 @@ class PostgresAdminController extends Controller
                 ORDER BY table_name
             ");
 
+            // Primary keys for all tables in one query
+            $pkStmt = $pdo->query("
+                SELECT tc.table_name, kcu.column_name
+                FROM information_schema.table_constraints tc
+                JOIN information_schema.key_column_usage kcu
+                    ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+                WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_schema = 'public'
+                ORDER BY tc.table_name, kcu.ordinal_position
+            ");
+            $pkMap = [];
+            foreach ($pkStmt->fetchAll() as $pkRow) {
+                $pkMap[$pkRow['table_name']][] = $pkRow['column_name'];
+            }
+
+            // Estimated row counts
+            $countStmt = $pdo->query("
+                SELECT relname AS table_name, n_live_tup AS row_count
+                FROM pg_stat_user_tables
+            ");
+            $countMap = [];
+            foreach ($countStmt->fetchAll() as $cRow) {
+                $countMap[$cRow['table_name']] = (int) $cRow['row_count'];
+            }
+
+            // All FKs with delete/update rules
+            $allFkStmt = $pdo->query("
+                SELECT
+                    tc.table_name,
+                    kcu.column_name,
+                    ccu.table_name  AS foreign_table_name,
+                    ccu.column_name AS foreign_column_name,
+                    rc.delete_rule,
+                    rc.update_rule
+                FROM information_schema.table_constraints AS tc
+                JOIN information_schema.key_column_usage AS kcu
+                    ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+                JOIN information_schema.constraint_column_usage AS ccu
+                    ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema
+                JOIN information_schema.referential_constraints AS rc
+                    ON tc.constraint_name = rc.constraint_name AND tc.table_schema = rc.constraint_schema
+                WHERE tc.constraint_type = 'FOREIGN KEY'
+                AND tc.table_schema = 'public'
+            ");
+            $fkOut = [];
+            $fkIn  = [];
+            foreach ($allFkStmt->fetchAll() as $fkRow) {
+                $entry = [
+                    'column'      => $fkRow['column_name'],
+                    'references'  => $fkRow['foreign_table_name'] . '.' . $fkRow['foreign_column_name'],
+                    'onDelete'    => $fkRow['delete_rule'] ?: 'NO ACTION',
+                    'onUpdate'    => $fkRow['update_rule'] ?: 'NO ACTION',
+                ];
+                $fkOut[$fkRow['table_name']][] = $entry;
+                $fkIn[$fkRow['foreign_table_name']][] = [
+                    'fromTable'  => $fkRow['table_name'],
+                    'fromColumn' => $fkRow['column_name'],
+                    'references' => $fkRow['foreign_table_name'] . '.' . $fkRow['foreign_column_name'],
+                    'onDelete'   => $entry['onDelete'],
+                    'onUpdate'   => $entry['onUpdate'],
+                ];
+            }
+
             $tables = [];
             foreach ($tablesStmt->fetchAll() as $row) {
                 $tableName = $row['table_name'];
@@ -109,6 +171,11 @@ class PostgresAdminController extends Controller
                 ");
                 $colsStmt->execute([$tableName]);
 
+                $pkSet = [];
+                if (isset($pkMap[$tableName])) {
+                    $pkSet = array_flip($pkMap[$tableName]);
+                }
+
                 $columns = [];
                 foreach ($colsStmt->fetchAll() as $col) {
                     $columns[] = [
@@ -117,34 +184,17 @@ class PostgresAdminController extends Controller
                         'nullable'  => $col['is_nullable'] === 'YES',
                         'default'   => $col['column_default'],
                         'maxLength' => $col['character_maximum_length'],
-                    ];
-                }
-
-                $fkStmt = $pdo->prepare("
-                    SELECT kcu.column_name, ccu.table_name AS foreign_table_name, ccu.column_name AS foreign_column_name
-                    FROM information_schema.table_constraints AS tc
-                    JOIN information_schema.key_column_usage AS kcu
-                        ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
-                    JOIN information_schema.constraint_column_usage AS ccu
-                        ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema
-                    WHERE tc.constraint_type = 'FOREIGN KEY'
-                    AND tc.table_name = ?
-                    AND tc.table_schema = 'public'
-                ");
-                $fkStmt->execute([$tableName]);
-
-                $foreignKeys = [];
-                foreach ($fkStmt->fetchAll() as $fk) {
-                    $foreignKeys[] = [
-                        'column'     => $fk['column_name'],
-                        'references' => $fk['foreign_table_name'] . '.' . $fk['foreign_column_name'],
+                        'isPK'      => isset($pkSet[$col['column_name']]),
                     ];
                 }
 
                 $tables[] = [
                     'name'        => $tableName,
                     'columns'     => $columns,
-                    'foreignKeys' => $foreignKeys,
+                    'foreignKeys' => $fkOut[$tableName] ?? [],
+                    'incomingFKs' => $fkIn[$tableName]  ?? [],
+                    'primaryKey'  => $pkMap[$tableName] ?? [],
+                    'rowCount'    => $countMap[$tableName] ?? 0,
                 ];
             }
 

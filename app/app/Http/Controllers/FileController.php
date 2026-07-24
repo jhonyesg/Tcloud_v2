@@ -81,7 +81,7 @@ class FileController extends Controller
                     });
                 }
 
-                $files = $query->orderBy('is_folder', 'desc')->orderBy('created_at', 'desc')->get();
+                $files = $query->orderBy('is_folder', 'desc')->orderBy('created_at', 'desc')->limit(500)->get();
                 return response()->json($files);
             }
 
@@ -224,8 +224,13 @@ class FileController extends Controller
             return response()->json(['error' => 'Use /files/upload for file uploads'], 400);
         }
 
+        $sanitizedName = basename($request->name);
+        if ($sanitizedName !== $request->name || $sanitizedName === '' || $sanitizedName === '.') {
+            return response()->json(['error' => 'Invalid folder name'], 400);
+        }
+
         $existing = File::where('parent_id', $parentId)
-            ->where('name', $request->name)
+            ->where('name', $sanitizedName)
             ->where('storage_provider_id', $storageId)
             ->first();
 
@@ -234,10 +239,15 @@ class FileController extends Controller
         }
 
         $storage = StorageProvider::find($storageId);
-        $path = $this->generatePath($parentId, $request->name, $storage);
+        $path = $this->generatePath($parentId, $sanitizedName, $storage);
 
         if ($storage->type === 'local') {
             $physicalPath = rtrim($storage->base_path, '/') . '/' . $path;
+            $realBase = realpath($storage->base_path);
+            $realPath = realpath(dirname($physicalPath)) . '/' . basename($physicalPath);
+            if (!$realBase || !$realPath || !str_starts_with($realPath, $realBase)) {
+                return response()->json(['error' => 'Invalid path'], 400);
+            }
             if (!is_dir($physicalPath)) {
                 if (!mkdir($physicalPath, 0755, true)) {
                     return response()->json(['error' => 'No se pudo crear el directorio'], 500);
@@ -348,7 +358,8 @@ class FileController extends Controller
         $mimeType = $file->getMimeType();
         $size = $file->getSize();
 
-        if ($user->personal_quota_bytes > 0 && !$parentId) {
+        $isPersonalStorage = str_starts_with($storage->base_path ?? '', '/home/www/Usuarios_tcloud/');
+        if ($user->personal_quota_bytes > 0 && $isPersonalStorage) {
             if ($user->personal_used_bytes + $size > $user->personal_quota_bytes) {
                 return response()->json(['error' => 'Personal quota exceeded'], 413);
             }

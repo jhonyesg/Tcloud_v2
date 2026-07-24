@@ -2,11 +2,14 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\File;
+use App\Models\Share;
 use App\Models\StorageProvider;
 use App\Models\User;
 use App\Models\UserStorage;
 use App\Modules\Correo\Services\NotificationService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Session;
 
@@ -115,6 +118,36 @@ class UserController extends Controller
             return response()->json(['error' => 'Cannot delete yourself'], 403);
         }
 
+        // Cleanup files (physical + DB) — chunks to avoid memory exhaustion
+        $user->files()->chunkById(100, function ($files) {
+            foreach ($files as $file) {
+                if (!$file->is_folder) {
+                    $storage = $file->storageProvider;
+                    if ($storage && $storage->type === 'local') {
+                        $fullPath = rtrim($storage->base_path, '/') . '/' . $file->path;
+                        if (file_exists($fullPath) && is_file($fullPath)) {
+                            @unlink($fullPath);
+                        }
+                    }
+                }
+                $file->delete();
+            }
+        });
+
+        // Cleanup shares created by this user
+        Share::where('created_by', $user->id)->delete();
+
+        // Cleanup user storages
+        UserStorage::where('user_id', $user->id)->delete();
+
+        // Cleanup other NO ACTION dependencies
+        DB::table('canales')->where('usuario_id', $user->id)->delete();
+        DB::table('media_edit_jobs')->where('user_id', $user->id)->delete();
+        DB::table('correo_log')->where('user_id', $user->id)->delete();
+        DB::table('correo_config')->where('updated_by', $user->id)->update(['updated_by' => null]);
+        DB::table('correo_plantillas')->where('created_by', $user->id)->update(['created_by' => null]);
+
+        // Remaining FKs (user_sessions, external_site_user, grabador_usuario, user_keyword) are CASCADE in DB
         $user->delete();
 
         return response()->json(['message' => 'User deleted']);

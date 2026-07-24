@@ -2,6 +2,7 @@
 
 namespace App\Http\Middleware;
 
+use App\Models\User;
 use App\Models\UserSession;
 use App\Services\SessionService;
 use Closure;
@@ -51,9 +52,18 @@ class SessionTracker
         // Sesión válida — cachear por 30 s para evitar queries repetidas
         Cache::put($cacheKey, '1', 30);
 
-        // Throttle: update last_activity_at at most once per 60 seconds
+        // Throttle: update last_activity_at and renew expires_at at most once per 60 seconds
         if ($record->last_activity_at->diffInSeconds(now()) >= 60) {
-            $record->update(['last_activity_at' => now()]);
+            $user = User::find(Session::get('user_id'));
+            $lifetimeMinutes = $user ? $this->sessionService->getEffectiveLifetimeMinutes($user) : 0;
+            $newExpiry = $lifetimeMinutes > 0 ? now()->addMinutes($lifetimeMinutes) : null;
+
+            $record->update([
+                'last_activity_at' => now(),
+                'expires_at'        => $newExpiry,
+            ]);
+
+            Cache::forget($cacheKey);
         }
 
         return $next($request);

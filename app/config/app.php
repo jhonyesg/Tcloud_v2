@@ -5,7 +5,7 @@ return [
     'env' => env('APP_ENV', 'local'),
     'debug' => (bool) env('APP_DEBUG', true),
     'url' => env('APP_URL', 'http://localhost'),
-    'timezone' => 'America/Mexico_City',
+    'timezone' => 'America/Bogota',
     'locale' => 'es',
     'fallback_locale' => 'es',
     'faker_locale' => 'es_MX',

@@ -17,8 +17,15 @@ return Application::configure(basePath: dirname(__DIR__))
             'admin'           => \App\Http\Middleware\AdminOnly::class,
             'role'            => \App\Http\Middleware\CheckRole::class,
             'session.tracker' => \App\Http\Middleware\SessionTracker::class,
+            'misavisos'       => \App\Http\Middleware\EnsureMisAvisosEnabled::class,
+            'throttle'        => \Illuminate\Routing\Middleware\ThrottleRequests::class,
         ]);
         $middleware->appendToGroup('web', \App\Http\Middleware\SessionTracker::class);
+
+        // Excepciones CSRF: el webhook del transcriptor se valida por token propio.
+        $middleware->validateCsrfTokens(except: [
+            'webhooks/transcription',
+        ]);
     })
     ->withExceptions(function (Exceptions $exceptions) {
         //

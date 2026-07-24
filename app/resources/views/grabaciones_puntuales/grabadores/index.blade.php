@@ -302,6 +302,10 @@
             <span class="hidden sm:inline">Nuevo Grabador</span>
             <span class="sm:hidden">Nuevo</span>
         </button>
+        <button onclick="startGrabadoresTour()" class="flex items-center gap-1 sm:gap-2 bg-purple-600 hover:bg-purple-700 text-white px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl font-medium transition-colors shadow-sm text-sm" title="Tour interactivo">
+            <i class="fas fa-map-marked-alt text-xs"></i>
+            <span class="hidden sm:inline">Tour</span>
+        </button>
     </div>
 
     <!-- Loading -->
@@ -952,4 +956,96 @@
         </div>
     </div>
 </div>
+<script src="/js/interactive-tour.js"></script>
+<script>
+function startGrabadoresTour() {
+    TcloudTour.start({
+        steps: [
+            {
+                title: 'Grabadores',
+                content: 'Los grabadores son los <strong>dispositivos o servicios</strong> que ejecutan las grabaciones fisicamente. ' +
+                         'Aqui administras los grabadores, sus usuarios asignados y verificas su estado de conexion.',
+                icon: 'fa-satellite-dish',
+                color: '#10b981',
+                selector: null,
+                position: 'center',
+            },
+            {
+                title: 'Crear Grabador',
+                content: 'Registra un nuevo grabador con su <strong>nombre, tipo (Radio o TV), IP y puerto</strong>. ' +
+                         'Una vez creado, puedes asignarle usuarios y crear canales de grabacion.',
+                icon: 'fa-plus',
+                color: '#10b981',
+                selector: 'button[title="Tour interactivo"]',
+                position: 'left',
+            },
+            {
+                title: 'Gestionar Usuarios',
+                content: 'Asigna <strong>usuarios al grabador</strong>. Los usuarios asignados podran ver y ejecutar ' +
+                         'las grabaciones de los canales que dependan de este grabador. ' +
+                         'Puedes asignar permisos especificos por usuario.',
+                icon: 'fa-users',
+                color: '#3b82f6',
+                selector: function () { return document.querySelector('button[class*="bg-blue-50"][onclick*="openUsersModal"]') || document.querySelector('button[onclick*="openUsersModal"]'); },
+                position: 'bottom',
+            },
+            {
+                title: 'Editar Grabador',
+                content: 'Modifica los datos del grabador: nombre, tipo, IP, puerto y estado (activo/inactivo). ' +
+                         'Si desactivas un grabador, sus canales no podran ejecutar grabaciones.',
+                icon: 'fa-edit',
+                color: '#6366f1',
+                selector: function () { return document.querySelector('button[onclick*="openEdit"]'); },
+                position: 'bottom',
+            },
+            {
+                title: 'Probar Conexion',
+                content: 'Verifica que el grabador este <strong>conectado y respondiendo</strong>. ' +
+                         'Esta prueba envia una peticion al grabador y muestra si responde correctamente.',
+                icon: 'fa-plug',
+                color: '#16a34a',
+                selector: function () { return document.querySelector('button[onclick*="testGrabador"]'); },
+                position: 'bottom',
+            },
+            {
+                title: 'Ver Detalle',
+                content: 'Abre la pagina de detalle del grabador donde puedes ver todos los usuarios asignados, ' +
+                         'sus permisos y el historial de grabaciones.',
+                icon: 'fa-eye',
+                color: '#64748b',
+                selector: function () { return document.querySelector('button[onclick*="openDetail"]'); },
+                position: 'bottom',
+            },
+            {
+                title: 'Eliminar Grabador',
+                content: 'Elimina el grabador del sistema. <strong>Cuidado:</strong> esta accion no se puede deshacer ' +
+                         'y afecta todos los canales asignados a este grabador. Te pedira confirmacion.',
+                icon: 'fa-trash-alt',
+                color: '#dc2626',
+                selector: function () { return document.querySelector('button[onclick*="deletingGrabador"]'); },
+                position: 'bottom',
+            },
+            {
+                title: 'Tipo: Radio vs TV',
+                content: 'Los grabadores pueden ser de tipo <strong>Radio</strong> (audio) o <strong>TV</strong> (audio+video). ' +
+                         'El tipo determina que formatos de grabacion soporta y como se procesa el contenido.',
+                icon: 'fa-info-circle',
+                color: '#8b5cf6',
+                selector: null,
+                position: 'center',
+            },
+            {
+                title: 'Tour Completado',
+                content: 'Ya conoces el modulo de Grabadores. ' +
+                         'Recuerda: <strong>Probar</strong> para verificar conexion, <strong>Usuarios</strong> para asignar accesos, ' +
+                         'y <strong>Editar</strong> para configurar. Puedes repetir este tour cuando quieras.',
+                icon: 'fa-check-circle',
+                color: '#16a34a',
+                selector: null,
+                position: 'center',
+            },
+        ]
+    });
+}
+</script>
 @endsection

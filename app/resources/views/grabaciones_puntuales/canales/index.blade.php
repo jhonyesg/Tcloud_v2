@@ -20,6 +20,10 @@
         <p class="text-xs sm:text-sm text-slate-500 mt-1">Canales de grabación configurados</p>
     </div>
     <div class="flex items-center gap-2">
+        <button onclick="startCanalesTour()" class="flex items-center gap-2 bg-purple-600 hover:bg-purple-700 text-white px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl font-medium text-sm transition-colors shadow-sm" title="Tour interactivo">
+            <i class="fas fa-map-marked-alt text-xs"></i>
+            <span class="hidden sm:inline">Tour</span>
+        </button>
         @if($user && $user->isAdmin())
             <button id="btn-sincronizar"
                     data-url="{{ route('canales.sincronizar') }}"
@@ -500,5 +504,100 @@
         });
     });
 })();
+</script>
+<script src="/js/interactive-tour.js"></script>
+<script>
+function startCanalesTour() {
+    TcloudTour.start({
+        steps: [
+            {
+                title: 'Grabaciones Puntuales',
+                content: 'Este modulo permite <strong>grabar audio/video en horarios especificos</strong> (slots) ' +
+                         'desde canales de emisoras o medios puntuales. Aqui configuras y administras los canales de grabacion.',
+                icon: 'fa-broadcast-tower',
+                color: '#6366f1',
+                selector: null,
+                position: 'center',
+            },
+            {
+                title: 'Lista de Canales',
+                content: 'Cada fila representa un <strong>canal de grabacion</strong>. El <strong>Slot</strong> indica el nombre o horario asignado. ' +
+                         'El <strong>API ID</strong> es el identificador del canal en el servidor de grabacion externo. ' +
+                         'El <strong>Estado</strong> muestra si el canal esta activo o inactivo.',
+                icon: 'fa-list',
+                color: '#3b82f6',
+                selector: '#tabla-canales',
+                position: 'bottom',
+            },
+            {
+                title: 'Ejecutar Grabacion',
+                content: 'El boton <strong>Ejecutar</strong> inicia una grabacion inmediata del canal. ' +
+                         'Solo aparece en canales activos que tienen un API ID configurado. ' +
+                         'La grabacion se procesa en el servidor y se almacena automaticamente.',
+                icon: 'fa-play',
+                color: '#16a34a',
+                selector: '.btn-ejecutar',
+                position: 'bottom',
+            },
+            {
+                title: 'Editar Canal',
+                content: 'Modifica la configuracion del canal: nombre del slot, detalle, grabador asignado, ' +
+                         'y parametros de grabacion (duracion, formato, etc).',
+                icon: 'fa-edit',
+                color: '#6366f1',
+                selector: 'a[href*="edit"]',
+                position: 'bottom',
+            },
+            {
+                title: 'Limpiar Canal',
+                content: 'Elimina el canal de grabacion. Esta accion <strong>no se puede deshacer</strong>. ' +
+                         'Te pedira confirmacion antes de proceder.',
+                icon: 'fa-eraser',
+                color: '#f59e0b',
+                selector: '.btn-limpiar',
+                position: 'bottom',
+            },
+            {
+                title: 'Crear Canal',
+                content: 'Crea un nuevo canal de grabacion asignandolo a un grabador existente. ' +
+                         'Los administradores pueden sincronizar IDs desde el servidor externo.',
+                icon: 'fa-plus',
+                color: '#6366f1',
+                selector: function () {
+                    return document.querySelector('a[href*="create"]') || document.querySelector('button[data-url*="sincronizar"]');
+                },
+                position: 'bottom',
+            },
+            {
+                title: 'Busqueda',
+                content: 'Filtra canales por nombre de slot, detalle o API ID. ' +
+                         'Util cuando tienes muchos canales configurados.',
+                icon: 'fa-search',
+                color: '#64748b',
+                selector: '#busqueda',
+                position: 'bottom',
+            },
+            {
+                title: 'Grabadores',
+                content: 'Los <strong>grabadores</strong> son los dispositivos o servicios que ejecutan las grabaciones fisicamente. ' +
+                         'Cada canal se asigna a un grabador. Puedes gestionarlos desde el menu lateral.',
+                icon: 'fa-microphone',
+                color: '#8b5cf6',
+                selector: 'a[href*="grabadores"]',
+                position: 'bottom',
+            },
+            {
+                title: 'Tour Completado',
+                content: 'Ya conoces el modulo de Grabaciones Puntuales. ' +
+                         'Recuerda: <strong>Ejecutar</strong> para grabar ahora, <strong>Editar</strong> para configurar, ' +
+                         'y <strong>Limpiar</strong> para eliminar. Puedes repetir este tour cuando quieras.',
+                icon: 'fa-check-circle',
+                color: '#16a34a',
+                selector: null,
+                position: 'center',
+            },
+        ]
+    });
+}
 </script>
 @endsection

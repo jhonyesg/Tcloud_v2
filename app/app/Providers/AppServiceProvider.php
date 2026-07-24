@@ -4,6 +4,15 @@ namespace App\Providers;
 
 use App\Models\User;
 use App\Models\ExternalSite;
+use App\Models\Correction;
+use App\Models\UserAlertsInteligente;
+use App\Services\Ia\AlertDispatcher;
+use App\Services\Ia\AudioConverter;
+use App\Services\Ia\CorrectionService;
+use App\Services\Ia\KeywordMatcher;
+use App\Services\Ia\SrtParser;
+use App\Services\Ia\TranscriptionProcessor;
+use App\Services\Ia\TranscriptorApiClient;
 use Illuminate\Support\Facades\Session;
 use Illuminate\Support\ServiceProvider;
 
@@ -11,7 +20,14 @@ class AppServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
-        //
+        // Modulo IA — bindings del transcriptor
+        $this->app->singleton(TranscriptorApiClient::class);
+        $this->app->singleton(AudioConverter::class);
+        $this->app->singleton(SrtParser::class);
+        $this->app->singleton(CorrectionService::class);
+        $this->app->singleton(TranscriptionProcessor::class);
+        $this->app->singleton(KeywordMatcher::class);
+        $this->app->singleton(AlertDispatcher::class);
     }
 
     public function boot(): void
@@ -19,9 +35,14 @@ class AppServiceProvider extends ServiceProvider
         view()->composer('layouts.app', function ($view) {
             $userId = Session::get('user_id');
 
+            $misAvisosEnabled = false;
+            $correctionsPendingCount = 0;
+
             if (!$userId) {
                 $view->with('sidebarQuota', $this->emptyQuota());
                 $view->with('userExternalSites', collect());
+                $view->with('misAvisosEnabled', $misAvisosEnabled);
+                $view->with('correctionsPendingCount', $correctionsPendingCount);
                 return;
             }
 
@@ -29,11 +50,24 @@ class AppServiceProvider extends ServiceProvider
             if (!$user) {
                 $view->with('sidebarQuota', $this->emptyQuota());
                 $view->with('userExternalSites', collect());
+                $view->with('misAvisosEnabled', $misAvisosEnabled);
+                $view->with('correctionsPendingCount', $correctionsPendingCount);
                 return;
             }
 
             $userExternalSites = $user->externalSites()->where('enabled', true)->get();
             $view->with('userExternalSites', $userExternalSites);
+
+            // Modulo IA — visibilidad "Mis Avisos" y badge "Correcciones" pendientes.
+            $misAvisosEnabled = UserAlertsInteligente::where('user_id', $user->id)
+                ->where('enabled', true)
+                ->exists();
+            if (($user->role ?? null) === 'admin') {
+                $correctionsPendingCount = (int) Correction::where('status', Correction::STATUS_PENDING)->count();
+            }
+
+            $view->with('misAvisosEnabled', $misAvisosEnabled);
+            $view->with('correctionsPendingCount', $correctionsPendingCount);
 
             $used  = (int) $user->personal_used_bytes;
             $limit = (int) $user->personal_quota_bytes;
@@ -53,10 +87,10 @@ class AppServiceProvider extends ServiceProvider
 
             $view->with('sidebarQuota', [
                 'used_label'   => $this->formatBytes($used),
-                'limit_label'  => $this->formatBytes($limit),
-                'percentage'   => $percentage,
-                'is_unlimited' => false,
-                'color_class'  => $percentage > 90 ? 'bg-red-400' : 'bg-brand-300',
+                'limit_label'   => $this->formatBytes($limit),
+                'percentage'    => $percentage,
+                'is_unlimited'  => false,
+                'color_class'   => $percentage > 90 ? 'bg-red-400' : 'bg-brand-300',
             ]);
         });
     }

@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class User extends Model
 {
@@ -106,5 +107,43 @@ class User extends Model
         return $this->belongsToMany(ExternalSite::class, 'external_site_user')
             ->withPivot('sort_order')
             ->orderBy('sort_order');
+    }
+
+    public function userKeywords(): BelongsToMany
+    {
+        return $this->belongsToMany(Keyword::class, 'user_keyword')
+            ->withPivot('created_at');
+    }
+
+    public function keywordMatches(): HasMany
+    {
+        return $this->hasMany(KeywordMatch::class);
+    }
+
+    public function transcriptions(): BelongsToMany
+    {
+        return $this->belongsToMany(Transcription::class, 'keyword_matches', 'user_id', 'transcription_id')
+            ->withPivot(['keyword_id', 'segment_id', 'snippet', 'matched_at'])
+            ->distinct();
+    }
+
+    public function alertsInteligente(): HasOne
+    {
+        return $this->hasOne(UserAlertsInteligente::class);
+    }
+
+    public function alertLogs(): HasMany
+    {
+        return $this->hasMany(AlertLog::class);
+    }
+
+    public function correctionsProposed(): HasMany
+    {
+        return $this->hasMany(Correction::class, 'proposed_by');
+    }
+
+    public function correctionsApproved(): HasMany
+    {
+        return $this->hasMany(Correction::class, 'approved_by');
     }
 }

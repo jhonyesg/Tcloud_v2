@@ -2199,6 +2199,12 @@ deleteConfirmFile: null,
                     </svg>
                     <span class="hidden sm:inline">Subir Archivo</span>
                 </button>
+                <button onclick="startFilesTour()" class="flex items-center gap-1 sm:gap-2 bg-purple-600 hover:bg-purple-700 text-white px-2 sm:px-4 py-2 rounded-lg transition-colors" title="Tour interactivo">
+                    <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-1.447-.894L15 9m0 8V9m0 0L9 7"/>
+                    </svg>
+                    <span class="hidden sm:inline">Tour</span>
+                </button>
             </div>
         </div>
         <div class="px-3 py-2 sm:px-6 sm:py-3 bg-slate-50 border-t border-slate-100" x-show="viewMode === 'files'">
@@ -3213,7 +3219,7 @@ deleteConfirmFile: null,
                 </svg>
             </button>
             <div x-show="currentViewerFile && isVideo(currentViewerFile.mime_type)" class="w-full h-full flex items-center justify-center p-4">
-                <video x-ref="videoplayer" controls preload="auto" class="max-w-full max-h-full rounded-lg bg-black"></video>
+                <video x-ref="videoplayer" controls preload="auto" playsinline webkit-playsinline class="max-w-full max-h-full rounded-lg bg-black"></video>
             </div>
             <div x-show="currentViewerFile && isAudio(currentViewerFile.mime_type)" class="w-full flex flex-col items-center gap-6 py-16">
                 <div class="w-24 h-24 bg-purple-900/50 rounded-full flex items-center justify-center">
@@ -3745,7 +3751,7 @@ deleteConfirmFile: null,
                         ? 'background:#0f172a;'
                         : 'height:0; overflow:hidden; flex:none;'">
                     <video id="clip-media-el" class="w-full h-full object-contain"
-                           preload="metadata" playsinline></video>
+                           preload="metadata" playsinline webkit-playsinline></video>
                     <!-- Loading overlay (only inside video container) -->
                     <div x-show="!clipReady && clipFile && clipFile.mime_type && clipFile.mime_type.startsWith('video/')"
                          class="absolute inset-0 flex items-center justify-center gap-3 bg-slate-900/60">
@@ -4164,7 +4170,7 @@ deleteConfirmFile: null,
             </div>
             <div class="flex-1 flex items-center justify-center p-4" style="min-height:300px;">
                 <template x-if="clipPreviewMime.startsWith('video/')">
-                    <video :src="clipPreviewUrl" controls autoplay class="max-w-full max-h-[70vh] rounded-lg"></video>
+                    <video :src="clipPreviewUrl" controls autoplay playsinline webkit-playsinline class="max-w-full max-h-[70vh] rounded-lg"></video>
                 </template>
                 <template x-if="clipPreviewMime.startsWith('audio/')">
                     <div class="flex flex-col items-center gap-6 py-12">
@@ -4288,4 +4294,151 @@ deleteConfirmFile: null,
     100% { transform: scale(1); box-shadow: 0 0 8px rgba(124,58,237,0.3); }
 }
 </style>
+<script src="/js/interactive-tour.js"></script>
+<script>
+function startFilesTour() {
+    TcloudTour.start({
+        steps: [
+            {
+                title: 'Bienvenido a Mis Archivos',
+                content: 'Aqui puedes explorar todos tus storages, subir archivos, organizarlos en carpetas y editarlos. ' +
+                         'Este tour te guia por todas las funciones disponibles.',
+                icon: 'fa-hand-wave',
+                color: '#6366f1',
+                selector: null,
+                position: 'center',
+            },
+            {
+                title: 'Storages',
+                content: 'Cada storage es un espacio de almacenamiento asignado a tu usuario. ' +
+                         'Los storages personales (icono amarillo) son solo para ti. Los compartidos (icono azul) pueden ser usados por varios usuarios. ' +
+                         '<strong>Click en un storage</strong> para ver sus archivos.',
+                icon: 'fa-database',
+                color: '#3b82f6',
+                selector: function () {
+                    return document.querySelector('[x-show="viewMode === \'storages\' && availableStorages.length > 0"]');
+                },
+                position: 'bottom',
+                onShow: function () {
+                    var alpine = document.querySelector('[x-data]')._x_dataStack[0];
+                    if (alpine.viewMode !== 'storages') alpine.navigateToRoot();
+                },
+            },
+            {
+                title: 'Subir Archivos',
+                content: 'Una vez dentro de un storage, usa este boton para <strong>subir archivos</strong>. ' +
+                         'Tambien puedes arrastrar y soltar archivos directamente en el area de contenido.',
+                icon: 'fa-upload',
+                color: '#2563eb',
+                selector: 'button[title="Subir archivo"]',
+                position: 'bottom',
+                onShow: function () {
+                    var alpine = document.querySelector('[x-data]')._x_dataStack[0];
+                    if (alpine.viewMode === 'storages' && alpine.availableStorages.length > 0) {
+                        alpine.enterStorage(alpine.availableStorages[0].id, alpine.availableStorages[0].name);
+                    }
+                },
+            },
+            {
+                title: 'Recortar (Editor de Corte)',
+                content: 'Para archivos de audio o video, este boton abre el <strong>Editor de Corte</strong>. ' +
+                         'Puedes seleccionar un segmento del video/audio, recortarlo, crear secuencias de multiples segmentos ' +
+                         'y exportar el resultado. El editor incluye linea de tiempo, miniaturas y preview.',
+                icon: 'fa-cut',
+                color: '#8b5cf6',
+                selector: 'button[title="Editor de corte"]',
+                position: 'bottom',
+            },
+            {
+                title: 'Descargar',
+                content: 'Descarga archivos individuales o carpetas completas (como ZIP). ' +
+                         'Si seleccionas multiples archivos, aparece una barra con la opcion de descargar todo en un solo ZIP.',
+                icon: 'fa-download',
+                color: '#16a34a',
+                selector: 'button[title="Descargar"]',
+                position: 'bottom',
+            },
+            {
+                title: 'Copiar',
+                content: '<strong>Copiar</strong> duplica el archivo en otra carpeta dentro del mismo storage. ' +
+                         'El archivo original se mantiene en su ubicacion. Se abre un navegador de carpetas para elegir el destino.',
+                icon: 'fa-copy',
+                color: '#3b82f6',
+                selector: 'button[title="Copiar"]',
+                position: 'bottom',
+            },
+            {
+                title: 'Mover',
+                content: '<strong>Mover</strong> transfiere el archivo a otra carpeta dentro del storage. ' +
+                         'El archivo desaparece de su ubicacion original y aparece en la carpeta destino. ' +
+                         'Se abre un navegador de carpetas para elegir el destino.',
+                icon: 'fa-arrows-alt',
+                color: '#6366f1',
+                selector: 'button[title="Mover"]',
+                position: 'bottom',
+            },
+            {
+                title: 'Renombrar',
+                content: 'Cambia el nombre del archivo o carpeta. Solo haz click y escribe el nuevo nombre. ' +
+                         'Presiona Enter para guardar o Escape para cancelar.',
+                icon: 'fa-pen',
+                color: '#f59e0b',
+                selector: 'button[title="Renombrar"]',
+                position: 'bottom',
+            },
+            {
+                title: 'Eliminar',
+                content: '<strong>Elimina</strong> el archivo o carpeta permanentemente. ' +
+                         'Te pedira confirmacion antes de borrar. ' +
+                         'Tambien puedes seleccionar multiples archivos y eliminarlos en lote.',
+                icon: 'fa-trash',
+                color: '#dc2626',
+                selector: 'button[title="Eliminar"]',
+                position: 'bottom',
+            },
+            {
+                title: 'Compartir',
+                content: 'Genera un enlace publico para compartir archivos con cualquier persona, sin necesidad de que tenga cuenta. ' +
+                         'Puedes configurar permisos (lectura/escritura), contrasena y fecha de expiracion.',
+                icon: 'fa-share-alt',
+                color: '#6366f1',
+                selector: 'button[title="Compartir"]',
+                position: 'bottom',
+            },
+            {
+                title: 'Seleccion Multiple',
+                content: 'Mantén <strong>Ctrl+Click</strong> para seleccionar varios archivos a la vez. ' +
+                         'Aparecera una barra con opciones para descargar como ZIP o eliminar en lote.',
+                icon: 'fa-check-square',
+                color: '#2563eb',
+                selector: null,
+                position: 'center',
+            },
+            {
+                title: 'Vista Grid / Lista',
+                content: 'Cambia entre vista de cuadricula (iconos) y vista de lista (tabla). ' +
+                         'Tu preferencia se guarda automaticamente para la proxima visita.',
+                icon: 'fa-th-large',
+                color: '#64748b',
+                selector: '.flex.items-center.gap-1.bg-slate-100.p-1.rounded-lg',
+                position: 'bottom',
+            },
+            {
+                title: 'Tour Completado',
+                content: 'Ya conoces todas las funciones de Mis Archivos. ' +
+                         'Recuerda: arrastra para subir, click en un archivo para verlo, y usa los botones de accion al pasar el mouse. ' +
+                         'Puedes repetir este tour cuando quieras con el boton morado.',
+                icon: 'fa-check-circle',
+                color: '#16a34a',
+                selector: null,
+                position: 'center',
+            },
+        ],
+        onComplete: function () {
+            var alpine = document.querySelector('[x-data]')._x_dataStack[0];
+            if (alpine) alpine.navigateToRoot();
+        }
+    });
+}
+</script>
 @endsection

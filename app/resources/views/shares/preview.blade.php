@@ -35,7 +35,7 @@
 
                 @elseif(str_starts_with($mimeType, 'video/'))
                     <div class="flex flex-col items-center bg-white rounded-xl p-4">
-                        <video controls class="w-full max-w-4xl rounded-lg" style="max-height: 70vh;">
+                        <video controls playsinline webkit-playsinline class="w-full max-w-4xl rounded-lg" style="max-height: 70vh;">
                             <source src="{{ $previewUrl }}" type="{{ $mimeType }}">
                             Tu navegador no soporta reproducción de video.
                         </video>
