@@ -69,7 +69,7 @@
 
     <template x-if="file.mime_type.startsWith('video/')">
         <div class="flex flex-col items-center bg-gray-100 rounded-lg p-4">
-            <video controls preload="metadata" class="w-full max-w-4xl rounded" style="max-height: 70vh;">
+            <video controls preload="metadata" playsinline webkit-playsinline class="w-full max-w-4xl rounded" style="max-height: 70vh;">
                 <source src="/media/{{ $fileId }}/preview" :type="file.mime_type">
                 Tu navegador no soporta el elemento de video.
             </video>
