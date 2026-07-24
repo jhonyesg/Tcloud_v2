@@ -509,8 +509,19 @@ class PublicShareController extends Controller
         }
 
         $storageProvider = $targetFolder->storageProvider;
-        $relativePath = $targetFolder->path . '/' . $request->name;
+        $sanitizedName = basename($request->name);
+        if ($sanitizedName !== $request->name || $sanitizedName === '' || $sanitizedName === '.') {
+            return response()->json(['error' => 'Invalid name'], 400);
+        }
+
+        $relativePath = $targetFolder->path . '/' . $sanitizedName;
         $fullPath = $storageProvider->base_path . '/' . $relativePath;
+
+        $realBase = realpath($storageProvider->base_path);
+        $realNew = realpath(dirname($fullPath)) . '/' . $sanitizedName;
+        if (!$realBase || !$this->isPathWithinStorage($realNew, $realBase)) {
+            return response()->json(['error' => 'Invalid path'], 400);
+        }
 
         mkdir($fullPath, 0755, true);
 
@@ -562,11 +573,22 @@ class PublicShareController extends Controller
             return response()->json(['error' => 'File not in shared folder'], 403);
         }
 
+        $sanitizedName = basename($request->name);
+        if ($sanitizedName !== $request->name || $sanitizedName === '' || $sanitizedName === '.') {
+            return response()->json(['error' => 'Invalid name'], 400);
+        }
+
         $oldPath = $file->path;
         $parentPath = dirname($oldPath);
-        $newPath = $parentPath . '/' . $request->name;
+        $newPath = $parentPath . '/' . $sanitizedName;
         $fullOldPath = $file->storageProvider->base_path . '/' . $oldPath;
         $fullNewPath = $file->storageProvider->base_path . '/' . $newPath;
+
+        $realBase = realpath($file->storageProvider->base_path);
+        $realNew = realpath(dirname($fullNewPath)) . '/' . $sanitizedName;
+        if (!$realBase || !$this->isPathWithinStorage($realNew, $realBase)) {
+            return response()->json(['error' => 'Invalid path'], 400);
+        }
 
         if ($file->is_folder) {
             rename($fullOldPath, $fullNewPath);
@@ -647,16 +669,29 @@ class PublicShareController extends Controller
         return false;
     }
 
-    private function renameDescendantPaths(File $folder, string $oldPath, string $newPath): void
+    private function isPathWithinStorage(string $path, string $basePath): bool
     {
-        $children = $folder->children;
-        foreach ($children as $child) {
-            $childPath = str_replace($oldPath, $newPath, $child->path);
-            $child->path = $childPath;
+        $realPath = realpath($path);
+        $realBase = realpath($basePath);
+        if (!$realPath || !$realBase) {
+            return false;
+        }
+        return str_starts_with($realPath, $realBase);
+    }
+
+    private function renameDescendantPaths(File $folder, string $oldPrefix, string $newPrefix): void
+    {
+        foreach ($folder->children as $child) {
+            $childOldPath = $child->path;
+            if (!str_starts_with($childOldPath, $oldPrefix)) {
+                continue;
+            }
+            $childNewPath = $newPrefix . substr($childOldPath, strlen($oldPrefix));
+            $child->path = $childNewPath;
             $child->save();
 
             if ($child->is_folder) {
-                $this->renameDescendantPaths($child, $child->path, $child->path);
+                $this->renameDescendantPaths($child, $childOldPath, $childNewPath);
             }
         }
     }

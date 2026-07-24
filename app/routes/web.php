@@ -8,13 +8,13 @@ use App\Modules\Correo\Http\Controllers\CorreoLogController;
 Route::get('/', fn() => redirect('/login'));
 
 Route::get('/login', [App\Http\Controllers\AuthController::class, 'showLogin'])->name('login');
-Route::post('/login', [App\Http\Controllers\AuthController::class, 'login']);
+Route::post('/login', [App\Http\Controllers\AuthController::class, 'login'])->middleware('throttle:10,1');
 Route::post('/logout', [App\Http\Controllers\AuthController::class, 'logout'])->middleware('auth');
 Route::get('/auth/me', [App\Http\Controllers\AuthController::class, 'me'])->middleware('auth');
 Route::post('/auth/ping', [App\Http\Controllers\AuthController::class, 'ping'])->middleware('auth');
-Route::post('/auth/forgot-password', [App\Http\Controllers\AuthController::class, 'forgotPassword']);
+Route::post('/auth/forgot-password', [App\Http\Controllers\AuthController::class, 'forgotPassword'])->middleware('throttle:5,1');
 Route::get('/auth/reset-password/{token}', [App\Http\Controllers\AuthController::class, 'showResetPassword'])->name('reset-password');
-Route::post('/auth/reset-password', [App\Http\Controllers\AuthController::class, 'resetPassword']);
+Route::post('/auth/reset-password', [App\Http\Controllers\AuthController::class, 'resetPassword'])->middleware('throttle:5,1');
 
 Route::get('/dashboard', [App\Http\Controllers\DashboardController::class, 'index'])->middleware('auth')->name('dashboard');
 

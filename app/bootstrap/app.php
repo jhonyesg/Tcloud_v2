@@ -18,6 +18,7 @@ return Application::configure(basePath: dirname(__DIR__))
             'role'            => \App\Http\Middleware\CheckRole::class,
             'session.tracker' => \App\Http\Middleware\SessionTracker::class,
             'misavisos'       => \App\Http\Middleware\EnsureMisAvisosEnabled::class,
+            'throttle'        => \Illuminate\Routing\Middleware\ThrottleRequests::class,
         ]);
         $middleware->appendToGroup('web', \App\Http\Middleware\SessionTracker::class);
 

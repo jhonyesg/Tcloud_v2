@@ -314,12 +314,6 @@ class StorageProviderController extends Controller
             ->where('storage_provider_id', $id)
             ->firstOrFail();
 
-        \App\Models\File::where('storage_provider_id', $id)
-            ->where('owner_id', $userId)
-            ->whereNull('parent_id')
-            ->where('is_folder', true)
-            ->delete();
-
         $userStorage->delete();
 
         return response()->json(['message' => 'User assignment removed']);

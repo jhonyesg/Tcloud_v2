@@ -34,6 +34,18 @@ class MediaPreviewController extends Controller
             return response()->json(['error' => 'File not found'], 404);
         }
 
+        // For video/audio files, offload streaming to nginx via X-Accel-Redirect.
+        // Nginx handles HTTP Range requests natively, which is required for mobile
+        // playback when the moov atom is at the end of large MP4 files.
+        if (str_starts_with($mimeType, 'video/') || str_starts_with($mimeType, 'audio/')) {
+            $internalPath = '/internal-media' . $fullPath;
+            return response('', 200, [
+                'Content-Type' => $mimeType,
+                'X-Accel-Redirect' => $internalPath,
+                'Accept-Ranges' => 'bytes',
+            ]);
+        }
+
         // BinaryFileResponse streams in 4KB chunks, handles Range requests natively,
         // and never loads the full file into memory regardless of file size.
         // X-Accel-Buffering: no tells nginx not to buffer the FastCGI response so

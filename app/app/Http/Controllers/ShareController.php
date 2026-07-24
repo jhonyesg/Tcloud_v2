@@ -2,14 +2,14 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\Share;
 use App\Models\File;
+use App\Models\Share;
 use App\Models\User;
 use App\Modules\Correo\Services\NotificationService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\Session;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Session;
 use Illuminate\Support\Str;
 
 class ShareController extends Controller
@@ -131,7 +131,21 @@ class ShareController extends Controller
         $data = [];
 
         if ($request->has('permissions')) {
-            $data['permissions'] = $request->permissions;
+            $newPerm = $request->permissions;
+            $creator = User::find($share->created_by);
+            $file = $share->file;
+            $canSet = false;
+            if ($creator && $creator->isAdmin()) {
+                $canSet = true;
+            } elseif ($file && $file->storage_provider_id) {
+                $canSet = $creator->hasStoragePermission($file->storage_provider_id, $newPerm);
+            } elseif ($file) {
+                $canSet = $file->owner_id === $share->created_by;
+            }
+            if (!$canSet) {
+                return response()->json(['error' => 'Cannot set permission higher than your own level'], 403);
+            }
+            $data['permissions'] = $newPerm;
         }
 
         if ($request->has('expires_at')) {
@@ -144,6 +158,7 @@ class ShareController extends Controller
 
         if (!empty($data)) {
             $share->update($data);
+            Cache::forget("share:meta:{$share->token}");
         }
 
         return response()->json($share);
@@ -160,6 +175,7 @@ class ShareController extends Controller
             return response()->json(['error' => 'Forbidden'], 403);
         }
 
+        Cache::forget("share:meta:{$share->token}");
         Cache::forget("share:meta:{$share->token}");
         $share->delete();
 
