@@ -43,11 +43,33 @@ class ApiTranscriptorController extends Controller
 
         $jobs = $query->limit(200)->get();
 
-        // Habilitados primero, luego por nombre.
-        $storages = StorageProvider::select(['id', 'name', 'type', 'transcription_enabled'])
+        // Habilitados primero, luego por nombre. Adjuntamos el conteo de
+        // descendientes con transcription_enabled=true para que la UI muestre
+        // un badge "N hijos" en storages con scope heredado.
+        $storages = StorageProvider::select(['id', 'name', 'type', 'transcription_enabled', 'base_path'])
             ->orderByRaw('transcription_enabled DESC')
             ->orderBy('name')
             ->get();
+
+        $descendantCounts = [];
+        $descendantNames = [];
+        foreach ($storages as $s) {
+            $scope = StorageProvider::resolveInheritedTranscriptionScope($s->id);
+            $descendants = array_values(array_diff($scope, [$s->id]));
+            $descendantCounts[$s->id] = count($descendants);
+            if (!empty($descendants)) {
+                $descendantNames[$s->id] = StorageProvider::whereIn('id', $descendants)
+                    ->orderBy('name')
+                    ->pluck('name')
+                    ->all();
+            }
+        }
+
+        $storages = $storages->map(function ($s) use ($descendantCounts, $descendantNames) {
+            $s->descendant_count = $descendantCounts[$s->id] ?? 0;
+            $s->descendant_names = $descendantNames[$s->id] ?? [];
+            return $s;
+        });
 
         return ['jobs' => $jobs, 'storages' => $storages, 'filters' => [
             'q' => $search,
@@ -345,6 +367,13 @@ class ApiTranscriptorController extends Controller
     {
         $storage = StorageProvider::findOrFail($id);
 
+        // Resolver scope virtual: el storage pedido + sus descendientes con
+        // transcription_enabled=true. La UI del operador ve la union de
+        // archivos, pero las acciones de transcripcion siguen trabajando
+        // contra el storage real (ver source_storage_id).
+        $scopeIds = StorageProvider::resolveInheritedTranscriptionScope($id);
+        $scopeInfo = StorageProvider::inheritedTranscriptionScopeInfo($id);
+
         $mode = $request->input('mode', 'browse');
         $parentId = $request->input('parent'); // null = raíz
         if ($parentId === '' || $parentId === 'null') $parentId = null;
@@ -358,40 +387,34 @@ class ApiTranscriptorController extends Controller
 
         // Búsqueda global por nombre (agrupado por carpeta)
         if ($search !== '') {
-            $files = File::where('storage_provider_id', $id)
+            $files = File::whereIn('storage_provider_id', $scopeIds)
                 ->where('is_folder', false)
                 ->where('name', 'ilike', "%{$search}%")
                 ->orderByDesc('file_modified_at')
                 ->limit($limit)
-                ->get(['id', 'name', 'size', 'file_modified_at', 'parent_id']);
+                ->get(['id', 'name', 'size', 'file_modified_at', 'parent_id', 'storage_provider_id']);
         } elseif ($mode === 'today' || $mode === 'yesterday') {
-            // Carpeta del día (nombre = dmY, ej. "06072026"). Selecciona la carpeta
-            // principal del día: la que tiene el archivo modificado más recientemente
-            // (la activa, la que usa el grabador ahora).
+            // Carpeta del día (nombre = dmY, ej. "06072026"). Con scope
+            // heredado, agregamos los archivos de TODAS las carpetas de día
+            // presentes en el scope (cada storage hijo puede tener su propia
+            // carpeta raiz con su nombre dmY). Cada archivo se anota con
+            // source_storage_id para que la UI muestre de dónde viene.
             $date = $mode === 'today' ? now() : now()->subDay();
             $folderName = $date->format('dmY');
 
-            // 1) Listar carpetas con ese nombre en el storage
-            $dayFolders = File::where('storage_provider_id', $id)
+            $dayFolders = File::whereIn('storage_provider_id', $scopeIds)
                 ->where('is_folder', true)
                 ->where('name', $folderName)
-                ->get(['id', 'parent_id']);
+                ->get(['id', 'parent_id', 'storage_provider_id']);
 
             if ($dayFolders->isNotEmpty()) {
-                // 2) Escoger la carpeta que tenga el archivo con file_modified_at más reciente
-                $topFile = File::where('storage_provider_id', $id)
-                    ->where('is_folder', false)
-                    ->whereIn('parent_id', $dayFolders->pluck('id'))
-                    ->orderByDesc('file_modified_at')
-                    ->first(['parent_id']);
+                $dayFolderIds = $dayFolders->pluck('id');
 
-                $dayFolderId = $topFile?->parent_id ?? $dayFolders->first()->id;
-
-                $files = File::where('storage_provider_id', $id)
+                $files = File::whereIn('storage_provider_id', $scopeIds)
                     ->where('is_folder', false)
-                    ->where('parent_id', $dayFolderId)
+                    ->whereIn('parent_id', $dayFolderIds)
                     ->limit(2000)
-                    ->get(['id', 'name', 'size', 'file_modified_at', 'parent_id']);
+                    ->get(['id', 'name', 'size', 'file_modified_at', 'parent_id', 'storage_provider_id']);
 
                 $files = $files->sortByDesc(function ($f) {
                     return self::extractMilitaryTime((string) $f->name);
@@ -399,20 +422,23 @@ class ApiTranscriptorController extends Controller
             }
         } else {
             // Navegación: subcarpetas + archivos de la carpeta actual
-            $folders = File::where('storage_provider_id', $id)
+            // En modo browse con scope heredado, las carpetas raíz que el
+            // cliente ve incluyen también las subcarpetas de los hijos
+            // (porque las carpetas File raíz solo existen en el storage padre).
+            $folders = File::whereIn('storage_provider_id', $scopeIds)
                 ->where('is_folder', true)
                 ->where('parent_id', $parentId)
                 ->orderByDesc('file_modified_at')
                 ->orderByDesc('name')
                 ->limit($limit)
-                ->get(['id', 'name', 'file_modified_at']);
+                ->get(['id', 'name', 'file_modified_at', 'storage_provider_id']);
 
-            $files = File::where('storage_provider_id', $id)
+            $files = File::whereIn('storage_provider_id', $scopeIds)
                 ->where('is_folder', false)
                 ->where('parent_id', $parentId)
                 ->orderByDesc('file_modified_at')
                 ->limit($limit)
-                ->get(['id', 'name', 'size', 'file_modified_at']);
+                ->get(['id', 'name', 'size', 'file_modified_at', 'storage_provider_id']);
 
             // Construir breadcrumb subiendo por parent_id
             $cur = $parentId;
@@ -452,6 +478,7 @@ class ApiTranscriptorController extends Controller
                 'has_transcription' => $tx !== null,
                 'transcription_id' => $tx?->id,
                 'transcription_state' => $tx?->state,
+                'source_storage_id' => $f->storage_provider_id ?? null,
             ];
         });
 
@@ -481,9 +508,10 @@ class ApiTranscriptorController extends Controller
             'name' => $f->name,
             'is_folder' => true,
             'file_modified_at' => $f->file_modified_at?->toIso8601String(),
+            'source_storage_id' => $f->storage_provider_id ?? null,
         ]);
 
-        return response()->json([
+        $response = [
             'storage' => $storage->only(['id', 'name', 'transcription_enabled']),
             'folders' => $foldersData,
             'files' => $filesData,
@@ -492,9 +520,19 @@ class ApiTranscriptorController extends Controller
             'mode' => $search !== '' ? 'search' : $mode,
             'files_total' => is_array($filesData) ? count($filesData) : $filesData->count(),
             'folders_total' => $foldersData->count(),
-            'transcribed_count' => (is_array($filesData) ? collect($filesData) : $filesData)
-                ->flatten(1)->where('has_transcription', true)->count(),
-        ]);
+            'transcribed_count' => $this->countTranscribed($filesData),
+        ];
+
+        // Incluir info del scope solo si hay herencia real (storage_id != self solo).
+        if (count($scopeIds) > 1 || $scopeInfo['descendants']->isNotEmpty()) {
+            $response['scope'] = [
+                'self' => $scopeInfo['self']?->only(['id', 'name', 'transcription_enabled']),
+                'descendants' => $scopeInfo['descendants']->map(fn ($s) => $s->only(['id', 'name', 'transcription_enabled']))->values(),
+                'storage_ids' => $scopeIds,
+            ];
+        }
+
+        return response()->json($response);
     }
 
     /**
@@ -1183,5 +1221,35 @@ class ApiTranscriptorController extends Controller
             return end($ms[1]);
         }
         return '';
+    }
+
+    /**
+     * Cuenta archivos con has_transcription=true dentro de $filesData.
+     * Soporta tanto Collection plana (modo browse/today) como Collection
+     * agrupada (modo search: cada item es {folder, files: [...] }).
+     */
+    private function countTranscribed($filesData): int
+    {
+        if (is_array($filesData)) {
+            $iter = $filesData;
+        } elseif ($filesData instanceof \Illuminate\Support\Collection) {
+            $iter = $filesData->all();
+        } else {
+            return 0;
+        }
+
+        $count = 0;
+        foreach ($iter as $item) {
+            if (isset($item['has_transcription']) && $item['has_transcription'] === true) {
+                $count++;
+            } elseif (isset($item['files']) && is_array($item['files'])) {
+                foreach ($item['files'] as $sub) {
+                    if (isset($sub['has_transcription']) && $sub['has_transcription'] === true) {
+                        $count++;
+                    }
+                }
+            }
+        }
+        return $count;
     }
 }
