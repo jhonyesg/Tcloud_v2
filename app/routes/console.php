@@ -9,7 +9,11 @@ Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');
 
-Schedule::command('storage:sync --all')->everyFifteenMinutes()->withoutOverlapping();
+// withoutOverlapping(30): el TTL por defecto es de 1440 minutos. Un SIGKILL
+// durante un cuelgue de NFS (donde el proceso queda bloqueado en IO
+// ininterrumpible) dejaba el lock muerto y paraba TODOS los syncs 24 horas sin
+// avisar. 30 min deja margen holgado sobre los ~4 min de ejecucion real.
+Schedule::command('storage:sync --all')->everyFifteenMinutes()->withoutOverlapping(30);
 
 Schedule::call(function () {
     $service = app(SessionService::class);

@@ -6,26 +6,39 @@ class FileScannerService
 {
     private const MAX_DEPTH = 30;
 
-    public function scanDirectory(string $basePath, int $depth = 0): array
+    /**
+     * Escanea un directorio devolviendo un resultado que distingue "vacio" de
+     * "no fiable".
+     *
+     * Antes devolvia [] tanto para un directorio realmente vacio como para
+     * cualquier fallo de acceso, y StorageSyncService no podia diferenciarlos:
+     * un montaje NFS caido parecia una carpeta vacia y provocaba el borrado del
+     * arbol en BD. Ver ScanResult.
+     */
+    public function scanDirectory(string $basePath, int $depth = 0): ScanResult
     {
         $entries = [];
 
         if ($depth > self::MAX_DEPTH) {
-            return $entries;
+            return ScanResult::failed(ScanResult::DEPTH_EXCEEDED, $basePath);
         }
 
+        // NFS cachea atributos: sin esto, is_dir()/is_readable() pueden devolver
+        // datos obsoletos de antes de que el montaje se cayera.
+        clearstatcache(true, $basePath);
+
         if (!is_dir($basePath)) {
-            return $entries;
+            return ScanResult::failed(ScanResult::NOT_A_DIRECTORY, $basePath);
         }
 
         if (!is_readable($basePath)) {
-            return $entries;
+            return ScanResult::failed(ScanResult::NOT_READABLE, $basePath);
         }
 
         try {
             $items = scandir($basePath);
             if ($items === false) {
-                return $entries;
+                return ScanResult::failed(ScanResult::SCANDIR_FAILED, $basePath);
             }
 
             foreach ($items as $item) {
@@ -58,24 +71,32 @@ class FileScannerService
                     ];
                 }
             }
-        } catch (\Exception $e) {
-            return $entries;
+        } catch (\Throwable $e) {
+            // Un fallo a mitad del recorrido deja $entries parcial: descartarlo.
+            // Devolver entradas parciales como si fueran fiables haria que la
+            // purga borrase todo lo que no dio tiempo a leer.
+            \Illuminate\Support\Facades\Log::warning('storage_sync.scan_exception', [
+                'path' => $basePath,
+                'error' => $e->getMessage(),
+            ]);
+
+            return ScanResult::failed(ScanResult::EXCEPTION, $basePath);
         }
 
-        return $entries;
+        return ScanResult::ok($entries, $basePath);
     }
 
-    public function scanSubdirectory(string $basePath, string $relativePath, int $depth = 0): array
+    public function scanSubdirectory(string $basePath, string $relativePath, int $depth = 0): ScanResult
     {
         $fullPath = rtrim($basePath, '/') . '/' . ltrim($relativePath, '/');
 
         if (!$this->isPathWithinBase($basePath, $fullPath)) {
-            return [];
+            return ScanResult::failed(ScanResult::NOT_A_DIRECTORY, $fullPath);
         }
 
         $realPath = realpath($fullPath);
         if (!$realPath || !is_dir($realPath)) {
-            return [];
+            return ScanResult::failed(ScanResult::NOT_A_DIRECTORY, $fullPath);
         }
 
         return $this->scanDirectory($realPath, $depth);

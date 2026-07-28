@@ -2,12 +2,14 @@
 
 namespace App\Http\Controllers\Ia;
 
+use App\Http\Controllers\Concerns\RunsBackgroundCommands;
 use App\Http\Controllers\Controller;
 use App\Jobs\ConvertAndTranscribeJob;
 use App\Models\File;
 use App\Models\StorageProvider;
 use App\Models\Transcription;
 use App\Services\Ia\TranscriptorApiClient;
+use App\Services\Ia\TranscriptorSettings;
 use App\Services\Ia\TranscriptionSubmitService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -18,6 +20,24 @@ use Predis\Connection\ConnectionException as PredisConnectionException;
 
 class ApiTranscriptorController extends Controller
 {
+    use RunsBackgroundCommands;
+
+    public function __construct(private TranscriptorSettings $settings) {}
+
+    /**
+     * Respuesta cuando el freno de emergencia esta activo.
+     *
+     * 423 Locked: el recurso existe y la peticion es valida, pero el envio esta
+     * deliberadamente bloqueado. No es 503 (no hay fallo) ni 429 (no es rate).
+     */
+    private function pausedResponse()
+    {
+        return response()->json([
+            'error' => 'El envio esta pausado (dispatch_paused). Reactivalo desde la pestaña Configuracion.',
+            'paused' => true,
+        ], 423);
+    }
+
     public function index(Request $request)
     {
         if ($request->wantsJson()) {
@@ -101,7 +121,7 @@ class ApiTranscriptorController extends Controller
             [
                 'state' => Transcription::STATE_PENDING,
                 'generate_alerts' => true,
-                'language' => config('transcriptor.language', 'es'),
+                'language' => $this->settings->str('language'),
                 'started_at' => now(),
             ]
         );
@@ -135,6 +155,10 @@ class ApiTranscriptorController extends Controller
      */
     public function bulkDispatch(Request $request)
     {
+
+        if ($this->settings->bool('dispatch_paused')) {
+            return $this->pausedResponse();
+        }
         $validated = $request->validate([
             'ids' => 'nullable|array|max:2000',
             'ids.*' => 'integer|min:1',
@@ -257,7 +281,7 @@ class ApiTranscriptorController extends Controller
             [
                 'state' => Transcription::STATE_PENDING,
                 'generate_alerts' => $generateAlerts,
-                'language' => config('transcriptor.language', 'es'),
+                'language' => $this->settings->str('language'),
                 'started_at' => now(),
             ]
         );
@@ -541,62 +565,75 @@ class ApiTranscriptorController extends Controller
      */
     public function scanStorage(Request $request, int $id)
     {
-        $storage = StorageProvider::findOrFail($id);
+        try {
+            $storage = StorageProvider::findOrFail($id);
 
-        $batch = max(1, min(100, (int) $request->input('batch', (int) config('transcriptor.scan_batch', 5))));
-        $minAge = (int) config('transcriptor.scan_min_age_seconds', 60);
-        $cutoff = now()->subSeconds($minAge);
+            // Sin default inline: el `5` que habia aqui contradecia el default
+            // real de scan_batch (100) y ganaba cuando el request no traia batch.
+            $batch = max(1, min($this->settings->int('ui_batch_max'), (int) $request->input('batch', $this->settings->int('scan_batch'))));
+            $minAge = $this->settings->int('scan_min_age_seconds');
+            $cutoff = now()->subSeconds($minAge);
 
-        $files = File::where('storage_provider_id', $id)
-            ->where('is_folder', false)
-            ->where('file_modified_at', '<', $cutoff)
-            ->whereNotExists(function ($q) {
-                $q->select(DB::raw(1))
-                  ->from('transcriptions')
-                  ->whereColumn('transcriptions.file_id', 'files.id');
-            })
-            ->orderByDesc('file_modified_at')
-            ->limit($batch)
-            ->get();
+            $files = File::where('storage_provider_id', $id)
+                ->where('is_folder', false)
+                ->where('file_modified_at', '<', $cutoff)
+                ->whereNotExists(function ($q) {
+                    $q->select(DB::raw(1))
+                      ->from('transcriptions')
+                      ->whereColumn('transcriptions.file_id', 'files.id');
+                })
+                ->orderByDesc('file_modified_at')
+                ->limit($batch)
+                ->get();
 
-        $dispatched = 0;
-        $errors = 0;
-        set_time_limit(max(600, $batch * 120));
-        $submitter = app(TranscriptionSubmitService::class);
-        foreach ($files as $file) {
-            try {
-                $transcription = Transcription::firstOrCreate(
-                    ['file_id' => $file->id],
-                    [
-                        'state' => Transcription::STATE_PENDING,
-                        'generate_alerts' => true,
-                        'language' => config('transcriptor.language', 'es'),
-                        'original_name' => $file->name,
-                        'started_at' => now(),
-                    ]
-                );
-                // Solo enviar si está pending sin job_id (evita reenviar done/queued).
-                if ($transcription->state === Transcription::STATE_PENDING && empty($transcription->job_id)) {
-                    $result = $submitter->submit($transcription);
-                    if ($result['ok']) {
-                        $dispatched++;
-                    } else {
-                        $errors++;
-                        \Illuminate\Support\Facades\Log::error("scanStorage file {$file->id}: {$result['error']}");
+            $dispatched = 0;
+            $errors = 0;
+            set_time_limit(max(600, $batch * 120));
+            $submitter = app(TranscriptionSubmitService::class);
+            foreach ($files as $file) {
+                try {
+                    $transcription = Transcription::firstOrCreate(
+                        ['file_id' => $file->id],
+                        [
+                            'state' => Transcription::STATE_PENDING,
+                            'generate_alerts' => true,
+                            'language' => $this->settings->str('language'),
+                            'original_name' => $file->name,
+                            'started_at' => now(),
+                        ]
+                    );
+                    // Solo enviar si está pending sin job_id (evita reenviar done/queued).
+                    if ($transcription->state === Transcription::STATE_PENDING && empty($transcription->job_id)) {
+                        $result = $submitter->submit($transcription);
+                        if ($result['ok']) {
+                            $dispatched++;
+                        } else {
+                            $errors++;
+                            \Illuminate\Support\Facades\Log::error("scanStorage file {$file->id}: {$result['error']}");
+                        }
                     }
+                } catch (\Throwable $e) {
+                    \Illuminate\Support\Facades\Log::error("scanStorage file {$file->id}: {$e->getMessage()}");
+                    $errors++;
                 }
-            } catch (\Throwable $e) {
-                \Illuminate\Support\Facades\Log::error("scanStorage file {$file->id}: {$e->getMessage()}");
-                $errors++;
             }
-        }
 
-        return response()->json([
-            'storage_id' => $storage->id,
-            'dispatched' => $dispatched,
-            'errors' => $errors,
-            'candidates' => $files->count(),
-        ]);
+            return response()->json([
+                'storage_id' => $storage->id,
+                'dispatched' => $dispatched,
+                'errors' => $errors,
+                'candidates' => $files->count(),
+            ]);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error("scanStorage({$id}) FATAL: " . $e->getMessage(), [
+                'exception' => $e,
+                'batch' => $request->input('batch'),
+            ]);
+            return response()->json([
+                'error' => 'Error interno del servidor: ' . $e->getMessage(),
+                'storage_id' => $id,
+            ], 500);
+        }
     }
 
     /**
@@ -633,7 +670,7 @@ class ApiTranscriptorController extends Controller
                         'original_name' => $file->name,
                         'state' => Transcription::STATE_PENDING,
                         'generate_alerts' => $generateAlerts,
-                        'language' => config('transcriptor.language', 'es'),
+                        'language' => $this->settings->str('language'),
                         'started_at' => now(),
                     ]
                 );
@@ -741,7 +778,7 @@ class ApiTranscriptorController extends Controller
                         'original_name' => $file->name,
                         'state' => Transcription::STATE_PENDING,
                         'generate_alerts' => $generateAlerts,
-                        'language' => config('transcriptor.language', 'es'),
+                        'language' => $this->settings->str('language'),
                         'started_at' => now(),
                     ]
                 );
@@ -768,8 +805,16 @@ class ApiTranscriptorController extends Controller
      */
     public function processBatch(Request $request)
     {
-        $batch = max(1, min(200, (int) $request->input('batch', 50)));
+        if ($this->settings->bool('dispatch_paused')) {
+            return $this->pausedResponse();
+        }
+
+        // El tope sale de ui_batch_max, el MISMO valor con el que la vista pinta
+        // el slider. Antes eran dos numeros independientes (500 en la UI, 200
+        // aqui) y el exceso se truncaba en silencio.
+        $batch = max(1, min($this->settings->int('ui_batch_max'), (int) $request->input('batch', 50)));
         $generateAlerts = (bool) $request->input('generate_alerts', false);
+        $includeFailed = (bool) $request->input('include_failed', false);
         $runId = 'batch_' . time() . '_' . substr(md5(uniqid('', true)), 0, 6);
         $cacheKey = 'transcription_batch:' . $runId;
 
@@ -798,8 +843,16 @@ class ApiTranscriptorController extends Controller
         $cmd = escapeshellarg($php) . ' ' . escapeshellarg($artisan)
              . ' transcription:scan-and-submit --days=0'
              . ' --batch=' . (int) $batch
-             . ' --run-id=' . escapeshellarg($runId)
-             . ' >> ' . escapeshellarg($logFile) . ' 2>&1 &';
+             . ' --run-id=' . escapeshellarg($runId);
+        if ($includeFailed) {
+            $cmd .= ' --include-failed';
+        }
+        // generate_alerts se validaba arriba pero nunca llegaba al comando: el
+        // checkbox de la UI prometia un comportamiento que no ocurria.
+        if ($generateAlerts) {
+            $cmd .= ' --alerts';
+        }
+        $cmd .= ' >> ' . escapeshellarg($logFile) . ' 2>&1 &';
 
         try {
             $this->execBackground($cmd);
@@ -835,34 +888,15 @@ class ApiTranscriptorController extends Controller
     }
 
     /**
-     * Ejecuta un comando en background portable (Linux).
-     */
-    private function execBackground(string $cmd): void
-    {
-        if (PHP_OS_FAMILY === 'Windows') {
-            pclose(popen('start /B ' . $cmd, 'r'));
-            return;
-        }
-        // Linux: usar proc_open con descriptores a /dev/null para que PHP NO espere
-        // al hijo. exec() de PHP bloquea hasta que el proceso libera stdout/stderr,
-        // lo cual colgaba la request HTTP cuando el hijo escribía logs.
-        $descriptors = [
-            0 => ['file', '/dev/null', 'r'],
-            1 => ['file', '/dev/null', 'w'],
-            2 => ['file', '/dev/null', 'w'],
-        ];
-        $proc = @proc_open($cmd, $descriptors, $pipes);
-        if (is_resource($proc)) {
-            proc_close($proc);
-        }
-    }
-
-    /**
      * Envío manual de un archivo concreto a transcripción.
      * Crea el job (el job mismo evita duplicados vía firstOrCreate).
      */
     public function transcribeFile(Request $request, int $fileId)
     {
+
+        if ($this->settings->bool('dispatch_paused')) {
+            return $this->pausedResponse();
+        }
         $file = File::findOrFail($fileId);
 
         if ($file->is_folder) {
@@ -889,7 +923,7 @@ class ApiTranscriptorController extends Controller
             [
                 'state' => Transcription::STATE_PENDING,
                 'generate_alerts' => true,
-                'language' => config('transcriptor.language', 'es'),
+                'language' => $this->settings->str('language'),
                 'original_name' => $file->name,
                 'started_at' => now(),
             ]
@@ -922,6 +956,10 @@ class ApiTranscriptorController extends Controller
      */
     public function dispatchNow(Request $request, int $id)
     {
+
+        if ($this->settings->bool('dispatch_paused')) {
+            return $this->pausedResponse();
+        }
         $job = Transcription::with('file')->findOrFail($id);
 
         if (!in_array($job->state, [Transcription::STATE_PENDING, Transcription::STATE_QUEUED, Transcription::STATE_PROCESSING], true)) {
@@ -981,7 +1019,7 @@ class ApiTranscriptorController extends Controller
             [
                 'state' => Transcription::STATE_PENDING,
                 'generate_alerts' => true,
-                'language' => config('transcriptor.language', 'es'),
+                'language' => $this->settings->str('language'),
                 'started_at' => now(),
             ]
         );
@@ -1155,11 +1193,23 @@ class ApiTranscriptorController extends Controller
         try {
             $syncService = app(\App\Services\StorageSyncService::class);
             $stats = $syncService->fullSync($storage, 1);
+
+            // fullSync esta serializado por storage. Dos clics seguidos ya no
+            // lanzan dos recorridos completos concurrentes sobre ~23k carpetas.
+            if (!empty($stats['skipped_locked'])) {
+                return response()->json(['error' => 'Ya hay una sincronización en curso para este storage'], 409);
+            }
+
+            if (!empty($stats['disabled'])) {
+                return response()->json(['error' => 'El sincronizado está desactivado (storage_sync.enabled)'], 423);
+            }
+
             return response()->json([
                 'message' => 'Sincronización completada',
                 'storage_id' => $storage->id,
                 'created' => $stats['created'] ?? 0,
                 'deleted' => $stats['deleted'] ?? 0,
+                'duplicate_folders_skipped' => $stats['duplicate_folders_skipped'] ?? 0,
             ]);
         } catch (\Throwable $e) {
             return response()->json(['error' => 'Sync falló: ' . $e->getMessage()], 500);

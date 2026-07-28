@@ -22,23 +22,29 @@ class DiskScannerService
     public const LAYOUT_FLAT = 'flat';
     public const LAYOUT_GROUPED = 'grouped_by_subfolder';
 
+    public function __construct(
+        private TranscriptorSettings $settings,
+        private \App\Services\FileRegistry $registry,
+    ) {}
+
     /**
      * Escanea un storage y devuelve estadisticas de lo que encontro/creó.
      *
      * @param  StorageProvider $storage
      * @param  int  $daysBack  Cuantos dias hacia atras escanear (0 = solo hoy)
      * @param  bool $all       Escanear recursivamente todas las carpetas
+     * @param  bool $generateAlerts  Marcar las transcripciones creadas para generar avisos
      * @return array{candidates:int, files_created:int, transcriptions_created:int, scanned:int}
      */
-    public function scanStorage(StorageProvider $storage, int $daysBack = 0, bool $all = false, ?int $batchOverride = null): array
+    public function scanStorage(StorageProvider $storage, int $daysBack = 0, bool $all = false, ?int $batchOverride = null, bool $generateAlerts = true): array
     {
         $basePath = rtrim((string) $storage->base_path, '/');
         if (!is_dir($basePath) || !is_readable($basePath)) {
             return ['candidates' => 0, 'files_created' => 0, 'transcriptions_created' => 0, 'scanned' => 0];
         }
 
-        $batch = $batchOverride ?? (int) config('transcriptor.scan_batch', 100);
-        $minAge = (int) config('transcriptor.scan_min_age_seconds', 60);
+        $batch = $batchOverride ?? $this->settings->int('scan_batch');
+        $minAge = $this->settings->int('scan_min_age_seconds');
         $cutoff = time() - $minAge;
         $tz = config('app.timezone');
 
@@ -128,7 +134,7 @@ class DiskScannerService
                     ->first();
 
                 if (!$file) {
-                    $file = File::create([
+                    $file = $this->registry->ensure($storage, $c['path'], [
                         'name' => $c['name'],
                         'path' => $c['path'],
                         'size' => $c['size'],
@@ -159,8 +165,8 @@ class DiskScannerService
                         'file_id' => $file->id,
                         'original_name' => $c['name'],
                         'state' => Transcription::STATE_PENDING,
-                        'generate_alerts' => true,
-                        'language' => config('transcriptor.language', 'es'),
+                        'generate_alerts' => $generateAlerts,
+                        'language' => $this->settings->str('language'),
                         'started_at' => now(),
                     ]);
                     $transcriptionsCreated++;
@@ -178,6 +184,84 @@ class DiskScannerService
             'transcriptions_created' => $transcriptionsCreated,
             'scanned' => $scanned,
         ];
+    }
+
+    /**
+     * Recolecta transcripciones en estado 'error' de un storage y las prepara
+     * para reintento: verifica accesibilidad del archivo en disco y resetea
+     * la fila a 'pending' (manteniendo id, file_id, retries++). Si el archivo
+     * no es accesible, promueve la fila a 'dead' con un mensaje claro.
+     *
+     * NO toca transcripciones en estado 'dead' (decisión de diseño: requieren
+     * acción manual del operador).
+     *
+     * @param  StorageProvider $storage
+     * @param  int $maxRetries Max reintentos automáticos antes de promover a dead
+     * @return array{candidates:int, reset_to_pending:int, promoted_to_dead:int, skipped_max_retries:int}
+     */
+    public function collectFailedCandidates(StorageProvider $storage, int $maxRetries = 3): array
+    {
+        $stats = [
+            'candidates' => 0,
+            'reset_to_pending' => 0,
+            'promoted_to_dead' => 0,
+            'skipped_max_retries' => 0,
+        ];
+
+        $candidates = Transcription::where('state', Transcription::STATE_ERROR)
+            ->where('retries', '<', $maxRetries)
+            ->whereHas('file', function ($q) use ($storage) {
+                $q->where('storage_provider_id', $storage->id);
+            })
+            ->with('file.storageProvider')
+            ->get();
+
+        foreach ($candidates as $tx) {
+            $stats['candidates']++;
+            $file = $tx->file;
+            if (!$file || !$file->storageProvider) {
+                $tx->update([
+                    'state' => Transcription::STATE_DEAD,
+                    'error_message' => 'Archivo o storage asociado no existe. No se reintentará automáticamente.',
+                    'finished_at' => now(),
+                ]);
+                $stats['promoted_to_dead']++;
+                continue;
+            }
+
+            $srcPath = rtrim((string) $file->storageProvider->base_path, '/')
+                     . '/' . ltrim((string) $file->path, '/');
+
+            if (!is_file($srcPath) || !is_readable($srcPath)) {
+                $tx->update([
+                    'state' => Transcription::STATE_DEAD,
+                    'error_message' => "Archivo no accesible en disco ({$srcPath}). No se reintentará automáticamente.",
+                    'finished_at' => now(),
+                ]);
+                Log::info("DiskScanner::collectFailedCandidates tx {$tx->id}: archivo no accesible, promovido a dead");
+                $stats['promoted_to_dead']++;
+                continue;
+            }
+
+            $tx->update([
+                'state' => Transcription::STATE_PENDING,
+                'error_message' => null,
+                'job_id' => null,
+                'node_url' => null,
+                'node_id' => null,
+                'retries' => $tx->retries + 1,
+            ]);
+            $stats['reset_to_pending']++;
+        }
+
+        $stats['skipped_max_retries'] = Transcription::where('state', Transcription::STATE_ERROR)
+            ->where('retries', '>=', $maxRetries)
+            ->whereHas('file', function ($q) use ($storage) {
+                $q->where('storage_provider_id', $storage->id);
+            })
+            ->count();
+
+        return $stats;
     }
 
     /**
@@ -409,7 +493,10 @@ class DiskScannerService
                 ->where('is_folder', true)
                 ->first();
             if (!$folder) {
-                $folder = File::create([
+                // Via FileRegistry: este bucle corre cada 2 minutos desde
+                // transcription:tick, en paralelo con storage:sync, y antes no
+                // tenia ninguna proteccion frente a carreras.
+                $folder = $this->registry->ensure($storage, $accumPath, [
                     'name' => $part,
                     'path' => $accumPath,
                     'size' => 0,

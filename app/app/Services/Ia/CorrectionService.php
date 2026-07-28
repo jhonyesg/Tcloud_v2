@@ -18,18 +18,59 @@ use Illuminate\Support\Facades\Log;
 class CorrectionService
 {
     /**
-     * Aplica el diccionario approved a un array de segmentos (in-place),
-     * seteando `text` desde `text_raw`.
+     * $settings es opcional: resuelto por el contenedor en produccion (para que
+     * un override desde la UI tenga efecto), y omitible en tests que instancian
+     * el servicio a pelo para probar solo la logica de texto.
+     */
+    public function __construct(private ?TranscriptorSettings $settings = null) {}
+
+    private function chunkSize(): int
+    {
+        return $this->settings?->int('corrections_chunk')
+            ?? (int) config('transcriptor.corrections_chunk', 500);
+    }
+
+    /**
+     * Aplica el diccionario approved a un array de segmentos y retorna el
+     * array mutado. La mutación se hace por referencia de índice para que
+     * el caller (`TranscriptionProcessor`) reciba los segmentos con `text`
+     * corregido directamente.
      *
      * @param array $segments array de arrays con clave `text_raw` (y opcional `text`)
+     * @return array el mismo array con `text` corregido
      */
-    public function applyToSegments(array $segments): void
+    public function applyToSegments(array $segments): array
     {
-        foreach ($segments as &$segment) {
-            $raw = $segment['text_raw'] ?? $segment['text'] ?? '';
-            $segment['text'] = Correction::applyToText($raw);
+        $corrections = Correction::approved()
+            ->orderByRaw('LENGTH(wrong_normalized) DESC')
+            ->get(['wrong_normalized', 'correct_text']);
+
+        if ($corrections->isEmpty()) {
+            return $segments;
         }
-        unset($segment);
+
+        foreach ($segments as $i => $segment) {
+            $raw = $segment['text_raw'] ?? $segment['text'] ?? '';
+            $segments[$i]['text'] = $this->applyText($raw, $corrections);
+        }
+
+        return $segments;
+    }
+
+    /**
+     * Aplica la lista de correcciones approved a un texto plano, en orden
+     * de longitud DESC del wrong_normalized para evitar que un substring
+     * corto sobreescriba uno largo.
+     */
+    private function applyText(string $text, \Illuminate\Support\Collection $corrections): string
+    {
+        foreach ($corrections as $correction) {
+            if ($correction->wrong_normalized === '') {
+                continue;
+            }
+            $text = str_ireplace($correction->wrong_normalized, $correction->correct_text, $text);
+        }
+        return $text;
     }
 
     /**
@@ -179,46 +220,60 @@ class CorrectionService
     /**
      * Reaplica el diccionario approved a TODOS los TranscriptionSegment
      * en chunks transaccionales. Incrementa applies_count por corrección
-     * aplicada. Retorna el total de segments actualizados.
+     * aplicada, con idempotencia: re-ejecutar el retroactivo sobre un
+     * segmento ya corregido NO incrementa el contador. El conteo se hace
+     * por delta dentro de cada chunk y se resetea después del commit.
      *
      * @param callable|null $progressCb fn($current, $total)
      * @param int $chunkSize
      * @param bool $dryRun No toca la BD; retorna conteo estimado.
      */
-    public function applyRetroactively(?callable $progressCb = null, int $chunkSize = 500, bool $dryRun = false): int
+    public function applyRetroactively(?callable $progressCb = null, ?int $chunkSize = null, bool $dryRun = false): int
     {
+        // null = usar corrections_chunk, que existia en config desde siempre y
+        // no lo leia nadie: aqui y en previewRetroactive() estaba hardcodeado a
+        // 500. Va por el servicio para que un override desde la UI tenga efecto.
+        $chunkSize = $chunkSize ?? $this->chunkSize();
+
         $corrections = Correction::approved()
             ->orderByRaw('LENGTH(wrong_normalized) DESC')
             ->get(['id', 'wrong_normalized', 'correct_text']);
 
         $total = TranscriptionSegment::count();
         $updated = 0;
-        $appliedByCorrection = [];
 
-        TranscriptionSegment::chunkById($chunkSize, function ($chunk) use (&$updated, &$appliedByCorrection, $corrections, $progressCb, $total, $dryRun) {
+        TranscriptionSegment::chunkById($chunkSize, function ($chunk) use (&$updated, $corrections, $progressCb, $total, $dryRun) {
             $rows = [];
+            $appliedByCorrection = [];
+
             foreach ($chunk as $segment) {
                 $raw = (string) $segment->text_raw;
                 $corrected = $raw;
+                $delta = [];
+
                 foreach ($corrections as $correction) {
                     if ($correction->wrong_normalized === '') {
                         continue;
                     }
                     $new = str_ireplace($correction->wrong_normalized, $correction->correct_text, $corrected);
                     if ($new !== $corrected) {
-                        $appliedByCorrection[$correction->id] = ($appliedByCorrection[$correction->id] ?? 0) + 1;
+                        $delta[$correction->id] = ($delta[$correction->id] ?? 0) + 1;
                         $corrected = $new;
                     }
                 }
+
                 if ($corrected !== $raw) {
                     $updated++;
                     if (!$dryRun) {
                         $rows[$segment->id] = $corrected;
+                        foreach ($delta as $cid => $n) {
+                            $appliedByCorrection[$cid] = ($appliedByCorrection[$cid] ?? 0) + $n;
+                        }
                     }
                 }
             }
 
-            if (!$dryRun && !empty($rows)) {
+            if (!$dryRun && (!empty($rows) || !empty($appliedByCorrection))) {
                 DB::transaction(function () use ($rows, $appliedByCorrection) {
                     foreach ($rows as $id => $text) {
                         DB::table('transcription_segments')
@@ -246,6 +301,6 @@ class CorrectionService
      */
     public function previewRetroactive(): int
     {
-        return $this->applyRetroactively(null, 500, true);
+        return $this->applyRetroactively(null, null, true);
     }
 }

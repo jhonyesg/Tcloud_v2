@@ -156,9 +156,19 @@ class FileController extends Controller
             $isAutoScan = false;
 
             // auto-scan on first visit if folder is empty in DB (new folder, cron hasn't run yet)
+            //
+            // Este bloque fue el generador de duplicados de mayor volumen el
+            // 2026-07-27: tras un borrado masivo TODA carpeta queda vacia en BD,
+            // asi que cada carga de pagina de cada usuario disparaba un escaneo
+            // concurrente sobre la misma carpeta. Cache::add() es atomico, asi
+            // que solo la primera peticion de la ventana llega a intentarlo; el
+            // lock dentro de syncFolder() es la segunda barrera.
             if ($paginator->total() === 0 && $page === 1 && $storageId !== null) {
                 $storage = StorageProvider::find($storageId);
-                if ($storage && $storage->type === 'local') {
+                $backoff = (int) config('storage_sync.lock.autoscan_backoff', 60);
+                $attemptKey = "autoscan_attempted:{$storageId}:" . ($parentId ?? 'root');
+
+                if ($storage && $storage->type === 'local' && Cache::add($attemptKey, 1, $backoff)) {
                     $isAutoScan = true;
                     $syncService = app(StorageSyncService::class);
                     $files = $syncService->syncFolder($storage, $parentId, $user->id);
