@@ -8,11 +8,19 @@ use Illuminate\Support\Facades\Log;
  * Parser de SRT estandar a segmentos con timestamps en segundos.
  *
  * Salida: [['index'=>1, 'start_seconds'=>0.64, 'end_seconds'=>6.56, 'text'=>'...'], ...]
- * Trunca segmentos > 500 chars (con warning) para no inflar la BD con basura.
+ *
+ * El limite de longitud por segmento es configurable (`srt_max_segment_chars`,
+ * 0 = sin limite). Estuvo fijado en 500 "para no inflar la BD con basura", pero
+ * la premisa era falsa: la columna es `text` (ilimitada) y lo que se cortaba era
+ * habla real de ~30s sin pausas — tipico de emisoras de radio. El texto cortado
+ * dejaba de aparecer en las busquedas.
  */
 class SrtParser
 {
-    private const MAX_SEGMENT_CHARS = 500;
+    /** Se mantiene como referencia historica del valor que causaba el recorte. */
+    public const LEGACY_MAX_SEGMENT_CHARS = 500;
+
+    public function __construct(private ?TranscriptorSettings $settings = null) {}
 
     public function parse(string $content): array
     {
@@ -20,19 +28,29 @@ class SrtParser
             return [];
         }
 
+        $maxChars = $this->maxSegmentChars();
+
         $pattern = '/(?:^|\n)(\d+)\s*\n(\d{2}:\d{2}:\d{2}[,.]\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}[,.]\d{3})\s*\n([\s\S]*?)(?=\n\s*\n|\Z)/';
         preg_match_all($pattern, $content, $matches, PREG_SET_ORDER);
 
         $segments = [];
+        $truncated = 0;
+        $charsLost = 0;
+        $longest = 0;
+
         foreach ($matches as $m) {
             $index = (int) $m[1];
             $startSeconds = $this->timeToSeconds($m[2]);
             $endSeconds = $this->timeToSeconds($m[3]);
             $text = trim(str_replace("\n", ' ', $m[4]));
 
-            if (mb_strlen($text) > self::MAX_SEGMENT_CHARS) {
-                Log::warning("SrtParser: segmento #{$index} excede " . self::MAX_SEGMENT_CHARS . " chars; truncando.");
-                $text = mb_substr($text, 0, self::MAX_SEGMENT_CHARS);
+            $len = mb_strlen($text);
+            $longest = max($longest, $len);
+
+            if ($maxChars > 0 && $len > $maxChars) {
+                $truncated++;
+                $charsLost += $len - $maxChars;
+                $text = mb_substr($text, 0, $maxChars);
             }
 
             $segments[] = [
@@ -43,7 +61,30 @@ class SrtParser
             ];
         }
 
+        // UN aviso por SRT, con el agregado. Antes se emitia uno por segmento y
+        // suponia el 15% de todo el log, ahogando cualquier otra señal.
+        if ($truncated > 0) {
+            Log::warning('SrtParser: segmentos truncados', [
+                'segmentos' => $truncated,
+                'de_total' => count($segments),
+                'chars_perdidos' => $charsLost,
+                'mas_largo' => $longest,
+                'limite' => $maxChars,
+            ]);
+        }
+
         return $segments;
+    }
+
+    private function maxSegmentChars(): int
+    {
+        if ($this->settings !== null) {
+            return $this->settings->int('srt_max_segment_chars');
+        }
+
+        return function_exists('config')
+            ? (int) config('transcriptor.srt_max_segment_chars', 3000)
+            : 3000;
     }
 
     /**
