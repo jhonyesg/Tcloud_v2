@@ -17,10 +17,15 @@ class TranscriptionPollingService
     public function __construct(
         private TranscriptorApiClient $client,
         private TranscriptionProcessor $processor,
+        private TranscriptorSettings $settings,
     ) {}
 
     /**
      * Hace polling de todas las transcripciones en queued/processing con job_id.
+     *
+     * El limite estaba hardcodeado en 100, por debajo del objetivo de cola (140):
+     * el poll no alcanzaba al dispatch y los jobs completados se acumulaban sin
+     * recoger. Ahora es ajustable y su default va al nivel del objetivo.
      *
      * @return array{polled:int, done:int, errors:int, still_pending:int}
      */
@@ -31,7 +36,7 @@ class TranscriptionPollingService
             Transcription::STATE_PROCESSING,
         ])
             ->whereNotNull('job_id')
-            ->limit(100)
+            ->limit($this->settings->int('poll_limit'))
             ->get();
 
         $polled = 0;

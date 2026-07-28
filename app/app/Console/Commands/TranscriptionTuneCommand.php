@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Models\StorageProvider;
+use App\Services\Ia\TranscriptorSettings;
 use Illuminate\Console\Command;
 
 /**
@@ -34,21 +35,30 @@ class TranscriptionTuneCommand extends Command
 
     protected $description = 'Calcula el numero optimo de workers de transcripcion segun storages habilitados y ajusta el pool systemd.';
 
-    private const MIN_WORKERS = 3;
-    private const MAX_WORKERS = 12;
-    private const RATIO_MEDIOS_POR_WORKER = 6;
-
-    public function handle(): int
+    public function handle(TranscriptorSettings $settings): int
     {
         $apply = (bool) $this->option('apply');
         $json = (bool) $this->option('json');
+
+        // Antes eran private const. Ahora salen de la capa de settings, con los
+        // mismos valores como default, para poder bajarlos en caliente durante
+        // una saturacion sin desplegar.
+        $minWorkers = $settings->int('worker_min');
+        $ratio = max(1, $settings->int('worker_ratio'));
+
+        // El techo se acota a las units realmente instaladas: la UI no puede
+        // pedir workers que no existen en systemd.
+        $installed = $this->installedUnitCount();
+        $maxWorkers = max(1, min($settings->int('worker_max'), $installed ?: $settings->int('worker_max')));
+        $override = $settings->int('worker_override');
 
         $countStorages = StorageProvider::transcriptionEnabled()->count();
 
         if ($countStorages === 0) {
             $this->info('No hay storages con transcripcion habilitada. Workers objetivo: 0 (off).');
+            $stoppedOrphans = $apply ? $this->reconcileForbiddenPools() : [];
             if ($json) {
-                $this->line(json_encode(['ts' => now()->toIso8601String(), 'storages_total' => 0, 'medios_total' => 0, 'workers_target' => 0, 'started' => [], 'stopped' => []]));
+                $this->line(json_encode(['ts' => now()->toIso8601String(), 'storages_total' => 0, 'medios_total' => 0, 'workers_target' => 0, 'started' => [], 'stopped' => [], 'stopped_orphans' => $stoppedOrphans]));
             }
             if ($apply) {
                 $this->stopAllWorkers();
@@ -73,19 +83,31 @@ class TranscriptionTuneCommand extends Command
             ->count();
 
         $totalMedios = $countFlat + $mediosAgrupados;
-        $workersObjetivo = (int) max(
-            self::MIN_WORKERS,
-            min(self::MAX_WORKERS, (int) ceil($totalMedios / self::RATIO_MEDIOS_POR_WORKER))
-        );
+
+        if ($override > 0) {
+            // En saturacion lo que se necesita es "ponlo en 4 ahora", no deducir
+            // que ratio produce 4.
+            $workersObjetivo = min($override, $maxWorkers);
+        } else {
+            $workersObjetivo = (int) max($minWorkers, min($maxWorkers, (int) ceil($totalMedios / $ratio)));
+        }
 
         $this->info("Storages habilitados: {$countStorages}");
         $this->info("  - planos (1 medio c/u): {$countFlat}");
         $this->info("  - agrupados (multi-medio): {$grouped->count()} storages -> {$mediosAgrupados} medios");
         $this->info("Medios total equivalente: {$totalMedios}");
-        $this->info("Workers objetivo: {$workersObjetivo} (rango ".self::MIN_WORKERS."-".self::MAX_WORKERS.")");
+        if ($override > 0) {
+            $this->warn("Workers objetivo: {$workersObjetivo} (FORZADO por worker_override={$override}; la formula se ignora)");
+        } else {
+            $this->info("Workers objetivo: {$workersObjetivo} (medios/{$ratio}, acotado a {$minWorkers}-{$maxWorkers})");
+        }
 
         if (!$apply) {
             $this->warn('Modo dry-run. Use --apply para aplicar cambios al pool systemd.');
+            $orphansDetected = $this->detectForbiddenPools();
+            if ($orphansDetected) {
+                $this->warn('Pools prohibidos activos (se desactivarian con --apply): ' . implode(', ', $orphansDetected));
+            }
             if ($json) {
                 $this->line(json_encode([
                     'ts' => now()->toIso8601String(),
@@ -94,6 +116,8 @@ class TranscriptionTuneCommand extends Command
                     'workers_target' => $workersObjetivo,
                     'started' => [],
                     'stopped' => [],
+                    'stopped_orphans' => [],
+                    'orphans_detected' => $orphansDetected,
                 ]));
             }
             return Command::SUCCESS;
@@ -101,6 +125,11 @@ class TranscriptionTuneCommand extends Command
 
         $started = [];
         $stopped = [];
+
+        // Reconciliar pools prohibidos ANTES de calcular nada mas: si hay
+        // instancias worker@N vivas, la concurrencia real no es la que este
+        // comando cree gestionar.
+        $stoppedOrphans = $this->reconcileForbiddenPools();
 
         // Asegurar que existan y esten active los servicios 1..workersObjetivo
         for ($i = 1; $i <= $workersObjetivo; $i++) {
@@ -121,7 +150,7 @@ class TranscriptionTuneCommand extends Command
         }
 
         // Detener sobrantes
-        for ($i = $workersObjetivo + 1; $i <= self::MAX_WORKERS; $i++) {
+        for ($i = $workersObjetivo + 1; $i <= max($maxWorkers, $installed); $i++) {
             $name = "tcloud-transcription-batch-{$i}";
             if (!$this->serviceExists($name)) continue;
             $status = $this->getActiveState($name);
@@ -156,10 +185,88 @@ class TranscriptionTuneCommand extends Command
                 'workers_target' => $workersObjetivo,
                 'started' => $started,
                 'stopped' => $stopped,
+                'stopped_orphans' => $stoppedOrphans,
+                'worker_min' => $minWorkers,
+                'worker_max' => $maxWorkers,
+                'worker_ratio' => $ratio,
+                'worker_override' => $override,
+                'units_installed' => $installed,
             ]));
         }
 
         return Command::SUCCESS;
+    }
+
+    /**
+     * Desactiva pools de workers prohibidos por la spec
+     * (transcription-orchestrator-runtime §7).
+     *
+     * El unico pool permitido es tcloud-transcription-batch-{1..N}. Las
+     * instancias del template tcloud-transcription-worker@N son invisibles para
+     * este comando: no las arranca ni las cuenta, asi que mientras esten vivas
+     * la concurrencia real duplica a la calculada. Verificado el 2026-07-26:
+     * 11 batch-N + 10 worker@N = 21 workers reales contra una API con 2 GPUs.
+     *
+     * La spec ya las prohibia, pero nada lo hacia cumplir. Esto convierte el
+     * contrato en autoaplicado: si reaparecen, el siguiente tune las apaga y
+     * deja rastro en el log.
+     *
+     * @return list<string> units detenidas en esta ejecucion
+     */
+    private function reconcileForbiddenPools(): array
+    {
+        $stopped = [];
+
+        foreach ($this->detectForbiddenPools() as $unit) {
+            $this->warn("Pool prohibido activo: {$unit} — desactivando.");
+            @shell_exec('systemctl disable --now ' . escapeshellarg($unit) . ' 2>/dev/null');
+            $stopped[] = $unit;
+        }
+
+        if ($stopped) {
+            \Illuminate\Support\Facades\Log::warning(
+                'TranscriptionTune: detenidas instancias de un pool prohibido (spec transcription-orchestrator-runtime §7)',
+                ['stopped_orphans' => $stopped]
+            );
+        }
+
+        return $stopped;
+    }
+
+    /**
+     * Instancias activas del template prohibido tcloud-transcription-worker@.
+     *
+     * @return list<string>
+     */
+    private function detectForbiddenPools(): array
+    {
+        $out = @shell_exec("systemctl list-units 'tcloud-transcription-worker@*.service' --all --plain --no-legend 2>/dev/null");
+        if (!$out) {
+            return [];
+        }
+
+        $units = [];
+        foreach (preg_split('/\R/', trim($out)) as $line) {
+            $line = trim($line);
+            if ($line === '') continue;
+
+            // Formato: UNIT LOAD ACTIVE SUB DESCRIPTION
+            $cols = preg_split('/\s+/', $line);
+            $unit = $cols[0] ?? '';
+            $active = $cols[2] ?? '';
+
+            if ($unit !== '' && $active === 'active') {
+                $units[] = $unit;
+            }
+        }
+
+        return $units;
+    }
+
+    /** Numero de units tcloud-transcription-batch-N.service instaladas. */
+    private function installedUnitCount(): int
+    {
+        return count(glob('/etc/systemd/system/tcloud-transcription-batch-*.service') ?: []);
     }
 
     private function serviceExists(string $name): bool
@@ -177,7 +284,9 @@ class TranscriptionTuneCommand extends Command
 
     private function stopAllWorkers(): void
     {
-        for ($i = 1; $i <= self::MAX_WORKERS; $i++) {
+        // Recorre las units instaladas, no una constante: si mañana hay 16
+        // instaladas, un tope fijo de 12 dejaria 4 corriendo.
+        for ($i = 1; $i <= max(1, $this->installedUnitCount()); $i++) {
             $name = "tcloud-transcription-batch-{$i}";
             if ($this->serviceExists($name)) {
                 @shell_exec("systemctl stop {$name}.service 2>/dev/null");

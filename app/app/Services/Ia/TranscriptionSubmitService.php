@@ -19,6 +19,7 @@ class TranscriptionSubmitService
     public function __construct(
         private AudioConverter $converter,
         private TranscriptorApiClient $client,
+        private TranscriptorSettings $settings,
     ) {}
 
     /**
@@ -109,10 +110,20 @@ class TranscriptionSubmitService
 
     private function markError(Transcription $t, string $message): void
     {
+        $maxRetries = $this->settings->int('max_retries');
+        $newRetries = (int) $t->retries + 1;
+
+        $state = Transcription::STATE_ERROR;
+        if ($newRetries >= $maxRetries) {
+            $state = Transcription::STATE_DEAD;
+            $message = "[Auto] Max retries ({$maxRetries}) alcanzado. {$message}";
+        }
+
         $t->update([
-            'state' => Transcription::STATE_ERROR,
+            'state' => $state,
             'error_message' => $message,
             'finished_at' => now(),
+            'retries' => $newRetries,
         ]);
     }
 }

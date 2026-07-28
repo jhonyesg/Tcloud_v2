@@ -2,48 +2,36 @@
 
 namespace App\Console\Commands;
 
-use App\Services\Ia\CorrectionService;
 use Illuminate\Console\Command;
 
+/**
+ * @deprecated Use `corrections:apply-run --run-id=<id>` instead. This facade
+ * stays as a manual alias for one release cycle to avoid breaking operators
+ * that already use `transcription:apply-corrections` from CLI.
+ */
 class ApplyCorrectionsCommand extends Command
 {
     protected $signature = 'transcription:apply-corrections
                             {--dry-run : Solo reporta cambios sin tocar la BD}
-                            {--chunk=500 : Tamaño del chunk de segments por transacción}';
+                            {--chunk=0 : Tamaño del chunk de segments por transacción (0 = usar corrections_chunk)}';
 
-    protected $description = 'Reaplica el diccionario de correcciones approved a todos los TranscriptionSegment existentes.';
+    protected $description = 'DEPRECATED: usa `corrections:apply-run --run-id=<id>`. Reaplica el diccionario de correcciones approved a todos los TranscriptionSegment existentes.';
 
-    public function handle(CorrectionService $service): int
+    public function handle(): int
     {
+        $runId = 'cli_' . time() . '_' . md5((string) mt_rand());
         $dryRun = (bool) $this->option('dry-run');
-        $chunk = max(50, (int) $this->option('chunk'));
+        // 0 se pasa tal cual para que corrections:apply-run resuelva el default
+        // desde corrections_chunk en vez de fijar 500 aqui.
+        $chunkOption = (int) $this->option('chunk');
+        $chunk = $chunkOption > 0 ? max(50, $chunkOption) : 0;
 
-        $this->info($dryRun ? 'Modo dry-run: no se modificará la BD.' : 'Aplicando correcciones...');
+        $this->warn("DEPRECATED: usa `corrections:apply-run --run-id=<id>` para getionar progreso.");
 
-        $progressBar = $this->output->createProgressBar();
-        $progressBar->start();
-
-        $last = 0;
-        $updated = $service->applyRetroactively(
-            function ($current) use ($progressBar, &$last) {
-                if ($current !== $last) {
-                    $progressBar->advance();
-                    $last = $current;
-                }
-            },
-            $chunk,
-            $dryRun
-        );
-
-        $progressBar->finish();
-        $this->newLine(2);
-
-        if ($dryRun) {
-            $this->info("Dry-run: {$updated} segments serían modificados con el diccionario actual.");
-        } else {
-            $this->info("Listo. {$updated} segments actualizados.");
-        }
-
-        return Command::SUCCESS;
+        return $this->call('corrections:apply-run', [
+            '--run-id' => $runId,
+            '--chunk' => $chunk,
+            '--dry-run' => $dryRun,
+        ]);
     }
 }

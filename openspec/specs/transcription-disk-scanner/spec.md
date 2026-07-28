@@ -27,8 +27,10 @@ El sistema SHALL soportar un parámetro `--days=N` para escanear también las ca
 - **WHEN** se ejecuta el scanner con `--all`
 - **THEN** el sistema escanea recursivamente todas las carpetas bajo `base_path` que contengan `.mp4` sin transcripción, respetando `scan_batch` por ciclo
 
-### Requirement: Scanner submits pending transcriptions synchronously
-El sistema SHALL, para cada `Transcription` en `state=pending` sin `job_id`, ejecutar síncronamente la conversión a Opus (`ffmpeg`) y el envío al transcriptor externo vía `POST /v1/transcribe`, sin usar colas Redis.
+### Requirement: Scanner submits pending transcriptions
+El sistema SHALL, para cada `Transcription` en `state=pending` sin `job_id`, ejecutar la conversión a Opus (`ffmpeg`) y el envío al transcriptor externo vía `POST /v1/transcribe`.
+
+> **Corrección (2026-07-26)**: este requisito decía «sin usar colas Redis», pero la implementación encola a `queues:transcription` desde antes de este cambio (`ScanAndSubmitCommand` despacha `ConvertAndTranscribeJob` salvo con `--no-dispatch`, y el tick programado usa precisamente `--no-dispatch` para separar descubrimiento de encolado). La ejecución síncrona solo sobrevive en los endpoints manuales de la UI (`transcribeFile`, `dispatchNow`) y en el reenvío de atascados de `poll-results`. El texto se corrige para reflejar la realidad; la divergencia es anterior a este cambio.
 
 #### Scenario: Submit a pending transcription
 - **WHEN** existe una `Transcription` en `state=pending` sin `job_id` y su `File` es legible en disco
@@ -42,11 +44,26 @@ El sistema SHALL, para cada `Transcription` en `state=pending` sin `job_id`, eje
 - **THEN** el sistema marca la `Transcription` en `state=error` con mensaje descriptivo y continúa con el siguiente
 
 ### Requirement: Scanner respects batch limit
-El sistema SHALL limitar la cantidad de archivos procesados por ciclo al valor `scan_batch` (configurable), ordenados por `file_modified_at` descendente.
+El sistema SHALL limitar el DESCUBRIMIENTO por storage y por ciclo al valor `scan_batch`, ordenados por `file_modified_at` descendente, y SHALL limitar el ENCOLADO por ejecución a `min(scan_max_dispatch_per_cycle, deficit_del_regulador)`.
+
+Ambos límites son distintos y ambos son necesarios: `scan_batch` acota cuánto se descubre en cada storage; el tope de encolado acota cuánto entra a la cola en total.
 
 #### Scenario: Batch limit reached
 - **WHEN** hay más candidatos pendientes que `scan_batch`
-- **THEN** el sistema procesa solo los `scan_batch` más recientes y deja el resto para el siguiente ciclo
+- **THEN** el sistema descubre solo los `scan_batch` más recientes y deja el resto para el siguiente ciclo
+
+#### Scenario: Dispatch cap across storages
+- **WHEN** el descubrimiento produce candidatos en N storages habilitados
+- **THEN** el encolado NO SHALL calcularse como `scan_batch * N`
+- **AND** SHALL acotarse a `scan_max_dispatch_per_cycle` (default 200) y además al déficit del regulador
+- **AND** si la cola Redis ya está en/sobre el objetivo, SHALL omitir el encolado por completo
+
+> Con 31 storages y `scan_batch=100`, la fórmula anterior encolaba 3100 jobs en un bucle apretado sin consultar al regulador. Es además la ruta del botón «Escanear storages» de la UI, así que la inundación también ocurría con disparo manual.
+
+#### Scenario: Dispatch paused
+- **WHEN** `dispatch_paused` está activo
+- **THEN** el descubrimiento SHALL completarse con normalidad (no se pierde nada)
+- **AND** el encolado SHALL omitirse dejando traza en el log
 
 ### Requirement: Scanner skips already-transcribed files
 El sistema SHALL omitir cualquier archivo que ya tenga una fila en `transcriptions`, independientemente de su estado.
@@ -113,3 +130,53 @@ El sistema SHALL combinar las reglas de layout-aware y scope-aware dedup para so
 - **WHEN** storage 47 está habilitado y storage 63 no
 - **THEN** storage 47 escanea todas las subcarpetas incluida `LA_W/`
 - **AND** los archivos LA_W se registran bajo storage 47 (no se omite por descendencia porque el hijo no está enabled)
+
+### Requirement: Scanner retries errored transcriptions with accessible files
+El sistema SHALL, cuando se ejecuta `transcription:scan-and-submit --include-failed`, además del comportamiento existente de descubrir archivos sin transcripción, recolectar todas las `Transcription` con `state='error'` cuyo archivo asociado sigue accesible en disco y que tengan `retries < max_retries` (configurable, default 3), resetearlas a `state='pending'` e incrementar el contador `retries`. Para cada `Transcription` con `state='error'` cuyo archivo ya no es accesible, SHALL marcarla como `state='dead'` con un mensaje claro.
+
+#### Scenario: Errored transcription with accessible file
+- **WHEN** el scanner corre con `--include-failed` y existe una `Transcription` con `state='error'`, `retries < 3`, cuyo `File` es legible en disco
+- **THEN** el scanner actualiza la `Transcription`: `state='pending'`, `error_message=null`, `job_id=null`, `node_url=null`, `node_id=null`, `retries++`
+- **AND** la fila será encolada en Redis en la Fase 2 del mismo batch (junto con los pending nuevos)
+
+#### Scenario: Errored transcription with missing file
+- **WHEN** el scanner corre con `--include-failed` y existe una `Transcription` con `state='error'` cuyo `File` apunta a una ruta inexistente o no legible
+- **THEN** el scanner actualiza la `Transcription`: `state='dead'`, `error_message='Archivo no accesible en disco (<path>). No se reintentará automáticamente.'`
+- **AND** la fila NO se reencola a Redis
+
+#### Scenario: Errored transcription with max retries reached
+- **WHEN** el scanner corre con `--include-failed` y existe una `Transcription` con `state='error'` y `retries >= max_retries` (3 por default)
+- **THEN** el scanner NO modifica la fila y la cuenta en estadísticas como `skipped_max_retries`
+- **AND** el operador puede reprocesarla manualmente desde la UI si lo desea
+
+#### Scenario: Dead transcriptions are never auto-retried
+- **WHEN** el scanner corre con `--include-failed` y existe una `Transcription` con `state='dead'`
+- **THEN** el scanner la ignora completamente (no la incluye en candidatos, no modifica el campo retries)
+- **AND** la única vía de reprocesamiento para archivos dead es la acción manual desde la UI
+
+### Requirement: Auto-promotion to dead after max retries
+El sistema SHALL, cuando `TranscriptionSubmitService::markError()` se invoca para una `Transcription` cuyo `retries >= max_retries`, marcarla automáticamente como `state='dead'` con un mensaje que mencione el límite alcanzado, en lugar de dejarla en `error`. Esto aplica también cuando el reprocess manual falla consecutivamente.
+
+#### Scenario: Worker failure exceeds retry limit
+- **WHEN** un worker de Redis falla al transcribir un archivo que ya fue reintentado 3 veces (retries=3 al entrar al worker)
+- **THEN** `markError()` actualiza la `Transcription`: `state='dead'`, `error_message='[Auto] Max retries (3) alcanzado. <error original>'`, `retries=4`
+- **AND** la fila queda fuera del scope de reintento automático
+
+#### Scenario: First-time failure stays as error
+- **WHEN** un worker falla al transcribir un archivo por primera vez (retries=0 al entrar al worker)
+- **THEN** `markError()` actualiza la `Transcription`: `state='error'`, `error_message=<error>`, `retries=1`
+- **AND** la fila será elegible para reintento en el siguiente batch con `--include-failed`
+
+### Requirement: UI exposes include-failed toggle
+El sistema SHALL exponer en el modal "Escanear storages" un checkbox "Reintentar fallidos" (default OFF) que, cuando está marcado, envía `include_failed=true` en el body del POST `/ia/api-transcriptor/process-batch`. El frontend SHALL mostrar en el panel de resultados el desglose: archivos recuperados, promovidos a dead, saltados por max retries.
+
+#### Scenario: User marks include-failed and starts batch
+- **WHEN** el operador marca el checkbox "Reintentar fallidos" y hace clic en "Iniciar procesamiento"
+- **THEN** el frontend envía `include_failed: true` en el body
+- **AND** el backend ejecuta el comando con `--include-failed`
+- **AND** al terminar el batch, el panel de resultados muestra `failed_recovered`, `failed_promoted_to_dead` y `failed_skipped_max_retries`
+
+#### Scenario: Default behavior unchanged
+- **WHEN** el operador NO marca el checkbox "Reintentar fallidos" (caso por defecto)
+- **THEN** el batch se ejecuta como antes, sin reencolar transcripciones en error
+- **AND** la UI no muestra las estadísticas de fallidos en el panel de resultados

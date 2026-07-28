@@ -15,17 +15,68 @@ use Illuminate\Support\Facades\Log;
  */
 class TranscriptorApiClient
 {
-    private string $baseUrl;
-    private ?string $apiKey;
-    private int $submitTimeout;
-    private int $getTimeout;
+    public function __construct(private TranscriptorSettings $settings) {}
 
-    public function __construct()
+    /*
+     * Los valores se leen POR LLAMADA, no en el constructor.
+     *
+     * Esta clase esta bindeada como singleton y vive dentro de procesos
+     * queue:work que duran horas: cachearlos en propiedades los congelaba hasta
+     * reiniciar systemd, que es justo lo que la capa de settings en caliente
+     * viene a resolver.
+     */
+
+    private function baseUrl(): string
     {
-        $this->baseUrl = rtrim((string) config('transcriptor.base_url'), '/');
-        $this->apiKey = config('transcriptor.api_key') ?: null;
-        $this->submitTimeout = (int) config('transcriptor.submit_timeout', 60);
-        $this->getTimeout = (int) config('transcriptor.get_timeout', 30);
+        return rtrim((string) config('transcriptor.base_url'), '/');
+    }
+
+    private function apiKey(): ?string
+    {
+        return config('transcriptor.api_key') ?: null;
+    }
+
+    private function submitTimeout(): int
+    {
+        return $this->settings->int('submit_timeout');
+    }
+
+    private function getTimeout(): int
+    {
+        return $this->settings->int('get_timeout');
+    }
+
+    /**
+     * Cliente para el POST de envio, con reintentos.
+     *
+     * Antes no habia ninguno: un 502 transitorio mandaba la transcripcion
+     * directa a markError() y, tras max_retries, a dead. Solo se reintenta ante
+     * fallo de conexion o 5xx — un 4xx/401 es permanente y reintentarlo solo
+     * multiplica la carga.
+     */
+    private function submitRequest(string $opusPath)
+    {
+        return Http::timeout($this->submitTimeout())
+            ->retry(
+                $this->settings->int('submit_max_attempts'),
+                $this->settings->int('submit_retry_base_ms'),
+                function ($exception, $request) {
+                    if ($exception instanceof ConnectionException) {
+                        return true;
+                    }
+
+                    $status = method_exists($exception, 'response') && $exception->response
+                        ? $exception->response->status()
+                        : 0;
+
+                    return $status >= 500;
+                },
+                throw: false
+            )
+            // Streaming en vez de file_get_contents(): cargar el opus entero en
+            // un string PHP se multiplicaba por N workers con memory_limit=512M.
+            ->attach('file', fopen($opusPath, 'r'), basename($opusPath))
+            ->asMultipart();
     }
 
     /**
@@ -39,17 +90,12 @@ class TranscriptorApiClient
             throw new \RuntimeException("Archivo opus no legible: {$opusPath}");
         }
 
-        $endpoint = $this->baseUrl . '/v1/transcribe';
+        $endpoint = $this->baseUrl() . '/v1/transcribe';
 
         try {
-            $request = Http::timeout($this->submitTimeout)
-                ->attach('file', file_get_contents($opusPath), basename($opusPath));
-
-            $request = $request->asMultipart();
-
-            $response = $request->post($endpoint, [
-                'language' => config('transcriptor.language', 'es'),
-                'lang_fix' => (string) config('transcriptor.lang_fix', 'async'),
+            $response = $this->submitRequest($opusPath)->post($endpoint, [
+                'language' => $this->settings->str('language'),
+                'lang_fix' => $this->settings->str('lang_fix'),
                 'original_name' => $file->name,
                 'file_id' => (string) $file->id,
                 'storage_id' => (string) $file->storage_provider_id,
@@ -90,17 +136,12 @@ class TranscriptorApiClient
             throw new \RuntimeException("Archivo opus no legible: {$opusPath}");
         }
 
-        $endpoint = $this->baseUrl . '/v1/transcribe';
+        $endpoint = $this->baseUrl() . '/v1/transcribe';
 
         try {
-            $request = Http::timeout($this->submitTimeout)
-                ->attach('file', file_get_contents($opusPath), basename($opusPath));
-
-            $request = $request->asMultipart();
-
-            $response = $request->post($endpoint, [
-                'language' => config('transcriptor.language', 'es'),
-                'lang_fix' => 'async',
+            $response = $this->submitRequest($opusPath)->post($endpoint, [
+                'language' => $this->settings->str('language'),
+                'lang_fix' => $this->settings->str('lang_fix'),
                 'callback_url' => $callbackUrl,
                 'original_name' => $file->name,
                 'file_id' => (string) $file->id,
@@ -142,12 +183,12 @@ class TranscriptorApiClient
         if (preg_match('#^https?://#i', $srtUrl)) {
             $endpoint = $srtUrl;
         } else {
-            $base = rtrim($nodeUrl ?: $this->baseUrl, '/');
+            $base = rtrim($nodeUrl ?: $this->baseUrl(), '/');
             $endpoint = $base . '/' . ltrim($srtUrl, '/');
         }
 
         $response = Http::withHeaders($this->authHeaders())
-            ->timeout($this->getTimeout)
+            ->timeout($this->getTimeout())
             ->get($endpoint);
 
         if (!$response->successful()) {
@@ -162,11 +203,11 @@ class TranscriptorApiClient
      */
     public function getSrt(string $jobId, string $nodeUrl): string
     {
-        $base = rtrim($nodeUrl ?: $this->baseUrl, '/');
+        $base = rtrim($nodeUrl ?: $this->baseUrl(), '/');
         $endpoint = "{$base}/v1/jobs/{$jobId}/srt";
 
         $response = Http::withHeaders($this->authHeaders())
-            ->timeout($this->getTimeout)
+            ->timeout($this->getTimeout())
             ->get($endpoint);
 
         if (!$response->successful()) {
@@ -181,11 +222,11 @@ class TranscriptorApiClient
      */
     public function getJob(string $jobId, string $nodeUrl): array
     {
-        $base = rtrim($nodeUrl ?: $this->baseUrl, '/');
+        $base = rtrim($nodeUrl ?: $this->baseUrl(), '/');
         $endpoint = "{$base}/v1/jobs/{$jobId}";
 
         $response = Http::withHeaders($this->authHeaders())
-            ->timeout($this->getTimeout)
+            ->timeout($this->getTimeout())
             ->get($endpoint);
 
         if (!$response->successful()) {
@@ -203,8 +244,8 @@ class TranscriptorApiClient
     {
         try {
             $response = Http::withHeaders($this->authHeaders())
-                ->timeout($this->getTimeout)
-                ->get($this->baseUrl . '/api/stats');
+                ->timeout($this->getTimeout())
+                ->get($this->baseUrl() . '/api/stats');
 
             if (!$response->successful()) {
                 return ['ok' => false, 'error' => 'stats ' . $response->status()];
@@ -224,8 +265,8 @@ class TranscriptorApiClient
     {
         try {
             $response = Http::withHeaders($this->authHeaders())
-                ->timeout($this->getTimeout)
-                ->get($this->baseUrl . '/api/info');
+                ->timeout($this->getTimeout())
+                ->get($this->baseUrl() . '/api/info');
 
             if (!$response->successful()) {
                 return ['ok' => false, 'error' => 'info ' . $response->status()];
@@ -245,8 +286,8 @@ class TranscriptorApiClient
     {
         try {
             $response = Http::withHeaders($this->authHeaders())
-                ->timeout($this->getTimeout)
-                ->get($this->baseUrl . '/health');
+                ->timeout($this->getTimeout())
+                ->get($this->baseUrl() . '/health');
 
             return [
                 'ok' => $response->successful(),
@@ -260,7 +301,7 @@ class TranscriptorApiClient
 
     public function getBaseUrl(): string
     {
-        return $this->baseUrl;
+        return $this->baseUrl();
     }
 
     /**
@@ -273,6 +314,8 @@ class TranscriptorApiClient
 
     private function authHeaders(): array
     {
-        return $this->apiKey ? ['Authorization' => 'Bearer ' . $this->apiKey] : [];
+        $key = $this->apiKey();
+
+        return $key ? ['Authorization' => 'Bearer ' . $key] : [];
     }
 }
