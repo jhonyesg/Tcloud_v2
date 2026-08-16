@@ -314,6 +314,12 @@ class TranscriptorSettings
             'label' => 'Pares aprendidos por transcripcion',
             'help' => 'Maximo de pares wrong->correct a proponer como pending por transcripcion tras el pase IA. 0 = desactivar aprendizaje.',
         ],
+        'ai_coherence_batch_size' => [
+            'type' => 'int', 'group' => 'ia', 'default' => 5, 'min' => 1, 'max' => 20,
+            'env_key' => 'TRANSCRIPTOR_AI_COHERENCE_BATCH_SIZE',
+            'label' => 'Segmentos por llamada LLM',
+            'help' => 'Cuantos segmentos se corrigen por llamada al LLM. Sub-batches pequenos (5) evitan timeout (cURL 28) con max_tokens alto.',
+        ],
     ];
 
     /** @var array<string,string> */

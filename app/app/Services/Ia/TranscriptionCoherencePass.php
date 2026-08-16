@@ -220,32 +220,41 @@ class TranscriptionCoherencePass
     }
 
     /**
-     * Envía los segmentos flagged al LLM en una sola llamada batch.
+     * Envía los segmentos flagged al LLM en sub-batches pequeños.
+     *
+     * (2026-08-16) Un batch de 20 segmentos con max_tokens=10000 tardaba >60s
+     * y el LLM devolvía timeout (cURL error 28), dejando el spanglish sin
+     * corregir. Se divide en sub-batches de `ai_coherence_batch_size` (default 5)
+     * para que cada llamada sea rápida y no exceda el timeout.
      *
      * @param  array<int, array{index: int, text: string, score: float}>  $flagged
      * @return array<int, string>  mapa index => texto corregido
      */
     private function correctBatch(array $flagged): array
     {
-        $systemPrompt = $this->systemPrompt();
-        $userPrompt = $this->buildUserPrompt($flagged);
-
-        $raw = $this->callChatCompletion($systemPrompt, $userPrompt, true);
-
-        // El trait devuelve el JSON decodificado, o ['raw'=>['text'=>...], 'unparsed'=>true].
-        $candidates = [];
-        if (isset($raw['unparsed']) && isset($raw['raw']['text'])) {
-            $candidates = $this->extractCandidates((string) $raw['raw']['text']);
-        } elseif (is_array($raw)) {
-            $candidates = $raw;
-        }
-
+        $batchSize = max(1, $this->settings->int('ai_coherence_batch_size'));
         $result = [];
-        foreach ($candidates as $c) {
-            $idx = (int) ($c['index'] ?? -1);
-            $corrected = trim((string) ($c['corrected'] ?? ''));
-            if ($idx >= 0 && $corrected !== '') {
-                $result[$idx] = $corrected;
+
+        foreach (array_chunk($flagged, $batchSize) as $chunk) {
+            $systemPrompt = $this->systemPrompt();
+            $userPrompt = $this->buildUserPrompt($chunk);
+
+            $raw = $this->callChatCompletion($systemPrompt, $userPrompt, true);
+
+            // El trait devuelve el JSON decodificado, o ['raw'=>['text'=>...], 'unparsed'=>true].
+            $candidates = [];
+            if (isset($raw['unparsed']) && isset($raw['raw']['text'])) {
+                $candidates = $this->extractCandidates((string) $raw['raw']['text']);
+            } elseif (is_array($raw)) {
+                $candidates = $raw;
+            }
+
+            foreach ($candidates as $c) {
+                $idx = (int) ($c['index'] ?? -1);
+                $corrected = trim((string) ($c['corrected'] ?? ''));
+                if ($idx >= 0 && $corrected !== '') {
+                    $result[$idx] = $corrected;
+                }
             }
         }
 
