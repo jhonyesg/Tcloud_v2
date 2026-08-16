@@ -55,7 +55,7 @@ class TranscriptionBackfillCoherenceCommand extends Command
                   ->whereRaw("text ~* '[áéíóúñ]'")
                   ->whereRaw('length(text) > 40');
             })
-            ->orderBy('created_at', 'desc');
+            ->orderBy('id', 'desc');
 
         $total = (clone $query)->count();
         $this->info("Transcripciones con spanglish residual en {$days} días: {$total}");
