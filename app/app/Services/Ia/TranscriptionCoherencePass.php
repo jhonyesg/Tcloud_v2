@@ -239,7 +239,11 @@ class TranscriptionCoherencePass
             $systemPrompt = $this->systemPrompt();
             $userPrompt = $this->buildUserPrompt($chunk);
 
-            $raw = $this->callChatCompletion($systemPrompt, $userPrompt, true);
+            // Reintento con backoff ante rate limit (HTTP 429) del gateway.
+            // (2026-08-16) El gateway de Kilo limita la tasa de la API key;
+            // con varios procesos paralelos se satura. Reintentar con espera
+            // progresiva evita perder el chunk y respeta el rate limit.
+            $raw = $this->callWithRetry($systemPrompt, $userPrompt);
 
             // El trait devuelve el JSON decodificado, o ['raw'=>['text'=>...], 'unparsed'=>true].
             $candidates = [];
@@ -259,6 +263,37 @@ class TranscriptionCoherencePass
         }
 
         return $result;
+    }
+
+    /**
+     * Llama al LLM con reintento ante rate limit (HTTP 429).
+     *
+     * @return array<string, mixed>
+     */
+    private function callWithRetry(string $systemPrompt, string $userPrompt): array
+    {
+        $maxRetries = 3;
+        $delay = 5; // segundos iniciales
+
+        for ($attempt = 0; $attempt <= $maxRetries; $attempt++) {
+            try {
+                return $this->callChatCompletion($systemPrompt, $userPrompt, true);
+            } catch (\Throwable $e) {
+                $isRateLimit = str_contains($e->getMessage(), '429')
+                    || str_contains($e->getMessage(), 'rate limit')
+                    || str_contains($e->getMessage(), 'too many requests');
+
+                if (!$isRateLimit || $attempt >= $maxRetries) {
+                    throw $e;
+                }
+
+                Log::warning("TranscriptionCoherencePass: rate limit, reintento en {$delay}s (intento " . ($attempt + 1) . ")");
+                sleep($delay);
+                $delay *= 2; // backoff exponencial
+            }
+        }
+
+        throw new \RuntimeException('LLM rate limit persistente');
     }
 
     private function systemPrompt(): string

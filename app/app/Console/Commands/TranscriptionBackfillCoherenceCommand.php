@@ -29,6 +29,8 @@ class TranscriptionBackfillCoherenceCommand extends Command
                             {--batch=5 : Transcripciones por lote}
                             {--sleep=2 : Pausa en segundos entre lotes}
                             {--limit= : Tope total de transcripciones a procesar}
+                            {--from-id= : Id mínimo de transcripción (para paralelizar)}
+                            {--to-id= : Id máximo de transcripción (para paralelizar)}
                             {--dry-run : Solo muestra cuántas procesaría, no toca BD}';
 
     protected $description = 'Re-procesa transcripciones done con el pase de coherencia IA, en lotes pequeños.';
@@ -42,6 +44,8 @@ class TranscriptionBackfillCoherenceCommand extends Command
         $dryRun = (bool) $this->option('dry-run');
 
         $since = now()->subDays($days);
+        $fromId = $this->option('from-id') !== null ? (int) $this->option('from-id') : null;
+        $toId = $this->option('to-id') !== null ? (int) $this->option('to-id') : null;
 
         // Seleccionar transcripciones done con spanglish residual (texto con
         // función EN + acentos ES) en la ventana. Solo las que el pase IA
@@ -56,6 +60,13 @@ class TranscriptionBackfillCoherenceCommand extends Command
                   ->whereRaw('length(text) > 40');
             })
             ->orderBy('id', 'desc');
+
+        if ($fromId !== null) {
+            $query->where('id', '>=', $fromId);
+        }
+        if ($toId !== null) {
+            $query->where('id', '<=', $toId);
+        }
 
         $total = (clone $query)->count();
         $this->info("Transcripciones con spanglish residual en {$days} días: {$total}");
