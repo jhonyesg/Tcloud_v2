@@ -285,9 +285,12 @@ class TranscriptionCoherencePass
 
         // Lista de proveedores en orden round-robin.
         // Kilo (primary) tiene un rate limit mucho más bajo que los otros
-        // proveedores. Para no saturarlo, se le da MENOS peso: aparece 1 vez
-        // mientras los proveedores con mejor rate limit aparecen 2 veces.
-        $providers = ['primary'];
+        // proveedores. Si `primary_enabled` es false, se omite y solo se usan
+        // los proveedores rápidos (Ollama, MiniMax, OpenCode).
+        $providers = [];
+        if ($this->llmSettings->bool('primary_enabled')) {
+            $providers[] = 'primary';
+        }
         if ($secondaryEnabled) {
             $providers[] = 'secondary';
             $providers[] = 'secondary';
@@ -299,6 +302,10 @@ class TranscriptionCoherencePass
         if ($quaternaryEnabled) {
             $providers[] = 'quaternary';
             $providers[] = 'quaternary';
+        }
+
+        if (empty($providers)) {
+            throw new \RuntimeException('No hay proveedores LLM habilitados.');
         }
 
         // Offset aleatorio para el proveedor inicial: con varios procesos

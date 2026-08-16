@@ -56,6 +56,12 @@ class LlmCorrectionSettings
             'label' => 'Habilitado',
             'help' => 'Switch maestro. false = el suggester sale sin gastar tokens, manual o vía cron.',
         ],
+        'primary_enabled' => [
+            'type' => 'bool', 'default' => true,
+            'env_key' => 'LLM_PRIMARY_ENABLED',
+            'label' => 'Proveedor primario (Kilo) habilitado',
+            'help' => 'Kilo tiene un rate limit bajo. Si se usan los proveedores rápidos (Ollama, MiniMax, OpenCode), se puede deshabilitar Kilo para el pase de coherencia.',
+        ],
         'model' => [
             'type' => 'str', 'default' => 'minimax/minimax-m3',
             'env_key' => 'LLM_MODEL',
