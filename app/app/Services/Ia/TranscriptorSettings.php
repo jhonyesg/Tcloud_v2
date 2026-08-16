@@ -308,6 +308,12 @@ class TranscriptorSettings
             'label' => 'Modelo de coherencia IA',
             'help' => 'Modelo LLM a usar. Vacio = usa el de llm-correction.model.',
         ],
+        'ai_coherence_max_learn' => [
+            'type' => 'int', 'group' => 'ia', 'default' => 5, 'min' => 0, 'max' => 50,
+            'env_key' => 'TRANSCRIPTOR_AI_COHERENCE_MAX_LEARN',
+            'label' => 'Pares aprendidos por transcripcion',
+            'help' => 'Maximo de pares wrong->correct a proponer como pending por transcripcion tras el pase IA. 0 = desactivar aprendizaje.',
+        ],
     ];
 
     /** @var array<string,string> */

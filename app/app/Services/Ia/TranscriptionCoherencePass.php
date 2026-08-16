@@ -34,6 +34,7 @@ class TranscriptionCoherencePass
         private EnglishResidualSegmentDetector $detector,
         private TranscriptorSettings $settings,
         private LlmCorrectionSettings $llmSettings,
+        private CorrectionService $corrections,
     ) {}
 
     /**
@@ -120,13 +121,83 @@ class TranscriptionCoherencePass
         }
 
         // Aplicar correcciones por índice.
+        $learnedPairs = [];
         foreach ($corrected as $idx => $newText) {
             if (isset($segments[$idx]) && is_string($newText) && $newText !== '') {
+                $before = (string) ($segments[$idx]['text'] ?? '');
                 $segments[$idx]['text'] = $newText;
+
+                // Aprendizaje: extraer pares wrong→correct del diff entre el
+                // texto del diccionario (before) y el corregido por IA (newText).
+                // (changes/2026-08-15-corrections-learn-from-ai-pass)
+                if ($before !== $newText) {
+                    $learnedPairs[] = [
+                        'wrong' => $before,
+                        'correct' => $newText,
+                        'segment_id' => $segments[$idx]['id'] ?? null,
+                    ];
+                }
             }
         }
 
+        // Proponer los pares aprendidos como correcciones pending (revisión humana).
+        $this->learnFromCorrections($learnedPairs);
+
         return $segments;
+    }
+
+    /**
+     * Propone los pares aprendidos del pase IA como correcciones pending.
+     *
+     * (changes/2026-08-15-corrections-learn-from-ai-pass) Cada corrección IA es
+     * conocimiento que alimenta el diccionario: el admin la aprueba y la primera
+     * pasada (diccionario) captura cada vez más, reduciendo la carga de IA.
+     *
+     * @param  array<int, array{wrong: string, correct: string, segment_id: ?int}>  $pairs
+     */
+    private function learnFromCorrections(array $pairs): void
+    {
+        if (empty($pairs)) {
+            return;
+        }
+
+        $maxLearn = $this->settings->int('ai_coherence_max_learn');
+        $proposed = 0;
+
+        foreach ($pairs as $pair) {
+            if ($proposed >= $maxLearn) {
+                break;
+            }
+
+            $wrong = trim((string) $pair['wrong']);
+            $correct = trim((string) $pair['correct']);
+            if ($wrong === '' || $correct === '' || $wrong === $correct) {
+                continue;
+            }
+
+            // Solo aprender frases cortas (1-4 palabras), no segmentos enteros.
+            if (str_word_count($wrong, 0, 'áéíóúñüÁÉÍÓÚÑÜ') > 4) {
+                continue;
+            }
+
+            try {
+                $created = $this->corrections->proposeLearned($wrong, $correct, $pair['segment_id']);
+                if ($created !== null) {
+                    $proposed++;
+                }
+            } catch (\Throwable $e) {
+                Log::warning('TranscriptionCoherencePass: error proponiendo par aprendido', [
+                    'error' => $e->getMessage(),
+                    'wrong' => $wrong,
+                ]);
+            }
+        }
+
+        if ($proposed > 0) {
+            Log::info('TranscriptionCoherencePass: pares aprendidos propuestos', [
+                'proposed' => $proposed,
+            ]);
+        }
     }
 
     /**
