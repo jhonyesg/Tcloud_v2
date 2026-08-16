@@ -266,24 +266,34 @@ class TranscriptionCoherencePass
     }
 
     /**
-     * Llama al LLM con reintento ante rate limit (HTTP 429) y fallback al
-     * segundo proveedor (Ollama Cloud) si está habilitado.
+     * Llama al LLM con reintento ante rate limit (HTTP 429) y fallback entre
+     * proveedores (Kilo, Ollama Cloud, MiniMax) si están habilitados.
      *
-     * (2026-08-16) El gateway de Kilo limita la tasa (HTTP 429). Si el
-     * secundario está habilitado, se alterna round-robin entre proveedores
-     * para duplicar el throughput y evitar el rate limit.
+     * (2026-08-16) El gateway de Kilo limita la tasa (HTTP 429). Con Ollama
+     * Cloud y MiniMax como proveedores secundarios/terciarios, se alterna
+     * round-robin para triplicar el throughput y evitar el rate limit.
      *
      * @return array<string, mixed>
      */
     private function callWithRetry(string $systemPrompt, string $userPrompt): array
     {
         $secondaryEnabled = $this->llmSettings->bool('secondary_enabled');
+        $tertiaryEnabled = $this->llmSettings->bool('tertiary_enabled');
         $maxRetries = 3;
         $delay = 5; // segundos iniciales
 
+        // Lista de proveedores en orden round-robin.
+        $providers = ['primary'];
+        if ($secondaryEnabled) {
+            $providers[] = 'secondary';
+        }
+        if ($tertiaryEnabled) {
+            $providers[] = 'tertiary';
+        }
+
         for ($attempt = 0; $attempt <= $maxRetries; $attempt++) {
-            // Alternar proveedor: primario en intentos pares, secundario en impares.
-            $provider = ($secondaryEnabled && $attempt % 2 === 1) ? 'secondary' : 'primary';
+            // Alternar proveedor round-robin.
+            $provider = $providers[$attempt % count($providers)];
 
             try {
                 return $this->callChatCompletion($systemPrompt, $userPrompt, true, $provider);
@@ -339,24 +349,38 @@ EOT;
      * Extrae candidatos de una respuesta en prosa (fallback cuando el modelo
      * no devuelve JSON estricto). Busca bloques JSON embebidos.
      *
+     * (2026-08-16) MiniMax devuelve razonamiento en prosa ANTES del JSON
+     * (ej. "[0] ... [1] ..." seguido de ```json [...]```). El regex del primer
+     * array capturaba el `[0]` del razonamiento, no el JSON final. Ahora se
+     * prioriza el bloque ```json``` y, si no, el ÚLTIMO array JSON.
+     *
      * @return array<int, array<string, mixed>>
      */
     private function extractCandidates(string $text): array
     {
-        // Quitar fences de markdown ```json ... ```
-        $text = preg_replace('/```(?:json)?\s*/i', '', $text);
-        $text = trim($text);
+        // 1. Priorizar bloque ```json ... ``` (markdown fence).
+        if (preg_match('/```(?:json)?\s*([\s\S]*?)```/i', $text, $m)) {
+            $decoded = json_decode(trim($m[1]), true);
+            if (is_array($decoded)) {
+                return $decoded;
+            }
+        }
 
-        $decoded = json_decode($text, true);
+        // 2. Intentar parsear el texto completo (JSON estricto).
+        $decoded = json_decode(trim($text), true);
         if (is_array($decoded)) {
             return $decoded;
         }
 
-        // Fallback: buscar el primer array JSON en el texto.
-        if (preg_match('/\[[\s\S]*\]/', $text, $m)) {
-            $decoded = json_decode($m[0], true);
-            if (is_array($decoded)) {
-                return $decoded;
+        // 3. Fallback: buscar el ÚLTIMO array JSON en el texto (no el primero,
+        //    porque el razonamiento en prosa puede contener "[0]").
+        if (preg_match_all('/\[[\s\S]*?\]/', $text, $matches)) {
+            // Probar de atrás hacia adelante: el JSON válido suele ser el último.
+            foreach (array_reverse($matches[0]) as $candidate) {
+                $decoded = json_decode($candidate, true);
+                if (is_array($decoded)) {
+                    return $decoded;
+                }
             }
         }
 

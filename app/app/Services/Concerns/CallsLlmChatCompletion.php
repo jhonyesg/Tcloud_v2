@@ -42,13 +42,17 @@ trait CallsLlmChatCompletion
         $settings = app(\App\Services\Ia\LlmCorrectionSettings::class);
 
         $isSecondary = $provider === 'secondary';
-        $apiKey = $isSecondary ? $settings->str('secondary_api_key') : $settings->apiKey();
+        $isTertiary = $provider === 'tertiary';
+        $apiKey = $isSecondary ? $settings->str('secondary_api_key')
+            : ($isTertiary ? $settings->str('tertiary_api_key') : $settings->apiKey());
         if ($apiKey === '') {
             throw new RuntimeException('LLM API key no configurada para el proveedor ' . $provider . '.');
         }
 
-        $model = $isSecondary ? $settings->str('secondary_model') : $settings->str('model');
-        $baseUrl = $isSecondary ? $settings->str('secondary_base_url') : $settings->str('base_url');
+        $model = $isSecondary ? $settings->str('secondary_model')
+            : ($isTertiary ? $settings->str('tertiary_model') : $settings->str('model'));
+        $baseUrl = $isSecondary ? $settings->str('secondary_base_url')
+            : ($isTertiary ? $settings->str('tertiary_base_url') : $settings->str('base_url'));
 
         // Importante: NO enviamos `response_format: {type: json_object}`.
         // Razón: gateways proxy (OllamaCloud, vLLM, local) NO soportan ese

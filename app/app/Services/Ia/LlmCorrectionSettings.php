@@ -149,6 +149,34 @@ class LlmCorrectionSettings
             'label' => 'Modelo del segundo proveedor',
             'help' => 'Modelo a invocar en Ollama Cloud (ej. deepseek-v4-flash:0731).',
         ],
+
+        // === Tercer proveedor (MiniMax.io) ===
+        // (2026-08-16) MiniMax.io con MiniMax-M2.7 es idóneo para corrección de
+        // texto. Se agrega como tercer proveedor para distribuir aún más la carga.
+        'tertiary_enabled' => [
+            'type' => 'bool', 'default' => false,
+            'env_key' => 'LLM_TERTIARY_ENABLED',
+            'label' => 'Tercer proveedor habilitado',
+            'help' => 'Habilita MiniMax.io como tercer proveedor para distribuir la carga del pase de coherencia.',
+        ],
+        'tertiary_base_url' => [
+            'type' => 'str', 'default' => 'https://api.minimax.io/v1',
+            'env_key' => 'LLM_TERTIARY_BASE_URL',
+            'label' => 'Base URL del tercer proveedor',
+            'help' => 'Endpoint OpenAI-compatible de MiniMax.io.',
+        ],
+        'tertiary_api_key' => [
+            'type' => 'str', 'default' => '',
+            'env_key' => 'LLM_TERTIARY_API_KEY',
+            'label' => 'API key del tercer proveedor',
+            'help' => 'API key de MiniMax.io.',
+        ],
+        'tertiary_model' => [
+            'type' => 'str', 'default' => 'MiniMax-M2.7',
+            'env_key' => 'LLM_TERTIARY_MODEL',
+            'label' => 'Modelo del tercer proveedor',
+            'help' => 'Modelo a invocar en MiniMax.io (ej. MiniMax-M2.7, MiniMax-M2.5).',
+        ],
     ];
 
     /** @var array<string,string> */
