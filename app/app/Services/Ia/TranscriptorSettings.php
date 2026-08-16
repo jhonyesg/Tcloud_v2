@@ -4,6 +4,7 @@ namespace App\Services\Ia;
 
 use App\Models\SystemSetting;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
 
 /**
@@ -146,6 +147,12 @@ class TranscriptorSettings
             'label' => 'Jobs consultados por ciclo',
             'help' => 'Deberia ir al menos al nivel del objetivo de cola, o el poll no alcanza al dispatch.',
         ],
+        'poll_max_age_hours' => [
+            'type' => 'int', 'group' => 'confiabilidad', 'default' => 48, 'min' => 2, 'max' => 720,
+            'env_key' => 'TRANSCRIPTOR_POLL_MAX_AGE_HOURS',
+            'label' => 'Antiguedad maxima en queued (horas)',
+            'help' => 'Pasado este plazo una transcripcion en queued/processing se cierra como dead en vez de sondearse indefinidamente. Es la red que evita backlogs zombis que consumen los slots del poll.',
+        ],
         'max_retries' => [
             'type' => 'int', 'group' => 'confiabilidad', 'default' => 3, 'min' => 1, 'max' => 10,
             'env_key' => 'TRANSCRIPTOR_MAX_RETRIES',
@@ -204,6 +211,31 @@ class TranscriptorSettings
             'label' => 'Correccion de idioma',
             'help' => 'Modo de correccion automatica de idioma en el transcriptor.',
         ],
+        'audio_output_format' => [
+            'type' => 'str', 'group' => 'api', 'default' => 'wav',
+            'options' => ['wav', 'opus'],
+            'env_key' => 'TRANSCRIPTOR_AUDIO_OUTPUT_FORMAT',
+            'label' => 'Formato de envio',
+            'help' => 'Formato al que ffmpeg convierte antes de subir. wav = pcm_s16le 16kHz mono, sin perdida (~115 MB/hora). opus = libopus 64k (~29 MB/hora, con perdida). La API acepta ambos.',
+        ],
+        'min_shm_free_bytes' => [
+            'type' => 'int', 'group' => 'api', 'default' => 200_000_000, 'min' => 10_000_000, 'max' => 4_000_000_000,
+            'env_key' => 'TRANSCRIPTOR_MIN_SHM_FREE_BYTES',
+            'label' => 'Minimo libre en /dev/shm (bytes)',
+            'help' => 'Si /dev/shm tiene menos de esto, el submit se aborta antes de invocar ffmpeg y el job se reencola para el siguiente ciclo. Default 200 MB cubre ~5 WAVs en vuelo + reintentos.',
+        ],
+        'requeue_after_minutes' => [
+            'type' => 'int', 'group' => 'api', 'default' => 5, 'min' => 1, 'max' => 60,
+            'env_key' => 'TRANSCRIPTOR_REQUEUE_AFTER_MINUTES',
+            'label' => 'Minutos hasta reintento tras rebote',
+            'help' => 'Cuando un job rebota por pre-flight (tmpfs sin espacio), el tick lo ignora durante este tiempo. Pasado el plazo se reencola normalmente.',
+        ],
+        'shm_warn_percent' => [
+            'type' => 'int', 'group' => 'api', 'default' => 80, 'min' => 50, 'max' => 99,
+            'env_key' => 'TRANSCRIPTOR_SHM_WARN_PERCENT',
+            'label' => 'Umbral de WARNING en /dev/shm (%)',
+            'help' => 'Por encima de este porcentaje, transcription:check-shm-health emite un Log::warning. Default 80 detecta la fuga antes de que /dev/shm llegue al 100%.',
+        ],
 
         // === Workers ===
         'worker_min' => [
@@ -244,6 +276,38 @@ class TranscriptorSettings
             'label' => 'Tope del slider de lote',
             'help' => 'Alinea el maximo del slider con el clamp del servidor para que no trunque en silencio.',
         ],
+        'min_file_size_bytes' => [
+            'type' => 'int', 'group' => 'confiabilidad', 'default' => 1024, 'min' => 0, 'max' => 1048576,
+            'env_key' => 'TRANSCRIPTOR_MIN_FILE_SIZE_BYTES',
+            'label' => 'Tamano minimo del audio (bytes)',
+            'help' => 'Archivos por debajo de este tamano se descartan sin pasar por ffmpeg. Evita ciclos de retry sobre radios truncados (0 bytes). 0 = desactivar.',
+        ],
+
+        // === Coherencia IA (pase de correccion de spanglish residual) ===
+        'ai_coherence_enabled' => [
+            'type' => 'bool', 'group' => 'ia', 'default' => true,
+            'env_key' => 'TRANSCRIPTOR_AI_COHERENCE_ENABLED',
+            'label' => 'Pase de coherencia IA',
+            'help' => 'Corrige con LLM los segmentos con ingles residual que el diccionario no cubre, dejando la transcripcion en espanol coherente.',
+        ],
+        'ai_coherence_threshold' => [
+            'type' => 'float', 'group' => 'ia', 'default' => 0.4, 'min' => 0.0, 'max' => 1.0,
+            'env_key' => 'TRANSCRIPTOR_AI_COHERENCE_THRESHOLD',
+            'label' => 'Umbral de ingles residual',
+            'help' => 'Score minimo (en/(en+es)) para considerar un segmento con ingles residual y enviarlo al LLM. Mismo umbral que el detector.',
+        ],
+        'ai_coherence_max_segments' => [
+            'type' => 'int', 'group' => 'ia', 'default' => 20, 'min' => 1, 'max' => 200,
+            'env_key' => 'TRANSCRIPTOR_AI_COHERENCE_MAX_SEGMENTS',
+            'label' => 'Tope de segmentos por transcripcion',
+            'help' => 'Maximo de segmentos a corregir con IA por transcripcion. Controla costo/latencia en transcripciones con mucho ingles (ej. musica).',
+        ],
+        'ai_coherence_model' => [
+            'type' => 'str', 'group' => 'ia', 'default' => '',
+            'env_key' => 'TRANSCRIPTOR_AI_COHERENCE_MODEL',
+            'label' => 'Modelo de coherencia IA',
+            'help' => 'Modelo LLM a usar. Vacio = usa el de llm-correction.model.',
+        ],
     ];
 
     /** @var array<string,string> */
@@ -260,15 +324,54 @@ class TranscriptorSettings
             return config(self::KEY_PREFIX . $key);
         }
 
-        $raw = $this->map()[self::KEY_PREFIX . $key]
-            ?? config(self::KEY_PREFIX . $key, $spec['default']);
+        $persisted = $this->map()[self::KEY_PREFIX . $key] ?? null;
+        $raw = $persisted ?? config(self::KEY_PREFIX . $key, $spec['default']);
 
-        return $this->coerce($raw, $spec);
+        $value = $this->coerce($raw, $spec);
+
+        // Un override guardado en BD fuera de rango se recorta en silencio y el
+        // operador cree estar corriendo con el valor que escribio. Paso con
+        // min_file_size_bytes = 100MB, recortado a 1MB por el max del schema:
+        // durante dias mando cientos de ficheros/dia a dead sin explicacion.
+        if ($persisted !== null && (string) $value !== (string) $persisted) {
+            $this->warnClamped($key, (string) $persisted, (string) $value);
+        }
+
+        return $value;
+    }
+
+    /**
+     * Avisa una sola vez por clave y por proceso: `get()` se llama en bucles
+     * dentro de workers que viven horas.
+     *
+     * @var array<string,true>
+     */
+    private static array $clampWarned = [];
+
+    private function warnClamped(string $key, string $stored, string $effective): void
+    {
+        if (isset(self::$clampWarned[$key])) {
+            return;
+        }
+        self::$clampWarned[$key] = true;
+
+        Log::warning('TranscriptorSettings: override fuera de rango, valor efectivo distinto del guardado', [
+            'key' => self::KEY_PREFIX . $key,
+            'stored' => $stored,
+            'effective' => $effective,
+            'min' => self::SCHEMA[$key]['min'] ?? null,
+            'max' => self::SCHEMA[$key]['max'] ?? null,
+        ]);
     }
 
     public function int(string $key): int
     {
         return (int) $this->get($key);
+    }
+
+    public function float(string $key): float
+    {
+        return (float) $this->get($key);
     }
 
     public function bool(string $key): bool
@@ -438,9 +541,20 @@ class TranscriptorSettings
             $hasDbRow = array_key_exists(self::KEY_PREFIX . $key, $map);
             $envValue = isset($spec['env_key']) ? env($spec['env_key']) : null;
 
+            $value = $this->get($key);
+
+            // Un override guardado fuera de rango se recorta al leerlo. Sin
+            // exponer el valor crudo, la UI mostraba el efectivo como si fuera
+            // lo que el operador escribio: min_file_size_bytes figuraba en
+            // 100MB mientras el pipeline aplicaba 1MB.
+            $stored = $hasDbRow ? $map[self::KEY_PREFIX . $key] : null;
+            $clamped = $stored !== null && (string) $stored !== (string) $value;
+
             $out[$key] = [
                 'key' => $key,
-                'value' => $this->get($key),
+                'value' => $value,
+                'stored' => $stored,
+                'clamped' => $clamped,
                 'default' => $this->coerce(config(self::KEY_PREFIX . $key, $spec['default']), $spec),
                 'schema_default' => $spec['default'],
                 'source' => $hasDbRow ? 'bd' : ($envValue !== null ? 'env' : 'archivo'),

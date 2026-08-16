@@ -10,8 +10,10 @@ use Illuminate\Support\Facades\Log;
 /**
  * Procesa una Transcripción que pasó a done: descarga el SRT, lo parsea
  * en segmentos (aplicando correcciones), actualiza state y dispara el
- * matching de keywords. Usado tanto por el webhook como por el polling
- * de respaldo (scan-stale).
+ * matching de keywords. Usado tanto por el polling como por el runbook
+ * de reintentos. La API v2 del transcriptor puede reescribir el SRT
+ * después vía el corrector async (whisper-turbo); cuando eso ocurre,
+ * `reprocessCorrected()` reemplaza los segmentos con la versión final.
  */
 class TranscriptionProcessor
 {
@@ -20,6 +22,7 @@ class TranscriptionProcessor
         private SrtParser $parser,
         private CorrectionService $corrections,
         private KeywordMatcher $matcher,
+        private TranscriptionCoherencePass $coherence,
     ) {}
 
     /**
@@ -37,7 +40,8 @@ class TranscriptionProcessor
     public function processDoneWithSrt(Transcription $transcription, ?string $srt): void
     {
         if ($transcription->state === Transcription::STATE_DONE) {
-            // Ya procesado; no duplicar (idempotencia del matcher).
+            // Ya procesado; no duplicar. Para sobreescritura por corrector
+            // async usar reprocessCorrected().
             return;
         }
 
@@ -50,10 +54,65 @@ class TranscriptionProcessor
         }
         $segments = $this->parser->parse($srt);
 
+        $this->persistSegmentsAndUpdate($transcription, $srt, $segments, triggerMatcher: true);
+    }
+
+    /**
+     * Reemplaza los segmentos existentes con la versión corregida del SRT
+     * (corrector async de la API). Pensado para llamarse desde el polling
+     * cuando se detecta la transición `corrected: 0 → 1`.
+     *
+     * El matcher es idempotente (early return si ya hay matches), así que no
+     * se duplican alertas; pero los segmentos pasan a reflejar el texto
+     * corregido por la API, no por las correcciones locales del diccionario.
+     */
+    public function reprocessCorrected(Transcription $transcription, string $srt): void
+    {
+        if ($transcription->state !== Transcription::STATE_DONE) {
+            // No estaba procesada: cae al flujo normal.
+            $this->processDoneWithSrt($transcription, $srt);
+
+            return;
+        }
+
+        $segments = $this->parser->parse($srt);
+
+        // Borrar segmentos viejos antes de re-insertar. Matching previo se
+        // mantiene: la transición 0→1 rara vez introduce keywords nuevos y
+        // las alertas ya enviadas son idempotentes desde el lado del usuario.
+        DB::transaction(function () use ($transcription, $segments) {
+            $transcription->segments()->delete();
+        });
+
+        $this->persistSegmentsAndUpdate($transcription, $srt, $segments, triggerMatcher: false);
+    }
+
+    /**
+     * Inserta segmentos + actualiza metadata. Centralizado para no duplicar
+     * la logica entre processDoneWithSrt() y reprocessCorrected().
+     */
+    private function persistSegmentsAndUpdate(
+        Transcription $transcription,
+        string $srt,
+        array $segments,
+        bool $triggerMatcher
+    ): void {
         // Aplicar correcciones approved: setea `text` desde `text_raw`.
         // Los segmentos vienen con clave `text`; mapear a `text_raw`.
         $segmentsForCorrections = array_map(fn ($s) => array_merge($s, ['text_raw' => $s['text']]), $segments);
-        $this->corrections->applyToSegments($segmentsForCorrections);
+
+        // Los canales que no emiten en español (Teleislas en criollo raizal,
+        // emisoras con música en inglés) se guardan tal cual: su inglés es
+        // correcto y el diccionario solo lo estropearía.
+        if ($this->corrections->appliesToTranscription($transcription)) {
+            $segmentsForCorrections = $this->corrections->applyToSegments($segmentsForCorrections);
+
+            // Pase de coherencia IA: corrige con LLM los segmentos con inglés
+            // residual que el diccionario no cubrió (spanglish). Solo si el
+            // canal emite en español. Fallback seguro: si el LLM falla, se
+            // conserva el texto del diccionario.
+            $segmentsForCorrections = $this->coherence->apply($segmentsForCorrections);
+        }
 
         DB::transaction(function () use ($transcription, $srt, $segmentsForCorrections) {
             $rows = [];
@@ -82,13 +141,14 @@ class TranscriptionProcessor
                 'srt_content' => $srt,
                 'duration_seconds' => $this->parser->calculateDuration($segmentsForCorrections),
                 'word_count' => $this->parser->calculateWordCount($segmentsForCorrections),
-                'finished_at' => $now,
+                'finished_at' => $transcription->finished_at ?? $now,
                 'error_message' => null,
             ]);
         });
 
         // Disparar matching contra text (corregido) solo si generate_alerts es true.
-        if ($transcription->generate_alerts) {
+        // En reprocessCorrected() se omite: los matches ya existen y son idempotentes.
+        if ($triggerMatcher && $transcription->generate_alerts) {
             try {
                 $this->matcher->run($transcription);
             } catch (\Throwable $e) {
