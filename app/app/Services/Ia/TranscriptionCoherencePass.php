@@ -284,14 +284,20 @@ class TranscriptionCoherencePass
         $delay = 5; // segundos iniciales
 
         // Lista de proveedores en orden round-robin.
+        // Kilo (primary) tiene un rate limit mucho más bajo que los otros
+        // proveedores. Para no saturarlo, se le da MENOS peso: aparece 1 vez
+        // mientras los proveedores con mejor rate limit aparecen 2 veces.
         $providers = ['primary'];
         if ($secondaryEnabled) {
+            $providers[] = 'secondary';
             $providers[] = 'secondary';
         }
         if ($tertiaryEnabled) {
             $providers[] = 'tertiary';
+            $providers[] = 'tertiary';
         }
         if ($quaternaryEnabled) {
+            $providers[] = 'quaternary';
             $providers[] = 'quaternary';
         }
 
