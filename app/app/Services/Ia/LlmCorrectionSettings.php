@@ -177,6 +177,35 @@ class LlmCorrectionSettings
             'label' => 'Modelo del tercer proveedor',
             'help' => 'Modelo a invocar en MiniMax.io (ej. MiniMax-M2.7, MiniMax-M2.5).',
         ],
+
+        // === Cuarto proveedor (OpenCode Go) ===
+        // (2026-08-16) OpenCode Go (subscription) con hy3. Endpoint:
+        // https://opencode.ai/zen/go/v1. Se agrega como cuarto proveedor para
+        // distribuir aún más la carga del pase de coherencia.
+        'quaternary_enabled' => [
+            'type' => 'bool', 'default' => false,
+            'env_key' => 'LLM_QUATERNARY_ENABLED',
+            'label' => 'Cuarto proveedor habilitado',
+            'help' => 'Habilita OpenCode Go como cuarto proveedor para distribuir la carga del pase de coherencia.',
+        ],
+        'quaternary_base_url' => [
+            'type' => 'str', 'default' => 'https://opencode.ai/zen/go/v1',
+            'env_key' => 'LLM_QUATERNARY_BASE_URL',
+            'label' => 'Base URL del cuarto proveedor',
+            'help' => 'Endpoint OpenAI-compatible de OpenCode Go.',
+        ],
+        'quaternary_api_key' => [
+            'type' => 'str', 'default' => '',
+            'env_key' => 'LLM_QUATERNARY_API_KEY',
+            'label' => 'API key del cuarto proveedor',
+            'help' => 'API key de OpenCode Go.',
+        ],
+        'quaternary_model' => [
+            'type' => 'str', 'default' => 'hy3',
+            'env_key' => 'LLM_QUATERNARY_MODEL',
+            'label' => 'Modelo del cuarto proveedor',
+            'help' => 'Modelo a invocar en OpenCode Go (ej. hy3, minimax-m2.7).',
+        ],
     ];
 
     /** @var array<string,string> */

@@ -279,6 +279,7 @@ class TranscriptionCoherencePass
     {
         $secondaryEnabled = $this->llmSettings->bool('secondary_enabled');
         $tertiaryEnabled = $this->llmSettings->bool('tertiary_enabled');
+        $quaternaryEnabled = $this->llmSettings->bool('quaternary_enabled');
         $maxRetries = 3;
         $delay = 5; // segundos iniciales
 
@@ -289,6 +290,9 @@ class TranscriptionCoherencePass
         }
         if ($tertiaryEnabled) {
             $providers[] = 'tertiary';
+        }
+        if ($quaternaryEnabled) {
+            $providers[] = 'quaternary';
         }
 
         for ($attempt = 0; $attempt <= $maxRetries; $attempt++) {

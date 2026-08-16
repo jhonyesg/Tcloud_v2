@@ -43,16 +43,20 @@ trait CallsLlmChatCompletion
 
         $isSecondary = $provider === 'secondary';
         $isTertiary = $provider === 'tertiary';
+        $isQuaternary = $provider === 'quaternary';
         $apiKey = $isSecondary ? $settings->str('secondary_api_key')
-            : ($isTertiary ? $settings->str('tertiary_api_key') : $settings->apiKey());
+            : ($isTertiary ? $settings->str('tertiary_api_key')
+            : ($isQuaternary ? $settings->str('quaternary_api_key') : $settings->apiKey()));
         if ($apiKey === '') {
             throw new RuntimeException('LLM API key no configurada para el proveedor ' . $provider . '.');
         }
 
         $model = $isSecondary ? $settings->str('secondary_model')
-            : ($isTertiary ? $settings->str('tertiary_model') : $settings->str('model'));
+            : ($isTertiary ? $settings->str('tertiary_model')
+            : ($isQuaternary ? $settings->str('quaternary_model') : $settings->str('model')));
         $baseUrl = $isSecondary ? $settings->str('secondary_base_url')
-            : ($isTertiary ? $settings->str('tertiary_base_url') : $settings->str('base_url'));
+            : ($isTertiary ? $settings->str('tertiary_base_url')
+            : ($isQuaternary ? $settings->str('quaternary_base_url') : $settings->str('base_url')));
 
         // Importante: NO enviamos `response_format: {type: json_object}`.
         // Razón: gateways proxy (OllamaCloud, vLLM, local) NO soportan ese
