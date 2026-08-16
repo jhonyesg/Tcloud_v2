@@ -266,18 +266,27 @@ class TranscriptionCoherencePass
     }
 
     /**
-     * Llama al LLM con reintento ante rate limit (HTTP 429).
+     * Llama al LLM con reintento ante rate limit (HTTP 429) y fallback al
+     * segundo proveedor (Ollama Cloud) si está habilitado.
+     *
+     * (2026-08-16) El gateway de Kilo limita la tasa (HTTP 429). Si el
+     * secundario está habilitado, se alterna round-robin entre proveedores
+     * para duplicar el throughput y evitar el rate limit.
      *
      * @return array<string, mixed>
      */
     private function callWithRetry(string $systemPrompt, string $userPrompt): array
     {
+        $secondaryEnabled = $this->llmSettings->bool('secondary_enabled');
         $maxRetries = 3;
         $delay = 5; // segundos iniciales
 
         for ($attempt = 0; $attempt <= $maxRetries; $attempt++) {
+            // Alternar proveedor: primario en intentos pares, secundario en impares.
+            $provider = ($secondaryEnabled && $attempt % 2 === 1) ? 'secondary' : 'primary';
+
             try {
-                return $this->callChatCompletion($systemPrompt, $userPrompt, true);
+                return $this->callChatCompletion($systemPrompt, $userPrompt, true, $provider);
             } catch (\Throwable $e) {
                 $isRateLimit = str_contains($e->getMessage(), '429')
                     || str_contains($e->getMessage(), 'rate limit')
@@ -287,7 +296,7 @@ class TranscriptionCoherencePass
                     throw $e;
                 }
 
-                Log::warning("TranscriptionCoherencePass: rate limit, reintento en {$delay}s (intento " . ($attempt + 1) . ")");
+                Log::warning("TranscriptionCoherencePass: rate limit en {$provider}, reintento en {$delay}s (intento " . ($attempt + 1) . ")");
                 sleep($delay);
                 $delay *= 2; // backoff exponencial
             }
