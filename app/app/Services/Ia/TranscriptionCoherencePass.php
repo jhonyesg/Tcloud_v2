@@ -295,9 +295,14 @@ class TranscriptionCoherencePass
             $providers[] = 'quaternary';
         }
 
+        // Offset aleatorio para el proveedor inicial: con varios procesos
+        // paralelos, si todos empiezan en 'primary' saturan su rate limit.
+        // Rotar el inicio distribuye la carga inicial entre todos los proveedores.
+        $offset = random_int(0, count($providers) - 1);
+
         for ($attempt = 0; $attempt <= $maxRetries; $attempt++) {
-            // Alternar proveedor round-robin.
-            $provider = $providers[$attempt % count($providers)];
+            // Alternar proveedor round-robin con offset aleatorio.
+            $provider = $providers[($offset + $attempt) % count($providers)];
 
             try {
                 return $this->callChatCompletion($systemPrompt, $userPrompt, true, $provider);
