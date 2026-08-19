@@ -203,13 +203,6 @@
                 <i class="fas fa-ban mr-1"></i> Exclusiones
                 <span x-show="exclusionesActiveFiltered.length > 0" x-cloak class="ml-1 px-1.5 py-0.5 bg-purple-500 text-white text-[10px] rounded-full" x-text="exclusionesActiveFiltered.length"></span>
             </button>
-            <!-- Tab Contexto sensible: cambios/2026-08-02-corrections-dictionary-atomicity.
-                 Lista correcciones con risk_level != 'low' para revisión manual.
-                 El counter se actualiza al cargar la tab via contextAudit endpoint. -->
-            <button @click="switchTab('context-sensitive')" :class="tab === 'context-sensitive' ? 'bg-amber-600 text-white' : 'bg-slate-100 text-slate-600'" class="px-4 py-2 rounded-lg text-sm font-medium transition-colors">
-                <i class="fas fa-shield-halved mr-1"></i> Contexto sensible
-                <span x-show="contextSensitiveCount > 0" x-cloak class="ml-1 px-1.5 py-0.5 bg-rose-500 text-white text-[10px] rounded-full" x-text="contextSensitiveCount"></span>
-            </button>
             <button @click="switchTab('transcription-review')" :class="tab === 'transcription-review' ? 'bg-cyan-600 text-white' : 'bg-slate-100 text-slate-600'" class="px-4 py-2 rounded-lg text-sm font-medium transition-colors">
                 <i class="fas fa-magnifying-glass-chart mr-1"></i> Revisar transcripciones
             </button>
@@ -434,90 +427,6 @@
                             <button @click="openExcludeForApproved(c)" class="text-xs px-2 py-1 bg-amber-50 hover:bg-amber-100 text-amber-700 rounded" title="Convertir en exclusión para que nunca más sea traducida por AI Suggest (la corrección aprobada sigue activa)">
                                 <i class="fas fa-shield-halved"></i> Excluir
                             </button>
-                        </td>
-                    </tr>
-                </template>
-            </tbody>
-        </table>
-    </div>
-
-    <!-- Tab Contexto sensible (changes/2026-08-02-corrections-dictionary-atomicity).
-         Lista correcciones con risk_level IN ('medium', 'high') detectadas por
-         el ContextShiftAuditor. Permite revisión manual antes de aplicar el
-         applyToText automático (que omite high por default). -->
-    <div x-show="tab === 'context-sensitive'" x-cloak class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-        <div class="px-4 py-3 bg-amber-50 border-b border-amber-200 flex items-center justify-between">
-            <div>
-                <h3 class="font-semibold text-slate-800">
-                    <i class="fas fa-shield-halved text-amber-600 mr-2"></i>Contexto sensible
-                </h3>
-                <p class="text-xs text-slate-500 mt-0.5">
-                    Correcciones con risk_level=medium o high (muletillas, falsos amigos, largas con baja freq).
-                    <strong>risk=high</strong> NO se aplica automáticamente en el corrector.
-                </p>
-            </div>
-            <div class="flex gap-2">
-                <button @click="loadContextSensitive()" :disabled="loadingContextSensitive" class="px-3 py-1.5 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg text-xs">
-                    <i class="fas" :class="loadingContextSensitive ? 'fa-spinner fa-spin' : 'fa-refresh'"></i> Recargar
-                </button>
-                <button @click="contextAuditApply()" :disabled="loadingContextSensitive || contextSensitive.length === 0" class="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 disabled:bg-slate-300 text-white rounded-lg text-xs font-medium">
-                    <i class="fas fa-magic"></i> Aplicar sugerencias del auditor
-                </button>
-            </div>
-        </div>
-
-        <!-- Filtros -->
-        <div class="px-4 py-3 border-b border-slate-200 bg-slate-50 flex items-center gap-3 flex-wrap">
-            <label class="text-xs font-medium text-slate-600">Risk:</label>
-            <select x-model="contextSensitiveFilter" class="text-sm border border-slate-300 rounded-lg px-3 py-1.5">
-                <option value="all">Todos</option>
-                <option value="high">Solo high</option>
-                <option value="medium">Solo medium</option>
-            </select>
-            <span class="text-xs text-slate-500 ml-auto">
-                <span x-text="contextSensitiveFiltered.length"></span> reglas marcadas
-                · <span x-text="contextSensitive.filter(c => c.suggested_risk === 'high').length"></span> high
-                · <span x-text="contextSensitive.filter(c => c.suggested_risk === 'medium').length"></span> medium
-            </span>
-        </div>
-
-        <div x-show="loadingContextSensitive" class="flex items-center justify-center py-12">
-            <i class="fas fa-spinner fa-spin text-amber-400"></i>
-        </div>
-        <div x-show="!loadingContextSensitive && contextSensitive.length === 0" class="text-center py-12 text-slate-400">
-            <i class="fas fa-shield-halved text-3xl mb-2"></i>
-            <p class="font-medium">No hay correcciones marcadas como context-sensitive</p>
-            <p class="text-xs mt-1">El corrector respetará el tono/contexto original sin restricciones.</p>
-        </div>
-        <table x-show="!loadingContextSensitive && contextSensitive.length > 0" class="w-full">
-            <thead class="bg-slate-50 border-b border-slate-200">
-                <tr>
-                    <th class="px-3 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">ID</th>
-                    <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Original</th>
-                    <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Corrección</th>
-                    <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Risk</th>
-                    <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider hidden md:table-cell">Match / razón</th>
-                    <th class="px-4 py-3 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">Acciones</th>
-                </tr>
-            </thead>
-            <tbody class="divide-y divide-slate-100">
-                <template x-for="s in contextSensitiveFiltered" :key="s.id">
-                    <tr class="hover:bg-slate-50">
-                        <td class="px-3 py-3 text-xs text-slate-500" x-text="s.id"></td>
-                        <td class="px-4 py-3 text-sm text-slate-700" x-text="s.wrong_text || '—'"></td>
-                        <td class="px-4 py-3 text-sm text-slate-700" x-text="s.correct_text || '—'"></td>
-                        <td class="px-4 py-3">
-                            <span class="px-2 py-0.5 rounded text-xs font-medium"
-                                  :class="s.suggested_risk === 'high' ? 'bg-rose-100 text-rose-700' : 'bg-amber-100 text-amber-700'"
-                                  x-text="s.suggested_risk"></span>
-                        </td>
-                        <td class="px-4 py-3 hidden md:table-cell text-xs text-slate-500">
-                            <div x-text="s.matched"></div>
-                            <div class="text-[10px] text-slate-400 mt-0.5" x-text="s.reason"></div>
-                        </td>
-                        <td class="px-4 py-3 text-right">
-                            <button @click="setRiskLevel(s.id, 'low')" class="text-xs px-2 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded">Aceptar (low)</button>
-                            <button @click="destroyApproved(s.id)" class="text-xs px-2 py-1 bg-red-50 hover:bg-red-100 text-red-600 rounded">Eliminar</button>
                         </td>
                     </tr>
                 </template>
@@ -2134,18 +2043,6 @@ function correccionesAdmin() {
         showRejectedTooltip: false,
         // Ejemplos en transcripciones (corrections-context-examples)
         contextModal: { open: false, loading: false, item: null, data: null },
-        // Contexto sensible (changes/2026-08-02-corrections-dictionary-atomicity)
-        contextSensitive: [],
-        loadingContextSensitive: false,
-         contextSensitiveFilter: 'all',
-        get contextSensitiveCount() {
-            return this.contextSensitive ? this.contextSensitive.length : 0;
-        },
-        get contextSensitiveFiltered() {
-            if (!this.contextSensitive) return [];
-            if (this.contextSensitiveFilter === 'all') return this.contextSensitive;
-             return this.contextSensitive.filter(s => s.suggested_risk === this.contextSensitiveFilter);
-         },
          // Revisión manual de transcripciones terminadas.
          transcriptionReviews: [],
          transcriptionReviewMode: 'requested',
@@ -2368,9 +2265,6 @@ function correccionesAdmin() {
             if (name === 'ai-suggest-results' && !this.aiSuggestResults) {
                 await this.loadAiSuggestResults();
             }
-            if (name === 'context-sensitive' && this.contextSensitive.length === 0) {
-                await this.loadContextSensitive();
-            }
             if (name === 'transcription-review') {
                 await this.loadTranscriptionReviews();
             }
@@ -2432,21 +2326,6 @@ function correccionesAdmin() {
             } finally { this.loadingApproved = false; }
         },
 
-        async loadContextSensitive() {
-            // Changes/2026-08-02: carga la lista de correcciones con risk != low.
-            this.loadingContextSensitive = true;
-            try {
-                const res = await apiFetch('/ia/correcciones/context-audit', { headers: { 'Accept': 'application/json' } });
-                if (res.ok) {
-                    const data = await res.json();
-                    this.contextSensitive = data.suggestions || [];
-                }
-            } catch (e) {
-                console.warn('No se pudo cargar contexto sensible', e);
-            } finally {
-                this.loadingContextSensitive = false;
-            }
-        },
 
         async loadTranscriptionReviews() {
             this.transcriptionReviewLoading = true;
@@ -2752,30 +2631,6 @@ function correccionesAdmin() {
             this.approvedSearch = wrongText || '';
         },
 
-        async contextAuditApply() {
-            // Aplica las sugerencias del auditor a la BD (solo pisa risk_level='low').
-            if (!confirm('¿Aplicar las sugerencias del ContextShiftAuditor? Solo se modificarán correcciones con risk_level=low (no pisa overrides manuales).')) return;
-            this.loadingContextSensitive = true;
-            try {
-                const res = await apiFetch('/ia/correcciones/context-audit', {
-                    method: 'POST',
-                    headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
-                });
-                if (res.ok) {
-                    const data = await res.json();
-                    this.showToast('success', 'Sugerencias aplicadas', `${data.updated} correcciones marcadas (${data.skipped_manual} overrides respetados).`);
-                    await this.loadContextSensitive();
-                    await this.loadApproved();
-                } else {
-                    this.showToast('error', 'Error', 'No se pudieron aplicar las sugerencias.');
-                }
-            } catch (e) {
-                this.showToast('error', 'Error', e.message || 'Fallo de red');
-            } finally {
-                this.loadingContextSensitive = false;
-            }
-        },
-
         async setRiskLevel(id, newRisk) {
             // Override manual: cambia risk_level de una corrección específica.
             // Llama al endpoint atómico PATCH /correcciones/{id}/risk-level.
@@ -2787,14 +2642,7 @@ function correccionesAdmin() {
                     body: JSON.stringify({ risk_level: newRisk }),
                 });
                 if (res.ok) {
-                    // Quitar la fila de la lista local sin esperar al reload: si
-                    // el override es a 'low' ya no debe aparecer como "contexto
-                    // sensible" (el endpoint GET /context-audit también la filtra
-                    // por seguridad). Esto evita la confusión de "le di Aceptar
-                    // y sigue ahí".
-                    this.contextSensitive = this.contextSensitive.filter(s => s.id !== id);
                     this.showToast('success', 'Risk actualizado', `Corrección #${id} → ${newRisk}`);
-                    await this.loadContextSensitive();
                     await this.loadApproved();
                 } else {
                     this.showToast('error', 'Error', `HTTP ${res.status}`);

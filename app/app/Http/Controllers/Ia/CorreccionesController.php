@@ -796,62 +796,16 @@ class CorreccionesController extends Controller
     }
 
     /**
-     * Dry-run del ContextShiftAuditor: retorna las sugerencias de risk_level
-     * para que el admin las revise antes de aplicar.
-     *
-     * Path: GET /ia/correcciones/context-audit
-     */
-    public function contextAudit(ContextShiftAuditor $auditor)
-    {
-        $suggestions = $auditor->audit();
-        $items = [];
-        foreach ($suggestions as $id => $s) {
-            $correction = Correction::find($id);
-            // Excluir overrides manuales a 'low': el admin ya revisó esta fila y
-            // decidió que NO es context-sensitive (override one-shot). Sin este
-            // filtro, la fila reaparece tras setRiskLevel(id, 'low') porque el
-            // auditor sigue sugiriendo el patrón; la UI la ignora porque no
-            // aparece en la lista.
-            if (!$correction || $correction->risk_level === Correction::RISK_LOW) {
-                continue;
-            }
-            $items[] = [
-                'id' => $id,
-                'suggested_risk' => $s['risk'],
-                'risk_level' => $correction->risk_level,
-                'matched' => $s['matched'] ?? null,
-                'reason' => $s['reason'],
-                'type' => $s['type'] ?? 'unknown',
-                'safe_translations' => $s['safe_translations'] ?? [],
-            ];
-        }
-        return response()->json([
-            'total' => count($items),
-            'suggestions' => $items,
-        ]);
-    }
-
-    /**
-     * Aplica las sugerencias del auditor a la BD (solo pisa risk_level='low').
-     *
-     * Path: POST /ia/correcciones/context-audit
-     */
-    public function contextAuditApply(ContextShiftAuditor $auditor)
-    {
-        $result = $auditor->applyToDb(false);
-        return response()->json($result);
-    }
-
-    /**
      * Override manual de risk_level por parte del admin.
-     * Cambios/2026-08-02-corrections-dictionary-atomicity.
+     * Cambios/2026-08-02-corrections-dictionary-atomicity (legado).
      *
      * Body: { risk_level: 'low'|'medium'|'high' }
      * Path: PATCH /ia/correcciones/{id}/risk-level
      *
-     * No re-ejecuta el auditor, solo cambia el flag manualmente. Si después se
-     * corre `corrections:context-audit --apply` y la regla sigue matcheando la
-     * blocklist, será sobreescrita (overrides one-shot, documentado en spec).
+     * Nota 2026-08-18: la vista bulk de "Contexto Sensible" se eliminó por
+     * redundante (las reglas wc>=4 ya están protegidas por el guard wc>=4
+     * + scopeSafe()). Este endpoint sigue disponible para overrides
+     * puntuales desde las filas individuales de Revisar transcripciones.
      */
     public function setRiskLevel(Request $request, int $id)
     {

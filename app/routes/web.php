@@ -170,7 +170,8 @@ Route::middleware(['auth', 'admin'])->prefix('ia')->group(function () {
     Route::post('/api-transcriptor/jobs/{id}/reprocess', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'reprocess']);
     Route::post('/api-transcriptor/jobs/{id}/cancel', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'cancelJob']);
     Route::delete('/api-transcriptor/jobs/{id}', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'destroy']);
-    Route::post('/api-transcriptor/storages/{id}/toggle', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'toggleStorage']);
+    // La ruta de toggle de storage se retiró: transcription_enabled es derivado
+    // de user_storages. Se habilita por cliente en /ia/avisos-inteligentes/{user}.
     Route::get('/api-transcriptor/storages/{id}/files', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'storageFiles']);
     Route::post('/api-transcriptor/storages/{id}/scan', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'scanStorage']);
     Route::post('/api-transcriptor/storages/{id}/process-folder', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'processFolder']);
@@ -212,6 +213,9 @@ Route::middleware(['auth', 'admin'])->prefix('ia')->group(function () {
     Route::post('/avisos-inteligentes/{userId}/emails/{email}/test', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'testEmail'])
         ->where('email', '.+');
     Route::get('/avisos-inteligentes/{userId}/matches', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'matches']);
+    // Habilita la transcripción de un storage PARA ESTE CLIENTE. La bandera de
+    // storage_providers se deriva de aquí (ver StorageTranscriptionSync).
+    Route::post('/avisos-inteligentes/{userId}/storages/{storageId}/transcription', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'toggleStorageTranscription']);
 
     // M4: Correcciones
     Route::get('/correcciones', [App\Http\Controllers\Ia\CorreccionesController::class, 'index']);
@@ -243,8 +247,6 @@ Route::middleware(['auth', 'admin'])->prefix('ia')->group(function () {
     Route::patch('/correcciones/{id}/risk-level', [App\Http\Controllers\Ia\CorreccionesController::class, 'setRiskLevel'])->whereNumber('id');
     Route::post('/correcciones/bulk-destroy-inactive', [App\Http\Controllers\Ia\CorreccionesController::class, 'bulkDestroyInactive']);
     Route::get('/correcciones/dictionary-audit', [App\Http\Controllers\Ia\CorreccionesController::class, 'auditReport']);
-    Route::get('/correcciones/context-audit', [App\Http\Controllers\Ia\CorreccionesController::class, 'contextAudit']);
-    Route::post('/correcciones/context-audit', [App\Http\Controllers\Ia\CorreccionesController::class, 'contextAuditApply']);
     Route::post('/correcciones/apply-retroactive', [App\Http\Controllers\Ia\CorreccionesController::class, 'applyRetroactive']);
     Route::get('/correcciones/apply-retroactive/{runId}', [App\Http\Controllers\Ia\CorreccionesController::class, 'runStatus']);
     Route::get('/correcciones/apply-retroactive-active', [App\Http\Controllers\Ia\CorreccionesController::class, 'activeApplyRun']);
