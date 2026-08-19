@@ -149,9 +149,15 @@ class TranscriptionCoherencePass
     /**
      * Propone los pares aprendidos del pase IA como correcciones pending.
      *
-     * (changes/2026-08-15-corrections-learn-from-ai-pass) Cada corrección IA es
-     * conocimiento que alimenta el diccionario: el admin la aprueba y la primera
-     * pasada (diccionario) captura cada vez más, reduciendo la carga de IA.
+     * (changes/2026-08-15-corrections-learn-from-ai-pass + 2026-08-18) Cada
+     * corrección IA es conocimiento que alimenta el diccionario: el admin la
+     * aprueba y la primera pasada (diccionario) captura cada vez más,
+     * reduciendo la carga de IA.
+     *
+     * Bug fixed el 2026-08-18: antes el `wrong` y `correct` eran los segmentos
+     * enteros (de ahí las 6.035 reglas de 4-6 palabras inflando la cola).
+     * Ahora extraemos solo el fragmento mínimo que cambió usando common-prefix/
+     * suffix trim + split por cláusulas, y descartamos cláusulas >4 palabras.
      *
      * @param  array<int, array{wrong: string, correct: string, segment_id: ?int}>  $pairs
      */
@@ -163,41 +169,222 @@ class TranscriptionCoherencePass
 
         $maxLearn = $this->settings->int('ai_coherence_max_learn');
         $proposed = 0;
+        $discardedBySize = 0;
+        $discardedByClassifier = 0;
+        $discardedByBrand = 0;
 
         foreach ($pairs as $pair) {
             if ($proposed >= $maxLearn) {
                 break;
             }
 
-            $wrong = trim((string) $pair['wrong']);
-            $correct = trim((string) $pair['correct']);
-            if ($wrong === '' || $correct === '' || $wrong === $correct) {
+            $wrongFull = trim((string) $pair['wrong']);
+            $correctFull = trim((string) $pair['correct']);
+            if ($wrongFull === '' || $correctFull === '' || $wrongFull === $correctFull) {
                 continue;
             }
 
-            // Solo aprender frases cortas (1-4 palabras), no segmentos enteros.
-            if (str_word_count($wrong, 0, 'áéíóúñüÁÉÍÓÚÑÜ') > 4) {
+            // Extraer el fragmento mínimo que cambió (common-prefix/suffix trim).
+            $clausePairs = $this->extractClausePairs($wrongFull, $correctFull);
+            if (empty($clausePairs)) {
                 continue;
             }
 
-            try {
-                $created = $this->corrections->proposeLearned($wrong, $correct, $pair['segment_id']);
-                if ($created !== null) {
-                    $proposed++;
+            foreach ($clausePairs as $cp) {
+                if ($proposed >= $maxLearn) {
+                    break;
                 }
-            } catch (\Throwable $e) {
-                Log::warning('TranscriptionCoherencePass: error proponiendo par aprendido', [
-                    'error' => $e->getMessage(),
-                    'wrong' => $wrong,
-                ]);
+
+                $wrong = $cp['wrong'];
+                $correct = $cp['correct'];
+                if ($wrong === '' || $correct === '' || $wrong === $correct) {
+                    continue;
+                }
+
+                // Filtro de longitud: solo emitir pares con 5+ palabras.
+                // Política consistente con el triage (cambios 2026-08-18):
+                // las reglas de 1-4 palabras son find/replace demasiado
+                // genérico, no preservan contexto (lesson del 2026-08-15-en-es-mix-miner-prune-open-strategy:
+                // 2.465 reglas palabra-por-palabra auto-aprobadas, 205k
+                // aplicaciones dañinas). Solo 5+ palabras tienen suficiente
+                // contexto para preservar tono/intención. Aplicado en el
+                // extractor (no solo en el triage) para NO GENERAR el ruido
+                // que después tendríamos que descartar.
+                if ($this->wordCount($wrong) < 5) {
+                    $discardedBySize++;
+                    continue;
+                }
+
+                // Filtro de marca/nombre propio (ya presente en
+                // proposeLearned, pero duplicado aquí para tener métricas
+                // de descarte en el log).
+                if (app(\App\Services\Ia\LlmCorrectionSuggester::class)->looksLikeBrandOrProperNoun($wrong)) {
+                    $discardedByBrand++;
+                    Log::info('par descartado por brand/proper noun', [
+                        'wrong' => $wrong,
+                        'correct' => $correct,
+                    ]);
+                    continue;
+                }
+
+                try {
+                    $created = $this->corrections->proposeLearned($wrong, $correct, null);
+                    if ($created !== null) {
+                        $proposed++;
+                    } else {
+                        // proposeLearned retorna null cuando EnEsRuleClassifier
+                        // marca NOISE/QUARANTINE o ya existe el par.
+                        $discardedByClassifier++;
+                    }
+                } catch (\Throwable $e) {
+                    Log::warning('TranscriptionCoherencePass: error proponiendo par aprendido', [
+                        'error' => $e->getMessage(),
+                        'wrong' => $wrong,
+                    ]);
+                }
             }
         }
 
-        if ($proposed > 0) {
-            Log::info('TranscriptionCoherencePass: pares aprendidos propuestos', [
+        if ($proposed > 0 || $discardedBySize > 0 || $discardedByClassifier > 0 || $discardedByBrand > 0) {
+            Log::info('TranscriptionCoherencePass: pares aprendidos', [
                 'proposed' => $proposed,
+                'discarded_by_size' => $discardedBySize,
+                'discarded_by_classifier' => $discardedByClassifier,
+                'discarded_by_brand' => $discardedByBrand,
             ]);
         }
+    }
+
+    /**
+     * Extrae los pares wrong→correct a nivel de palabra.
+     *
+     * Cambio 2026-08-18: el extractor anterior emitía `wrong=$before; correct=$newText`
+     * (segmento entero), generando reglas de 4-6 palabras que llenaban la cola
+     * pending con traducciones literales. Esta implementación hace diff palabra
+     * a palabra (alineamiento posicional 1:1) y emite pares solo donde difieren.
+     *
+     * Asume que la IA produce cambios 1:1 a nivel de palabra (sustituciones,
+     * no reordenamientos significativos), lo cual es el patrón observado en
+     * el pase de coherencia: corrige palabra EN por su equivalente ES en la
+     * misma posición.
+     *
+     * Bugs evitados vs la versión char-level:
+     *  - "motors" vs "motores": el char-level strip considera 's' como sufijo
+     *    común y tritura demasiado. A nivel de palabra son tokens distintos
+     *    que deben producir un par.
+     *  - Prefijos como "The"/"Las" que comparten 0 chars pero son al inicio.
+     *
+     * @return array<int, array{wrong: string, correct: string}>
+     */
+    private function extractClausePairs(string $before, string $after): array
+    {
+        // Tokeniza por palabra; preserva puntuación final adjunta al token
+        // (ej. "motors." → ["motors", "."]) para poder emparejar las pos.
+        $tokenize = function (string $text): array {
+            $parts = preg_split('/(\s+|[.;:!?])/u', $text, -1, PREG_SPLIT_DELIM_CAPTURE | PREG_SPLIT_NO_EMPTY);
+            return is_array($parts) ? $parts : [];
+        };
+
+        $bTokens = $tokenize($before);
+        $aTokens = $tokenize($after);
+
+        if (empty($bTokens) || empty($aTokens)) {
+            return [];
+        }
+
+        // Emparejar posiciones 1:1. Si las longitudes difieren (inserción o
+        // borrado por la IA), los tokens faltantes se ignoran — un find/replace
+        // sin match completo no sirve como regla del diccionario.
+        $n = min(count($bTokens), count($aTokens));
+        $pairs = [];
+        for ($i = 0; $i < $n; $i++) {
+            $bw = (string) $bTokens[$i];
+            $aw = (string) $aTokens[$i];
+
+            // Saltar delimitadores (espacios, puntuación) — solo comparar
+            // palabras o frases que estén en la misma posición textual.
+            if (trim($bw) === '' || trim($aw) === '') {
+                continue;
+            }
+
+            // Si coinciden, es parte estable del segmento (no es un cambio).
+            if ($bw === $aw) {
+                continue;
+            }
+
+            // Si bw es puntuación (un punto/coma), es ruido de tokenización;
+            // saltarlo para no inventar pares como "."→"X".
+            if (preg_match('/^[.;:!?]+$/u', $bw)) {
+                continue;
+            }
+
+            $pairs[] = ['wrong' => $bw, 'correct' => $aw];
+        }
+
+        return $pairs;
+    }
+
+    /**
+     * Cuenta palabras sobre Unicode español con strip de puntuación. Reemplaza
+     * `str_word_count($wrong, 0, 'áéíóúñü...')` que se evadía con tildes.
+     */
+    private function wordCount(string $text): int
+    {
+        $words = preg_split('/\s+/u', trim($text), -1, PREG_SPLIT_NO_EMPTY);
+        if (!is_array($words)) {
+            return 0;
+        }
+        $count = 0;
+        foreach ($words as $w) {
+            // descartar tokens puramente puntuación
+            if (preg_match('/[\p{L}\p{N}]/u', $w)) {
+                $count++;
+            }
+        }
+        return $count;
+    }
+
+    /**
+     * Hidrata `source_segment_id` para las correcciones recién emitidas por
+     * `learnFromCorrections()`. Se ejecuta DESPUÉS del INSERT de
+     * transcription_segments (la hidratación en apply() es estructuralmente
+     * imposible porque los segmentos no tienen id de BD todavía).
+     *
+     * Cambio 2026-08-18 (decisión 6 revisada): un único UPDATE-JOIN resuelve
+     * cada `wrong_text` contra `position(c.wrong_text in ts.text_raw)`. La
+     * cobertura es per-transcripción y filtra por created_at reciente para
+     * no tocar correcciones anteriores.
+     */
+    public function hydrateCoherenceLearnedSourceSegments(int $transcriptionId): int
+    {
+        $hydrated = \Illuminate\Support\Facades\DB::statement(
+            "UPDATE corrections c
+             SET source_segment_id = ts.id
+             FROM transcription_segments ts
+             WHERE c.source = 'ai-coherence-learn'
+               AND c.source_segment_id IS NULL
+               AND c.status = 'pending'
+               AND c.created_at > now() - interval '5 minutes'
+               AND ts.transcription_id = ?
+               AND position(c.wrong_text in ts.text_raw) > 0",
+            [$transcriptionId]
+        );
+
+        $count = \Illuminate\Support\Facades\DB::table('corrections')
+            ->where('source', 'ai-coherence-learn')
+            ->where('status', 'pending')
+            ->where('created_at', '>', now()->subMinutes(5))
+            ->whereNotNull('source_segment_id')
+            ->count();
+
+        if ($count > 0) {
+            Log::info('TranscriptionCoherencePass: hydrated source_segment_id', [
+                'transcription_id' => $transcriptionId,
+                'hydrated' => $count,
+            ]);
+        }
+
+        return $count;
     }
 
     /**

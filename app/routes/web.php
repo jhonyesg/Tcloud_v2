@@ -177,12 +177,28 @@ Route::middleware(['auth', 'admin'])->prefix('ia')->group(function () {
     Route::post('/api-transcriptor/storages/{id}/process-day', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'processDay']);
     Route::post('/api-transcriptor/process-batch', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'processBatch']);
     Route::get('/api-transcriptor/batch-status/{runId}', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'batchStatus'])->where('runId', '[A-Za-z0-9_\-]+');
-    Route::post('/api-transcriptor/transcribe/{fileId}', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'transcribeFile']);
+    // throttle: este endpoint corre ffmpeg + POST SINCRONOS dentro de php-fpm.
+    // Defensa en profundidad, no el limitador principal: el tope real es el pool
+    // acotado del navegador (ui_max_parallel_sends) y, en su momento, el semaforo
+    // inflight_max. Se deja holgado a proposito — un limite estrecho devolveria
+    // 429 en envios legitimos de archivos cortos y el usuario los veria como
+    // errores. 60/min solo actua ante la rafaga patologica (una pagina cacheada
+    // con el Promise.allSettled viejo, o peticiones a mano).
+    Route::post('/api-transcriptor/transcribe/{fileId}', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'transcribeFile'])->middleware('throttle:60,1');
     Route::get('/api-transcriptor/jobs/{id}/status', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'jobStatus']);
+    Route::get('/api-transcriptor/jobs/{id}/transcript', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'transcript']);
     Route::get('/api-transcriptor/transcribe/progress/{key}', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'transcribeProgress'])->where('key', '[A-Za-z0-9_\-]+');
     Route::post('/api-transcriptor/storages/{id}/sync', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'syncStorage']);
     Route::get('/api-transcriptor/health', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'health']);
     Route::get('/api-transcriptor/stats', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'stats']);
+    Route::get('/api-transcriptor/empty-folders', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'emptyFolders']);
+    Route::get('/api-transcriptor/shm-status', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'shmStatus']);
+
+    // Configuracion en caliente del pipeline (pestaña "Configuracion").
+    Route::get('/api-transcriptor/settings', [App\Http\Controllers\Ia\TranscriptorSettingsController::class, 'index']);
+    Route::post('/api-transcriptor/settings', [App\Http\Controllers\Ia\TranscriptorSettingsController::class, 'update'])->middleware('throttle:30,1');
+    Route::post('/api-transcriptor/settings/reset', [App\Http\Controllers\Ia\TranscriptorSettingsController::class, 'reset'])->middleware('throttle:30,1');
+    Route::post('/api-transcriptor/settings/run-tick', [App\Http\Controllers\Ia\TranscriptorSettingsController::class, 'runTick'])->middleware('throttle:6,1');
 
     // M2: Avisos Inteligentes
     Route::get('/avisos-inteligentes', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'index']);
@@ -199,13 +215,67 @@ Route::middleware(['auth', 'admin'])->prefix('ia')->group(function () {
 
     // M4: Correcciones
     Route::get('/correcciones', [App\Http\Controllers\Ia\CorreccionesController::class, 'index']);
+    Route::get('/correcciones/transcription-review', [App\Http\Controllers\Ia\CorreccionesController::class, 'transcriptionReviewList']);
+    Route::get('/correcciones/transcription-review/{id}', [App\Http\Controllers\Ia\CorreccionesController::class, 'transcriptionReviewDetail'])->whereNumber('id');
+    Route::patch('/correcciones/transcription-review/{id}', [App\Http\Controllers\Ia\CorreccionesController::class, 'transcriptionReviewUpdate'])->whereNumber('id');
     Route::get('/correcciones/pending', [App\Http\Controllers\Ia\CorreccionesController::class, 'pending']);
+    Route::get('/correcciones/approved', [App\Http\Controllers\Ia\CorreccionesController::class, 'approved']);
+    // Export CSV (original + corrección) para validación fuera del navegador.
+    Route::get('/correcciones/export', [App\Http\Controllers\Ia\CorreccionesController::class, 'export']);
+    Route::get('/correcciones/ai-suggest-results', [App\Http\Controllers\Ia\CorreccionesController::class, 'aiSuggestResults']);
+    // Ejemplos de dónde dispara una corrección, para moderarla con contexto.
+    Route::get('/correcciones/{id}/contexto', [App\Http\Controllers\Ia\CorreccionesController::class, 'contextExamples'])->whereNumber('id');
+    // Detalle del segmento origen (changes/2026-08-12-corrections-pending-segment-context).
+    // Abre el modal "Contexto del segmento" desde el snippet en la tabla.
+    Route::get('/correcciones/{id}/source-segment', [App\Http\Controllers\Ia\CorreccionesController::class, 'sourceSegment'])->whereNumber('id');
+    Route::get('/correcciones/protected-terms', [App\Http\Controllers\Ia\CorreccionesController::class, 'protectedTermsIndex']);
+    Route::post('/correcciones/protected-terms', [App\Http\Controllers\Ia\CorreccionesController::class, 'protectedTermsStore']);
+    Route::delete('/correcciones/protected-terms/{id}', [App\Http\Controllers\Ia\CorreccionesController::class, 'protectedTermsArchive'])->whereNumber('id');
+    Route::post('/correcciones/protected-terms/{id}/restore', [App\Http\Controllers\Ia\CorreccionesController::class, 'protectedTermsRestore'])->whereNumber('id');
     Route::post('/correcciones/{id}/approve', [App\Http\Controllers\Ia\CorreccionesController::class, 'approve']);
     Route::post('/correcciones/{id}/reject', [App\Http\Controllers\Ia\CorreccionesController::class, 'reject']);
     Route::post('/correcciones', [App\Http\Controllers\Ia\CorreccionesController::class, 'store']);
+    Route::patch('/correcciones/{id}', [App\Http\Controllers\Ia\CorreccionesController::class, 'update'])->whereNumber('id');
     Route::delete('/correcciones/{id}', [App\Http\Controllers\Ia\CorreccionesController::class, 'destroy']);
+    // Atomicity + dictionary audit + context-shift (2026-08-02-corrections-dictionary-atomicity)
+    Route::get('/correcciones/{id}/atomicity-suggestions', [App\Http\Controllers\Ia\CorreccionesController::class, 'atomicitySuggestions'])->whereNumber('id');
+    Route::post('/correcciones/{id}/atomicity-suggestions/bulk-add', [App\Http\Controllers\Ia\CorreccionesController::class, 'bulkCreateAtomicityFromCorrection'])->whereNumber('id');
+    Route::patch('/correcciones/{id}/risk-level', [App\Http\Controllers\Ia\CorreccionesController::class, 'setRiskLevel'])->whereNumber('id');
+    Route::post('/correcciones/bulk-destroy-inactive', [App\Http\Controllers\Ia\CorreccionesController::class, 'bulkDestroyInactive']);
+    Route::get('/correcciones/dictionary-audit', [App\Http\Controllers\Ia\CorreccionesController::class, 'auditReport']);
+    Route::get('/correcciones/context-audit', [App\Http\Controllers\Ia\CorreccionesController::class, 'contextAudit']);
+    Route::post('/correcciones/context-audit', [App\Http\Controllers\Ia\CorreccionesController::class, 'contextAuditApply']);
     Route::post('/correcciones/apply-retroactive', [App\Http\Controllers\Ia\CorreccionesController::class, 'applyRetroactive']);
-    Route::get('/correcciones/preview-retroactive', [App\Http\Controllers\Ia\CorreccionesController::class, 'previewRetroactive']);
+    Route::get('/correcciones/apply-retroactive/{runId}', [App\Http\Controllers\Ia\CorreccionesController::class, 'runStatus']);
+    Route::get('/correcciones/apply-retroactive-active', [App\Http\Controllers\Ia\CorreccionesController::class, 'activeApplyRun']);
+    // Bulk moderation + undo (2026-07-30-corrections-bulk-moderation)
+    Route::post('/correcciones/bulk-approve', [App\Http\Controllers\Ia\CorreccionesController::class, 'bulkApprove']);
+    Route::post('/correcciones/bulk-reject', [App\Http\Controllers\Ia\CorreccionesController::class, 'bulkReject']);
+    Route::post('/correcciones/bulk-destroy', [App\Http\Controllers\Ia\CorreccionesController::class, 'bulkDestroy']);
+    Route::post('/correcciones/bulk-destroy-pending', [App\Http\Controllers\Ia\CorreccionesController::class, 'bulkDestroyPending']);
+    Route::post('/correcciones/undo/{bulkActionId}', [App\Http\Controllers\Ia\CorreccionesController::class, 'undoBulkAction'])
+        ->where('bulkActionId', '[A-Za-z0-9_-]+');
+    // Miner EN↔ES status (2026-07-30-corrections-en-es-mix-miner)
+    Route::get('/correcciones/mining-status', [App\Http\Controllers\Ia\CorreccionesController::class, 'miningStatus']);
+    // AI suggester LLM-powered status (2026-08-01-corrections-ai-suggest-context-aware)
+    Route::get('/correcciones/ai-suggest-status', [App\Http\Controllers\Ia\CorreccionesController::class, 'aiSuggestStatus']);
+    // AI suggester invocación on-demand desde el botón del header (gasto controlado por admin).
+    Route::post('/correcciones/ai-suggest-now', [App\Http\Controllers\Ia\CorreccionesController::class, 'aiSuggestNow']);
+    // AI suggester save-on-preview: reusa los candidatos ya mostrados en el modal sin re-llamar al LLM.
+    Route::post('/correcciones/ai-suggest-save', [App\Http\Controllers\Ia\CorreccionesController::class, 'aiSuggestSave']);
+    // AI suggester configuración editable desde UI (modelo, base_url, defaults) — sin deploy.
+    Route::get('/correcciones/ai-suggest-settings', [App\Http\Controllers\Ia\CorreccionesController::class, 'aiSuggestSettings']);
+    Route::post('/correcciones/ai-suggest-settings', [App\Http\Controllers\Ia\CorreccionesController::class, 'aiSuggestSettingsUpdate']);
+    Route::delete('/correcciones/ai-suggest-settings', [App\Http\Controllers\Ia\CorreccionesController::class, 'aiSuggestSettingsReset']);
+    // Forzar refetch de modelos disponibles desde el gateway.
+    Route::post('/correcciones/ai-suggest-settings/refresh-models', [App\Http\Controllers\Ia\CorreccionesController::class, 'aiSuggestSettingsRefreshModels']);
+    // Setear API key cifrada (alternativa al .env para LLM_API_KEY).
+    Route::post('/correcciones/ai-suggest-settings/api-key', [App\Http\Controllers\Ia\CorreccionesController::class, 'aiSuggestSettingsApiKey']);
+
+    // Triage en capas de pendientes (cambios/2026-08-18-corrections-coherence-learn-fix-and-pending-triage).
+    Route::post('/correcciones/triage-pending', [App\Http\Controllers\Ia\CorreccionesController::class, 'triagePending']);
+    Route::get('/correcciones/triage-pending/{runId}', [App\Http\Controllers\Ia\CorreccionesController::class, 'triageRunStatus'])
+        ->where('runId', '[A-Za-z0-9_-]+');
 });
 
 // Modulo IA — cliente (M3): Mis Avisos + propuestas de corrección

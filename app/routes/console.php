@@ -52,10 +52,99 @@ Schedule::command('transcription:tune --apply')
 
 // Polling de resultados: cada 1 min recupera SRT de transcriptor para jobs queued/processing.
 // Reenvia stuck (sin job_id > stale_after_minutes). Independiente del tick (fase 2).
-Schedule::command('transcription:poll-results')->everyMinute()->withoutOverlapping();
+//
+// TTL explicito: withoutOverlapping() sin argumento usa 1440 minutos. El mutex
+// solo lo libera el proceso que lo tomo, asi que un SIGKILL a mitad de ciclo
+// dejaba el polling parado 24h en silencio — y el polling es el UNICO camino
+// de retorno de resultados (no hay webhook entrante). 10 min cubre de sobra un
+// ciclo normal.
+Schedule::command('transcription:poll-results')
+    ->everyMinute()
+    ->withoutOverlapping(10);
 
 // Limpieza de archivos temporales en /dev/shm (tmpfs) cada hora.
 Schedule::command('transcription:cleanup-tmpfs')->hourly();
+
+// Limpieza defensiva de WAVs huérfanos (>30 min, sin fd abierto) en /dev/shm.
+// Red de seguridad tras el fix del fd leak (2026-08-12): no debería encontrar
+// nada que limpiar, pero si un crash/kill -9 deja archivos sin cerrar, los
+// libera sin afectar jobs en curso.
+Schedule::command('transcription:cleanup-orphan-wav')
+    ->everyFifteenMinutes()
+    ->withoutOverlapping(60);
+
+// Centinela de /dev/shm: cada 10 min verifica uso y emite WARNING si supera
+// el umbral (default 80%). Cache del estado para el endpoint shm-status.
+Schedule::command('transcription:check-shm-health')
+    ->everyTenMinutes()
+    ->withoutOverlapping(30);
+
+// Limpieza diaria del log de undo de bulk actions (corrections-bulk-moderation).
+// Borra entries con expires_at < now() - retention (default 7d).
+Schedule::command('corrections:cleanup-undo-log')->daily()->at('04:00')->withoutOverlapping(60);
+
+// Reporte semanal de triage (cambios/2026-08-18-corrections-coherence-learn-fix-and-pending-triage).
+// Solo dry-run: el admin revisa el log y decide si aplicar desde la UI.
+Schedule::command('corrections:triage-pending --dry-run')
+    ->weekly()
+    ->saturdays()
+    ->at('04:30')
+    ->withoutOverlapping(60)
+    ->appendOutputTo(storage_path('logs/corrections-triage.log'));
+
+// === Auto-cycle de detección y sugerencias EN→ES (cambios 2026-08-11-english-residual-segment-detector) ===
+//
+// Cada 4 horas ejecuta el ciclo:
+//   1) findFlaggedTranscriptions (umbral 0.5) sobre las últimas 4h
+//   2) extrae bigramas (function_en, ES_noun) recurrentes
+//   3) filtra contra pending/approved existentes y la heurística de sustantivos
+//   4) inserta candidatos como PENDING (NO approved) con source='auto-cycle-YYYY-MM-DD'
+//
+// El admin revisa las pendientes en /ia/correcciones y las aprueba/rechaza.
+// Genera max 5 reglas por corrida para mantener ruido bajo. Threshold alto
+// (0.7) marca solo segmentos con mezcla EN/ES severa. min-freq=15 evita
+// rules espurias de un solo segmento.
+Schedule::command('corrections:cycle-suggestions --hours=4 --threshold=0.7 --min-freq=15 --max-rules=5')
+    ->everyFourHours()
+    ->withoutOverlapping(120)
+    ->appendOutputTo(storage_path('logs/corrections-cycle.log'));
+
+// === Detector de transcripciones con inglés residual (mismo ritmo) ===
+//
+// Marca como needs_review las transcripciones done de las últimas 4h
+// con segmentos que superen threshold 0.5 (mezcla EN/ES severa).
+// Idempotente: no pisa status humano preexistente (correct/ignored).
+Schedule::command('corrections:detect-english-residual --hours=4 --threshold=0.5 --apply')
+    ->everyFourHours()
+    ->withoutOverlapping(120)
+    ->appendOutputTo(storage_path('logs/corrections-detect.log'));
+
+// === Minería EN->ES: DESPROGRAMADA el 2026-08-11 ===
+//
+// Aquí corrían dos tareas que alimentaban el diccionario con traducciones
+// inglés->español:
+//
+//   Schedule::command('corrections:mine-en-es --days=14 --min-freq=5')->weekly()...
+//   Schedule::command('corrections:ai-suggest --days=1 --sample=200')->everyTwoHours()...
+//
+// El encargo original (2026-08-01) fue "hay mucho texto en inglés y necesito
+// que eso se corrija", y con 12 corridas/día auto-aprobando en risk_level='low'
+// el resultado fueron 2.465 reglas de traducción palabra por palabra con 205.000
+// aplicaciones: the->la (84.011), in->en (41.104), and->y (38.281), are->están.
+//
+// Un motor de find/replace no puede traducir: no tiene contexto ni concordancia.
+// Lo que producía era espanglish PEOR que el original —
+//   "The cooperativas are dotadas of two motors."
+//     -> "la cooperativas están dotadas of two motors."
+// y además degradaba español correcto ("al diseño" -> "al deño").
+//
+// La causa real es que el ASR devuelve inglés (e italiano) en audio español;
+// eso se arregla en el transcriptor, no traduciendo a posteriori. Ver
+// EnEsRuleClassifier y `corrections:quarantine-en-es`.
+//
+// Los comandos siguen existiendo para uso manual y ahora pasan por el guardrail
+// (rechazan pares EN->ES y entran como pending, sin auto-aprobar), pero no se
+// agendan: sin nada que aportar, solo gastarían tokens de LLM cada 2 horas.
 
 // transcription:apply-corrections queda SOLO manual (no se agenda).
 // transcription-tick es el unico scheduled de descubrimiento+encolado.
