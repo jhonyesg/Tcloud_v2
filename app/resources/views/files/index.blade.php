@@ -373,7 +373,9 @@ deleteConfirmFile: null,
         let url = '/files?page=1';
         if (this.currentFolder) url += '&parent_id=' + this.currentFolder;
         if (this.currentStorage) url += '&storage_id=' + this.currentStorage;
-        if (forceSync) url += '&sync=1';
+        // prune=1 marca "esto lo pidio una persona": el servidor solo se salta las
+        // guardas de borrado masivo en ese caso. silentSync manda sync=1 a secas.
+        if (forceSync) url += '&sync=1&prune=1';
         if (skipBreadcrumbs) url += '&nb=1';
 
         apiFetch(url, {
@@ -408,10 +410,7 @@ deleteConfirmFile: null,
                 this.breadcrumbs = serverBreadcrumbs;
             }
             if (forceSync) {
-                const total = data?.pagination?.total ?? serverData.length;
-                const folders = serverData.filter(f => f.is_folder).length;
-                const files = serverData.filter(f => !f.is_folder).length;
-                this.showToast('Directorio actualizado — ' + folders + ' carpetas, ' + files + ' archivos (total: ' + total + ')', 'success');
+                this.reportSync(data?.stats, serverData);
             }
             this.isNavigating = false;
             this.navigatingToId = null;
@@ -466,6 +465,67 @@ deleteConfirmFile: null,
 
     refreshFiles() {
         this.loadFiles(true);
+    },
+
+    /**
+     * Traduce el resultado real del sync a un aviso.
+     *
+     * Antes esto contaba la lista devuelta y siempre salia en verde, incluso
+     * cuando el servidor no habia llegado a escanear — montaje caido, escaneo no
+     * fiable o carpeta tomada por otro proceso devuelven el ultimo estado
+     * conocido de la BD, que es indistinguible de un sync limpio si solo miras
+     * los archivos.
+     */
+    reportSync(stats, serverData) {
+        const folders = serverData.filter(f => f.is_folder).length;
+        const files = serverData.filter(f => !f.is_folder).length;
+        const contenido = folders + ' carpetas, ' + files + ' archivos';
+
+        if (!stats) {
+            this.showToast('Directorio actualizado — ' + contenido, 'success');
+            return;
+        }
+
+        const noEscaneado = {
+            locked: 'otro proceso esta escaneando esta carpeta ahora mismo',
+            mount_detached: 'el disco no esta montado',
+            scan_untrusted: 'el disco no respondio de forma fiable',
+            sync_disabled: 'la sincronizacion esta desactivada',
+            path_missing: 'la ruta ya no existe en disco',
+            path_outside_base: 'la ruta queda fuera del storage',
+            unknown_folder: 'la carpeta ya no existe en la base de datos',
+        }[stats.status];
+
+        if (noEscaneado) {
+            this.showToast('No se pudo actualizar: ' + noEscaneado + '. Se muestra lo ultimo conocido.', 'warning', 7000);
+            return;
+        }
+
+        const cambios = [];
+        if (stats.created) cambios.push(stats.created + ' nuevos');
+        if (stats.updated) cambios.push(stats.updated + ' actualizados');
+        if (stats.deleted) cambios.push(stats.deleted + ' eliminados');
+
+        // Se escaneo bien pero la purga se nego. Con prune=1 el unico motivo
+        // posible es un escaneo parcial; sin permiso, es que no se pidio.
+        if (!stats.pruned && stats.orphans > 0) {
+            const motivo = stats.allowed_to_prune === false
+                ? 'no tienes permiso para eliminarlos'
+                : 'el escaneo fue parcial y no es fiable para borrar';
+            this.showToast(
+                'Sincronizado (' + (cambios.join(', ') || 'sin cambios') + '). Quedan ' +
+                stats.orphans + ' registros que ya no estan en disco: ' + motivo + '.',
+                'warning', 7000
+            );
+            return;
+        }
+
+        this.showToast(
+            cambios.length
+                ? 'Directorio actualizado — ' + cambios.join(', ')
+                : 'Directorio actualizado — sin cambios (' + contenido + ')',
+            'success'
+        );
     },
 
     async silentSync() {
@@ -956,9 +1016,10 @@ deleteConfirmFile: null,
         }
     },
 
-    showToast(msg, type = 'error') {
+    showToast(msg, type = 'error', ms = 4000) {
         this.toast = { msg, type };
-        setTimeout(() => this.toast = null, 4000);
+        if (this._toastTimer) clearTimeout(this._toastTimer);
+        this._toastTimer = setTimeout(() => this.toast = null, ms);
     },
 
     async downloadSelected() {
@@ -2199,11 +2260,11 @@ deleteConfirmFile: null,
                     </svg>
                     <span class="hidden sm:inline">Subir Archivo</span>
                 </button>
-                <button onclick="startFilesTour()" class="flex items-center gap-1 sm:gap-2 bg-purple-600 hover:bg-purple-700 text-white px-2 sm:px-4 py-2 rounded-lg transition-colors" title="Tour interactivo">
+                <button onclick="startFilesTour()" class="flex items-center gap-1 sm:gap-2 bg-purple-600 hover:bg-purple-700 text-white px-2 sm:px-4 py-2 rounded-lg transition-colors" title="Guía interactiva">
                     <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-1.447-.894L15 9m0 8V9m0 0L9 7"/>
                     </svg>
-                    <span class="hidden sm:inline">Tour</span>
+                    <span class="hidden sm:inline">Guía</span>
                 </button>
             </div>
         </div>
@@ -4277,7 +4338,7 @@ deleteConfirmFile: null,
     <!-- Toast global -->
     <div x-cloak x-show="toast" x-transition
          class="fixed bottom-6 left-1/2 -translate-x-1/2 z-[9999] flex items-center gap-3 px-5 py-3 rounded-xl shadow-xl text-white text-sm font-medium pointer-events-none"
-         :class="toast?.type === 'success' ? 'bg-green-600' : 'bg-red-600'">
+         :class="toast?.type === 'success' ? 'bg-green-600' : (toast?.type === 'warning' ? 'bg-amber-600' : 'bg-red-600')">
         <svg x-show="toast?.type !== 'success'" class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.293 4.293a1 1 0 011.414 0L21 13.586V19a2 2 0 01-2 2H5a2 2 0 01-2-2v-5.414L10.293 4.293z"/>
         </svg>
@@ -4294,25 +4355,122 @@ deleteConfirmFile: null,
     100% { transform: scale(1); box-shadow: 0 0 8px rgba(124,58,237,0.3); }
 }
 </style>
-<script src="/js/interactive-tour.js"></script>
+<script src="/js/interactive-tour.js?v=20"></script>
 <script>
 function startFilesTour() {
+    // Obtener Alpine dinámicamente cada vez que se necesite
+    function getAlpine() {
+        // Buscar todos los elementos con x-data y encontrar el que tiene fileManager (viewMode)
+        var allData = document.querySelectorAll('[x-data]');
+        for (var i = 0; i < allData.length; i++) {
+            var el = allData[i];
+            if (el._x_dataStack && el._x_dataStack[0]) {
+                var data = el._x_dataStack[0];
+                if (data.viewMode !== undefined || (data.availableStorages && data.availableStorages.length > 0)) {
+                    return data;
+                }
+            }
+        }
+        // Fallback al primero
+        var first = document.querySelector('[x-data]');
+        return first ? (first._x_dataStack ? first._x_dataStack[0] : null) : null;
+    }
+
+    // Helper: entrar al storage personal y esperar a que cargue
+    function enterPersonalStorage(callback) {
+        var alpine = getAlpine();
+        if (!alpine) { if (callback) callback(); return; }
+
+        // Esperar a que Alpine cargue los storages si aún no están listos
+        var waitForStorages = function () {
+            var a = getAlpine();
+            if (!a) { if (callback) callback(); return; }
+
+            // Si aún no hay storages, esperar un poco más
+            if (!a.availableStorages || a.availableStorages.length === 0) {
+                setTimeout(waitForStorages, 300);
+                return;
+            }
+
+            // Si no estamos en vista de storages, ir al root
+            if (a.viewMode !== 'storages') {
+                if (typeof a.navigateToRoot === 'function') {
+                    a.navigateToRoot();
+                }
+            }
+
+            // Re-obtener alpine fresco después de navigateToRoot
+            a = getAlpine();
+            if (!a || !a.availableStorages || a.availableStorages.length === 0) {
+                if (callback) callback();
+                return;
+            }
+
+            var personal = a.availableStorages.find(s => s.is_personal);
+            if (personal) {
+                a.enterStorage(personal.id, personal.name);
+                // Esperar a que termine de cargar archivos
+                var attempts = 0;
+                var interval = setInterval(function () {
+                    attempts++;
+                    var currentAlpine = getAlpine();
+                    if (!currentAlpine) {
+                        clearInterval(interval);
+                        if (callback) callback();
+                        return;
+                    }
+                    if (currentAlpine.viewMode === 'files' || attempts > 30) {
+                        clearInterval(interval);
+                        // Esperar extra para que Alpine renderice los archivos en el DOM
+                        setTimeout(function () { if (callback) callback(); }, 800);
+                    }
+                }, 200);
+                return;
+            }
+
+            if (callback) callback();
+        };
+
+        waitForStorages();
+    }
+
+    // Helper: forzar visibilidad de botones de acción durante el tour
+    var tourStyleId = 'tour-force-actions-visible';
+    function forceActionButtonsVisible() {
+        if (document.getElementById(tourStyleId)) return;
+        var style = document.createElement('style');
+        style.id = tourStyleId;
+        style.textContent = '.group button[style*="opacity"], .group .opacity-0, .group .sm\\:opacity-0 { opacity: 1 !important; }';
+        document.head.appendChild(style);
+    }
+    function clearForceActionButtons() {
+        var s = document.getElementById(tourStyleId);
+        if (s) s.remove();
+    }
+    // Limpiar estilo al cerrar tour
+    var origDismiss = TcloudTour.dismiss;
+    TcloudTour.dismiss = function() {
+        clearForceActionButtons();
+        origDismiss.call(TcloudTour);
+    };
+
     TcloudTour.start({
         steps: [
             {
-                title: 'Bienvenido a Mis Archivos',
-                content: 'Aqui puedes explorar todos tus storages, subir archivos, organizarlos en carpetas y editarlos. ' +
-                         'Este tour te guia por todas las funciones disponibles.',
+                title: 'Primeros pasos: Mis Archivos',
+                content: 'Bienvenido a tu espacio de archivos. Aquí puedes gestionar tus storages personales, acceder a storages compartidos, subir archivos, crear carpetas y organizar tu contenido. ' +
+                         'Esta guía te muestra paso a paso cómo funciona todo.',
                 icon: 'fa-hand-wave',
                 color: '#6366f1',
                 selector: null,
                 position: 'center',
             },
             {
-                title: 'Storages',
-                content: 'Cada storage es un espacio de almacenamiento asignado a tu usuario. ' +
-                         'Los storages personales (icono amarillo) son solo para ti. Los compartidos (icono azul) pueden ser usados por varios usuarios. ' +
-                         '<strong>Click en un storage</strong> para ver sus archivos.',
+                title: 'Tus Storages',
+                content: 'Estos son tus espacios de almacenamiento. ' +
+                         '<strong>Storages personales</strong> (icono ámbar) son tuyos exclusivamente. ' +
+                         '<strong>Storages compartidos</strong> (icono azul) son gestionados por un administrador y te asignan permisos según tu rol. ' +
+                         'Si no ves storages de gestores, es porque aún no te han sido asignados.',
                 icon: 'fa-database',
                 color: '#3b82f6',
                 selector: function () {
@@ -4320,95 +4478,410 @@ function startFilesTour() {
                 },
                 position: 'bottom',
                 onShow: function () {
-                    var alpine = document.querySelector('[x-data]')._x_dataStack[0];
-                    if (alpine.viewMode !== 'storages') alpine.navigateToRoot();
+                    var alpine = getAlpine();
+                    if (alpine && alpine.viewMode !== 'storages' && typeof alpine.navigateToRoot === 'function') {
+                        alpine.navigateToRoot();
+                    }
+                },
+            },
+            {
+                title: 'Tu Storage Personal',
+                content: 'Aquí se muestran los archivos y carpetas de tu <strong>storage personal</strong>. ' +
+                         'Las <strong>carpetas</strong> se abren con doble click. Los <strong>archivos</strong> se abren con un click para verlos o reproducirlos. ' +
+                         'Si tu storage está vacío, usa el botón azul <strong>Subir Archivo</strong> o crea una carpeta.',
+                icon: 'fa-folder-open',
+                color: '#f59e0b',
+                selector: function () {
+                    var el = document.querySelector('.group.relative.bg-slate-50');
+                    if (el) return el;
+                    var area = document.querySelector('[x-show="viewMode === \'files\' && files.length > 0"]') ||
+                               document.querySelector('.grid.grid-cols-2.sm\\:grid-cols-3.md\\:grid-cols-4');
+                    if (area && area.offsetParent !== null) return area;
+                    return document.querySelector('[x-show="viewMode === \'files\'"]') || null;
+                },
+                position: 'bottom',
+                async: true,
+                onShow: function (done) {
+                    // Navegar automáticamente al storage personal antes de que el tooltip aparezca
+                    enterPersonalStorage(function () {
+                        // Después de cargar, llamar done() para que el tour renderice el paso con el target correcto
+                        if (done) done();
+                    });
                 },
             },
             {
                 title: 'Subir Archivos',
-                content: 'Una vez dentro de un storage, usa este boton para <strong>subir archivos</strong>. ' +
-                         'Tambien puedes arrastrar y soltar archivos directamente en el area de contenido.',
+                content: 'Usa este botón para <strong>subir archivos</strong> desde tu computadora. ' +
+                         'También puedes <strong>arrastrar y soltar</strong> archivos directamente sobre el área de contenido. ' +
+                         'Nota: esta acción requiere permiso de escritura. Si no lo ves, tu storage es de solo lectura.',
                 icon: 'fa-upload',
                 color: '#2563eb',
                 selector: 'button[title="Subir archivo"]',
                 position: 'bottom',
                 onShow: function () {
-                    var alpine = document.querySelector('[x-data]')._x_dataStack[0];
-                    if (alpine.viewMode === 'storages' && alpine.availableStorages.length > 0) {
-                        alpine.enterStorage(alpine.availableStorages[0].id, alpine.availableStorages[0].name);
-                    }
+                    enterPersonalStorage();
                 },
             },
             {
-                title: 'Recortar (Editor de Corte)',
-                content: 'Para archivos de audio o video, este boton abre el <strong>Editor de Corte</strong>. ' +
-                         'Puedes seleccionar un segmento del video/audio, recortarlo, crear secuencias de multiples segmentos ' +
-                         'y exportar el resultado. El editor incluye linea de tiempo, miniaturas y preview.',
-                icon: 'fa-cut',
-                color: '#8b5cf6',
-                selector: 'button[title="Editor de corte"]',
-                position: 'bottom',
-            },
-            {
-                title: 'Descargar',
-                content: 'Descarga archivos individuales o carpetas completas (como ZIP). ' +
-                         'Si seleccionas multiples archivos, aparece una barra con la opcion de descargar todo en un solo ZIP.',
-                icon: 'fa-download',
-                color: '#16a34a',
-                selector: 'button[title="Descargar"]',
-                position: 'bottom',
-            },
-            {
-                title: 'Copiar',
-                content: '<strong>Copiar</strong> duplica el archivo en otra carpeta dentro del mismo storage. ' +
-                         'El archivo original se mantiene en su ubicacion. Se abre un navegador de carpetas para elegir el destino.',
-                icon: 'fa-copy',
+                title: 'Crear Carpeta',
+                content: 'Organiza tus archivos creando carpetas dentro de tu storage. ' +
+                         'Usa el botón <strong>+ Nueva Carpeta</strong> y asigna un nombre. ' +
+                         'Esta acción requiere permiso de escritura.',
+                icon: 'fa-folder-plus',
                 color: '#3b82f6',
-                selector: 'button[title="Copiar"]',
+                selector: 'button[title="Nueva carpeta"]',
                 position: 'bottom',
+                onShow: function () {
+                    enterPersonalStorage();
+                },
             },
             {
-                title: 'Mover',
-                content: '<strong>Mover</strong> transfiere el archivo a otra carpeta dentro del storage. ' +
-                         'El archivo desaparece de su ubicacion original y aparece en la carpeta destino. ' +
-                         'Se abre un navegador de carpetas para elegir el destino.',
-                icon: 'fa-arrows-alt',
-                color: '#6366f1',
-                selector: 'button[title="Mover"]',
+                title: 'Vista de Lista: encabezados',
+                content: 'Estás en <strong>vista de lista</strong>. La tabla muestra cuatro columnas: ' +
+                         '<strong>Nombre</strong>, <strong>Tamaño</strong>, <strong>Fecha</strong> y <strong>Acciones</strong>. ' +
+                         '<span style="color:#3b82f6"><strong>Cada encabezado es clicable y ordena la lista</strong></span>: ' +
+                         'por nombre alfabético (A→Z o Z→A), por tamaño (más pequeño→más grande) o por fecha (más antiguo→más reciente). ' +
+                         'A continuación verás cada encabezado en detalle.',
+                icon: 'fa-table',
+                color: '#3b82f6',
+                selector: function () {
+                    // El primer th ordenable (Nombre) es el target
+                    var ths = document.querySelectorAll('thead th');
+                    for (var i = 0; i < ths.length; i++) {
+                        if (ths[i].textContent.indexOf('Nombre') !== -1) {
+                            return ths[i];
+                        }
+                    }
+                    return null;
+                },
                 position: 'bottom',
+                async: true,
+                onShow: function (done) {
+                    enterPersonalStorage(function () {
+                        forceActionButtonsVisible();
+                        var a = getAlpine();
+                        if (a && a.filesViewMode !== 'list') {
+                            a.setFilesViewMode('list');
+                        }
+                        setTimeout(function () {
+                            var ths = document.querySelectorAll('thead th');
+                            for (var i = 0; i < ths.length; i++) {
+                                if (ths[i].textContent.indexOf('Nombre') !== -1) {
+                                    ths[i].scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+                                    break;
+                                }
+                            }
+                            setTimeout(function () { if (done) done(); }, 350);
+                        }, 400);
+                    });
+                },
             },
             {
-                title: 'Renombrar',
-                content: 'Cambia el nombre del archivo o carpeta. Solo haz click y escribe el nuevo nombre. ' +
-                         'Presiona Enter para guardar o Escape para cancelar.',
-                icon: 'fa-pen',
+                title: 'Ordenar por Nombre',
+                content: 'Haz clic en <strong>Nombre</strong> para ordenar alfabéticamente. ' +
+                         '<strong>↑</strong> = A → Z, <strong>↓</strong> = Z → A. ' +
+                         'La flecha azul indica la columna activa. Vuelve a hacer clic para invertir el orden.',
+                icon: 'fa-sort-alpha-down',
+                color: '#3b82f6',
+                selector: 'th[\\@click="sortFiles(\'name\')"]',
+                position: 'bottom',
+                async: true,
+                onShow: function (done) {
+                    enterPersonalStorage(function () {
+                        var a = getAlpine();
+                        if (a && a.filesViewMode !== 'list') {
+                            a.setFilesViewMode('list');
+                        }
+                        setTimeout(function () {
+                            var th = document.querySelector('th[\\@click="sortFiles(\'name\')"]');
+                            if (th) {
+                                th.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+                                setTimeout(function () { if (done) done(); }, 250);
+                            } else {
+                                if (done) done();
+                            }
+                        }, 400);
+                    });
+                },
+            },
+            {
+                title: 'Ordenar por Tamaño',
+                content: 'Haz clic en <strong>Tamaño</strong> (oculto en móvil) para ordenar por tamaño de archivo. ' +
+                         '<strong>↑</strong> = más pequeño primero, <strong>↓</strong> = más grande primero. ' +
+                         'Útil para encontrar los archivos más pesados.',
+                icon: 'fa-sort-amount-down',
                 color: '#f59e0b',
-                selector: 'button[title="Renombrar"]',
+                selector: 'th[\\@click="sortFiles(\'size\')"]',
                 position: 'bottom',
+                async: true,
+                onShow: function (done) {
+                    enterPersonalStorage(function () {
+                        var a = getAlpine();
+                        if (a && a.filesViewMode !== 'list') {
+                            a.setFilesViewMode('list');
+                        }
+                        setTimeout(function () {
+                            var th = document.querySelector('th[\\@click="sortFiles(\'size\')"]');
+                            if (th) {
+                                th.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+                                setTimeout(function () { if (done) done(); }, 250);
+                            } else {
+                                if (done) done();
+                            }
+                        }, 400);
+                    });
+                },
             },
             {
-                title: 'Eliminar',
-                content: '<strong>Elimina</strong> el archivo o carpeta permanentemente. ' +
-                         'Te pedira confirmacion antes de borrar. ' +
-                         'Tambien puedes seleccionar multiples archivos y eliminarlos en lote.',
-                icon: 'fa-trash',
-                color: '#dc2626',
-                selector: 'button[title="Eliminar"]',
+                title: 'Ordenar por Fecha',
+                content: 'Haz clic en <strong>Fecha</strong> (oculto en móvil) para ordenar por fecha de modificación. ' +
+                         '<strong>↓</strong> (descendente) muestra los más recientes arriba, que es el orden por defecto. ' +
+                         '<strong>↑</strong> (ascendente) lleva los más antiguos al inicio. ' +
+                         'Útil para ver el historial cronológico.',
+                icon: 'fa-calendar-alt',
+                color: '#7c3aed',
+                selector: 'th[\\@click="sortFiles(\'date\')"]',
                 position: 'bottom',
+                async: true,
+                onShow: function (done) {
+                    enterPersonalStorage(function () {
+                        var a = getAlpine();
+                        if (a && a.filesViewMode !== 'list') {
+                            a.setFilesViewMode('list');
+                        }
+                        setTimeout(function () {
+                            var th = document.querySelector('th[\\@click="sortFiles(\'date\')"]');
+                            if (th) {
+                                th.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+                                setTimeout(function () { if (done) done(); }, 250);
+                            } else {
+                                if (done) done();
+                            }
+                        }, 400);
+                    });
+                },
             },
             {
-                title: 'Compartir',
-                content: 'Genera un enlace publico para compartir archivos con cualquier persona, sin necesidad de que tenga cuenta. ' +
-                         'Puedes configurar permisos (lectura/escritura), contrasena y fecha de expiracion.',
+                title: 'Acciones: Compartir',
+                content: 'Haz clic en el botón <strong style="color:#6366f1">Compartir</strong> para generar un enlace público de este archivo o carpeta. ' +
+                         'Puedes configurar fecha de expiración y contraseña. Esta acción requiere permiso de compartir.',
                 icon: 'fa-share-alt',
                 color: '#6366f1',
-                selector: 'button[title="Compartir"]',
+                selector: function () {
+                    // Buscar el primer archivo con el botón compartir visible
+                    var firstFile = document.querySelector('.group.relative.bg-slate-50');
+                    if (firstFile) {
+                        var btn = firstFile.querySelector('button[title="Compartir"]');
+                        if (btn) return btn;
+                    }
+                    return document.querySelector('button[title="Compartir"]') || null;
+                },
                 position: 'bottom',
+                async: true,
+                onShow: function (done) {
+                    enterPersonalStorage(function () {
+                        // Asegurar vista grid
+                        var a = getAlpine();
+                        if (a && a.filesViewMode !== 'grid') {
+                            a.setFilesViewMode('grid');
+                        }
+                        forceActionButtonsVisible();
+                        setTimeout(function () {
+                            var firstFile = document.querySelector('.group.relative.bg-slate-50');
+                            if (firstFile) {
+                                var btn = firstFile.querySelector('button[title="Compartir"]');
+                                if (btn) {
+                                    btn.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+                                }
+                            }
+                            setTimeout(function () { if (done) done(); }, 400);
+                        }, 600);
+                    });
+                },
             },
             {
-                title: 'Seleccion Multiple',
-                content: 'Mantén <strong>Ctrl+Click</strong> para seleccionar varios archivos a la vez. ' +
-                         'Aparecera una barra con opciones para descargar como ZIP o eliminar en lote.',
+                title: 'Acciones: Descargar',
+                content: 'Usa el botón <strong style="color:#16a34a">Descargar</strong> para guardar el archivo en tu computadora. ' +
+                         'Si es una carpeta, se descargará como un archivo ZIP comprimido.',
+                icon: 'fa-download',
+                color: '#16a34a',
+                selector: function () {
+                    var firstFile = document.querySelector('.group.relative.bg-slate-50');
+                    if (firstFile) {
+                        var btn = firstFile.querySelector('button[title="Descargar"], button[title="Descargar carpeta como ZIP"]');
+                        if (btn) return btn;
+                    }
+                    return document.querySelector('button[title="Descargar"]') || null;
+                },
+                position: 'bottom',
+                async: true,
+                onShow: function (done) {
+                    enterPersonalStorage(function () {
+                        var a = getAlpine();
+                        if (a && a.filesViewMode !== 'grid') {
+                            a.setFilesViewMode('grid');
+                        }
+                        forceActionButtonsVisible();
+                        setTimeout(function () {
+                            var firstFile = document.querySelector('.group.relative.bg-slate-50');
+                            if (firstFile) {
+                                var btn = firstFile.querySelector('button[title="Descargar"], button[title="Descargar carpeta como ZIP"]');
+                                if (btn) {
+                                    btn.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+                                }
+                            }
+                            setTimeout(function () { if (done) done(); }, 400);
+                        }, 600);
+                    });
+                },
+            },
+            {
+                title: 'Acciones: Copiar',
+                content: 'El botón <strong style="color:#3b82f6">Copiar</strong> te permite duplicar este archivo o carpeta dentro del mismo storage o en otro storage donde tengas permisos.',
+                icon: 'fa-copy',
+                color: '#3b82f6',
+                selector: function () {
+                    var firstFile = document.querySelector('.group.relative.bg-slate-50');
+                    if (firstFile) {
+                        var btn = firstFile.querySelector('button[title="Copiar"]');
+                        if (btn) return btn;
+                    }
+                    return document.querySelector('button[title="Copiar"]') || null;
+                },
+                position: 'bottom',
+                async: true,
+                onShow: function (done) {
+                    enterPersonalStorage(function () {
+                        var a = getAlpine();
+                        if (a && a.filesViewMode !== 'grid') {
+                            a.setFilesViewMode('grid');
+                        }
+                        forceActionButtonsVisible();
+                        setTimeout(function () {
+                            var firstFile = document.querySelector('.group.relative.bg-slate-50');
+                            if (firstFile) {
+                                var btn = firstFile.querySelector('button[title="Copiar"]');
+                                if (btn) {
+                                    btn.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+                                }
+                            }
+                            setTimeout(function () { if (done) done(); }, 400);
+                        }, 600);
+                    });
+                },
+            },
+            {
+                title: 'Acciones: Mover',
+                content: 'Usa <strong style="color:#6366f1">Mover</strong> para cambiar la ubicación de este archivo o carpeta dentro de tu storage o a otro storage. ' +
+                         'Mantendrá el mismo nombre y contenido.',
+                icon: 'fa-arrows-alt',
+                color: '#6366f1',
+                selector: function () {
+                    var firstFile = document.querySelector('.group.relative.bg-slate-50');
+                    if (firstFile) {
+                        var btn = firstFile.querySelector('button[title="Mover"]');
+                        if (btn) return btn;
+                    }
+                    return document.querySelector('button[title="Mover"]') || null;
+                },
+                position: 'bottom',
+                async: true,
+                onShow: function (done) {
+                    enterPersonalStorage(function () {
+                        var a = getAlpine();
+                        if (a && a.filesViewMode !== 'grid') {
+                            a.setFilesViewMode('grid');
+                        }
+                        forceActionButtonsVisible();
+                        setTimeout(function () {
+                            var firstFile = document.querySelector('.group.relative.bg-slate-50');
+                            if (firstFile) {
+                                var btn = firstFile.querySelector('button[title="Mover"]');
+                                if (btn) {
+                                    btn.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+                                }
+                            }
+                            setTimeout(function () { if (done) done(); }, 400);
+                        }, 600);
+                    });
+                },
+            },
+            {
+                title: 'Acciones: Renombrar',
+                content: 'Haz clic en <strong style="color:#f59e0b">Renombrar</strong> para cambiar el nombre del archivo o carpeta. ' +
+                         'Se abrirá un campo de edición inline; presiona Enter para guardar.',
+                icon: 'fa-edit',
+                color: '#f59e0b',
+                selector: function () {
+                    var firstFile = document.querySelector('.group.relative.bg-slate-50');
+                    if (firstFile) {
+                        var btn = firstFile.querySelector('button[title="Renombrar"]');
+                        if (btn) return btn;
+                    }
+                    return document.querySelector('button[title="Renombrar"]') || null;
+                },
+                position: 'bottom',
+                async: true,
+                onShow: function (done) {
+                    enterPersonalStorage(function () {
+                        var a = getAlpine();
+                        if (a && a.filesViewMode !== 'grid') {
+                            a.setFilesViewMode('grid');
+                        }
+                        forceActionButtonsVisible();
+                        setTimeout(function () {
+                            var firstFile = document.querySelector('.group.relative.bg-slate-50');
+                            if (firstFile) {
+                                var btn = firstFile.querySelector('button[title="Renombrar"]');
+                                if (btn) {
+                                    btn.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+                                }
+                            }
+                            setTimeout(function () { if (done) done(); }, 400);
+                        }, 600);
+                    });
+                },
+            },
+            {
+                title: 'Acciones: Eliminar',
+                content: '<strong style="color:#dc2626">Eliminar</strong> mueve el archivo o carpeta a la papelera. ' +
+                         '<span style="color:#dc2626"><strong>Atención:</strong> esta acción no se puede deshacer desde la interfaz. Solo un administrador puede restaurar archivos eliminados.</span>',
+                icon: 'fa-trash-alt',
+                color: '#dc2626',
+                selector: function () {
+                    var firstFile = document.querySelector('.group.relative.bg-slate-50');
+                    if (firstFile) {
+                        var btn = firstFile.querySelector('button[title="Eliminar"]');
+                        if (btn) return btn;
+                    }
+                    return document.querySelector('button[title="Eliminar"]') || null;
+                },
+                position: 'bottom',
+                async: true,
+                onShow: function (done) {
+                    enterPersonalStorage(function () {
+                        var a = getAlpine();
+                        if (a && a.filesViewMode !== 'grid') {
+                            a.setFilesViewMode('grid');
+                        }
+                        forceActionButtonsVisible();
+                        setTimeout(function () {
+                            var firstFile = document.querySelector('.group.relative.bg-slate-50');
+                            if (firstFile) {
+                                var btn = firstFile.querySelector('button[title="Eliminar"]');
+                                if (btn) {
+                                    btn.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+                                }
+                            }
+                            setTimeout(function () { if (done) done(); }, 400);
+                        }, 600);
+                    });
+                },
+            },
+            {
+                title: 'Selección Múltiple',
+                content: 'Mantén <strong>Ctrl+Click</strong> (o Cmd en Mac) para seleccionar varios archivos a la vez. ' +
+                         'Aparece una barra con opciones para descargar todo como ZIP o eliminar en lote.',
                 icon: 'fa-check-square',
                 color: '#2563eb',
                 selector: null,
@@ -4416,18 +4889,32 @@ function startFilesTour() {
             },
             {
                 title: 'Vista Grid / Lista',
-                content: 'Cambia entre vista de cuadricula (iconos) y vista de lista (tabla). ' +
-                         'Tu preferencia se guarda automaticamente para la proxima visita.',
+                content: 'Cambia entre vista de cuadrícula (iconos grandes) y vista de lista (tabla con detalles). ' +
+                         'Tu preferencia se guarda automáticamente para la próxima visita.',
                 icon: 'fa-th-large',
                 color: '#64748b',
                 selector: '.flex.items-center.gap-1.bg-slate-100.p-1.rounded-lg',
                 position: 'bottom',
+                onShow: function () {
+                    enterPersonalStorage();
+                },
             },
             {
-                title: 'Tour Completado',
-                content: 'Ya conoces todas las funciones de Mis Archivos. ' +
-                         'Recuerda: arrastra para subir, click en un archivo para verlo, y usa los botones de accion al pasar el mouse. ' +
-                         'Puedes repetir este tour cuando quieras con el boton morado.',
+                title: '¿Por qué no veo algunos Storages?',
+                content: 'Los storages de gestores (compartidos) solo aparecen cuando un administrador te los asigna con permisos. ' +
+                         'Si no ves un storage esperado, contacta al administrador. ' +
+                         'Tus <strong>storages personales</strong> siempre estarán disponibles mientras tengas quota asignada.',
+                icon: 'fa-info-circle',
+                color: '#06b6d4',
+                selector: null,
+                position: 'center',
+            },
+            {
+                title: 'Guía Completada',
+                content: 'Ahora conoces lo esencial de Mis Archivos. ' +
+                         'Recuerda: entra a tu storage personal para subir y organizar archivos. ' +
+                         'Las acciones disponibles dependen de tus permisos. ' +
+                         'Puedes repetir esta guía cuando quieras con el botón morado.',
                 icon: 'fa-check-circle',
                 color: '#16a34a',
                 selector: null,
@@ -4435,8 +4922,10 @@ function startFilesTour() {
             },
         ],
         onComplete: function () {
-            var alpine = document.querySelector('[x-data]')._x_dataStack[0];
-            if (alpine) alpine.navigateToRoot();
+            var alpine = getAlpine();
+            if (alpine && typeof alpine.navigateToRoot === 'function') {
+                alpine.navigateToRoot();
+            }
         }
     });
 }

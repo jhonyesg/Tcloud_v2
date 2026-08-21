@@ -17,6 +17,11 @@
         padding: 8,
 
         start: function (config) {
+            // Clean up any previous tour state
+            if (this.overlay) { this.overlay.remove(); this.overlay = null; }
+            if (this.tooltip) { this.tooltip.remove(); this.tooltip = null; }
+            this.spotlight = null;
+
             this.steps = config.steps || [];
             this.current = 0;
             this.active = true;
@@ -68,11 +73,23 @@
             svg.style.cssText = 'position:fixed;inset:0;width:100%;height:100%;';
 
             var defs = document.createElementNS(svgNS, 'defs');
-            defs.innerHTML =
-                '<mask id="tour-mask">' +
-                  '<rect width="100%" height="100%" fill="white"/>' +
-                  '<rect id="tour-hole" x="0" y="0" width="0" height="0" rx="8" fill="black"/>' +
-                '</mask>';
+            var hole = document.createElementNS(svgNS, 'rect');
+            hole.setAttribute('id', 'tour-hole');
+            hole.setAttribute('x', '0');
+            hole.setAttribute('y', '0');
+            hole.setAttribute('width', '0');
+            hole.setAttribute('height', '0');
+            hole.setAttribute('rx', '8');
+            hole.setAttribute('fill', 'black');
+            var maskRect = document.createElementNS(svgNS, 'rect');
+            maskRect.setAttribute('width', '100%');
+            maskRect.setAttribute('height', '100%');
+            maskRect.setAttribute('fill', 'white');
+            var mask = document.createElementNS(svgNS, 'mask');
+            mask.setAttribute('id', 'tour-mask');
+            mask.appendChild(maskRect);
+            mask.appendChild(hole);
+            defs.appendChild(mask);
             svg.appendChild(defs);
 
             var dark = document.createElementNS(svgNS, 'rect');
@@ -83,7 +100,7 @@
             svg.appendChild(dark);
 
             this.overlay.appendChild(svg);
-            this.spotlight = document.getElementById('tour-hole');
+            this.spotlight = svg.querySelector('#tour-hole');
 
             // Click on overlay background = dismiss
             this.overlay.addEventListener('click', function (e) {
@@ -112,7 +129,40 @@
             var step = this.steps[this.current];
             if (!step) { this.dismiss(); return; }
 
+            var self = this;
+
+            // Handle async onShow: if step has onShow, call it and wait for done() before positioning
+            if (step.onShow) {
+                var called = false;
+                var done = function () {
+                    if (called) return;
+                    called = true;
+                    self._renderStep(step);
+                };
+                // Support both callback style and promise style
+                var result = step.onShow(done);
+                if (result && typeof result.then === 'function') {
+                    result.then(function () { done(); }).catch(function () { done(); });
+                }
+                // If onShow didn't call done synchronously and didn't return a promise, wait briefly
+                else if (!called && step.async) {
+                    // async flag tells engine to wait for done() call; do not auto-render yet
+                    return;
+                }
+                // If not async and not returned promise, render immediately
+                if (!called && !step.async) {
+                    done();
+                }
+            } else {
+                this._renderStep(step);
+            }
+        },
+
+        _renderStep: function (step) {
             var target = typeof step.selector === 'function' ? step.selector() : document.querySelector(step.selector);
+
+            // Guard: ensure spotlight exists before using it
+            if (!this.spotlight) { this.dismiss(); return; }
 
             // Position spotlight
             if (target) {
@@ -196,9 +246,6 @@
             } else {
                 this._positionTooltip(null, 'center');
             }
-
-            // Run onShow callback
-            if (step.onShow) step.onShow();
         },
 
         _positionTooltip: function (rect, placement) {

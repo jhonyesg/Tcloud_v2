@@ -396,6 +396,19 @@ class CorrectionService
 
     /**
      * Crea (o actualiza) una propuesta pending del cliente.
+     *
+     * Política de mínimo de palabras (cambios 2026-08-18, feedback admin):
+     * `wrong_text` debe tener 4 o más palabras. Las reglas de 1-3 palabras
+     * son find/replace genérico que no preservan contexto y producen
+     * espanglish (lesson del 2026-08-15-en-es-mix-miner-prune-open-strategy:
+     * 2.465 reglas palabra-por-palabra auto-aprobadas con 205k aplicaciones
+     * dañinas). Solo reglas con suficiente contexto se aceptan.
+     *
+     * El guard central aquí cubre TODOS los call sites:
+     *  - Admin manual (CorreccionesController::store)
+     *  - Cliente desde /mis-avisos (CorreccionPropuestaController::store)
+     *  - ai-suggest (aiSuggestEnEsMix)
+     *  - Atomicity suggestions / save paths
      */
     public function propose(User $by, string $wrong, string $correct, ?int $segmentId = null): Correction
     {
@@ -404,6 +417,14 @@ class CorrectionService
 
         if ($wrongNorm === '' || $correct === '') {
             throw new \InvalidArgumentException('wrong y correct no pueden estar vacíos.');
+        }
+
+        // Guard de longitud mínima — cortafuegos central contra single-word.
+        if (self::wordCountMinimal($wrong) < 4) {
+            throw new \InvalidArgumentException(
+                'Las correcciones deben tener al menos 4 palabras en wrong_text ('
+                . 'para preservar tono, intención y contexto del segmento original).'
+            );
         }
 
         return DB::transaction(function () use ($by, $wrong, $correct, $wrongNorm, $segmentId) {
@@ -1705,8 +1726,11 @@ class CorrectionService
             return null;
         }
 
-        // Filtro de calidad: no proponer segmentos enteros (> 4 palabras).
-        if (str_word_count($wrong, 0, 'áéíóúñüÁÉÍÓÚÑÜ') > 4) {
+        // Filtro de calidad: solo proponer frases de 4+ palabras.
+        // (cambios 2026-08-18, feedback admin) Las reglas de 1-3 palabras
+        // son find/replace genérico que no preservan contexto y producen
+        // espanglish. Ver `propose()` para el rationale y policy idéntica.
+        if (self::wordCountMinimal($wrong) < 4) {
             return null;
         }
 
@@ -1734,5 +1758,30 @@ class CorrectionService
             'source' => 'ai-coherence-learn',
             'applies_count' => 0,
         ]);
+    }
+
+    /**
+     * Helper consistente con `CorrectionTriageService::wordCount()`:
+     * cuenta palabras sobre Unicode español, descartando tokens puramente
+     * puntuación. Usado por los guards de longitud mínima en `propose()`
+     * y `proposeLearned()` (cambios 2026-08-18).
+     */
+    public static function wordCountMinimal(string $text): int
+    {
+        $text = trim($text);
+        if ($text === '') {
+            return 0;
+        }
+        $words = preg_split('/\s+/u', $text, -1, PREG_SPLIT_NO_EMPTY);
+        if (!is_array($words)) {
+            return 0;
+        }
+        $count = 0;
+        foreach ($words as $w) {
+            if (preg_match('/[\p{L}\p{N}]/u', $w)) {
+                $count++;
+            }
+        }
+        return $count;
     }
 }

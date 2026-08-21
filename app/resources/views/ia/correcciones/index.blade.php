@@ -331,29 +331,44 @@
 
     <!-- Tab Aprobadas (cargada vía AJAX; corrections-ai-suggest-auto-approve) -->
     <div x-show="tab === 'approved'" class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-        <!-- Filtros: source + búsqueda libre -->
-        <div x-show="approved.length > 0" class="px-4 py-3 border-b border-slate-200 bg-slate-50 flex items-center gap-3 flex-wrap">
+        <!-- Filtros: source + búsqueda libre + paginación superior -->
+        <div class="px-4 py-3 border-b border-slate-200 bg-slate-50 flex items-center gap-3 flex-wrap">
             <label class="text-xs font-medium text-slate-600">Origen:</label>
-            <select x-model="approvedSourceFilter" class="text-sm border border-slate-300 rounded-lg px-3 py-1.5">
-                <option value="all">Todos (<span x-text="approved.length"></span>)</option>
-                <template x-for="src in approvedSources" :key="'app-' + src">
-                    <option :value="src" x-text="src + ' (' + approved.filter(c => c.source === src).length + ')'"></option>
+            <select x-model="approvedSourceFilter" @change="loadApproved({ resetPage: true })" class="text-sm border border-slate-300 rounded-lg px-3 py-1.5">
+                <option value="all">Todos (<span x-text="approvedTotal"></span>)</option>
+                <template x-for="src in approvedSources" :key="'app-' + src.source">
+                    <option :value="src.source" x-text="src.source + ' (' + src.count + ')'"></option>
                 </template>
             </select>
             <label class="text-xs font-medium text-slate-600 ml-3">Buscar:</label>
-            <input type="search" x-model="approvedSearch" placeholder="wrong o correct…"
-                   class="text-sm border border-slate-300 rounded-lg px-3 py-1.5 w-56">
+            <div class="relative">
+                <input type="search" x-model="approvedSearch" @input.debounce.300ms="loadApproved({ resetPage: true })" placeholder="wrong o correct…"
+                       autocomplete="off" autocapitalize="off" spellcheck="false"
+                       class="text-sm border border-slate-300 rounded-lg pl-3 pr-8 py-1.5 w-56">
+                <button @click="approvedSearch = ''; loadApproved({ resetPage: true })"
+                        x-show="approvedSearch" class="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600" title="Limpiar búsqueda">
+                    <i class="fas fa-xmark"></i>
+                </button>
+            </div>
             <button @click="loadApproved()" :disabled="loadingApproved" class="ml-2 px-3 py-1.5 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg text-xs">
                 <i class="fas" :class="loadingApproved ? 'fa-spinner fa-spin' : 'fa-refresh'"></i>
             </button>
-            <span class="ml-auto text-xs text-slate-500" x-show="approvedFiltered.length !== approved.length">
-                <span x-text="approvedFiltered.length"></span> visibles / <span x-text="approved.length"></span> totales
+            <span class="ml-auto text-xs text-slate-500" x-show="approvedTotal > 0">
+                <span x-text="approvedFiltered.length"></span> visibles / <span x-text="approvedTotal"></span> totales
             </span>
+            <div class="flex items-center gap-1" x-show="!loadingApproved && approvedLastPage > 1">
+                <button @click="if (approvedPage > 1) { approvedPage--; loadApproved(); }" :disabled="approvedPage <= 1" class="px-2 py-1.5 bg-white border border-slate-300 hover:bg-slate-50 disabled:opacity-40 rounded-lg text-xs">‹</button>
+                <span class="text-xs text-slate-500"><span x-text="approvedPage"></span>/<span x-text="approvedLastPage"></span></span>
+                <button @click="if (approvedPage < approvedLastPage) { approvedPage++; loadApproved(); }" :disabled="approvedPage >= approvedLastPage" class="px-2 py-1.5 bg-white border border-slate-300 hover:bg-slate-50 disabled:opacity-40 rounded-lg text-xs">›</button>
+            </div>
         </div>
         <!-- Bulk action bar -->
         <div x-show="approvedSelectedIds.size > 0" class="px-4 py-2 bg-brand-50 border-b border-slate-200 flex items-center gap-3 text-sm">
             <span><span x-text="approvedSelectedIds.size"></span> seleccionadas</span>
             <button @click="approvedSelectedIds.clear()" class="text-xs text-slate-500 hover:text-slate-700">Limpiar</button>
+            <button @click="selectUpToMaxApproved()" x-show="approvedSelectedIds.size < 500" class="text-xs px-2 py-1 bg-brand-100 hover:bg-brand-200 text-brand-700 rounded" title="Acumula ids de las páginas siguientes hasta 500">
+                Seleccionar hasta 500
+            </button>
             <button @click="openExcludeBulk('approved')" class="ml-auto px-3 py-1 bg-amber-600 hover:bg-amber-700 text-white text-xs rounded-lg">
                 <i class="fas fa-shield-halved"></i> Excluir <span x-text="approvedSelectedIds.size"></span>
             </button>
@@ -362,8 +377,11 @@
             </button>
         </div>
         <div x-show="loadingApproved" class="flex items-center justify-center py-12"><i class="fas fa-spinner fa-spin text-emerald-400"></i></div>
-        <div x-show="!loadingApproved && approved.length === 0" class="text-center py-12 text-slate-400">
+        <div x-show="!loadingApproved && approved.length === 0 && approvedTotal === 0" class="text-center py-12 text-slate-400">
             <p class="font-medium">No hay correcciones aprobadas</p>
+        </div>
+        <div x-show="!loadingApproved && approved.length === 0 && approvedTotal > 0" class="text-center py-12 text-slate-400">
+            <p class="font-medium">Sin resultados para el filtro actual</p>
         </div>
         <table x-show="!loadingApproved && approved.length > 0" class="w-full">
             <thead class="bg-slate-50 border-b border-slate-200">
@@ -432,6 +450,28 @@
                 </template>
             </tbody>
         </table>
+        <div x-show="!loadingApproved" class="px-4 py-3 border-t border-slate-200 bg-slate-50 flex items-center gap-3 flex-wrap">
+            <label class="text-xs font-medium text-slate-600">Buscar:</label>
+            <div class="relative">
+                <input type="search" x-model="approvedSearch" @input.debounce.300ms="loadApproved({ resetPage: true })" placeholder="wrong o correct…"
+                       autocomplete="off" autocapitalize="off" spellcheck="false"
+                       class="text-sm border border-slate-300 rounded-lg pl-3 pr-8 py-1.5 w-56">
+                <button @click="approvedSearch = ''; loadApproved({ resetPage: true })"
+                        x-show="approvedSearch" class="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600" title="Limpiar búsqueda">
+                    <i class="fas fa-xmark"></i>
+                </button>
+            </div>
+            <button @click="loadApproved()" :disabled="loadingApproved" class="px-3 py-1.5 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg text-xs">
+                <i class="fas" :class="loadingApproved ? 'fa-spinner fa-spin' : 'fa-refresh'"></i>
+            </button>
+            <span class="ml-auto text-xs text-slate-500" x-show="approvedTotal > 0">
+                Página <span x-text="approvedPage"></span> de <span x-text="approvedLastPage"></span> · <span x-text="approvedFiltered.length"></span> visibles / <span x-text="approvedTotal"></span> totales
+            </span>
+            <div class="flex items-center gap-1">
+                <button @click="if (approvedPage > 1) { approvedPage--; loadApproved(); }" :disabled="approvedPage <= 1" class="px-3 py-1.5 bg-white border border-slate-300 hover:bg-slate-50 disabled:opacity-40 rounded-lg text-xs">‹ Anterior</button>
+                <button @click="if (approvedPage < approvedLastPage) { approvedPage++; loadApproved(); }" :disabled="approvedPage >= approvedLastPage" class="px-3 py-1.5 bg-white border border-slate-300 hover:bg-slate-50 disabled:opacity-40 rounded-lg text-xs">Siguiente ›</button>
+            </div>
+        </div>
     </div>
 
     <!-- Tab Revisión de transcripciones -->
@@ -452,7 +492,7 @@
             <span class="text-xs font-medium text-slate-600 mr-1">Mostrar:</span>
             <button @click="transcriptionReviewMode = 'latest'; loadTranscriptionReviews()"
                     :class="transcriptionReviewMode === 'latest' ? 'bg-cyan-600 text-white' : 'bg-white text-slate-600 border border-slate-300'"
-                    class="px-3 py-1.5 rounded-lg text-xs font-medium">Últimas 10</button>
+                    class="px-3 py-1.5 rounded-lg text-xs font-medium">Últimas 10 completadas</button>
             <button @click="transcriptionReviewMode = 'sensitive'; loadTranscriptionReviews()"
                     :class="transcriptionReviewMode === 'sensitive' ? 'bg-amber-600 text-white' : 'bg-white text-slate-600 border border-slate-300'"
                     class="px-3 py-1.5 rounded-lg text-xs font-medium">Últimas 10 sensibles</button>
@@ -493,7 +533,7 @@
     </div>
 
     <!-- Detalle de revisión de transcripción -->
-    <div x-show="transcriptionReviewDetail" x-cloak class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50" @keydown.escape.window="transcriptionReviewDetail = null">
+    <div x-show="transcriptionReviewDetail" x-cloak x-effect="!transcriptionReviewDetail && (showFullTranscript = false, transcriptLoading = false, transcriptData = null)" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50" @keydown.escape.window="transcriptionReviewDetail = null">
         <div class="bg-white rounded-2xl shadow-2xl w-full max-w-6xl max-h-[92vh] overflow-hidden flex flex-col" @click.outside="transcriptionReviewDetail = null">
             <div class="px-5 py-4 border-b border-slate-200 flex items-start justify-between gap-4">
                 <div class="min-w-0">
@@ -511,8 +551,37 @@
                             :class="transcriptionReviewDetail?.review?.status === status ? reviewStatusClass(status) : 'bg-white border-slate-300 text-slate-600 hover:bg-slate-100'"
                             x-text="reviewStatusLabel(status)"></button>
                 </template>
-                <a :href="transcriptionReviewDetail ? '/ia/api-transcriptor/jobs/' + transcriptionReviewDetail.id : '#'
-                   " target="_blank" class="ml-auto text-xs text-brand-600 hover:underline"><i class="fas fa-external-link-alt mr-1"></i>Ver SRT completo</a>
+                <button type="button" @click="toggleFullTranscript()" :disabled="transcriptLoading" class="ml-auto text-xs text-brand-600 hover:text-brand-700 font-medium inline-flex items-center gap-1">
+                    <i class="fas" :class="transcriptLoading ? 'fa-spinner fa-spin' : (showFullTranscript ? 'fa-eye-slash' : 'fa-eye')"></i>
+                    <span x-text="showFullTranscript ? 'Ocultar SRT completo' : 'Ver SRT completo'"></span>
+                </button>
+                <a :href="transcriptionReviewDetail ? '/ia/api-transcriptor/jobs/' + transcriptionReviewDetail.id : '#'" target="_blank" class="text-xs text-slate-400 hover:text-brand-600 inline-flex items-center gap-1" title="Abrir el job completo en una nueva pestaña">
+                    <i class="fas fa-external-link-alt"></i><span>SRT original</span>
+                </a>
+            </div>
+
+            <!-- Inline SRT panel (correcciones-review-srt-inline) -->
+            <div x-show="showFullTranscript" x-cloak x-transition.opacity role="region" aria-label="Transcripción completa" class="border-b border-slate-200 bg-slate-50">
+                <div class="px-5 py-4 max-h-96 overflow-y-auto space-y-3">
+                    <div x-show="transcriptLoading" class="text-center py-6 text-slate-400">
+                        <i class="fas fa-spinner fa-spin text-cyan-400 mr-2"></i>Cargando SRT completo…
+                    </div>
+                    <div x-show="!transcriptLoading && transcriptData && (transcriptData.segments ?? []).length === 0" class="text-center py-6 text-slate-400">
+                        Esta transcripción no tiene segmentos.
+                    </div>
+                    <div x-show="!transcriptLoading && transcriptData && (transcriptData.segments ?? []).length > 0">
+                        <div class="flex items-center justify-between text-[11px] text-slate-500 mb-2">
+                            <span><span x-text="(transcriptData?.segments ?? []).length"></span> segmentos</span>
+                            <span x-show="transcriptData?.truncated" class="px-2 py-0.5 rounded bg-amber-100 text-amber-700">Mostrando primeros N segmentos (truncado por el servidor)</span>
+                        </div>
+                        <template x-for="seg in (transcriptData?.segments ?? [])" :key="seg.segment_index">
+                            <div class="bg-white border border-slate-200 rounded-lg p-3">
+                                <div class="font-mono text-[11px] text-slate-400 mb-1" x-text="seg.start_label + ' → ' + seg.end_label"></div>
+                                <div class="text-sm text-slate-700 whitespace-pre-wrap" x-text="seg.text"></div>
+                            </div>
+                        </template>
+                    </div>
+                </div>
             </div>
 
             <div x-show="transcriptionReviewSaving" class="px-5 py-2 text-xs text-cyan-700 bg-cyan-50">Guardando revisión…</div>
@@ -584,14 +653,33 @@
             </button>
         </div>
 
-        <!-- Búsqueda global -->
+        <!-- Búsqueda global + paginación superior -->
         <div class="px-4 py-3 border-b border-slate-200 bg-slate-50 flex items-center gap-3 flex-wrap">
             <label class="text-xs font-medium text-slate-600">Buscar auto-aprobadas:</label>
-            <input type="search" x-model="aiSuggestResultsSearch" placeholder="wrong o correct…"
-                   class="text-sm border border-slate-300 rounded-lg px-3 py-1.5 w-72">
-            <span class="ml-auto text-xs text-slate-500" x-show="aiSuggestResultsSearch">
-                <span x-text="aiSuggestApprovedFiltered.length"></span> visibles / <span x-text="(aiSuggestResults?.approved_list ?? []).length"></span> totales
+            <div class="relative">
+                <input type="search" x-model="aiSuggestResultsSearch" @input.debounce.300ms="loadAiSuggestResults({ resetPage: true })" placeholder="wrong o correct…"
+                       autocomplete="off" autocapitalize="off" spellcheck="false"
+                       class="text-sm border border-slate-300 rounded-lg pl-3 pr-8 py-1.5 w-72">
+                <button @click="aiSuggestResultsSearch = ''; loadAiSuggestResults({ resetPage: true })"
+                        x-show="aiSuggestResultsSearch" class="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600" title="Limpiar búsqueda">
+                    <i class="fas fa-xmark"></i>
+                </button>
+            </div>
+            <label class="text-xs font-medium text-slate-600 ml-2">Lote:</label>
+            <select x-model="aiSuggestSourceFilter" @change="loadAiSuggestResults({ resetPage: true })" class="text-sm border border-slate-300 rounded-lg px-3 py-1.5">
+                <option value="all">Todos</option>
+                <template x-for="src in aiSuggestSources" :key="'ais-' + src.source">
+                    <option :value="src.source" x-text="src.source + ' (' + src.count + ')'"></option>
+                </template>
+            </select>
+            <span class="ml-auto text-xs text-slate-500">
+                <span x-text="aiSuggestApprovedFiltered.length"></span> visibles / <span x-text="aiSuggestApprovedTotal"></span> totales
             </span>
+            <div class="flex items-center gap-1" x-show="aiSuggestApprovedLastPage > 1">
+                <button @click="if (aiSuggestApprovedPage > 1) { aiSuggestApprovedPage--; loadAiSuggestResults(); }" :disabled="aiSuggestApprovedPage <= 1" class="px-2 py-1.5 bg-white border border-slate-300 hover:bg-slate-50 disabled:opacity-40 rounded-lg text-xs">‹</button>
+                <span class="text-xs text-slate-500"><span x-text="aiSuggestApprovedPage"></span>/<span x-text="aiSuggestApprovedLastPage"></span></span>
+                <button @click="if (aiSuggestApprovedPage < aiSuggestApprovedLastPage) { aiSuggestApprovedPage++; loadAiSuggestResults(); }" :disabled="aiSuggestApprovedPage >= aiSuggestApprovedLastPage" class="px-2 py-1.5 bg-white border border-slate-300 hover:bg-slate-50 disabled:opacity-40 rounded-lg text-xs">›</button>
+            </div>
         </div>
 
         <!-- Resumen de últimas 5 corridas -->
@@ -610,8 +698,10 @@
                 </thead>
                 <tbody class="divide-y divide-slate-100">
                     <template x-for="run in (aiSuggestResults?.runs ?? [])" :key="run.source">
-                        <tr class="hover:bg-slate-50">
-                            <td class="px-3 py-2 text-slate-700 font-mono text-[11px]" x-text="run.source"></td>
+                        <tr class="hover:bg-slate-50 cursor-pointer" @click="filterAiSuggestBySource(run.source)">
+                            <td class="px-3 py-2 text-slate-700 font-mono text-[11px]">
+                                <i class="fas fa-filter text-slate-300 mr-1"></i><span x-text="run.source"></span>
+                            </td>
                             <td class="px-3 py-2 text-slate-500" x-text="run.last_run_at ? new Date(run.last_run_at).toISOString().slice(0,16).replace('T',' ') : '—'"></td>
                             <td class="px-3 py-2 text-right text-emerald-700 font-medium" x-text="run.approved_count"></td>
                             <td class="px-3 py-2 text-right text-amber-700 font-medium" x-text="run.pending_count"></td>
@@ -658,6 +748,26 @@
                     </tr>
                 </tbody>
             </table>
+            <div class="mt-2 flex items-center justify-between gap-3 flex-wrap px-1">
+                <label class="text-xs font-medium text-slate-600">Buscar:</label>
+                <div class="relative">
+                    <input type="search" x-model="aiSuggestResultsSearch" @input.debounce.300ms="loadAiSuggestResults({ resetPage: true })" placeholder="wrong o correct…"
+                           autocomplete="off" autocapitalize="off" spellcheck="false"
+                           class="text-sm border border-slate-300 rounded-lg pl-3 pr-8 py-1.5 w-56">
+                    <button @click="aiSuggestResultsSearch = ''; loadAiSuggestResults({ resetPage: true })"
+                            x-show="aiSuggestResultsSearch" class="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600" title="Limpiar búsqueda">
+                        <i class="fas fa-xmark"></i>
+                    </button>
+                </div>
+                <span class="ml-auto text-xs text-slate-500" x-show="aiSuggestApprovedTotal > 0">
+                    <span x-text="aiSuggestApprovedFiltered.length"></span> visibles / <span x-text="aiSuggestApprovedTotal"></span> totales
+                </span>
+                <div class="flex items-center gap-1" x-show="aiSuggestApprovedLastPage > 1">
+                    <button @click="if (aiSuggestApprovedPage > 1) { aiSuggestApprovedPage--; loadAiSuggestResults(); }" :disabled="aiSuggestApprovedPage <= 1" class="px-2 py-1.5 bg-white border border-slate-300 hover:bg-slate-50 disabled:opacity-40 rounded-lg text-xs">‹</button>
+                    <span class="text-xs text-slate-500"><span x-text="aiSuggestApprovedPage"></span>/<span x-text="aiSuggestApprovedLastPage"></span></span>
+                    <button @click="if (aiSuggestApprovedPage < aiSuggestApprovedLastPage) { aiSuggestApprovedPage++; loadAiSuggestResults(); }" :disabled="aiSuggestApprovedPage >= aiSuggestApprovedLastPage" class="px-2 py-1.5 bg-white border border-slate-300 hover:bg-slate-50 disabled:opacity-40 rounded-lg text-xs">›</button>
+                </div>
+            </div>
         </div>
 
         <!-- Pendientes del suggester (caso: auto_approve desactivado) -->
@@ -2013,10 +2123,20 @@ function correccionesAdmin() {
         approvedSearch: '',
         approvedSourceFilter: 'all',
         approvedSources: [],
+        approvedPage: 1,
+        approvedPerPage: 50,
+        approvedTotal: 0,
+        approvedLastPage: 1,
         // AI suggest results sub-tab (corrections-ai-suggest-auto-approve)
         aiSuggestResults: null,
         loadingAiSuggestResults: false,
         aiSuggestResultsSearch: '',
+        aiSuggestSourceFilter: 'all',
+        aiSuggestSources: [],
+        aiSuggestApprovedPage: 1,
+        aiSuggestApprovedPerPage: 50,
+        aiSuggestApprovedTotal: 0,
+        aiSuggestApprovedLastPage: 1,
         // Exclusiones dinámicas (corrections-protected-terms-admin)
         exclusiones: [],
         exclusionesLoading: false,
@@ -2045,11 +2165,15 @@ function correccionesAdmin() {
         contextModal: { open: false, loading: false, item: null, data: null },
          // Revisión manual de transcripciones terminadas.
          transcriptionReviews: [],
-         transcriptionReviewMode: 'requested',
+         transcriptionReviewMode: 'completed',
          transcriptionReviewLoading: false,
-         transcriptionReviewLoadingDetail: false,
-         transcriptionReviewDetail: null,
-         transcriptionReviewSaving: false,
+        transcriptionReviewLoadingDetail: false,
+        transcriptionReviewDetail: null,
+        transcriptionReviewSaving: false,
+        // Inline SRT panel inside the review modal (correcciones-review-srt-inline)
+        showFullTranscript: false,
+        transcriptLoading: false,
+        transcriptData: null,
          transcriptionReviewNotes: '',
         // Export CSV (original + corrección). El botón "Exportar CSV" del header
         // descarga todo; el dropdown permite filtrar por estado y búsqueda libre.
@@ -2262,7 +2386,7 @@ function correccionesAdmin() {
             if (name === 'exclusiones' && this.exclusiones.length === 0) {
                 await this.loadExclusiones();
             }
-            if (name === 'ai-suggest-results' && !this.aiSuggestResults) {
+            if (name === 'ai-suggest-results') {
                 await this.loadAiSuggestResults();
             }
             if (name === 'transcription-review') {
@@ -2307,19 +2431,29 @@ function correccionesAdmin() {
             }
         },
 
-        async loadApproved() {
-            // Cargado vía AJAX al init() para que la pestaña Aprobadas soporte
-            // búsqueda libre, filtro por source y bulk delete sin render server-side.
+        async loadApproved({ resetPage = false } = {}) {
+            // Cargado vía AJAX paginado: búsqueda, filtro source y paginación
+            // se evalúan en el servidor para no transferir el diccionario completo.
+            if (resetPage) this.approvedPage = 1;
             this.loadingApproved = true;
             try {
-                const res = await apiFetch('/ia/correcciones/approved', { headers: { 'Accept': 'application/json' } });
+                const params = new URLSearchParams({
+                    page: this.approvedPage,
+                    per_page: this.approvedPerPage,
+                });
+                if (this.approvedSearch) params.set('search', this.approvedSearch);
+                if (this.approvedSourceFilter && this.approvedSourceFilter !== 'all') {
+                    params.set('source', this.approvedSourceFilter);
+                }
+                const res = await apiFetch('/ia/correcciones/approved?' + params.toString(), { headers: { 'Accept': 'application/json' } });
                 if (res.ok) {
-                    this.approved = await res.json();
-                    this.approvedCount = this.approved.length;
-                    // Sources únicos para el dropdown de filtro.
-                    const srcSet = new Set();
-                    this.approved.forEach(c => { if (c.source) srcSet.add(c.source); });
-                    this.approvedSources = Array.from(srcSet).sort();
+                    const data = await res.json();
+                    this.approved = data.items || [];
+                    this.approvedTotal = data.total || 0;
+                    this.approvedCount = data.total || 0;
+                    this.approvedPage = data.page || 1;
+                    this.approvedLastPage = Math.max(1, data.last_page || 1);
+                    if (Array.isArray(data.sources)) this.approvedSources = data.sources;
                 }
             } catch (e) {
                 // No crítico; el admin puede recargar manualmente.
@@ -2569,6 +2703,32 @@ function correccionesAdmin() {
             }
         },
 
+        async toggleFullTranscript() {
+            // Lazy fetch: solo cargamos el SRT la primera vez que el admin abre
+            // el panel dentro de la sesión actual del modal. El cache local
+            // se descarta cuando el modal se cierra (x-effect en el wrapper).
+            if (!this.transcriptionReviewDetail) return;
+            if (this.showFullTranscript) {
+                this.showFullTranscript = false;
+                return;
+            }
+            this.showFullTranscript = true;
+            if (this.transcriptData) return;
+            this.transcriptLoading = true;
+            try {
+                const res = await apiFetch('/ia/api-transcriptor/jobs/' + this.transcriptionReviewDetail.id + '/transcript', {
+                    headers: { 'Accept': 'application/json' },
+                });
+                if (!res.ok) throw new Error('No se pudo cargar el transcript');
+                this.transcriptData = await res.json();
+            } catch (e) {
+                this.showFullTranscript = false;
+                this.showToast('error', 'SRT completo', e.message || 'Fallo de red');
+            } finally {
+                this.transcriptLoading = false;
+            }
+        },
+
         async saveTranscriptionReview(status) {
             if (!this.transcriptionReviewDetail || !['correct', 'needs_review', 'ignored'].includes(status)) return;
             this.transcriptionReviewSaving = true;
@@ -2652,14 +2812,33 @@ function correccionesAdmin() {
             }
         },
 
-        async loadAiSuggestResults() {
+        async loadAiSuggestResults({ resetPage = false } = {}) {
+            if (resetPage) this.aiSuggestApprovedPage = 1;
             this.loadingAiSuggestResults = true;
             try {
-                const res = await apiFetch('/ia/correcciones/ai-suggest-results', { headers: { 'Accept': 'application/json' } });
-                if (res.ok) {
-                    this.aiSuggestResults = await res.json();
+                const params = new URLSearchParams({
+                    page: this.aiSuggestApprovedPage,
+                    per_page: this.aiSuggestApprovedPerPage,
+                });
+                if (this.aiSuggestResultsSearch) params.set('search', this.aiSuggestResultsSearch);
+                if (this.aiSuggestSourceFilter && this.aiSuggestSourceFilter !== 'all') {
+                    params.set('source', this.aiSuggestSourceFilter);
                 }
-            } catch (e) {
+                const res = await apiFetch('/ia/correcciones/ai-suggest-results?' + params.toString(), { headers: { 'Accept': 'application/json' } });
+                if (res.ok) {
+                    const data = await res.json();
+                    this.aiSuggestResults = {
+                        ...(this.aiSuggestResults ?? {}),
+                        ...data,
+                        approved_items: data.approved_items ?? [],
+                        pending_items: data.pending_items ?? [],
+                    };
+                    this.aiSuggestApprovedPage = data.approved_page || 1;
+                    this.aiSuggestApprovedTotal = data.approved_total || 0;
+                    this.aiSuggestApprovedLastPage = Math.max(1, data.approved_last_page || 1);
+                    if (Array.isArray(data.sources)) this.aiSuggestSources = data.sources;
+                }
+                } catch (e) {
                 // No crítico.
             } finally { this.loadingAiSuggestResults = false; }
         },
@@ -2964,17 +3143,16 @@ function correccionesAdmin() {
                 .filter(c => this._matchesSearch(c, this.pendingSearch));
         },
         get approvedFiltered() {
-            return this.approved
-                .filter(c => this.approvedSourceFilter === 'all' || c.source === this.approvedSourceFilter)
-                .filter(c => this._matchesSearch(c, this.approvedSearch));
+            // Ya filtrado/paginado en servidor; la vista muestra la página actual.
+            return this.approved;
         },
         get aiSuggestApprovedFiltered() {
-            const list = (this.aiSuggestResults?.approved_list ?? []);
-            return list.filter(c => this._matchesSearch(c, this.aiSuggestResultsSearch));
+            const list = (this.aiSuggestResults?.approved_items ?? []);
+            return list;
         },
         get aiSuggestPendingFiltered() {
-            const list = (this.aiSuggestResults?.pending_list ?? []);
-            return list.filter(c => this._matchesSearch(c, this.aiSuggestResultsSearch));
+            const list = (this.aiSuggestResults?.pending_items ?? []);
+            return list;
         },
         get exclusionesActiveFiltered() {
             return this.exclusiones.filter(e => !e.archived_at);
@@ -3031,6 +3209,40 @@ function correccionesAdmin() {
             } else {
                 this.approvedFiltered.forEach(c => this.approvedSelectedIds.add(c.id));
             }
+        },
+        async selectUpToMaxApproved() {
+            // Acumula ids de páginas sucesivas (con los filtros activos) hasta 500.
+            const max = 500;
+            let page = 1;
+            while (this.approvedSelectedIds.size < max) {
+                const params = new URLSearchParams({ page: page, per_page: 50 });
+                if (this.approvedSearch) params.set('search', this.approvedSearch);
+                if (this.approvedSourceFilter && this.approvedSourceFilter !== 'all') {
+                    params.set('source', this.approvedSourceFilter);
+                }
+                try {
+                    const res = await apiFetch('/ia/correcciones/approved?' + params.toString(), { headers: { 'Accept': 'application/json' } });
+                    if (!res.ok) break;
+                    const data = await res.json();
+                    const items = data.items || [];
+                    items.forEach(c => this.approvedSelectedIds.add(c.id));
+                    if (this.approvedSelectedIds.size >= max) {
+                        const excess = [...this.approvedSelectedIds].slice(0, max);
+                        this.approvedSelectedIds.clear();
+                        excess.forEach(id => this.approvedSelectedIds.add(id));
+                        break;
+                    }
+                    if (page >= (data.last_page || 1)) break;
+                    page++;
+                } catch (e) {
+                    break;
+                }
+            }
+            this.showToast('success', 'Selección', `${this.approvedSelectedIds.size} seleccionadas`);
+        },
+        filterAiSuggestBySource(source) {
+            this.aiSuggestSourceFilter = source;
+            this.loadAiSuggestResults({ resetPage: true });
         },
 
         // ===== Approve individual =====

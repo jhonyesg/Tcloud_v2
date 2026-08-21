@@ -42,7 +42,7 @@
                     <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Email</th>
                     <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Módulo</th>
                     <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider hidden md:table-cell">Keywords</th>
-                    <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider hidden md:table-cell">Alertas 24h</th>
+                    <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider hidden md:table-cell" title="Storages con acceso / storages asignados">Acceso</th>
                     <th class="px-4 py-3 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">Acciones</th>
                 </tr>
             </thead>
@@ -61,8 +61,14 @@
                         <td class="px-4 py-3 hidden md:table-cell text-sm text-slate-600">
                             <span x-text="(u.keywords_count || 0) + ' / ' + (u.alerts_inteligente?.keywords_quota || 0)"></span>
                         </td>
+                        {{-- Acceso = storages con transcription_access=true / storages asignados.
+                             Es el control que el admin enciende en la ficha del cliente.
+                             No es un atributo del storage; no se cuenta aquí la decisión de
+                             api-transcriptor sobre el storage. --}}
                         <td class="px-4 py-3 hidden md:table-cell text-sm">
-                            <span x-text="u.alerts_24h || 0"></span>
+                            <span class="font-medium"
+                                  :class="(u.storages_with_access || 0) > 0 ? 'text-green-700' : 'text-slate-400'"
+                                  x-text="(u.storages_with_access || 0) + ' / ' + (u.storages_count || 0)"></span>
                         </td>
                         <td class="px-4 py-3 text-right">
                             <div class="flex items-center justify-end gap-2">

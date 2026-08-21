@@ -6,23 +6,52 @@ use Symfony\Component\Process\ExecutableFinder;
 use Symfony\Component\Process\Process;
 
 /**
- * Wrapper sobre ffmpeg local para convertir audio a Opus 64k mono 16kHz,
- * el formato recomendado por la doc del transcriptor (~28x menos ancho de banda).
+ * Wrapper sobre ffmpeg local para normalizar el audio a mono 16kHz antes de
+ * enviarlo al transcriptor. El códec depende del formato pedido: wav
+ * (pcm_s16le, sin pérdida, lo que consume directamente el modelo ASR) u opus
+ * (libopus 64k, ~4x menos ancho de banda a cambio de una etapa con pérdida).
  *
  * Si se le pasa un $progressKey, escribe el porcentaje en un archivo de cache
  * para que el modal de progreso del frontend pueda consultarlo vía SSE/poll.
  */
 class AudioConverter
 {
-    public function toOpus64k(string $srcPath, string $dstPath, ?string $progressKey = null): void
+    /**
+     * Flags de códec por formato. Único sitio donde vive esa decisión.
+     *
+     * @return list<string>
+     */
+    public static function codecArgs(string $format): array
     {
+        return match ($format) {
+            'wav' => ['-c:a', 'pcm_s16le'],
+            'opus' => ['-c:a', 'libopus', '-b:a', '64k'],
+            default => throw new \InvalidArgumentException("Formato de audio no soportado: {$format}"),
+        };
+    }
+
+    /**
+     * Extensión del archivo temporal para un formato. Determina también el
+     * Content-Type con el que viaja el multipart.
+     */
+    public static function extensionFor(string $format): string
+    {
+        return $format === 'opus' ? 'opus' : 'wav';
+    }
+
+    public function convert(string $srcPath, string $dstPath, string $format = 'wav', ?string $progressKey = null): void
+    {
+        // Se valida antes de tocar disco o lanzar procesos: un formato
+        // desconocido es un error de configuración, no un fallo de ffmpeg.
+        $codecArgs = self::codecArgs($format);
+
         if (!is_file($srcPath) || !is_readable($srcPath)) {
             throw new \RuntimeException("Archivo de origen no legible: {$srcPath}");
         }
 
         $ffmpeg = (new ExecutableFinder())->find('ffmpeg');
         if ($ffmpeg === null) {
-            throw new \RuntimeException('ffmpeg no encontrado en el PATH. Instale ffmpeg >= 4.0 (con soporte libopus).');
+            throw new \RuntimeException('ffmpeg no encontrado en el PATH. Instale ffmpeg >= 4.0.');
         }
 
         // Total de duración del archivo de origen (segundos) para calcular %.
@@ -61,7 +90,7 @@ class AudioConverter
             '-i', $srcPath,
             '-map', $audioMap,
             '-vn', '-ac', '1', '-ar', '16000',
-            '-c:a', 'libopus', '-b:a', '64k',
+            ...$codecArgs,
             '-progress', 'pipe:1',
             '-nostats',
             $dstPath,

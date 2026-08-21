@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use App\Models\StorageProvider;
 use App\Services\Ia\TranscriptorSettings;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Ajusta automaticamente el pool de workers de transcripcion segun el numero
@@ -56,6 +57,19 @@ class TranscriptionTuneCommand extends Command
 
         if ($countStorages === 0) {
             $this->info('No hay storages con transcripcion habilitada. Workers objetivo: 0 (off).');
+
+            // Este mensaje vivia solo en transcription-tune.log, que nadie mira.
+            // El 2026-08-18 se repitio 517 veces mientras el pipeline entero
+            // estaba parado por un pivote vacio. Apagar TODO el pool no es una
+            // operacion rutinaria: va a laravel.log como WARNING, con cuantos
+            // workers se estan apagando.
+            $activos = $apply ? $this->countActiveWorkers() : 0;
+            Log::warning('TranscriptionTune: 0 storages con transcripcion habilitada; el pool queda apagado', [
+                'workers_activos' => $activos,
+                'apply' => $apply,
+                'pista' => 'revisar user_storages.transcription_enabled: si esta vacio, el pipeline no descubre ni envia nada',
+            ]);
+
             $stoppedOrphans = $apply ? $this->reconcileForbiddenPools() : [];
             if ($json) {
                 $this->line(json_encode(['ts' => now()->toIso8601String(), 'storages_total' => 0, 'medios_total' => 0, 'workers_target' => 0, 'started' => [], 'stopped' => [], 'stopped_orphans' => $stoppedOrphans]));
@@ -280,6 +294,20 @@ class TranscriptionTuneCommand extends Command
         $unit = str_ends_with($name, '.service') ? $name : $name . '.service';
         $out = @shell_exec("systemctl is-active {$unit} 2>/dev/null");
         return trim((string) $out);
+    }
+
+    /** Cuantos workers del pool estan corriendo ahora mismo. */
+    private function countActiveWorkers(): int
+    {
+        $activos = 0;
+        for ($i = 1; $i <= max(1, $this->installedUnitCount()); $i++) {
+            $name = "tcloud-transcription-batch-{$i}";
+            if ($this->serviceExists($name) && $this->getActiveState($name) === 'active') {
+                $activos++;
+            }
+        }
+
+        return $activos;
     }
 
     private function stopAllWorkers(): void

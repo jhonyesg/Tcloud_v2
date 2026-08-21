@@ -62,6 +62,17 @@ Schedule::command('transcription:poll-results')
     ->everyMinute()
     ->withoutOverlapping(10);
 
+// Centinela de flujo: cada hora comprueba que sigan naciendo transcripciones.
+//
+// Es la pieza que faltó el 2026-08-18: el pipeline estuvo 44 horas parado (el
+// pivote user_storages.transcription_enabled quedó vacío tras una migración) y
+// ninguna pieza avisó, porque cada una reportaba su propio estado como normal.
+// Este no mira componentes, mira el resultado. Sin
+// TRANSCRIPTOR_HEALTH_ALERT_EMAIL solo escribe WARNING en laravel.log.
+Schedule::command('transcription:health-check')
+    ->hourly()
+    ->withoutOverlapping(30);
+
 // Limpieza de archivos temporales en /dev/shm (tmpfs) cada hora.
 Schedule::command('transcription:cleanup-tmpfs')->hourly();
 

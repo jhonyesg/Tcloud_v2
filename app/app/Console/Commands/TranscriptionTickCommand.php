@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Jobs\ConvertAndTranscribeJob;
+use App\Models\StorageProvider;
 use App\Models\Transcription;
 use App\Services\Ia\TranscriptorSettings;
 use Carbon\CarbonImmutable;
@@ -136,25 +137,54 @@ class TranscriptionTickCommand extends Command
             ->where('state', Transcription::STATE_PENDING)
             ->whereNull('job_id')
             ->where('created_at', '>=', $todayStart)
+            // Excluir jobs rebotados por pre-flight (tmpfs sin espacio) cuyo
+            // plazo de requeue aun no vencio. Ver TranscriptionSubmitService::
+            // markRequeueable(). Sin este filtro, el tick reencolaria el job
+            // inmediatamente y volveria a rebotar.
+            ->where(function ($q) {
+                $q->whereNull('requeue_after_at')
+                  ->orWhere('requeue_after_at', '<=', now());
+            })
             ->orderBy('created_at', 'asc');
 
         $pendientes = $query->limit($batch)->pluck('file_id', 'id');
 
         if ($pendientes->isEmpty()) {
+            // "No hay pending" se registraba igual estando el sistema sano y al
+            // dia que estando el pipeline muerto por falta de storages
+            // habilitados. Los dos casos son indistinguibles en el log, y por
+            // eso el corte del 2026-08-18 paso 44 horas inadvertido: el tick
+            // repitio esta misma linea cada 2 minutos sin que nadie sospechara.
+            $storagesHabilitados = StorageProvider::transcriptionEnabled()->count();
+
             $msg = sprintf(
-                "[tick %s] SCAN: ok; DISPATCH: 0 (no hay pending del dia actual; current=%d, target=%d, batch_computed=%d)",
+                "[tick %s] SCAN: ok; DISPATCH: 0 (%s; current=%d, target=%d, batch_computed=%d, storages_habilitados=%d)",
                 now()->format('Y-m-d H:i:s'),
+                $storagesHabilitados === 0
+                    ? 'NINGUN storage con transcripcion habilitada'
+                    : 'no hay pending del dia actual',
                 $current,
                 $target,
                 $batch,
+                $storagesHabilitados,
             );
             $this->line($msg);
+
             if (!$this->dryRun) {
-                Log::info('TranscriptionTick: no pending today', [
-                    'current_redis' => $current,
-                    'batch_computed' => $batch,
-                ]);
+                if ($storagesHabilitados === 0) {
+                    Log::warning('TranscriptionTick: 0 storages con transcripcion habilitada; no hay nada que descubrir ni que enviar', [
+                        'current_redis' => $current,
+                        'pista' => 'ningun storage tiene transcription_enabled; encender los canales en /ia/api-transcriptor',
+                    ]);
+                } else {
+                    Log::info('TranscriptionTick: no pending today', [
+                        'current_redis' => $current,
+                        'batch_computed' => $batch,
+                        'storages_habilitados' => $storagesHabilitados,
+                    ]);
+                }
             }
+
             return Command::SUCCESS;
         }
 

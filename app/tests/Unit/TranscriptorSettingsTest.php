@@ -144,6 +144,34 @@ class TranscriptorSettingsTest extends LaravelTestCase
         $this->settings()->set(['scope' => 'manana']);
     }
 
+    // ------------------------------------------------------- formato de envio
+
+    public function testElFormatoDeEnvioPorDefectoEsWav(): void
+    {
+        Cache::forget(self::CACHE_KEY);
+
+        $this->assertSame('wav', $this->settings()->str('audio_output_format'));
+    }
+
+    public function testElFormatoDeEnvioAceptaWavYOpus(): void
+    {
+        Cache::forget(self::CACHE_KEY);
+
+        foreach (['wav', 'opus'] as $formato) {
+            [$clean, $errors] = $this->settings()->validate(['audio_output_format' => $formato]);
+
+            $this->assertSame([], $errors);
+            $this->assertSame($formato, $clean['audio_output_format']);
+        }
+    }
+
+    public function testRechazaUnFormatoDeEnvioQueFfmpegNoSabeProducir(): void
+    {
+        $this->expectException(ValidationException::class);
+
+        $this->settings()->set(['audio_output_format' => 'flac']);
+    }
+
     public function testRechazaMinBatchMayorQueMaxBatch(): void
     {
         Cache::forget(self::CACHE_KEY);

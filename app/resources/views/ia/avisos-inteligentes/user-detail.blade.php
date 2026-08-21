@@ -17,10 +17,27 @@
                 <h1 class="text-2xl font-bold text-slate-800">{{ $user->username ?? $user->email }}</h1>
                 <p class="text-sm text-slate-500 mt-1">{{ $user->email }}</p>
             </div>
-            <div class="flex gap-4 text-sm">
-                <div><span class="text-slate-500">Keywords:</span> <span class="font-semibold text-slate-800"><span x-text="used"></span> / <span x-text="quota"></span></span></div>
-                <div><span class="text-slate-500">Correos:</span> <span class="font-semibold text-slate-800" x-text="emails.length"></span></div>
+            <div class="flex gap-2">
+                <button onclick="startAvisosInteligentesTour()" class="flex items-center gap-2 bg-purple-600 hover:bg-purple-700 text-white px-3 py-2 rounded text-sm transition-colors" title="Guía interactiva">
+                    <i class="fas fa-map-marked-alt"></i>
+                    <span class="hidden sm:inline">Guía</span>
+                </button>
             </div>
+        </div>
+        <div class="flex items-center gap-4 mt-3 text-sm flex-wrap">
+            <div><span class="text-slate-500">Keywords:</span> <span class="font-semibold text-slate-800"><span x-text="used"></span> / <span x-text="quota"></span></span></div>
+            <div><span class="text-slate-500">Correos:</span> <span class="font-semibold text-slate-800" x-text="emails.length"></span></div>
+            <div><span class="text-slate-500">Acceso a transcripciones:</span> <span class="font-semibold text-slate-800"><span x-text="accessCount"></span> / <span x-text="storages.length"></span></span></div>
+        </div>
+        <div class="mt-4 px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-600 flex items-center gap-2">
+            <i class="fas fa-info-circle text-slate-400"></i>
+            <span>
+                <strong>Api-Transcriptor:</strong>
+                <span class="font-semibold text-slate-800">{{ $globalTranscribing }}</span>
+                <span class="text-slate-400">/</span>
+                <span>{{ $globalStorages }}</span>
+                storages transcribiendo globalmente. Esta pantalla solo concede <em>acceso a los resultados</em> a este cliente, no decide qué se transcribe.
+            </span>
         </div>
     </div>
 
@@ -65,6 +82,67 @@
                         <button @click="removeKeyword(kw.id)" class="text-xs px-2 py-1 bg-red-50 hover:bg-red-100 text-red-600 rounded">Eliminar</button>
                     </div>
                 </template>
+            </div>
+        </div>
+    </div>
+
+    {{-- Canales del cliente. Aquí se concede acceso a los resultados que
+         api-transcriptor produce. No se decide qué se transcribe (eso es
+         /ia/api-transcriptor). El badge "Transcribe / Sin transcripción"
+         anterior era espejo del flag global y se quitó para evitar la confusión
+         de que parecía un control de transcripción. --}}
+    <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden mb-6">
+        <div class="px-4 py-3 border-b border-slate-200 flex items-center justify-between flex-wrap gap-3">
+            <div>
+                <h2 class="text-sm font-semibold text-slate-700">Acceso a transcripciones por canal</h2>
+                <p class="text-xs text-slate-500 mt-0.5">
+                    Activa el acceso por storage para que el cliente pueda ver las transcripciones y correcciones que api-transcriptor produce en ese canal. Qué se transcribe se gestiona en
+                    <a href="/ia/api-transcriptor" class="text-brand-600 hover:underline">API Transcriptor</a>; aquí solo se concede acceso a los resultados.
+                </p>
+            </div>
+            <div class="flex items-center gap-3">
+                <span class="text-sm text-slate-600">
+                    <span class="font-semibold text-slate-800" x-text="accessCount"></span>
+                    <span class="text-slate-400">/</span>
+                    <span x-text="storages.length"></span>
+                    <span class="text-slate-500">con acceso</span>
+                </span>
+                <input type="text" x-model="storageFilter" placeholder="Filtrar storage..."
+                       class="border border-slate-300 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-brand-500 outline-none w-44">
+            </div>
+        </div>
+
+        <div x-show="storages.length === 0" class="text-center py-12 text-slate-400">
+            <p class="font-medium">Este cliente no tiene storages asignados</p>
+            <p class="text-sm mt-1">Asígnaselos primero en <a href="/admin/storages" class="text-brand-600 hover:underline">Storages</a>.</p>
+        </div>
+
+        <div x-show="storages.length > 0" class="max-h-96 overflow-y-auto divide-y divide-slate-100">
+            <template x-for="s in filteredStorages" :key="s.id">
+                <div class="flex items-center justify-between px-4 py-2.5 hover:bg-slate-50">
+                    <div class="min-w-0">
+                        <p class="text-sm text-slate-700 truncate" x-text="s.name"></p>
+                        <p class="text-xs text-slate-400" x-text="s.type"></p>
+                    </div>
+                    <div class="flex items-center gap-3 shrink-0">
+                        <span x-show="!s.transcription_enabled" class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1" title="Api-Transcriptor no está produciendo en este canal. El acceso se aplicará cuando vuelva a habilitarse.">
+                            <i class="fas fa-exclamation-triangle mr-1"></i>Sin producción
+                        </span>
+                        <button @click="setAccess(s)"
+                                :data-tour="s.id === firstStorageId ? 'storage-access-toggle' : null"
+                                type="button"
+                                :disabled="togglingAccess.has(s.id)"
+                                class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-wait"
+                                :class="accessStates[s.id] ? 'bg-green-100 text-green-700 hover:bg-green-200' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'"
+                                :title="accessStates[s.id] ? 'Este cliente tiene acceso a las transcripciones de este canal. Clic para revocar.' : 'Sin acceso. Clic para conceder.'">
+                            <span class="w-1.5 h-1.5 rounded-full" :class="accessStates[s.id] ? 'bg-green-500' : 'bg-slate-400'"></span>
+                            <span x-text="accessStates[s.id] ? 'Con acceso' : 'Sin acceso'"></span>
+                        </button>
+                    </div>
+                </div>
+            </template>
+            <div x-show="filteredStorages.length === 0" class="px-4 py-8 text-center text-sm text-slate-400">
+                Ningún storage coincide con el filtro
             </div>
         </div>
     </div>
@@ -122,9 +200,48 @@ function userDetail(userId, initialEmails, quota, initialUsed) {
         used: initialUsed,
         emails: initialEmails,
         keywords: @js($user->userKeywords->map(fn($k) => ['id' => $k->id, 'text' => $k->text])->values()),
+        storages: @js($storages ?? []),
+        accessStates: Object.fromEntries((@js($storages ?? [])).map(s => [s.id, !!s.transcription_access])),
+        togglingAccess: new Set(),
+        storageFilter: '',
         newEmail: '',
         newKeyword: '',
         init() {},
+        get filteredStorages() {
+            const q = this.storageFilter.trim().toLowerCase();
+            if (!q) return this.storages;
+            return this.storages.filter(s => (s.name || '').toLowerCase().includes(q));
+        },
+        get accessCount() {
+            return Object.values(this.accessStates).filter(Boolean).length;
+        },
+        get firstStorageId() {
+            return this.storages[0]?.id ?? null;
+        },
+        async setAccess(storage) {
+            if (this.togglingAccess.has(storage.id)) return;
+            const previous = this.accessStates[storage.id];
+            const next = !previous;
+            this.togglingAccess.add(storage.id);
+            this.accessStates[storage.id] = next;
+            try {
+                const res = await apiFetch('/ia/avisos-inteligentes/' + this.userId + '/storages/' + storage.id + '/transcription-access', {
+                    method: 'POST', credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content },
+                    body: JSON.stringify({ access: next }),
+                });
+                if (!res.ok) {
+                    this.accessStates[storage.id] = previous;
+                    const d = await res.json().catch(() => ({}));
+                    alert(d.error || 'No se pudo cambiar el acceso');
+                }
+            } catch (e) {
+                this.accessStates[storage.id] = previous;
+                alert('Error de red');
+            } finally {
+                this.togglingAccess.delete(storage.id);
+            }
+        },
         async addEmail() {
             if (!this.newEmail) return;
             const res = await apiFetch('/ia/avisos-inteligentes/' + this.userId + '/emails', {
@@ -168,6 +285,44 @@ function userDetail(userId, initialEmails, quota, initialUsed) {
             if (res.ok) { this.keywords = this.keywords.filter(k => k.id !== id); this.used = Math.max(0, this.used - 1); }
         },
     };
+}
+</script>
+
+<script src="/js/interactive-tour.js?v=20"></script>
+<script>
+function startAvisosInteligentesTour() {
+    TcloudTour.start({
+        steps: [
+            {
+                title: 'Avisos Inteligentes — orquestación por cliente',
+                content: 'Aquí concedes a este cliente <strong>acceso a los resultados</strong> de las transcripciones, storage por storage. ' +
+                         'No enciende ni apaga la transcripción: eso es decisión operativa de <a href="/ia/api-transcriptor" class="text-purple-700 underline">API Transcriptor</a>.',
+                icon: 'fa-bell',
+                color: '#4654a8',
+                selector: null,
+                position: 'center',
+            },
+            {
+                title: 'Banner global X/Y',
+                content: '<strong>Api-Transcriptor: X / Y</strong> storages transcribiendo globalmente. ' +
+                         'Es solo informativo: te dice qué hay produciéndose en la plataforma. ' +
+                         'El acceso por cliente es ortogonal.',
+                icon: 'fa-info-circle',
+                color: '#4654a8',
+                selector: null,
+                position: 'center',
+            },
+            {
+                title: 'Toggle de acceso por canal',
+                content: 'Activa el acceso por storage para darle al cliente permiso de ver las transcripciones y correcciones que api-transcriptor produce en ese canal. ' +
+                         'Si el canal está <em>Sin producción</em> (badge ámbar), significa que api-transcriptor no está generando resultados nuevos; el acceso se aplicará cuando vuelva a habilitarse.',
+                icon: 'fa-key',
+                color: '#4654a8',
+                selector: '[data-tour="storage-access-toggle"]',
+                position: 'left',
+            },
+        ],
+    });
 }
 </script>
 @endpush

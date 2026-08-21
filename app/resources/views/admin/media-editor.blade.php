@@ -119,7 +119,13 @@
             </h1>
             <p class="text-xs sm:text-sm text-gray-500 mt-1">Gestiona el acceso y los límites del editor de corte por usuario</p>
         </div>
-        <span class="text-xs sm:text-sm text-gray-400 capitalize" x-text="currentMonth"></span>
+        <div class="flex items-center gap-2">
+            <button onclick="startMediaEditorTour()" class="flex items-center gap-2 bg-purple-600 hover:bg-purple-700 text-white px-3 py-2 rounded-xl text-sm transition-colors shadow-sm" title="Guía interactiva">
+                <i class="fas fa-map-marked-alt"></i>
+                <span class="hidden sm:inline">Guía</span>
+            </button>
+            <span class="text-xs sm:text-sm text-gray-400 capitalize" x-text="currentMonth"></span>
+        </div>
     </div>
 
     <!-- Stats cards -->
@@ -429,4 +435,272 @@
         </div>
     </div>
 </div>
+
+<script src="/js/interactive-tour.js?v=20"></script>
+<script>
+function startMediaEditorTour() {
+    function getAlpine() {
+        var allData = document.querySelectorAll('[x-data]');
+        for (var i = 0; i < allData.length; i++) {
+            var el = allData[i];
+            if (el._x_dataStack && el._x_dataStack[0]) {
+                var data = el._x_dataStack[0];
+                if (data.users !== undefined && data.stats !== undefined) return data;
+            }
+        }
+        var first = document.querySelector('[x-data]');
+        return first ? (first._x_dataStack ? first._x_dataStack[0] : null) : null;
+    }
+
+    var alpine = getAlpine();
+    if (alpine) alpine.loading = false;
+
+    // Helper: scroll suave a un elemento y devolverlo
+    function scrollTo(selector) {
+        var el = typeof selector === 'string' ? document.querySelector(selector) : selector;
+        if (el) {
+            el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+        }
+        return el;
+    }
+
+    // Helper: obtener la primera fila no-admin en la tabla
+    function getFirstNonAdminRow() {
+        var rows = document.querySelectorAll('table tbody tr');
+        for (var i = 0; i < rows.length; i++) {
+            if (rows[i].querySelector('button[\\@click="toggleEnabled"]')) return rows[i];
+        }
+        return rows[0] || null;
+    }
+
+    TcloudTour.start({
+        steps: [
+            {
+                title: 'Editor de Medios',
+                content: 'Esta herramienta permite a los usuarios crear cortes (clips) de archivos multimedia directamente desde el navegador. ' +
+                         'Aquí controlas quién tiene acceso al editor, cuántos cortes puede generar cada mes y supervisas el estado del sistema de procesamiento (FFmpeg).',
+                icon: 'fa-cut',
+                color: '#6366f1',
+                selector: null,
+                position: 'center'
+            },
+            {
+                title: 'Estadísticas del Mes',
+                content: 'Cuatro tarjetas resumen la actividad: <strong style="color:#7c3aed">Cortes este mes</strong>, ' +
+                         '<strong style="color:#3b82f6">Cortes totales</strong> (histórico), ' +
+                         '<strong style="color:#16a34a">Usuarios con acceso</strong> y ' +
+                         '<strong style="color:#dc2626">Errores este mes</strong>. ' +
+                         'Sirven para detectar picos de uso o problemas de procesamiento.',
+                icon: 'fa-chart-pie',
+                color: '#3b82f6',
+                selector: '.grid.grid-cols-1.sm\\:grid-cols-2.lg\\:grid-cols-4',
+                position: 'bottom',
+                onShow: function () {
+                    scrollTo('.grid.grid-cols-1.sm\\:grid-cols-2.lg\\:grid-cols-4');
+                }
+            },
+            {
+                title: 'RAM Disk FFmpeg',
+                content: 'FFmpeg procesa los clips en un disco temporal en memoria (<strong>tmpfs</strong> montado en <code>/mnt/cliptemp</code>). ' +
+                         'La barra muestra el % usado: <span style="color:#6366f1">azul (&lt;70%)</span>, ' +
+                         '<span style="color:#f59e0b">ámbar (70-90%)</span>, ' +
+                         '<span style="color:#dc2626">rojo (≥90%)</span>. ' +
+                         '<strong style="color:#dc2626">Si supera el 90%, los nuevos cortes pueden fallar por falta de espacio.</strong> ' +
+                         'Si aparece "No montado", los cortes no se podrán procesar.',
+                icon: 'fa-memory',
+                color: '#06b6d4',
+                selector: function () {
+                    var card = document.querySelector('.bg-white.rounded-xl.shadow-sm.border.mb-8');
+                    if (card) {
+                        var header = card.querySelector('.flex.items-center.justify-between');
+                        return header || card;
+                    }
+                    return null;
+                },
+                position: 'bottom',
+                onShow: function () {
+                    scrollTo('.bg-white.rounded-xl.shadow-sm.border.mb-8');
+                }
+            },
+            {
+                title: 'Encabezados de la Tabla',
+                content: 'La tabla muestra las columnas: <strong>Usuario</strong>, <strong>Acceso</strong>, <strong>Uso este mes</strong>, ' +
+                         '<strong>Límite mensual</strong>, <strong>Último corte</strong> y <strong>Total</strong>. ' +
+                         'A continuación explicamos cada accionable por fila.',
+                icon: 'fa-columns',
+                color: '#2563eb',
+                selector: 'table thead',
+                position: 'bottom',
+                onShow: function () {
+                    scrollTo('table thead');
+                }
+            },
+            {
+                title: 'Columna: Usuario',
+                content: 'Muestra el avatar, nombre de usuario, email y rol (<span style="color:#7c3aed">Admin</span> o <span style="color:#475569">Usuario</span>). ' +
+                         'Los administradores tienen acceso ilimitado y no se pueden deshabilitar.',
+                icon: 'fa-user',
+                color: '#7c3aed',
+                selector: function () {
+                    var row = getFirstNonAdminRow();
+                    if (row) {
+                        var cell = row.querySelector('td:first-child');
+                        if (cell) return cell;
+                    }
+                    return document.querySelector('table tbody tr td:first-child') || null;
+                },
+                position: 'bottom',
+                onShow: function () {
+                    var row = getFirstNonAdminRow();
+                    if (row) scrollTo(row.querySelector('td:first-child'));
+                }
+            },
+            {
+                title: 'Activar / Desactivar Acceso',
+                content: 'Este interruptor (<strong style="color:#7c3aed">toggle violeta</strong>) habilita o deshabilita el acceso al Editor de Medios para cada usuario. ' +
+                         '<strong style="color:#16a34a">Activo</strong> (violeta) = puede generar cortes. ' +
+                         '<strong style="color:#94a3b8">Inactivo</strong> (gris) = botón deshabilitado, no ve la herramienta. ' +
+                         'Los cambios se guardan automáticamente al hacer clic. ' +
+                         '<span style="color:#94a3b8">Los administradores siempre están activos (no aparece toggle).</span>',
+                icon: 'fa-toggle-on',
+                color: '#7c3aed',
+                selector: function () {
+                    var row = getFirstNonAdminRow();
+                    if (row) {
+                        var btn = row.querySelector('button[\\@click="toggleEnabled"]');
+                        if (btn) return btn;
+                    }
+                    return document.querySelector('table tbody tr button[\\@click="toggleEnabled"]') || null;
+                },
+                position: 'left',
+                onShow: function () {
+                    var row = getFirstNonAdminRow();
+                    if (row) {
+                        var btn = row.querySelector('button[\\@click="toggleEnabled"]');
+                        if (btn) scrollTo(btn);
+                    }
+                }
+            },
+            {
+                title: 'Uso Este Mes',
+                content: 'Muestra <strong>cortes consumidos este mes</strong>, con barra de progreso. ' +
+                         'La barra cambia de color: <span style="color:#7c3aed">violeta</span> (&lt;75%), ' +
+                         '<span style="color:#f59e0b">ámbar</span> (75-99%), <span style="color:#dc2626">rojo</span> (100% agotado). ' +
+                         'Si el límite es 0 (ilimitado) no muestra barra.',
+                icon: 'fa-chart-bar',
+                color: '#f59e0b',
+                selector: function () {
+                    var row = getFirstNonAdminRow();
+                    if (row) {
+                        var cells = row.querySelectorAll('td');
+                        if (cells.length >= 3) return cells[2];
+                    }
+                    return null;
+                },
+                position: 'bottom',
+                onShow: function () {
+                    var row = getFirstNonAdminRow();
+                    if (row) scrollTo(row.querySelectorAll('td')[2]);
+                }
+            },
+            {
+                title: 'Límite Mensual',
+                content: 'Edita este campo numérico para definir el máximo de cortes mensuales del usuario. ' +
+                         '<strong style="color:#7c3aed">0 = ilimitado</strong>. ' +
+                         'Los cambios se guardan al presionar <strong>Enter</strong> o perder el foco (blur). ' +
+                         'Solo se puede editar cuando el usuario está <strong>Activo</strong>. ' +
+                         'El contador se reinicia automáticamente el 1 de cada mes.',
+                icon: 'fa-sliders-h',
+                color: '#7c3aed',
+                selector: function () {
+                    var row = getFirstNonAdminRow();
+                    if (row) {
+                        var input = row.querySelector('input[type="number"]');
+                        if (input) return input;
+                    }
+                    return document.querySelector('table tbody tr input[type="number"]') || null;
+                },
+                position: 'bottom',
+                onShow: function () {
+                    var row = getFirstNonAdminRow();
+                    if (row) {
+                        var input = row.querySelector('input[type="number"]');
+                        if (input) scrollTo(input);
+                    }
+                }
+            },
+            {
+                title: 'Último Corte',
+                content: 'Fecha y hora del último clip generado por este usuario. ' +
+                         'Si nunca ha usado el editor, muestra <strong>Nunca</strong>. ' +
+                         'Útil para identificar usuarios inactivos.',
+                icon: 'fa-clock',
+                color: '#475569',
+                selector: function () {
+                    var row = getFirstNonAdminRow();
+                    if (row) {
+                        var cells = row.querySelectorAll('td');
+                        if (cells.length >= 5) return cells[4];
+                    }
+                    return null;
+                },
+                position: 'bottom',
+                onShow: function () {
+                    var row = getFirstNonAdminRow();
+                    if (row) scrollTo(row.querySelectorAll('td')[4]);
+                }
+            },
+            {
+                title: 'Total de Cortes',
+                content: 'Acumulado histórico de cortes completados por el usuario. ' +
+                         'No se reinicia cada mes; sirve para medir la actividad total.',
+                icon: 'fa-hashtag',
+                color: '#3b82f6',
+                selector: function () {
+                    var row = getFirstNonAdminRow();
+                    if (row) {
+                        var cells = row.querySelectorAll('td');
+                        if (cells.length >= 6) return cells[5];
+                    }
+                    return null;
+                },
+                position: 'bottom',
+                onShow: function () {
+                    var row = getFirstNonAdminRow();
+                    if (row) scrollTo(row.querySelectorAll('td')[5]);
+                }
+            },
+            {
+                title: 'Nota sobre los Límites',
+                content: 'Cómo funciona el sistema de límites: ' +
+                         '<ul style="margin:6px 0 0 16px;padding:0;">' +
+                         '<li><strong>0 = ilimitado</strong>: el usuario puede generar todos los cortes que quiera.</li>' +
+                         '<li>Cualquier número > 0 es el máximo de cortes completados en el mes calendario.</li>' +
+                         '<li>Los administradores siempre tienen acceso ilimitado, ignorando el límite.</li>' +
+                         '<li>Los cortes fallidos <strong>no cuentan</strong> para el límite.</li>' +
+                         '<li>El contador se reinicia automáticamente el 1 de cada mes.</li>' +
+                         '</ul>',
+                icon: 'fa-info-circle',
+                color: '#7c3aed',
+                selector: '.bg-violet-50.border-violet-200',
+                position: 'top',
+                onShow: function () {
+                    scrollTo('.bg-violet-50.border-violet-200');
+                }
+            },
+            {
+                title: 'Guía Completada',
+                content: 'Conoces todo lo necesario para gestionar el Editor de Medios: ' +
+                         '<strong>activar/desactivar</strong> usuarios, <strong>configurar límites mensuales</strong>, ' +
+                         'monitorear el <strong>disco RAM de FFmpeg</strong> y supervisar las <strong>estadísticas</strong>. ' +
+                         'Repite esta guía cuando quieras con el botón morado.',
+                icon: 'fa-check-circle',
+                color: '#16a34a',
+                selector: null,
+                position: 'center'
+            }
+        ]
+    });
+}
+</script>
 @endsection

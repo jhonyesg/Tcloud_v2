@@ -60,7 +60,10 @@ class UserController extends Controller
                 'bienvenida',
                 $user->email,
                 [
-                    'nombre_usuario' => $user->email,
+                    'nombre_usuario' => $user->username ?? $user->email,
+                    'email' => $user->email,
+                    'fecha' => now()->format('d/m/Y H:i'),
+                    'app_url' => url('/'),
                 ]
             );
         }
@@ -137,7 +140,9 @@ class UserController extends Controller
         // Cleanup shares created by this user
         Share::where('created_by', $user->id)->delete();
 
-        // Cleanup user storages
+        // Cleanup user storages. Borrar al cliente no apaga la transcripción de
+        // sus canales: qué se transcribe lo decide API Transcriptor sobre el
+        // storage, con independencia de quién tenga acceso.
         UserStorage::where('user_id', $user->id)->delete();
 
         // Cleanup other NO ACTION dependencies

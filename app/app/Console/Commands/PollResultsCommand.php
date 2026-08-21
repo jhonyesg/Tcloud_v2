@@ -47,7 +47,28 @@ class PollResultsCommand extends Command
         // 2. Polling de queued/processing con job_id.
         $stats = $polling->pollAll();
 
-        $this->info("Poll-results: pendientes recuperados={$recoveredPending}, polled={$stats['polled']}, done={$stats['done']}, errors={$stats['errors']}, still_pending={$stats['still_pending']}");
+        $this->info(sprintf(
+            'Poll-results: pendientes recuperados=%d, polled=%d, done=%d, errors=%d, still_pending=%d, lost=%d, aged_out=%d',
+            $recoveredPending,
+            $stats['polled'],
+            $stats['done'],
+            $stats['errors'],
+            $stats['still_pending'],
+            $stats['lost'],
+            $stats['aged_out'],
+        ));
+
+        // Las filas cerradas por perdida upstream son recuperables re-enviando
+        // el audio: transcription:backfill-lost. Se registra a nivel WARNING
+        // para que quede rastro con LOG_LEVEL=warning.
+        if ($stats['lost'] > 0 || $stats['aged_out'] > 0) {
+            Log::warning('poll-results: transcripciones cerradas sin resultado', [
+                'lost' => $stats['lost'],
+                'aged_out' => $stats['aged_out'],
+                'accion' => 'php artisan transcription:backfill-lost --audit',
+            ]);
+        }
+
         return Command::SUCCESS;
     }
 }

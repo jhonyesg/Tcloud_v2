@@ -20,9 +20,9 @@
         <p class="text-xs sm:text-sm text-slate-500 mt-1">Canales de grabación configurados</p>
     </div>
     <div class="flex items-center gap-2">
-        <button onclick="startCanalesTour()" class="flex items-center gap-2 bg-purple-600 hover:bg-purple-700 text-white px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl font-medium text-sm transition-colors shadow-sm" title="Tour interactivo">
+        <button onclick="startCanalesTour()" class="flex items-center gap-2 bg-purple-600 hover:bg-purple-700 text-white px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl font-medium text-sm transition-colors shadow-sm" title="Guía interactiva">
             <i class="fas fa-map-marked-alt text-xs"></i>
-            <span class="hidden sm:inline">Tour</span>
+            <span class="hidden sm:inline">Guía</span>
         </button>
         @if($user && $user->isAdmin())
             <button id="btn-sincronizar"
@@ -505,97 +505,304 @@
     });
 })();
 </script>
-<script src="/js/interactive-tour.js"></script>
+<script src="/js/interactive-tour.js?v=20"></script>
 <script>
 function startCanalesTour() {
+    function getAlpine() {
+        var allData = document.querySelectorAll('[x-data]');
+        for (var i = 0; i < allData.length; i++) {
+            var el = allData[i];
+            if (el._x_dataStack && el._x_dataStack[0]) {
+                var data = el._x_dataStack[0];
+                if (data !== undefined) return data;
+            }
+        }
+        return null;
+    }
+
+    function scrollTo(selector) {
+        var el = typeof selector === 'string' ? document.querySelector(selector) : selector;
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+        return el;
+    }
+
+    function getFirstRow() {
+        return document.querySelector('table#tabla-canales tbody tr:not(#fila-vacia)') || null;
+    }
+
+    function getRowCell(index) {
+        var row = getFirstRow();
+        if (!row) return null;
+        var cells = row.querySelectorAll('td');
+        return cells[index] || null;
+    }
+
+    function getClickBtn(cls) {
+        var row = getFirstRow();
+        if (!row) return null;
+        return row.querySelector('.' + cls) || null;
+    }
+
+    function getCrearBtn() {
+        var btns = document.querySelectorAll('button[onclick*="startCanalesTour"]');
+        if (btns.length > 0) {
+            var next = btns[0].nextElementSibling;
+            if (next && (next.tagName === 'A' || next.tagName === 'BUTTON')) return next;
+        }
+        return document.querySelector('a[href*="create"]') || document.querySelector('button[data-url*="sincronizar"]') || null;
+    }
+
     TcloudTour.start({
         steps: [
             {
                 title: 'Grabaciones Puntuales',
-                content: 'Este modulo permite <strong>grabar audio/video en horarios especificos</strong> (slots) ' +
-                         'desde canales de emisoras o medios puntuales. Aqui configuras y administras los canales de grabacion.',
+                content: 'Este módulo permite <strong>grabar audio/video en horarios específicos</strong> (slots) ' +
+                         'desde canales de emisoras o medios puntuales. ' +
+                         'Aquí configuras y administras los canales de grabación. ' +
+                         'Cada canal está asociado a un grabador que ejecuta la grabación físicamente.',
                 icon: 'fa-broadcast-tower',
                 color: '#6366f1',
                 selector: null,
-                position: 'center',
+                position: 'center'
             },
             {
-                title: 'Lista de Canales',
-                content: 'Cada fila representa un <strong>canal de grabacion</strong>. El <strong>Slot</strong> indica el nombre o horario asignado. ' +
-                         'El <strong>API ID</strong> es el identificador del canal en el servidor de grabacion externo. ' +
-                         'El <strong>Estado</strong> muestra si el canal esta activo o inactivo.',
-                icon: 'fa-list',
-                color: '#3b82f6',
-                selector: '#tabla-canales',
-                position: 'bottom',
-            },
-            {
-                title: 'Ejecutar Grabacion',
-                content: 'El boton <strong>Ejecutar</strong> inicia una grabacion inmediata del canal. ' +
-                         'Solo aparece en canales activos que tienen un API ID configurado. ' +
-                         'La grabacion se procesa en el servidor y se almacena automaticamente.',
-                icon: 'fa-play',
-                color: '#16a34a',
-                selector: '.btn-ejecutar',
-                position: 'bottom',
-            },
-            {
-                title: 'Editar Canal',
-                content: 'Modifica la configuracion del canal: nombre del slot, detalle, grabador asignado, ' +
-                         'y parametros de grabacion (duracion, formato, etc).',
-                icon: 'fa-edit',
-                color: '#6366f1',
-                selector: 'a[href*="edit"]',
-                position: 'bottom',
-            },
-            {
-                title: 'Limpiar Canal',
-                content: 'Elimina el canal de grabacion. Esta accion <strong>no se puede deshacer</strong>. ' +
-                         'Te pedira confirmacion antes de proceder.',
-                icon: 'fa-eraser',
-                color: '#f59e0b',
-                selector: '.btn-limpiar',
-                position: 'bottom',
-            },
-            {
-                title: 'Crear Canal',
-                content: 'Crea un nuevo canal de grabacion asignandolo a un grabador existente. ' +
-                         'Los administradores pueden sincronizar IDs desde el servidor externo.',
+                title: 'Sincronizar IDs / Crear Canal',
+                content: 'Como <strong>administrador</strong> verás el botón teal <strong>Sincronizar IDs</strong> para traer canales desde el servidor externo. ' +
+                         'Como usuario normal verás el botón índigo <strong>Crear Canal</strong> para añadir uno nuevo.',
                 icon: 'fa-plus',
-                color: '#6366f1',
-                selector: function () {
-                    return document.querySelector('a[href*="create"]') || document.querySelector('button[data-url*="sincronizar"]');
-                },
-                position: 'bottom',
+                color: '#0d9488',
+                selector: function () { return getCrearBtn(); },
+                position: 'left',
+                onShow: function () {
+                    var btn = getCrearBtn();
+                    if (btn) scrollTo(btn);
+                }
             },
             {
-                title: 'Busqueda',
-                content: 'Filtra canales por nombre de slot, detalle o API ID. ' +
-                         'Util cuando tienes muchos canales configurados.',
+                title: 'Búsqueda',
+                content: 'Filtra canales por <strong>nombre de slot</strong>, <strong>detalle</strong> o <strong>API ID</strong>. ' +
+                         'Útil cuando tienes muchos canales configurados.',
                 icon: 'fa-search',
                 color: '#64748b',
                 selector: '#busqueda',
                 position: 'bottom',
+                onShow: function () {
+                    scrollTo('#busqueda');
+                }
             },
             {
-                title: 'Grabadores',
-                content: 'Los <strong>grabadores</strong> son los dispositivos o servicios que ejecutan las grabaciones fisicamente. ' +
-                         'Cada canal se asigna a un grabador. Puedes gestionarlos desde el menu lateral.',
-                icon: 'fa-microphone',
-                color: '#8b5cf6',
-                selector: 'a[href*="grabadores"]',
+                title: 'Encabezados de la Tabla',
+                content: 'Columnas: <strong>#</strong> (número de fila), ' +
+                         '<strong>Usuario</strong> (admin), <strong>Grabador</strong> (admin), ' +
+                         '<strong>Slot</strong>, <strong>API ID</strong>, <strong>Detalle</strong>, ' +
+                         '<strong>Estado</strong> y <strong>Acciones</strong>. ' +
+                         'Haz clic en una columna para ordenar asc/desc.',
+                icon: 'fa-columns',
+                color: '#3b82f6',
+                selector: 'table#tabla-canales thead',
                 position: 'bottom',
+                onShow: function () {
+                    scrollTo('table#tabla-canales thead');
+                }
             },
             {
-                title: 'Tour Completado',
-                content: 'Ya conoces el modulo de Grabaciones Puntuales. ' +
-                         'Recuerda: <strong>Ejecutar</strong> para grabar ahora, <strong>Editar</strong> para configurar, ' +
-                         'y <strong>Limpiar</strong> para eliminar. Puedes repetir este tour cuando quieras.',
+                title: 'Columna: Slot',
+                content: 'Nombre del slot de grabación (ej: "Radio_01", "TV_Manana"). ' +
+                         'Es el nombre que verás en el sistema de agendamiento y en los reportes.',
+                icon: 'fa-tag',
+                color: '#1e293b',
+                selector: function () {
+                    var row = getFirstRow();
+                    if (!row) return null;
+                    var cells = row.querySelectorAll('td');
+                    // Buscar la celda que tiene el slot_nombre (font-semibold)
+                    for (var i = 0; i < cells.length; i++) {
+                        if (cells[i].classList.contains('font-semibold')) return cells[i];
+                    }
+                    return cells[1] || null;
+                },
+                position: 'bottom',
+                onShow: function () {
+                    var row = getFirstRow();
+                    if (!row) return;
+                    var cells = row.querySelectorAll('td');
+                    for (var i = 0; i < cells.length; i++) {
+                        if (cells[i].classList.contains('font-semibold')) {
+                            scrollTo(cells[i]);
+                            return;
+                        }
+                    }
+                }
+            },
+            {
+                title: 'Columna: API ID',
+                content: 'Identificador del canal en el servidor de grabación externo. ' +
+                         'Es único por canal y se usa para que el sistema sepa qué canal ejecutar. ' +
+                         'Si está vacío <code>—</code>, el canal aún no está sincronizado.',
+                icon: 'fa-fingerprint',
+                color: '#475569',
+                selector: function () {
+                    var row = getFirstRow();
+                    if (!row) return null;
+                    var fonts = row.querySelectorAll('td.font-mono');
+                    // API ID es la primera celda font-mono (excluyendo row-num)
+                    for (var i = 0; i < fonts.length; i++) {
+                        if (!fonts[i].classList.contains('row-num')) return fonts[i];
+                    }
+                    return null;
+                },
+                position: 'bottom',
+                onShow: function () {
+                    var row = getFirstRow();
+                    if (!row) return;
+                    var fonts = row.querySelectorAll('td.font-mono');
+                    for (var i = 0; i < fonts.length; i++) {
+                        if (!fonts[i].classList.contains('row-num')) {
+                            scrollTo(fonts[i]);
+                            return;
+                        }
+                    }
+                }
+            },
+            {
+                title: 'Columna: Detalle',
+                content: 'Descripción opcional del canal (programa, horario, contenido esperado). ' +
+                         'Útil para identificarlo rápidamente sin ver el slot.',
+                icon: 'fa-info-circle',
+                color: '#475569',
+                selector: function () {
+                    var row = getFirstRow();
+                    if (!row) return null;
+                    var cells = row.querySelectorAll('td.max-w-\\[200px\\]');
+                    if (cells.length > 0) return cells[0];
+                    // fallback: buscar por truncate
+                    cells = row.querySelectorAll('td');
+                    for (var i = 0; i < cells.length; i++) {
+                        if (cells[i].getAttribute('title') !== null) return cells[i];
+                    }
+                    return null;
+                },
+                position: 'bottom',
+                onShow: function () {
+                    var row = getFirstRow();
+                    if (!row) return;
+                    var cells = row.querySelectorAll('td.max-w-\\[200px\\]');
+                    if (cells.length > 0) {
+                        scrollTo(cells[0]);
+                    } else {
+                        cells = row.querySelectorAll('td');
+                        for (var i = 0; i < cells.length; i++) {
+                            if (cells[i].getAttribute('title') !== null) {
+                                scrollTo(cells[i]);
+                                return;
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                title: 'Columna: Estado',
+                content: 'Badge con el estado actual: ' +
+                         '<span style="color:#16a34a"><strong>● Verde</strong> (Activo)</span> o ' +
+                         '<span style="color:#dc2626"><strong>● Rojo</strong> (Inactivo)</span>. ' +
+                         'Solo los canales activos y con API ID muestran el botón Ejecutar.',
+                icon: 'fa-circle',
+                color: '#16a34a',
+                selector: function () {
+                    var row = getFirstRow();
+                    if (!row) return null;
+                    var lastCell = row.querySelectorAll('td');
+                    return lastCell[lastCell.length - 2] || null;
+                },
+                position: 'bottom',
+                onShow: function () {
+                    var row = getFirstRow();
+                    if (!row) return;
+                    var cells = row.querySelectorAll('td');
+                    if (cells.length >= 2) scrollTo(cells[cells.length - 2]);
+                }
+            },
+            {
+                title: 'Acción: Ejecutar',
+                content: 'Botón <strong style="color:#16a34a">▶ Ejecutar</strong> (verde): inicia una grabación inmediata del canal. ' +
+                         'Solo aparece en canales <strong>activos con API ID configurado</strong>. ' +
+                         'La grabación se procesa en el servidor y se almacena automáticamente.',
+                icon: 'fa-play',
+                color: '#16a34a',
+                selector: function () { return getClickBtn('btn-ejecutar'); },
+                position: 'left',
+                onShow: function () {
+                    var btn = getClickBtn('btn-ejecutar');
+                    if (btn) scrollTo(btn);
+                }
+            },
+            {
+                title: 'Acción: Editar',
+                content: 'Botón <strong style="color:#4f46e5">✏️ Editar</strong> (índigo): modifica la configuración del canal: ' +
+                         'nombre del slot, detalle, grabador asignado, y parámetros de grabación (duración, formato, etc).',
+                icon: 'fa-edit',
+                color: '#4f46e5',
+                selector: function () {
+                    var row = getFirstRow();
+                    if (!row) return null;
+                    return row.querySelector('a[href*="edit"]') || null;
+                },
+                position: 'left',
+                onShow: function () {
+                    var row = getFirstRow();
+                    if (!row) return;
+                    var a = row.querySelector('a[href*="edit"]');
+                    if (a) scrollTo(a);
+                }
+            },
+            {
+                title: 'Acción: Limpiar',
+                content: 'Botón <strong style="color:#f59e0b">🧽 Limpiar</strong> (ámbar): elimina el canal de grabación. ' +
+                         '<span style="color:#dc2626"><strong>Esta acción no se puede deshacer</strong></span>. ' +
+                         'Te pedirá confirmación antes de proceder.',
+                icon: 'fa-eraser',
+                color: '#f59e0b',
+                selector: function () { return getClickBtn('btn-limpiar'); },
+                position: 'left',
+                onShow: function () {
+                    var btn = getClickBtn('btn-limpiar');
+                    if (btn) scrollTo(btn);
+                }
+            },
+            {
+                title: '¿Cómo funciona una grabación?',
+                content: 'Flujo típico: ' +
+                         '<ol style="margin:6px 0 0 16px;padding:0;">' +
+                         '<li>El sistema agenda el canal según los horarios definidos.</li>' +
+                         '<li>En el momento programado, envía un comando al grabador con el <strong>API ID</strong>.</li>' +
+                         '<li>El grabador ejecuta la grabación y la almacena en su storage.</li>' +
+                         '<li>El sistema la marca como completada y aparece en la lista de archivos del usuario.</li>' +
+                         '</ol>',
+                icon: 'fa-info-circle',
+                color: '#7c3aed',
+                selector: null,
+                position: 'center'
+            },
+            {
+                title: 'Gestión de Grabadores',
+                content: 'Los <strong>grabadores</strong> son los dispositivos o servicios que ejecutan las grabaciones físicamente. ' +
+                         'Cada canal se asigna a un grabador. Puedes gestionarlos desde el menú lateral: ' +
+                         '<strong>Grabadores Puntuales → Grabadores</strong>.',
+                icon: 'fa-server',
+                color: '#10b981',
+                selector: null,
+                position: 'center'
+            },
+            {
+                title: 'Guía Completada',
+                content: 'Conoces el módulo de Grabaciones Puntuales: ' +
+                         '<strong>crear</strong>, <strong>editar</strong>, <strong>ejecutar</strong> y <strong>limpiar</strong> canales. ' +
+                         'Repite esta guía cuando quieras con el botón morado.',
                 icon: 'fa-check-circle',
                 color: '#16a34a',
                 selector: null,
-                position: 'center',
-            },
+                position: 'center'
+            }
         ]
     });
 }

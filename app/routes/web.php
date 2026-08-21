@@ -170,8 +170,11 @@ Route::middleware(['auth', 'admin'])->prefix('ia')->group(function () {
     Route::post('/api-transcriptor/jobs/{id}/reprocess', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'reprocess']);
     Route::post('/api-transcriptor/jobs/{id}/cancel', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'cancelJob']);
     Route::delete('/api-transcriptor/jobs/{id}', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'destroy']);
-    // La ruta de toggle de storage se retiró: transcription_enabled es derivado
-    // de user_storages. Se habilita por cliente en /ia/avisos-inteligentes/{user}.
+    // El interruptor de transcripción de un storage vive aquí, en su propio
+    // módulo. Entre el 18 y el 20 de agosto estuvo en Avisos Inteligentes (como
+    // bandera derivada por cliente); fue un acoplamiento equivocado y costó una
+    // caída de 44 horas. Ver ApiTranscriptorController::toggleStorage().
+    Route::post('/api-transcriptor/storages/{id}/toggle', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'toggleStorage']);
     Route::get('/api-transcriptor/storages/{id}/files', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'storageFiles']);
     Route::post('/api-transcriptor/storages/{id}/scan', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'scanStorage']);
     Route::post('/api-transcriptor/storages/{id}/process-folder', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'processFolder']);
@@ -213,9 +216,12 @@ Route::middleware(['auth', 'admin'])->prefix('ia')->group(function () {
     Route::post('/avisos-inteligentes/{userId}/emails/{email}/test', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'testEmail'])
         ->where('email', '.+');
     Route::get('/avisos-inteligentes/{userId}/matches', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'matches']);
-    // Habilita la transcripción de un storage PARA ESTE CLIENTE. La bandera de
-    // storage_providers se deriva de aquí (ver StorageTranscriptionSync).
-    Route::post('/avisos-inteligentes/{userId}/storages/{storageId}/transcription', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'toggleStorageTranscription']);
+    Route::post('/avisos-inteligentes/{userId}/storages/{storageId}/transcription-access', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'toggleStorageAccess'])
+        ->whereNumber('userId')->whereNumber('storageId');
+    // Aquí NO se decide qué se transcribe. Avisos Inteligentes consume el
+    // contenido que produce API Transcriptor (keywords sobre transcripciones ya
+    // hechas); encender o apagar un canal es una decisión operativa de ese otro
+    // módulo, en /ia/api-transcriptor.
 
     // M4: Correcciones
     Route::get('/correcciones', [App\Http\Controllers\Ia\CorreccionesController::class, 'index']);

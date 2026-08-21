@@ -10,11 +10,17 @@
             <h1 class="text-2xl font-bold text-slate-800">Sites Externos</h1>
             <p class="text-slate-500 mt-0.5">Gestiona sitios web embebidos y sus asignaciones</p>
         </div>
-        <button @click="openCreate()"
-                class="flex items-center gap-2 px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-xl text-sm font-medium transition-colors">
-            <i class="fas fa-plus"></i>
-            <span x-show="true">Nuevo Site</span>
-        </button>
+        <div class="flex items-center gap-2">
+            <button onclick="startExternalSitesTour()" class="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-sm font-medium transition-colors" title="Guía interactiva">
+                <i class="fas fa-map-marked-alt"></i>
+                <span class="hidden sm:inline">Guía</span>
+            </button>
+            <button @click="openCreate()"
+                    class="flex items-center gap-2 px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-xl text-sm font-medium transition-colors">
+                <i class="fas fa-plus"></i>
+                <span x-show="true">Nuevo Site</span>
+            </button>
+        </div>
     </div>
 
     <!-- Toast -->
@@ -400,6 +406,61 @@ function externalSitesAdmin() {
             setTimeout(() => this.toast = null, 3500);
         },
     };
+}
+</script>
+<script src="/js/interactive-tour.js?v=20"></script>
+<script>
+function startExternalSitesTour() {
+    const alpine = document.querySelector('[x-data]')?._x_dataStack?.[0];
+    if (alpine) {
+        alpine.showForm = false;
+        alpine.showUsersModal = false;
+    }
+
+    TcloudTour.start({
+        steps: [
+            {
+                title: 'Sites Externos',
+                content: 'Aquí configuras sitios web embebidos que aparecerán como accesos directos en el menú lateral de los usuarios. Puedes asignar visibilidad por usuario y personalizar el icono y color.',
+                icon: 'fa-globe',
+                color: '#6366f1',
+                selector: null,
+                position: 'center'
+            },
+            {
+                title: 'Tabla de Sites',
+                content: 'Cada fila muestra el nombre, URL, estado (activo/inactivo) y usuarios asignados. Los sites inactivos no aparecen en el menú lateral.',
+                icon: 'fa-table',
+                color: '#3b82f6',
+                selector: 'table',
+                position: 'bottom'
+            },
+            {
+                title: 'Usuarios Asignados',
+                content: 'El botón <strong>Usuarios</strong> te permite controlar quién ve cada site en su menú lateral. Sin usuarios asignados, el site no aparece para nadie.',
+                icon: 'fa-users',
+                color: '#2563eb',
+                selector: 'table tbody tr:first-child td:nth-child(4) button',
+                position: 'left'
+            },
+            {
+                title: 'Editar y Eliminar',
+                content: 'Edita el nombre, URL, icono y color de un site, o elimínalo permanentemente. Los cambios se reflejan inmediatamente en el menú lateral.',
+                icon: 'fa-edit',
+                color: '#4654a8',
+                selector: 'table tbody tr:first-child td:last-child',
+                position: 'left'
+            },
+            {
+                title: 'Crear Site',
+                content: 'Crea un nuevo site definiendo nombre, URL completa, icono de Font Awesome y color de fondo. Actívalo para que aparezca en los menús correspondientes.',
+                icon: 'fa-plus-circle',
+                color: '#4654a8',
+                selector: 'button[onclick="startExternalSitesTour()"] + button',
+                position: 'bottom'
+            }
+        ]
+    });
 }
 </script>
 @endsection

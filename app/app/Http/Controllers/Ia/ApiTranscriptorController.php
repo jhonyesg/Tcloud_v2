@@ -8,10 +8,12 @@ use App\Jobs\ConvertAndTranscribeJob;
 use App\Models\File;
 use App\Models\StorageProvider;
 use App\Models\Transcription;
+use App\Services\Ia\TranscriptionPollingService;
 use App\Services\Ia\TranscriptorApiClient;
 use App\Services\Ia\TranscriptorSettings;
 use App\Services\Ia\TranscriptionSubmitService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -21,6 +23,34 @@ use Predis\Connection\ConnectionException as PredisConnectionException;
 class ApiTranscriptorController extends Controller
 {
     use RunsBackgroundCommands;
+
+    /** Tamaño de pagina por defecto del listado de Trabajos. */
+    private const JOBS_PER_PAGE_DEFAULT = 50;
+
+    /** Tope duro de tamaño de pagina, para que ?per_page= no sea un DoS. */
+    private const JOBS_PER_PAGE_MAX = 100;
+
+    /**
+     * Cuantas filas como maximo se pueden recorrer con la paginacion.
+     *
+     * No es un limite de datos sino de navegacion: mas atras de 500 se busca,
+     * no se pagina. Mantenerlo acotado permite contar el total escaneando
+     * 501 filas en vez de la tabla entera (millones de segmentos detras).
+     */
+    private const JOBS_WINDOW_MAX = 500;
+
+    /**
+     * Sub-tabs de la pestaña Trabajos -> estados de BD que agrupan.
+     *
+     * 'completed' es SOLO done: mezclarlo con error/dead hacia que los fallos
+     * se leyeran como exitos. Los terminales fallidos viven en 'failed'.
+     */
+    private const JOB_SCOPES = [
+        'pending' => [Transcription::STATE_PENDING, Transcription::STATE_QUEUED, Transcription::STATE_PROCESSING],
+        'completed' => [Transcription::STATE_DONE],
+        'failed' => [Transcription::STATE_ERROR, Transcription::STATE_DEAD],
+        'all' => null,
+    ];
 
     public function __construct(private TranscriptorSettings $settings) {}
 
@@ -48,20 +78,96 @@ class ApiTranscriptorController extends Controller
 
     private function indexData(Request $request): array
     {
-        $query = Transcription::with('file:id,name,storage_provider_id')
-            ->orderByDesc('created_at');
+        // Scope = sub-tab activa. El filtrado se hace aqui y no en el cliente:
+        // antes la vista cargaba las 200 filas mas recientes y las repartia con
+        // x-show, asi que con backlog de pendientes la sub-tab Completados salia
+        // vacia — los 'done' quedaban fuera del corte y nunca llegaban al navegador.
+        $scope = (string) $request->input('scope', 'pending');
+        if (!array_key_exists($scope, self::JOB_SCOPES)) {
+            $scope = 'pending';
+        }
+        $scopeStates = self::JOB_SCOPES[$scope];
+
+        $perPage = (int) $request->input('per_page', self::JOBS_PER_PAGE_DEFAULT);
+        $perPage = max(1, min($perPage, self::JOBS_PER_PAGE_MAX));
+
+        $query = Transcription::with('file:id,name,storage_provider_id');
+
+        if ($scopeStates !== null) {
+            $query->whereIn('state', $scopeStates);
+        }
+
+        // Los terminales se ordenan por cuando terminaron, que es el dato que
+        // importa al revisarlos. NULLS LAST es sintaxis nativa de Postgres.
+        if (in_array($scope, ['completed', 'failed'], true)) {
+            $query->orderByRaw('finished_at DESC NULLS LAST')->orderByDesc('created_at');
+        } else {
+            $query->orderByDesc('created_at');
+        }
 
         if ($search = trim((string) $request->input('q', ''))) {
-            $query->whereHas('file', function ($q) use ($search) {
-                $q->where('name', 'ilike', "%{$search}%");
+            // original_name es lo que la tabla muestra realmente; buscar solo por
+            // files.name dejaba fuera coincidencias visibles en pantalla.
+            $query->where(function ($q) use ($search) {
+                $q->where('original_name', 'ilike', "%{$search}%")
+                    ->orWhereHas('file', function ($f) use ($search) {
+                        $f->where('name', 'ilike', "%{$search}%");
+                    });
             });
         }
 
-        if ($state = $request->input('state')) {
+        // El filtro explicito de estado se intersecta con el scope: pedir
+        // ?state=done desde la sub-tab de fallidos no debe sacar filas done.
+        $state = (string) $request->input('state', '');
+        if ($state !== '' && ($scopeStates === null || in_array($state, $scopeStates, true))) {
             $query->where('state', $state);
+        } else {
+            $state = '';
         }
 
-        $jobs = $query->limit(200)->get();
+        // Conteo acotado: escanea 501 filas como mucho en vez de la tabla entera.
+        // Los totales reales por estado ya los sirve stats() con un GROUP BY indexado.
+        // reorder() quita el ORDER BY: ordenar por finished_at no usa indice y
+        // obligaria a Postgres a ordenar todo el conjunto solo para contar.
+        $total = (clone $query)->toBase()
+            ->reorder()
+            ->select(DB::raw('1'))
+            ->limit(self::JOBS_WINDOW_MAX + 1)
+            ->get()
+            ->count();
+
+        $capped = $total > self::JOBS_WINDOW_MAX;
+        $navigable = min($total, self::JOBS_WINDOW_MAX);
+        $totalPages = max(1, (int) ceil($navigable / $perPage));
+
+        $page = (int) $request->input('page', 1);
+        $page = max(1, min($page, $totalPages));
+
+        $jobs = $query->forPage($page, $perPage)->get();
+
+        $payload = [
+            'jobs' => $jobs,
+            'filters' => [
+                'q' => $search,
+                'state' => $state,
+                'scope' => $scope,
+            ],
+            'pagination' => [
+                'page' => $page,
+                'per_page' => $perPage,
+                'total' => $navigable,
+                'total_pages' => $totalPages,
+                'capped' => $capped,
+                'window_max' => self::JOBS_WINDOW_MAX,
+            ],
+        ];
+
+        // Paginar la tabla de Trabajos no necesita recalcular los storages, y ese
+        // bloque cuesta ~430ms (resolveInheritedTranscriptionScope por storage).
+        // Con ?only=jobs el navegador lo omite al cambiar de pagina o de sub-tab.
+        if ($request->input('only') === 'jobs') {
+            return $payload;
+        }
 
         // Habilitados primero, luego por nombre. Adjuntamos el conteo de
         // descendientes con transcription_enabled=true para que la UI muestre
@@ -74,8 +180,8 @@ class ApiTranscriptorController extends Controller
         $descendantCounts = [];
         $descendantNames = [];
         foreach ($storages as $s) {
-            $scope = StorageProvider::resolveInheritedTranscriptionScope($s->id);
-            $descendants = array_values(array_diff($scope, [$s->id]));
+            $inheritedScope = StorageProvider::resolveInheritedTranscriptionScope($s->id);
+            $descendants = array_values(array_diff($inheritedScope, [$s->id]));
             $descendantCounts[$s->id] = count($descendants);
             if (!empty($descendants)) {
                 $descendantNames[$s->id] = StorageProvider::whereIn('id', $descendants)
@@ -91,10 +197,21 @@ class ApiTranscriptorController extends Controller
             return $s;
         });
 
-        return ['jobs' => $jobs, 'storages' => $storages, 'filters' => [
-            'q' => $search,
-            'state' => $state ?? '',
-        ]];
+        $payload['storages'] = $storages;
+
+        // Topes que la interfaz aplica del lado del navegador. Salen de la capa
+        // de settings, NO de config(): la vista los leia del fichero y solo
+        // adoptaba el override al abrir la pestana Configuracion, asi que quien
+        // bajaba el tope y no entraba ahi seguia pudiendo pedir lotes que el
+        // servidor luego clampeaba en silencio (processBatch usa este mismo
+        // ui_batch_max).
+        $payload['ui_limits'] = [
+            'batch_max' => $this->settings->int('ui_batch_max'),
+            'max_parallel_sends' => $this->settings->int('ui_max_parallel_sends'),
+            'scan_batch' => $this->settings->int('scan_batch'),
+        ];
+
+        return $payload;
     }
 
     public function show(int $id)
@@ -111,10 +228,40 @@ class ApiTranscriptorController extends Controller
             return response()->json(['error' => 'Solo se reintentan jobs en error/dead'], 409);
         }
 
+        // Camino rápido: re-encolar en el transcriptor reusando el .bin
+        // (POST /v1/jobs/{id}/retry). Más eficiente que re-ffmpeg + re-upload.
+        // Solo funciona si el .bin no fue purgado (BIN_RETENTION_HOURS, 24h).
+        if (!empty($job->job_id) && !empty($job->node_url)) {
+            try {
+                $client = app(TranscriptorApiClient::class);
+                $resp = $client->retryUpstream($job->job_id, $job->node_url);
+                if (!empty($resp['job_id'])) {
+                    $job->update([
+                        'state' => Transcription::STATE_QUEUED,
+                        'error_message' => null,
+                        'finished_at' => null,
+                        'corrected' => null,
+                    ]);
+
+                    return response()->json([
+                        'message' => 'Job re-encolado en la API externa (sin re-subida)',
+                        'transcription_id' => $job->id,
+                        'state' => $job->state,
+                        'job_id' => $job->job_id,
+                        'upstream_retry' => true,
+                    ], 200);
+                }
+            } catch (\Throwable $e) {
+                // Falla upstream (404 = job no existe, 409 = estado cambió, o .bin purgado):
+                // caemos al camino lento de re-subida. Logueamos para diagnostico.
+                \Illuminate\Support\Facades\Log::info("retry: upstream retry no disponible (tx={$job->id}): {$e->getMessage()}");
+            }
+        }
+
+        // Camino lento: borrar local y reenviar con ffmpeg + POST.
         $fileId = $job->file_id;
         $job->delete();
 
-        // Crear transcripción pending nueva y enviar síncronamente.
         set_time_limit(600);
         $transcription = Transcription::firstOrCreate(
             ['file_id' => $fileId],
@@ -133,10 +280,11 @@ class ApiTranscriptorController extends Controller
         $transcription = Transcription::where('file_id', $fileId)->first();
 
         return response()->json([
-            'message' => 'Job reprocesado',
+            'message' => 'Job reprocesado (re-subida completa)',
             'transcription_id' => $transcription?->id,
             'state' => $transcription?->state,
             'job_id' => $transcription?->job_id,
+            'upstream_retry' => false,
         ], 200);
     }
 
@@ -156,15 +304,22 @@ class ApiTranscriptorController extends Controller
     public function bulkDispatch(Request $request)
     {
 
-        if ($this->settings->bool('dispatch_paused')) {
-            return $this->pausedResponse();
-        }
         $validated = $request->validate([
             'ids' => 'nullable|array|max:2000',
             'ids.*' => 'integer|min:1',
         ]);
 
         $ids = $validated['ids'] ?? null;
+
+        // El freno solo bloquea el ENVIO. Con una seleccion explicita todavia
+        // tiene sentido recoger resultados de lo ya enviado, que no genera
+        // carga de transcripcion. Sin seleccion la accion es puro dispatch, y
+        // ahi el freno sigue cortando de raiz.
+        $dispatchPaused = $this->settings->bool('dispatch_paused');
+        if ($dispatchPaused && empty($ids)) {
+            return $this->pausedResponse();
+        }
+
         if (empty($ids)) {
             $ids = Transcription::query()
                 ->whereIn('state', [
@@ -203,14 +358,53 @@ class ApiTranscriptorController extends Controller
         $skipped_queued = 0;
         $errors = 0;
 
+        // Una fila ya enviada no se reenvia: lo que le falta es que alguien
+        // RECOJA su resultado. Antes se descartaban todas como
+        // skipped_queued, asi que seleccionar 50 filas queued y pulsar
+        // "Procesar seleccionados" no hacia absolutamente nada — el boton
+        // ofrecia procesar 50 y procesaba 0, sin explicar por que.
+        $polling = app(TranscriptionPollingService::class);
+        $pollBudget = self::BULK_POLL_MAX;
+        $collected = 0;
+        $lost = 0;
+        $stillPending = 0;
+        $notPolled = 0;
+
         foreach ($rows as $tx) {
-            // Omitir terminales o ya enviadas: cuentan como skipped, no como error.
-            if (!in_array($tx->state, $dispatchableStates, true) || !empty($tx->job_id)) {
+            // Terminales (done/error/dead): nada que hacer aqui.
+            if (!in_array($tx->state, $dispatchableStates, true)) {
                 $skipped_queued++;
                 continue;
             }
 
-            $storageId = $tx->file?->storage_provider_id;
+            if (!empty($tx->job_id)) {
+                // Cada sondeo son 1-2 peticiones HTTP sincronas dentro de
+                // php-fpm; sin tope una seleccion grande agotaria el timeout.
+                if ($pollBudget <= 0) {
+                    $notPolled++;
+                    continue;
+                }
+                $pollBudget--;
+
+                try {
+                    match ($polling->pollOne($tx)) {
+                        'done' => $collected++,
+                        'lost', 'aged_out' => $lost++,
+                        'error' => $errors++,
+                        default => $stillPending++,
+                    };
+                } catch (\Throwable $e) {
+                    $errors++;
+                    Log::warning('bulkDispatch poll tx=' . $tx->id . ': ' . $e->getMessage());
+                }
+                continue;
+            }
+
+            // Sin job_id: nunca salio hacia la API, hay que enviarla.
+            if ($dispatchPaused) {
+                $skipped_queued++;
+                continue;
+            }
 
             try {
                 ConvertAndTranscribeJob::dispatch(
@@ -223,6 +417,9 @@ class ApiTranscriptorController extends Controller
                 return response()->json([
                     'error' => 'Redis no disponible: ' . $e->getMessage(),
                     'enqueued' => $enqueued,
+                    'collected' => $collected,
+                    'lost' => $lost,
+                    'still_pending' => $stillPending,
                     'skipped_queued' => $skipped_queued,
                     'errors' => ++$errors,
                     'partial' => true,
@@ -235,10 +432,22 @@ class ApiTranscriptorController extends Controller
 
         return response()->json([
             'enqueued' => $enqueued,
+            'collected' => $collected,
+            'lost' => $lost,
+            'still_pending' => $stillPending,
+            'not_polled' => $notPolled,
             'skipped_queued' => $skipped_queued,
             'errors' => $errors,
+            'dispatch_paused' => $dispatchPaused,
         ], 200);
     }
+
+    /**
+     * Tope de sondeos por peticion de bulk. Cada uno es HTTP sincrono contra
+     * el transcriptor dentro de php-fpm; el resto se deja al poller de fondo,
+     * que ya recorre toda la cola cada minuto.
+     */
+    private const BULK_POLL_MAX = 200;
 
 
     /**
@@ -358,24 +567,62 @@ class ApiTranscriptorController extends Controller
     public function destroy(int $id)
     {
         $job = Transcription::findOrFail($id);
+
+        // Tambien eliminar en la API externa si el job es terminal y tiene
+        // job_id (libera SRT + .bin en el transcriptor). Best-effort: si la
+        // API externa falla o el job no está terminal alli, la fila local
+        // se borra de todas formas para no dejar registros huerfanos.
+        if (!empty($job->job_id) && !empty($job->node_url)) {
+            try {
+                app(TranscriptorApiClient::class)->deleteUpstream($job->job_id, $job->node_url);
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::debug("destroy: delete upstream tx={$job->id}: {$e->getMessage()}");
+            }
+        }
+
         $job->delete();
         return response()->json(['message' => 'Transcripción eliminada']);
     }
 
+    /**
+     * Enciende o apaga la transcripción de un storage.
+     *
+     * `storage_providers.transcription_enabled` es la bandera AUTORITATIVA del
+     * pipeline: la leen DiskScannerService (qué recorrer), TranscriptionTune
+     * (cuántos workers) y la UI de envío. Se escribe aquí y solo aquí.
+     *
+     * Historia: entre el 2026-08-18 y el 2026-08-20 esta bandera fue un valor
+     * derivado de `user_storages.transcription_enabled` y el control se mudó a
+     * Avisos Inteligentes. Fue un error de acoplamiento — API Transcriptor es un
+     * módulo independiente; Avisos y Correcciones consumen el contenido que este
+     * produce, no deciden qué se produce — y además costó una caída de 44 horas
+     * cuando el pivote quedó vacío. La derivación se retiró.
+     */
     public function toggleStorage(Request $request, int $id)
     {
         $storage = StorageProvider::findOrFail($id);
 
         $request->validate([
-            'transcription_enabled' => 'nullable|boolean',
+            'transcription_enabled' => 'required|boolean',
         ]);
 
-        $data = [];
-        if ($request->has('transcription_enabled')) {
-            $data['transcription_enabled'] = $request->boolean('transcription_enabled');
-        }
+        $antes = (bool) $storage->transcription_enabled;
+        $ahora = $request->boolean('transcription_enabled');
 
-        $storage->update($data);
+        if ($antes !== $ahora) {
+            $storage->update(['transcription_enabled' => $ahora]);
+
+            // Apagar un storage detiene su descubrimiento por completo, y ese
+            // silencio es indistinguible de un fallo. Que quede en el log quién
+            // y cuándo, para no repetir la investigación forense del 18 de agosto.
+            Log::info('ApiTranscriptor: transcripción de storage cambiada', [
+                'storage_id' => $storage->id,
+                'storage' => $storage->name,
+                'de' => $antes,
+                'a' => $ahora,
+                'user_id' => Session::get('user_id'),
+            ]);
+        }
 
         return response()->json($storage->only(['id', 'name', 'transcription_enabled']));
     }
@@ -1049,8 +1296,8 @@ class ApiTranscriptorController extends Controller
      *
      * Si el estado local sigue pendiente (queued/processing) y la transcripción
      * ya tiene job_id en la API externa, consulta GET /v1/jobs/{job_id} para
-     * recuperar el estado real. Esto cubre el caso en que el webhook no llega
-     * (callback_host no alcanzable desde el nodo del transcriptor).
+     * recuperar el estado real. No es un respaldo de nada: el polling es el
+     * único camino por el que vuelve un resultado (no hay webhook entrante).
      */
     public function jobStatus(int $id)
     {
@@ -1084,46 +1331,77 @@ class ApiTranscriptorController extends Controller
         ]);
     }
 
+    /** Tope de segmentos servidos al modal (hay grabaciones de radio de horas). */
+    private const TRANSCRIPT_SEGMENTS_MAX = 5000;
+
+    /**
+     * Contenido de una transcripcion para el modal "Ver transcripción".
+     *
+     * Sirve el texto ya corregido (transcription_segments.text) y el SRT crudo,
+     * ambos en Postgres — no hay ficheros en disco. Las etiquetas HH:MM:SS se
+     * resuelven aqui con los helpers del modelo en vez de formatear en JS.
+     */
+    public function transcript(int $id)
+    {
+        $job = Transcription::with('file:id,name')->findOrFail($id);
+
+        $segments = $job->segments()
+            ->orderBy('segment_index')
+            ->limit(self::TRANSCRIPT_SEGMENTS_MAX + 1)
+            ->get(['id', 'segment_index', 'start_seconds', 'end_seconds', 'text']);
+
+        $truncated = $segments->count() > self::TRANSCRIPT_SEGMENTS_MAX;
+        if ($truncated) {
+            $segments = $segments->take(self::TRANSCRIPT_SEGMENTS_MAX);
+        }
+
+        $rows = $segments->map(fn ($s) => [
+            'segment_index' => $s->segment_index,
+            'start_seconds' => $s->start_seconds,
+            'end_seconds' => $s->end_seconds,
+            'start_label' => $s->getStartLabel(),
+            'end_label' => $s->getEndLabel(),
+            'text' => $s->text,
+        ])->values();
+
+        return response()->json([
+            'id' => $job->id,
+            'state' => $job->state,
+            'file_name' => $job->original_name ?: ($job->file?->name ?? 'File #' . $job->file_id),
+            'language' => $job->language,
+            'duration_seconds' => $job->duration_seconds,
+            'word_count' => $job->word_count,
+            'finished_at' => $job->finished_at?->toIso8601String(),
+            'error_message' => $job->error_message,
+            'srt_content' => $job->srt_content,
+            'plain_text' => trim(implode(' ', array_filter($rows->pluck('text')->all(), 'strlen'))),
+            'segments' => $rows,
+            'segments_truncated' => $truncated,
+        ]);
+    }
+
     /**
      * Consulta GET /v1/jobs/{job_id} en la API externa y sincroniza el estado
      * local. Si el job ya terminó (done/error/dead), procesa el resultado.
      * Silencioso: no lanza, solo loguea errores para no romper el polling.
+     *
+     * NO reenvia el audio: solo pregunta "¿ya terminaste?". Para volver a
+     * mandar un archivo estan "Enviar ahora" (filas sin job_id) y
+     * transcription:backfill-lost (filas cuyo resultado se perdio upstream).
+     *
+     * @return string done|error|lost|aged_out|pending, o '' si no hay job_id.
      */
-    private function syncFromUpstream(Transcription $transcription): void
+    private function syncFromUpstream(Transcription $transcription): string
     {
-        if (empty($transcription->job_id)) return;
+        if (empty($transcription->job_id)) return '';
 
-        try {
-            $client = app(TranscriptorApiClient::class);
-            $remote = $client->getJob($transcription->job_id, $transcription->node_url ?? '');
-            $state = $remote['state'] ?? $remote['status'] ?? null;
-
-            if ($state === null) return;
-
-            if ($state === Transcription::STATE_DONE) {
-                $processor = app(\App\Services\Ia\TranscriptionProcessor::class);
-                $processor->processDone($transcription->fresh());
-            } elseif (in_array($state, [Transcription::STATE_ERROR, Transcription::STATE_DEAD], true)) {
-                $transcription->update([
-                    'state' => $state,
-                    'error_message' => $remote['error'] ?? ('Estado final: ' . $state),
-                    'finished_at' => now(),
-                ]);
-            } elseif ($state === 'cancelled') {
-                $transcription->update([
-                    'state' => Transcription::STATE_ERROR,
-                    'error_message' => 'Job cancelado en la API externa',
-                    'finished_at' => now(),
-                ]);
-            } elseif ($state === Transcription::STATE_PROCESSING) {
-                // Reflejar processing si el nodo ya empezó.
-                if ($transcription->state !== Transcription::STATE_PROCESSING) {
-                    $transcription->update(['state' => Transcription::STATE_PROCESSING]);
-                }
-            }
-        } catch (\Throwable $e) {
-            \Illuminate\Support\Facades\Log::debug("jobStatus syncFromUpstream {$transcription->id}: {$e->getMessage()}");
-        }
+        // Delega en el poller en vez de reimplementarlo. La copia anterior
+        // divergia en lo que mas importaba: si el job estaba done pero su SRT
+        // ya no existia upstream, la excepcion moria en un Log::debug (que
+        // LOG_LEVEL=warning descarta) y la fila se quedaba igual. El boton
+        // "Refrescar estado" parecia no hacer nada, sin explicacion en pantalla.
+        // Ademas usaba processDone() ignorando el srt_url que da la API.
+        return app(TranscriptionPollingService::class)->pollOne($transcription);
     }
 
     /**
@@ -1142,16 +1420,21 @@ class ApiTranscriptorController extends Controller
             ], 422);
         }
 
-        $this->syncFromUpstream($job);
+        $outcome = $this->syncFromUpstream($job);
         $job->refresh();
 
         $segmentsCount = $job->state === Transcription::STATE_DONE
             ? $job->segments()->count()
             : 0;
 
+        // Antes la respuesta no distinguia "sigue en cola" de "no se pudo
+        // hacer nada": ambos devolvian el mismo JSON sin cambios y el boton
+        // parecia inerte. `outcome` dice que ocurrio de verdad.
         return response()->json([
             'id' => $job->id,
             'state' => $job->state,
+            'outcome' => $outcome,
+            'outcome_message' => self::OUTCOME_MESSAGES[$outcome] ?? null,
             'original_name' => $job->original_name ?: ($job->file?->name ?? 'File #' . $job->file_id),
             'job_id' => $job->job_id,
             'started_at' => $job->started_at?->toIso8601String(),
@@ -1163,6 +1446,18 @@ class ApiTranscriptorController extends Controller
             'elapsed_seconds' => $job->started_at ? max(0, now()->diffInSeconds($job->started_at, false)) : null,
         ]);
     }
+
+    /**
+     * Que significa cada resultado de "Refrescar estado", en lenguaje del
+     * operador. Ninguno implica reenviar audio: el boton solo consulta.
+     */
+    private const OUTCOME_MESSAGES = [
+        'done' => 'Terminado: se descargó la transcripción y ya está disponible.',
+        'error' => 'La API reporta que el job falló. Pasa a Fallidos.',
+        'lost' => 'La API perdió el resultado (el SRT ya no existe). Se marcó como fallido; para recuperarlo hay que volver a enviar el audio.',
+        'aged_out' => 'Lleva demasiado tiempo sin resolverse y se cerró como fallido. Para recuperarlo hay que volver a enviar el audio.',
+        'pending' => 'Sigue en la API sin terminar. No hay nada que hacer: el resultado se recoge solo.',
+    ];
 
     /**
      * Progreso en vivo (ffmpeg + submit) de una operación manual.
@@ -1221,6 +1516,39 @@ class ApiTranscriptorController extends Controller
         return response()->json($client->getHealth());
     }
 
+    /**
+     * Estado de /dev/shm (tmpfs donde se escriben los WAVs intermedios).
+     * El comando transcription:check-shm-health actualiza la cache cada 10 min;
+     * aqui solo la servimos. Si la cache no existe (cold start) corremos el
+     * calculo en proceso para no devolver un 503.
+     */
+    public function shmStatus(TranscriptorSettings $settings)
+    {
+        $cached = Cache::get('transcriptor:shm:status');
+        if (!is_array($cached)) {
+            $total = @disk_total_space('/dev/shm');
+            $free  = @disk_free_space('/dev/shm');
+            $used  = ($total !== false && $free !== false) ? ($total - $free) : null;
+            $pct   = ($total !== false && $total > 0 && $used !== null)
+                ? round($used * 100 / $total, 1)
+                : null;
+            $cached = [
+                'total' => $total !== false ? $total : null,
+                'used'  => $used,
+                'free'  => $free !== false ? $free : null,
+                'percent' => $pct,
+                'dir_writable' => is_writable('/dev/shm/tcloud-transcription'),
+                'checked_at' => now()->toIso8601String(),
+            ];
+            Cache::put('transcriptor:shm:status', $cached, 600);
+        }
+        $cached['threshold'] = max(50, min(99, $settings->int('shm_warn_percent')));
+        $cached['status'] = ($cached['percent'] !== null && $cached['percent'] >= $cached['threshold'])
+            ? 'warning'
+            : 'ok';
+        return response()->json($cached);
+    }
+
     public function stats(TranscriptorApiClient $client)
     {
         $stats = $client->getStats();
@@ -1230,6 +1558,112 @@ class ApiTranscriptorController extends Controller
             ->pluck('count', 'state')
             ->toArray();
         return response()->json($stats);
+    }
+
+    /**
+     * Novedad: storages con transcription_enabled que tienen subcarpetas
+     * "hoja" sin archivos en absoluto. Escanea hasta 2 niveles bajo
+     * base_path con cap por storage.
+     *
+     * Cache 5 min: el escaneo de filesystem por subdir es caro.
+     * Cap `max_dirs` por storage protege contra explosiones.
+     *
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function emptyFolders(Request $request)
+    {
+        $maxDirs = max(50, min(500, (int) $request->input('max_dirs', 200)));
+
+        $cacheKey = 'transcriptor:empty_folders:max' . $maxDirs;
+        $data = \Cache::remember($cacheKey, 300, function () use ($maxDirs) {
+            $storages = DB::table('storage_providers')
+                ->where('transcription_enabled', true)
+                ->orderBy('id')
+                ->get(['id', 'name', 'base_path']);
+
+            $empty = [];
+            foreach ($storages as $sp) {
+                if (!is_dir($sp->base_path)) continue;
+                $entries = @scandir($sp->base_path);
+                if (!$entries) continue;
+
+                $missing = [];
+                $scanned = 0;
+                foreach ($entries as $e) {
+                    if ($e === '.' || $e === '..') continue;
+                    if (!is_dir($sp->base_path . '/' . $e)) continue;
+                    if ($scanned >= $maxDirs) break;
+                    $scanned++;
+                    if ($this->dirHasNoFiles($sp->base_path . '/' . $e)) {
+                        $missing[] = $e;
+                        continue;
+                    }
+                    $subEntries = @scandir($sp->base_path . '/' . $e);
+                    if (!$subEntries) continue;
+                    foreach ($subEntries as $sub) {
+                        if ($sub === '.' || $sub === '..') continue;
+                        $subPath = $sp->base_path . '/' . $e . '/' . $sub;
+                        if (!is_dir($subPath)) continue;
+                        if ($scanned >= $maxDirs) break;
+                        $scanned++;
+                        if ($this->dirHasNoFiles($subPath)) {
+                            $missing[] = $e . '/' . $sub;
+                        }
+                    }
+                }
+                if (!empty($missing)) {
+                    $empty[] = [
+                        'storage_id' => $sp->id,
+                        'storage_name' => $sp->name,
+                        'base_path' => $sp->base_path,
+                        'missing_count' => count($missing),
+                        'missing' => array_slice($missing, 0, 30),
+                    ];
+                }
+            }
+
+            return [
+                'generated_at' => now()->toIso8601String(),
+                'storages_with_empty' => count($empty),
+                'total_missing_folders' => array_sum(array_column($empty, 'missing_count')),
+                'items' => $empty,
+            ];
+        });
+
+        return response()->json($data);
+    }
+
+    /**
+     * Recorre un directorio y devuelve true si NO contiene ningun archivo
+     * en ningun nivel. Cap de 200 subarchivos/subdirs para no morir en
+     * filesystems gigantes.
+     */
+    private function dirHasNoFiles(string $dir, int $cap = 200): bool
+    {
+        $found = false;
+        $count = 0;
+        $stack = [$dir];
+        while ($stack && !$found && $count < $cap) {
+            $cur = array_pop($stack);
+            $items = @scandir($cur);
+            if (!$items) continue;
+            foreach ($items as $it) {
+                if ($it === '.' || $it === '..') continue;
+                $count++;
+                if ($count >= $cap) break;
+                $full = $cur . '/' . $it;
+                if (is_file($full)) {
+                    $size = @filesize($full);
+                    if ($size !== false && $size > 0) {
+                        $found = true;
+                        break;
+                    }
+                } elseif (is_dir($full)) {
+                    $stack[] = $full;
+                }
+            }
+        }
+        return !$found;
     }
 
     public static function stateClass(string $state): string

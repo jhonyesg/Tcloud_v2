@@ -8,10 +8,11 @@ class UserStorage extends Model
 {
     public $timestamps = false;
 
-    protected $fillable = ['user_id', 'storage_provider_id', 'permissions', 'can_create_shares'];
+    protected $fillable = ['user_id', 'storage_provider_id', 'permissions', 'can_create_shares', 'transcription_access'];
 
     protected $casts = [
         'assigned_at' => 'datetime',
+        'transcription_access' => 'boolean',
     ];
 
     public function user()

@@ -10,14 +10,20 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('storage_providers', function (Blueprint $table) {
-            $table->string('folder_layout', 20)
-                ->default('flat')
-                ->after('transcription_enabled');
-            $table->boolean('allow_parent_overlap')
-                ->default(false)
-                ->after('folder_layout');
+            if (!Schema::hasColumn('storage_providers', 'folder_layout')) {
+                $table->string('folder_layout', 20)
+                    ->default('flat')
+                    ->after('transcription_enabled');
+            }
+            if (!Schema::hasColumn('storage_providers', 'allow_parent_overlap')) {
+                $table->boolean('allow_parent_overlap')
+                    ->default(false)
+                    ->after('folder_layout');
+            }
         });
 
+        DB::statement("ALTER TABLE storage_providers
+                       DROP CONSTRAINT IF EXISTS storage_providers_folder_layout_check");
         DB::statement("ALTER TABLE storage_providers
                        ADD CONSTRAINT storage_providers_folder_layout_check
                        CHECK (folder_layout IN ('flat', 'grouped_by_subfolder'))");

@@ -113,6 +113,7 @@ class TranscriptionConfigCommand extends Command
     {
         $rows = [];
         $lastGroup = null;
+        $clampedKeys = [];
 
         foreach ($settings->effective() as $key => $e) {
             if ($lastGroup !== null && $e['group'] !== $lastGroup) {
@@ -124,19 +125,31 @@ class TranscriptionConfigCommand extends Command
                 ? implode('|', $e['options'])
                 : (($e['min'] !== null || $e['max'] !== null) ? "{$e['min']}..{$e['max']}" : '-');
 
+            // El valor efectivo puede diferir del guardado si el override esta
+            // fuera del rango del schema: se recorta al leerlo. Sin señalarlo,
+            // el operador cree estar corriendo con lo que escribio.
             $rows[] = [
                 $e['group'],
-                $key,
+                $key . ($e['clamped'] ? ' <fg=red>!</>' : ''),
                 $this->fmt($e['value']),
                 $this->fmt($e['default']),
                 $e['source'],
                 $range,
             ];
+
+            if ($e['clamped']) {
+                $clampedKeys[$key] = $e['stored'];
+            }
         }
 
         $this->table(['Grupo', 'Clave', 'Efectivo', 'Default', 'Origen', 'Rango'], $rows);
         $this->line('');
         $this->line("Origen: <fg=yellow>bd</> = override activo (restaurable) · <fg=cyan>env</> = definido en .env · archivo = literal de config/transcriptor.php");
+
+        foreach ($clampedKeys as $key => $stored) {
+            $this->line('');
+            $this->warn("'{$key}' guardado como {$stored}, fuera del rango del schema: se aplica el valor efectivo de la columna 'Efectivo', no el guardado.");
+        }
     }
 
     private function fmt(mixed $v): string

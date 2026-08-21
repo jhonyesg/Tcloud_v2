@@ -302,9 +302,9 @@
             <span class="hidden sm:inline">Nuevo Grabador</span>
             <span class="sm:hidden">Nuevo</span>
         </button>
-        <button onclick="startGrabadoresTour()" class="flex items-center gap-1 sm:gap-2 bg-purple-600 hover:bg-purple-700 text-white px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl font-medium transition-colors shadow-sm text-sm" title="Tour interactivo">
+        <button onclick="startGrabadoresTour()" class="flex items-center gap-1 sm:gap-2 bg-purple-600 hover:bg-purple-700 text-white px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl font-medium transition-colors shadow-sm text-sm" title="Guía interactiva">
             <i class="fas fa-map-marked-alt text-xs"></i>
-            <span class="hidden sm:inline">Tour</span>
+            <span class="hidden sm:inline">Guía</span>
         </button>
     </div>
 
@@ -956,94 +956,319 @@
         </div>
     </div>
 </div>
-<script src="/js/interactive-tour.js"></script>
+<script src="/js/interactive-tour.js?v=20"></script>
 <script>
 function startGrabadoresTour() {
+    function getAlpine() {
+        var allData = document.querySelectorAll('[x-data]');
+        for (var i = 0; i < allData.length; i++) {
+            var el = allData[i];
+            if (el._x_dataStack && el._x_dataStack[0]) {
+                var data = el._x_dataStack[0];
+                if (data.grabadores !== undefined) return data;
+            }
+        }
+        var first = document.querySelector('[x-data]');
+        return first ? (first._x_dataStack ? first._x_dataStack[0] : null) : null;
+    }
+
+    var alpine = getAlpine();
+    if (alpine) {
+        alpine.showCreateModal = false;
+        alpine.showEditModal = false;
+        alpine.showDeleteModal = false;
+        alpine.showUsersModal = false;
+    }
+
+    function scrollTo(selector) {
+        var el = typeof selector === 'string' ? document.querySelector(selector) : selector;
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+        return el;
+    }
+
+    function getFirstRow() {
+        return document.querySelector('table tbody tr:first-child') ||
+               document.querySelector('.sm\\:hidden .bg-white.rounded-xl') || null;
+    }
+
+    function getBtn(title) {
+        var row = getFirstRow();
+        if (!row) return null;
+        var btns = row.querySelectorAll('button[title]');
+        for (var i = 0; i < btns.length; i++) {
+            if (btns[i].getAttribute('title') === title) return btns[i];
+        }
+        return null;
+    }
+
     TcloudTour.start({
         steps: [
             {
                 title: 'Grabadores',
-                content: 'Los grabadores son los <strong>dispositivos o servicios</strong> que ejecutan las grabaciones fisicamente. ' +
-                         'Aqui administras los grabadores, sus usuarios asignados y verificas su estado de conexion.',
+                content: 'Los grabadores son los <strong>dispositivos o servicios</strong> que ejecutan las grabaciones físicamente. ' +
+                         'Aquí administras los grabadores, asignas usuarios y verificas su estado de conexión. ' +
+                         'Al crear un grabador se generan automáticamente 10 canales (<code>nombre_01 ... nombre_10</code>).',
                 icon: 'fa-satellite-dish',
                 color: '#10b981',
                 selector: null,
-                position: 'center',
+                position: 'center'
             },
             {
                 title: 'Crear Grabador',
                 content: 'Registra un nuevo grabador con su <strong>nombre, tipo (Radio o TV), IP y puerto</strong>. ' +
-                         'Una vez creado, puedes asignarle usuarios y crear canales de grabacion.',
+                         'Una vez creado, se generan automáticamente 10 canales (<code>nombre_01 ... nombre_10</code>) y puedes asignarle usuarios.',
                 icon: 'fa-plus',
                 color: '#10b981',
-                selector: 'button[title="Tour interactivo"]',
+                selector: function () {
+                    // Buscar el botón Guía y tomar su hermano anterior hermano (el botón "Nuevo Grabador")
+                    var btns = document.querySelectorAll('button[onclick*="startGrabadoresTour"]');
+                    if (btns.length > 0) {
+                        var prev = btns[0].previousElementSibling;
+                        if (prev && prev.tagName === 'BUTTON') return prev;
+                    }
+                    // Fallback: buscar botón verde esmeralda
+                    return document.querySelector('button.bg-emerald-600') || null;
+                },
                 position: 'left',
+                onShow: function () {
+                    var btns = document.querySelectorAll('button[onclick*="startGrabadoresTour"]');
+                    if (btns.length > 0) {
+                        var prev = btns[0].previousElementSibling;
+                        if (prev) scrollTo(prev);
+                    }
+                }
             },
             {
-                title: 'Gestionar Usuarios',
-                content: 'Asigna <strong>usuarios al grabador</strong>. Los usuarios asignados podran ver y ejecutar ' +
-                         'las grabaciones de los canales que dependan de este grabador. ' +
-                         'Puedes asignar permisos especificos por usuario.',
+                title: 'Encabezados de la Tabla',
+                content: 'Columnas disponibles: <strong>Nombre</strong> (con icono de tipo), <strong>Tipo</strong> (Radio/TV), ' +
+                         '<strong>IP:Puerto</strong>, <strong>Estado</strong>, <strong>Canales</strong> (asociados), ' +
+                         '<strong>Usuarios</strong> (asignados) y <strong>Acciones</strong>.',
+                icon: 'fa-columns',
+                color: '#2563eb',
+                selector: 'table thead',
+                position: 'bottom',
+                onShow: function () {
+                    scrollTo('table thead');
+                }
+            },
+            {
+                title: 'Columna: Nombre',
+                content: 'Nombre del grabador con su icono representativo: ' +
+                         '<span style="color:#10b981"><i class="fas fa-radio"></i> verde</span> para Radio (audio) o ' +
+                         '<span style="color:#7c3aed"><i class="fas fa-tv"></i> morado</span> para TV (video). ' +
+                         'Es el nombre que verás en listados, reportes y al asignar canales.',
+                icon: 'fa-tag',
+                color: '#1e293b',
+                selector: function () {
+                    var row = getFirstRow();
+                    if (row) {
+                        var cells = row.querySelectorAll('td');
+                        if (cells.length > 0) return cells[0];
+                    }
+                    return null;
+                },
+                position: 'bottom',
+                onShow: function () {
+                    var row = getFirstRow();
+                    if (row) scrollTo(row.querySelectorAll('td')[0]);
+                }
+            },
+            {
+                title: 'Columna: Tipo',
+                content: 'Badge con el tipo de grabador: ' +
+                         '<span style="color:#10b981"><strong>Radio</strong></span> (solo audio) o ' +
+                         '<span style="color:#7c3aed"><strong>TV</strong></span> (audio + video). ' +
+                         'Determina los formatos de grabación soportados y el procesamiento del contenido.',
+                icon: 'fa-info-circle',
+                color: '#8b5cf6',
+                selector: function () {
+                    var row = getFirstRow();
+                    if (row) {
+                        var cells = row.querySelectorAll('td');
+                        if (cells.length > 1) return cells[1];
+                    }
+                    return null;
+                },
+                position: 'bottom',
+                onShow: function () {
+                    var row = getFirstRow();
+                    if (row) scrollTo(row.querySelectorAll('td')[1]);
+                }
+            },
+            {
+                title: 'Columna: IP:Puerto',
+                content: 'Dirección IP y puerto del grabador en formato <code>monospace</code>. ' +
+                         'Es la dirección a la que el sistema se conecta para enviar comandos y recibir transmisiones. ' +
+                         'Si es incorrecta, las grabaciones fallarán.',
+                icon: 'fa-network-wired',
+                color: '#475569',
+                selector: function () {
+                    var row = getFirstRow();
+                    if (row) {
+                        var cells = row.querySelectorAll('td');
+                        if (cells.length > 2) return cells[2];
+                    }
+                    return null;
+                },
+                position: 'bottom',
+                onShow: function () {
+                    var row = getFirstRow();
+                    if (row) scrollTo(row.querySelectorAll('td')[2]);
+                }
+            },
+            {
+                title: 'Columna: Estado',
+                content: 'Badge con punto de color: ' +
+                         '<span style="color:#16a34a"><strong>● Verde</strong> (Activo)</span> o ' +
+                         '<span style="color:#dc2626"><strong>● Rojo</strong> (Inactivo)</span>. ' +
+                         'Si está inactivo, sus canales no podrán ejecutar grabaciones.',
+                icon: 'fa-circle',
+                color: '#16a34a',
+                selector: function () {
+                    var row = getFirstRow();
+                    if (row) {
+                        var cells = row.querySelectorAll('td');
+                        if (cells.length > 3) return cells[3];
+                    }
+                    return null;
+                },
+                position: 'bottom',
+                onShow: function () {
+                    var row = getFirstRow();
+                    if (row) scrollTo(row.querySelectorAll('td')[3]);
+                }
+            },
+            {
+                title: 'Columna: Canales',
+                content: 'Cantidad de canales de grabación asociados al grabador. ' +
+                         'Por defecto se crean 10 al registrar el grabador (nombre_01 ... nombre_10). ' +
+                         'Sirve para ver de un vistazo cuántos canales están operativos.',
+                icon: 'fa-list-ol',
+                color: '#3b82f6',
+                selector: function () {
+                    var row = getFirstRow();
+                    if (row) {
+                        var cells = row.querySelectorAll('td');
+                        if (cells.length > 4) return cells[4];
+                    }
+                    return null;
+                },
+                position: 'bottom',
+                onShow: function () {
+                    var row = getFirstRow();
+                    if (row) scrollTo(row.querySelectorAll('td')[4]);
+                }
+            },
+            {
+                title: 'Columna: Usuarios',
+                content: 'Cantidad de usuarios con acceso asignado a este grabador. ' +
+                         'Los usuarios asignados pueden ver y ejecutar las grabaciones de los canales asociados.',
+                icon: 'fa-user-friends',
+                color: '#7c3aed',
+                selector: function () {
+                    var row = getFirstRow();
+                    if (row) {
+                        var cells = row.querySelectorAll('td');
+                        if (cells.length > 5) return cells[5];
+                    }
+                    return null;
+                },
+                position: 'bottom',
+                onShow: function () {
+                    var row = getFirstRow();
+                    if (row) scrollTo(row.querySelectorAll('td')[5]);
+                }
+            },
+            {
+                title: 'Acción: Usuarios',
+                content: 'Haz clic en el icono <strong style="color:#2563eb">👥 azul</strong> para abrir el modal de asignación. ' +
+                         'Busca usuarios, asígnalos con permisos específicos (lectura, escritura, etc.) o remuévelos.',
                 icon: 'fa-users',
                 color: '#3b82f6',
-                selector: function () { return document.querySelector('button[class*="bg-blue-50"][onclick*="openUsersModal"]') || document.querySelector('button[onclick*="openUsersModal"]'); },
-                position: 'bottom',
+                selector: function () { return getBtn('Usuarios'); },
+                position: 'left',
+                onShow: function () {
+                    var b = getBtn('Usuarios');
+                    if (b) scrollTo(b);
+                }
             },
             {
-                title: 'Editar Grabador',
-                content: 'Modifica los datos del grabador: nombre, tipo, IP, puerto y estado (activo/inactivo). ' +
-                         'Si desactivas un grabador, sus canales no podran ejecutar grabaciones.',
+                title: 'Acción: Editar',
+                content: 'Icono <strong style="color:#4f46e5">✏️ índigo</strong>: modifica los datos del grabador ' +
+                         '(nombre, tipo, IP, puerto). Para activar/desactivar, edita el campo correspondiente.',
                 icon: 'fa-edit',
                 color: '#6366f1',
-                selector: function () { return document.querySelector('button[onclick*="openEdit"]'); },
-                position: 'bottom',
+                selector: function () { return getBtn('Editar grabador'); },
+                position: 'left',
+                onShow: function () {
+                    var b = getBtn('Editar grabador');
+                    if (b) scrollTo(b);
+                }
             },
             {
-                title: 'Probar Conexion',
-                content: 'Verifica que el grabador este <strong>conectado y respondiendo</strong>. ' +
-                         'Esta prueba envia una peticion al grabador y muestra si responde correctamente.',
+                title: 'Acción: Probar Conexión',
+                content: 'Icono <strong style="color:#10b981">🔌 verde</strong>: verifica que el grabador esté ' +
+                         'conectado y respondiendo. Envía una petición al grabador y muestra si responde correctamente. ' +
+                         'Útil para diagnóstico antes de agendar grabaciones.',
                 icon: 'fa-plug',
                 color: '#16a34a',
-                selector: function () { return document.querySelector('button[onclick*="testGrabador"]'); },
-                position: 'bottom',
+                selector: function () { return getBtn('Probar conexión'); },
+                position: 'left',
+                onShow: function () {
+                    var b = getBtn('Probar conexión');
+                    if (b) scrollTo(b);
+                }
             },
             {
-                title: 'Ver Detalle',
-                content: 'Abre la pagina de detalle del grabador donde puedes ver todos los usuarios asignados, ' +
-                         'sus permisos y el historial de grabaciones.',
+                title: 'Acción: Ver Detalle',
+                content: 'Icono <strong style="color:#64748b">👁️ gris</strong>: abre la página de detalle del grabador ' +
+                         'donde puedes ver todos los usuarios asignados, sus permisos y el historial de grabaciones.',
                 icon: 'fa-eye',
                 color: '#64748b',
-                selector: function () { return document.querySelector('button[onclick*="openDetail"]'); },
-                position: 'bottom',
+                selector: function () { return getBtn('Ver detalle'); },
+                position: 'left',
+                onShow: function () {
+                    var b = getBtn('Ver detalle');
+                    if (b) scrollTo(b);
+                }
             },
             {
-                title: 'Eliminar Grabador',
-                content: 'Elimina el grabador del sistema. <strong>Cuidado:</strong> esta accion no se puede deshacer ' +
-                         'y afecta todos los canales asignados a este grabador. Te pedira confirmacion.',
+                title: 'Acción: Eliminar',
+                content: 'Icono <strong style="color:#dc2626">🗑️ rojo</strong>: elimina el grabador. ' +
+                         '<span style="color:#dc2626"><strong>Cuidado:</strong> esta acción no se puede deshacer y afecta todos los canales asignados. ' +
+                         'Te pedirá confirmación.</span>',
                 icon: 'fa-trash-alt',
                 color: '#dc2626',
-                selector: function () { return document.querySelector('button[onclick*="deletingGrabador"]'); },
-                position: 'bottom',
+                selector: function () { return getBtn('Eliminar'); },
+                position: 'left',
+                onShow: function () {
+                    var b = getBtn('Eliminar');
+                    if (b) scrollTo(b);
+                }
             },
             {
                 title: 'Tipo: Radio vs TV',
-                content: 'Los grabadores pueden ser de tipo <strong>Radio</strong> (audio) o <strong>TV</strong> (audio+video). ' +
-                         'El tipo determina que formatos de grabacion soporta y como se procesa el contenido.',
+                content: 'Los grabadores pueden ser de tipo <strong style="color:#10b981">Radio</strong> (audio) o ' +
+                         '<strong style="color:#7c3aed">TV</strong> (audio+video). ' +
+                         'El tipo determina qué formatos de grabación soporta y cómo se procesa el contenido. ' +
+                         'No se puede cambiar después de creado el grabador.',
                 icon: 'fa-info-circle',
                 color: '#8b5cf6',
                 selector: null,
-                position: 'center',
+                position: 'center'
             },
             {
-                title: 'Tour Completado',
-                content: 'Ya conoces el modulo de Grabadores. ' +
-                         'Recuerda: <strong>Probar</strong> para verificar conexion, <strong>Usuarios</strong> para asignar accesos, ' +
-                         'y <strong>Editar</strong> para configurar. Puedes repetir este tour cuando quieras.',
+                title: 'Guía Completada',
+                content: 'Conoces el módulo de Grabadores: ' +
+                         '<strong>crear</strong>, <strong>editar</strong>, <strong>probar conexión</strong>, ' +
+                         '<strong>asignar usuarios</strong>, <strong>ver detalle</strong> y <strong>eliminar</strong>. ' +
+                         'Recuerda probar la conexión tras crear o modificar para asegurar que todo funciona. ' +
+                         'Repite esta guía cuando quieras con el botón morado.',
                 icon: 'fa-check-circle',
                 color: '#16a34a',
                 selector: null,
-                position: 'center',
-            },
+                position: 'center'
+            }
         ]
     });
 }

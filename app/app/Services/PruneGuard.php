@@ -20,10 +20,13 @@ class PruneGuard
     public function __construct(private ?array $config = null) {}
 
     /**
-     * @param  int   $dbCount    filas en BD candidatas a borrarse
+     * @param  int   $dbCount    TOTAL de filas que la BD tiene para esa carpeta, no
+     *                           solo las huerfanas: la regla de proporcion compara
+     *                           lo que hay contra lo que se vio en disco, asi que
+     *                           necesita el denominador completo.
      * @param  int   $diskCount  entradas realmente vistas en disco
      * @param  bool  $scanOk     si el escaneo fue fiable (ScanResult::$ok)
-     * @param  bool  $forced     el operador paso --force-prune
+     * @param  bool  $forced     orden explicita: --force-prune o el boton Actualizar
      */
     public function decide(int $dbCount, int $diskCount, bool $scanOk, bool $forced = false): PruneDecision
     {
@@ -66,7 +69,10 @@ class PruneGuard
                 return PruneDecision::refuse('mass_delete_ratio', [
                     'ratio' => round($ratio, 3),
                     'max_ratio' => $maxRatio,
-                    'would_delete' => $toDelete,
+                    // Estimacion, no el conteo real: la guarda solo ve totales, no
+                    // que filas emparejaron. El numero exacto lo registra el
+                    // llamador como 'orphans'.
+                    'estimated_deletes' => $toDelete,
                 ]);
             }
         }

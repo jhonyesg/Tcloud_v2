@@ -25,6 +25,21 @@
                     <span class="w-2 h-2 rounded-full {{ \App\Http\Controllers\Ia\ApiTranscriptorController::stateDot($job->state) }}"></span>
                     {{ $job->state }}
                 </span>
+                @if($job->state === 'done')
+                    @if($job->corrected === \App\Models\Transcription::CORRECTED_PENDING)
+                        <span class="inline-flex items-center gap-1 px-3 py-1.5 rounded-full text-sm font-medium bg-amber-100 text-amber-800" title="El corrector async de la API (whisper-turbo) aún no terminó. El SRT visible es la versión sin corregir.">
+                            <i class="fas fa-hourglass-half text-xs"></i> Corrección pendiente
+                        </span>
+                    @elseif($job->corrected === \App\Models\Transcription::CORRECTED_DONE)
+                        <span class="inline-flex items-center gap-1 px-3 py-1.5 rounded-full text-sm font-medium bg-emerald-100 text-emerald-800" title="El corrector async terminó. El SRT visible es la versión corregida por la API.">
+                            <i class="fas fa-spell-check text-xs"></i> Corregido
+                        </span>
+                    @elseif($job->corrected === \App\Models\Transcription::CORRECTED_LOST)
+                        <span class="inline-flex items-center gap-1 px-3 py-1.5 rounded-full text-sm font-medium bg-slate-200 text-slate-700" title="El corrector async no recuperó este job (timeout o motor reiniciado). El SRT visible es la versión sin corregir.">
+                            <i class="fas fa-question-circle text-xs"></i> Sin corrección
+                        </span>
+                    @endif
+                @endif
                 @if(in_array($job->state, ['error','dead']))
                 <form method="POST" action="/ia/api-transcriptor/jobs/{{ $job->id }}/retry" @submit.prevent="retry($event)">
                     @csrf
@@ -53,11 +68,31 @@
         </div>
     </div>
 
+    @if($job->segments->isNotEmpty())
+    <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden mb-6">
+        <div class="px-4 py-3 border-b border-slate-200">
+            <h2 class="text-sm font-semibold text-slate-700">
+                Segmentos <span class="text-slate-400 font-normal">({{ $job->segments->count() }})</span>
+            </h2>
+        </div>
+        <div class="divide-y divide-slate-100 max-h-[600px] overflow-auto">
+            @foreach($job->segments->sortBy('segment_index') as $seg)
+            <div class="flex gap-3 px-4 py-2 hover:bg-slate-50">
+                <span class="text-[11px] font-mono text-slate-400 whitespace-nowrap pt-0.5 flex-shrink-0">
+                    {{ $seg->getStartLabel() }} &rarr; {{ $seg->getEndLabel() }}
+                </span>
+                <span class="text-sm text-slate-700 leading-relaxed break-words">{{ $seg->text }}</span>
+            </div>
+            @endforeach
+        </div>
+    </div>
+    @endif
+
     @if($job->srt_content)
     <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
         <div class="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
             <h2 class="text-sm font-semibold text-slate-700">SRT</h2>
-            <a href="#" onclick="downloadSrt(); return false;"
+            <a href="#" @click.prevent="downloadSrt()"
                class="text-xs text-brand-600 hover:underline">
                 <i class="fas fa-download mr-1"></i> Descargar .srt
             </a>
@@ -93,15 +128,21 @@ function jobDetail() {
             if (res.ok) window.location.href = '/ia/api-transcriptor';
             else alert('Error al eliminar');
         },
+        // Vive dentro del componente: como funcion global leia
+        // window.jobDetail?.srtContent, que resuelve a una propiedad de la
+        // *funcion* jobDetail (undefined) y descargaba un fichero vacio.
+        downloadSrt() {
+            const blob = new Blob([this.srtContent ?? ''], { type: 'text/plain;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'transcripcion_' + this.jobId + '.srt';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+        },
     };
-}
-function downloadSrt() {
-    const blob = new Blob([window.jobDetail?.srtContent ?? ''], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = 'transcription_{{ $job->id }}.srt';
-    a.click();
-    URL.revokeObjectURL(url);
 }
 </script>
 @endpush

@@ -13,6 +13,7 @@ use App\Services\Ia\KeywordMatcher;
 use App\Services\Ia\SrtParser;
 use App\Services\Ia\TranscriptionProcessor;
 use App\Services\Ia\TranscriptorApiClient;
+use App\Services\Ia\TranscriptorSettings;
 use Illuminate\Support\Facades\Session;
 use Illuminate\Support\ServiceProvider;
 
@@ -21,6 +22,10 @@ class AppServiceProvider extends ServiceProvider
     public function register(): void
     {
         // Modulo IA — bindings del transcriptor
+        // TranscriptorSettings es singleton pero refresca su memo por TTL: los
+        // procesos queue:work viven horas y una memo permanente congelaria la
+        // configuracion hasta reiniciar systemd.
+        $this->app->singleton(TranscriptorSettings::class);
         $this->app->singleton(TranscriptorApiClient::class);
         $this->app->singleton(AudioConverter::class);
         $this->app->singleton(SrtParser::class);

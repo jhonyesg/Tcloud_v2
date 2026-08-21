@@ -11,6 +11,10 @@
             <h1 class="text-lg sm:text-2xl font-bold text-gray-800">Mis Recursos Compartidos</h1>
             <p class="text-xs sm:text-sm text-gray-500 mt-0.5">Gestiona los enlaces de acceso que has generado</p>
         </div>
+         <button onclick="startSharesTour()" class="flex-shrink-0 flex items-center gap-2 bg-purple-600 hover:bg-purple-700 text-white px-3 py-1.5 rounded-lg transition-colors text-sm" title="Guía interactiva">
+            <i class="fas fa-map-marked-alt text-xs"></i>
+             <span class="hidden sm:inline">Guía</span>
+        </button>
         <button @click="loadShares()" :disabled="loading"
                 class="flex-shrink-0 flex items-center gap-2 text-sm text-gray-500 hover:text-gray-700 border border-gray-200 rounded-lg px-3 py-1.5 hover:bg-gray-50 disabled:opacity-50 ml-2">
             <i :class="loading ? 'fas fa-spinner fa-spin' : 'fas fa-sync-alt'" class="text-xs"></i>
@@ -464,6 +468,56 @@ function sharesApp() {
             return '<i class="fas fa-file text-gray-400"></i>';
         }
     };
+}
+</script>
+
+<script src="/js/interactive-tour.js?v=20"></script>
+<script>
+function startSharesTour() {
+    TcloudTour.start({
+        steps: [
+            {
+                title: 'Mis Recursos Compartidos',
+                content: 'Aquí gestionas todos los enlaces de acceso que has generado para tus archivos y carpetas. Puedes copiar links, revisar permisos, ver cuántas veces se ha accedido y revocar el acceso cuando lo necesites.',
+                icon: 'fa-share-alt',
+                color: '#6366f1',
+                selector: null,
+                position: 'center'
+            },
+            {
+                title: 'Resumen',
+                content: 'Estas tarjetas te dan una vista rápida: total de enlaces, cuántos están activos, cuántos expiraron y el número total de accesos acumulados.',
+                icon: 'fa-chart-bar',
+                color: '#3b82f6',
+                selector: '.grid.grid-cols-2.sm\\:grid-cols-4',
+                position: 'bottom'
+            },
+            {
+                title: 'Filtros',
+                content: 'Usa la búsqueda y los filtros para encontrar rápidamente un enlace por nombre, permiso o estado (activo/expirado).',
+                icon: 'fa-filter',
+                color: '#2563eb',
+                selector: '.px-5.py-3.border-b',
+                position: 'bottom'
+            },
+            {
+                title: 'Acciones por enlace',
+                content: '<strong>Copiar</strong> el enlace público, <strong>abrirlo</strong> en una nueva pestaña o <strong>revocarlo</strong> para que nadie más pueda acceder.',
+                icon: 'fa-link',
+                color: '#4654a8',
+                selector: 'table tbody tr:first-child td:last-child',
+                position: 'left'
+            },
+            {
+                title: 'Accesos',
+                content: 'La columna <strong>Accesos</strong> muestra cuántas veces se ha usado cada enlace. Esto te ayuda a medir el impacto de tus compartidos.',
+                icon: 'fa-eye',
+                color: '#06b6d4',
+                selector: 'table tbody tr:first-child td:nth-child(6)',
+                position: 'bottom'
+            }
+        ]
+    });
 }
 </script>
 @endsection

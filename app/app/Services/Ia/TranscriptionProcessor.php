@@ -104,6 +104,7 @@ class TranscriptionProcessor
         // Los canales que no emiten en español (Teleislas en criollo raizal,
         // emisoras con música en inglés) se guardan tal cual: su inglés es
         // correcto y el diccionario solo lo estropearía.
+        $coherenceApplied = false;
         if ($this->corrections->appliesToTranscription($transcription)) {
             $segmentsForCorrections = $this->corrections->applyToSegments($segmentsForCorrections);
 
@@ -112,9 +113,10 @@ class TranscriptionProcessor
             // canal emite en español. Fallback seguro: si el LLM falla, se
             // conserva el texto del diccionario.
             $segmentsForCorrections = $this->coherence->apply($segmentsForCorrections);
+            $coherenceApplied = true;
         }
 
-        DB::transaction(function () use ($transcription, $srt, $segmentsForCorrections) {
+        DB::transaction(function () use ($transcription, $srt, $segmentsForCorrections, $coherenceApplied) {
             $rows = [];
             $now = now();
             foreach ($segmentsForCorrections as $seg) {
@@ -134,6 +136,17 @@ class TranscriptionProcessor
                 foreach (array_chunk($rows, 200) as $chunk) {
                     TranscriptionSegment::insert($chunk);
                 }
+            }
+
+            // Hidratación post-INSERT de source_segment_id para las
+            // correcciones emitidas por la coherencia IA. El extractor emite
+            // las filas ANTES del INSERT, así que source_segment_id queda
+            // null en ese momento; un UPDATE-JOIN (implementado en
+            // TranscriptionCoherencePass::hydrateCoherenceLearnedSourceSegments)
+            // las enlaza con el segmento origen usando position(wrong in text_raw).
+            // Cambio 2026-08-18 (corrige bug de 6.035 pending sin source_segment_id).
+            if ($coherenceApplied) {
+                $this->coherence->hydrateCoherenceLearnedSourceSegments((int) $transcription->id);
             }
 
             $transcription->update([

@@ -107,9 +107,15 @@
 }" x-init="loadUsers()">
     <div class="flex justify-between items-center mb-4 sm:mb-6">
         <h1 class="text-lg sm:text-2xl font-bold text-gray-800">Gestionar Usuarios</h1>
-        <button @click="showCreateModal = true" class="bg-blue-600 text-white px-3 sm:px-4 py-2 rounded hover:bg-blue-700 text-sm">
-            <span class="hidden sm:inline">Crear Usuario</span><span class="sm:hidden">Crear</span>
-        </button>
+        <div class="flex items-center gap-2">
+            <button onclick="startUsersTour()" class="flex items-center gap-2 bg-purple-600 hover:bg-purple-700 text-white px-3 py-2 rounded text-sm transition-colors" title="Guía interactiva">
+                <i class="fas fa-map-marked-alt"></i>
+                <span class="hidden sm:inline">Guía</span>
+            </button>
+            <button @click="showCreateModal = true" class="bg-blue-600 text-white px-3 sm:px-4 py-2 rounded hover:bg-blue-700 text-sm">
+                <span class="hidden sm:inline">Crear Usuario</span><span class="sm:hidden">Crear</span>
+            </button>
+        </div>
     </div>
 
     {{-- Vista móvil: tarjetas --}}
@@ -249,6 +255,10 @@
                     <label class="block text-sm font-medium mb-1">Quota (bytes, 0 = ilimitado)</label>
                     <input type="number" name="personal_quota_bytes" value="0" min="0" class="w-full border p-2 rounded">
                 </div>
+                <div class="mb-4 flex items-center gap-2">
+                    <input type="checkbox" name="send_email" value="1" id="send_email" checked class="rounded text-blue-600 focus:ring-blue-500">
+                    <label for="send_email" class="text-sm text-gray-700">Enviar correo de bienvenida al crear usuario</label>
+                </div>
                 <div class="flex gap-2">
                     <button type="submit" class="bg-blue-600 text-white px-4 py-2 rounded">Crear</button>
                     <button type="button" @click="showCreateModal = false" class="bg-gray-300 px-4 py-2 rounded">Cancelar</button>
@@ -328,4 +338,303 @@
         </div>
     </div>
 </div>
+
+<script src="/js/interactive-tour.js?v=20"></script>
+<script>
+function startUsersTour() {
+    function getAlpine() {
+        var allData = document.querySelectorAll('[x-data]');
+        for (var i = 0; i < allData.length; i++) {
+            var el = allData[i];
+            if (el._x_dataStack && el._x_dataStack[0]) {
+                var data = el._x_dataStack[0];
+                if (data.users !== undefined && data.showCreateModal !== undefined) return data;
+            }
+        }
+        var first = document.querySelector('[x-data]');
+        return first ? (first._x_dataStack ? first._x_dataStack[0] : null) : null;
+    }
+
+    var alpine = getAlpine();
+    if (alpine) {
+        alpine.showCreateModal = false;
+        alpine.showEditModal = false;
+        alpine.showDeleteModal = false;
+    }
+
+    function scrollTo(selector) {
+        var el = typeof selector === 'string' ? document.querySelector(selector) : selector;
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+        return el;
+    }
+
+    function getFirstRow() {
+        return document.querySelector('table tbody tr:first-child') || null;
+    }
+
+    function getCrearUsuarioBtn() {
+        var btns = document.querySelectorAll('button[onclick*="startUsersTour"]');
+        if (btns.length > 0) {
+            var prev = btns[0].previousElementSibling;
+            if (prev && prev.tagName === 'BUTTON') return prev;
+        }
+        return document.querySelector('button.bg-blue-600') || null;
+    }
+
+    function getLink(text) {
+        var row = getFirstRow();
+        if (!row) return null;
+        var links = row.querySelectorAll('td:last-child a');
+        for (var i = 0; i < links.length; i++) {
+            if (links[i].textContent.trim().toLowerCase().indexOf(text.toLowerCase()) !== -1) return links[i];
+        }
+        return null;
+    }
+
+    function getBtn(text) {
+        var row = getFirstRow();
+        if (!row) return null;
+        var btns = row.querySelectorAll('td:last-child button');
+        for (var i = 0; i < btns.length; i++) {
+            if (btns[i].textContent.trim().toLowerCase().indexOf(text.toLowerCase()) !== -1) return btns[i];
+        }
+        return null;
+    }
+
+    TcloudTour.start({
+        steps: [
+            {
+                title: 'Gestionar Usuarios',
+                content: 'Aquí puedes crear, editar y eliminar usuarios de la plataforma. ' +
+                         'También puedes asignar quotas de almacenamiento, controlar sesiones y habilitar el Editor de Medios por usuario.',
+                icon: 'fa-users-cog',
+                color: '#6366f1',
+                selector: null,
+                position: 'center'
+            },
+            {
+                title: 'Crear Usuario',
+                content: 'Haz clic en el botón azul <strong>Crear Usuario</strong> para abrir el modal. ' +
+                         'Define email, username (opcional), contraseña, rol (usuario o administrador) y quota personalizada. ' +
+                         'Si activas "Enviar correo de bienvenida", el usuario recibe un email con sus credenciales.',
+                icon: 'fa-user-plus',
+                color: '#2563eb',
+                selector: function () { return getCrearUsuarioBtn(); },
+                position: 'left',
+                onShow: function () {
+                    var btn = getCrearUsuarioBtn();
+                    if (btn) scrollTo(btn);
+                }
+            },
+            {
+                title: 'Encabezados de la Tabla',
+                content: 'Columnas: <strong>ID</strong>, <strong>Email</strong>, <strong>Username</strong>, <strong>Rol</strong> ' +
+                         '(<span style="color:#7c3aed">admin</span> o <span style="color:#16a34a">user</span>), ' +
+                         '<strong>Quota</strong>, <strong>Usado</strong>, <strong>Editor Medios</strong> y <strong>Acciones</strong>.',
+                icon: 'fa-columns',
+                color: '#3b82f6',
+                selector: 'table thead',
+                position: 'bottom',
+                onShow: function () {
+                    scrollTo('table thead');
+                }
+            },
+            {
+                title: 'Columna: ID',
+                content: 'Identificador numérico único del usuario. Asignado automáticamente al crear.',
+                icon: 'fa-hashtag',
+                color: '#475569',
+                selector: function () {
+                    var row = getFirstRow();
+                    if (row) {
+                        var cells = row.querySelectorAll('td');
+                        if (cells.length > 0) return cells[0];
+                    }
+                    return null;
+                },
+                position: 'bottom',
+                onShow: function () {
+                    var row = getFirstRow();
+                    if (row) scrollTo(row.querySelectorAll('td')[0]);
+                }
+            },
+            {
+                title: 'Columna: Email',
+                content: 'Correo electrónico del usuario. Se usa para login y recuperación de contraseña. ' +
+                         'Es obligatorio y debe ser único en la plataforma.',
+                icon: 'fa-envelope',
+                color: '#1e293b',
+                selector: function () {
+                    var row = getFirstRow();
+                    if (row) {
+                        var cells = row.querySelectorAll('td');
+                        if (cells.length > 1) return cells[1];
+                    }
+                    return null;
+                },
+                position: 'bottom',
+                onShow: function () {
+                    var row = getFirstRow();
+                    if (row) scrollTo(row.querySelectorAll('td')[1]);
+                }
+            },
+            {
+                title: 'Columna: Username',
+                content: 'Nombre de usuario opcional (alias). Aparece en listados y junto al email. ' +
+                         'Si está vacío, se muestra <code>—</code> y se usa solo el email como identificador.',
+                icon: 'fa-user',
+                color: '#1e293b',
+                selector: function () {
+                    var row = getFirstRow();
+                    if (row) {
+                        var cells = row.querySelectorAll('td');
+                        if (cells.length > 2) return cells[2];
+                    }
+                    return null;
+                },
+                position: 'bottom',
+                onShow: function () {
+                    var row = getFirstRow();
+                    if (row) scrollTo(row.querySelectorAll('td')[2]);
+                }
+            },
+            {
+                title: 'Columna: Rol',
+                content: 'Badge con el rol del usuario: ' +
+                         '<span style="color:#7c3aed"><strong>admin</strong></span> (administrador, acceso completo) o ' +
+                         '<span style="color:#16a34a"><strong>user</strong></span> (usuario estándar). ' +
+                         'Los admins no pueden ser desactivados del Editor de Medios.',
+                icon: 'fa-shield-alt',
+                color: '#7c3aed',
+                selector: function () {
+                    var row = getFirstRow();
+                    if (row) {
+                        var cells = row.querySelectorAll('td');
+                        if (cells.length > 3) return cells[3];
+                    }
+                    return null;
+                },
+                position: 'bottom',
+                onShow: function () {
+                    var row = getFirstRow();
+                    if (row) scrollTo(row.querySelectorAll('td')[3]);
+                }
+            },
+            {
+                title: 'Columna: Quota',
+                content: 'Espacio máximo de almacenamiento personal permitido para el usuario. ' +
+                         '<strong>0 = ilimitado</strong>. Se muestra en formato legible (KB, MB, GB, TB).',
+                icon: 'fa-hdd',
+                color: '#3b82f6',
+                selector: function () {
+                    var row = getFirstRow();
+                    if (row) {
+                        var cells = row.querySelectorAll('td');
+                        if (cells.length > 4) return cells[4];
+                    }
+                    return null;
+                },
+                position: 'bottom',
+                onShow: function () {
+                    var row = getFirstRow();
+                    if (row) scrollTo(row.querySelectorAll('td')[4]);
+                }
+            },
+            {
+                title: 'Columna: Usado',
+                content: 'Espacio actualmente consumido por los archivos personales del usuario. ' +
+                         'Si supera la quota, no podrá subir más archivos hasta liberar espacio.',
+                icon: 'fa-chart-pie',
+                color: '#f59e0b',
+                selector: function () {
+                    var row = getFirstRow();
+                    if (row) {
+                        var cells = row.querySelectorAll('td');
+                        if (cells.length > 5) return cells[5];
+                    }
+                    return null;
+                },
+                position: 'bottom',
+                onShow: function () {
+                    var row = getFirstRow();
+                    if (row) scrollTo(row.querySelectorAll('td')[5]);
+                }
+            },
+            {
+                title: 'Columna: Editor Medios',
+                content: 'Botón que activa/desactiva el acceso al Editor de Medios para este usuario. ' +
+                         '<strong style="color:#4f46e5">Activo</strong> (índigo) o <strong style="color:#94a3b8">Inactivo</strong> (gris). ' +
+                         'Los admins siempre tienen "Siempre activo" (no aparece el botón).',
+                icon: 'fa-film',
+                color: '#7c3aed',
+                selector: function () {
+                    var row = getFirstRow();
+                    if (row) {
+                        var cells = row.querySelectorAll('td');
+                        if (cells.length > 6) return cells[6];
+                    }
+                    return null;
+                },
+                position: 'bottom',
+                onShow: function () {
+                    var row = getFirstRow();
+                    if (row) scrollTo(row.querySelectorAll('td')[6]);
+                }
+            },
+            {
+                title: 'Acción: Storages',
+                content: 'Link <strong style="color:#16a34a">Storages</strong> (verde): abre la página de asignación de storages ' +
+                         'donde puedes ver a qué storages tiene acceso el usuario, con qué permisos y si puede compartir.',
+                icon: 'fa-database',
+                color: '#16a34a',
+                selector: function () { return getLink('Storages'); },
+                position: 'left',
+                onShow: function () {
+                    var l = getLink('Storages');
+                    if (l) scrollTo(l);
+                }
+            },
+            {
+                title: 'Acción: Editar',
+                content: 'Link <strong style="color:#4f46e5">Editar</strong> (índigo): modifica email, username, contraseña, ' +
+                         'rol y quota del usuario. ' +
+                         'También puedes configurar límites de sesiones simultáneas y duración.',
+                icon: 'fa-edit',
+                color: '#4f46e5',
+                selector: function () { return getLink('Editar'); },
+                position: 'left',
+                onShow: function () {
+                    var l = getLink('Editar');
+                    if (l) scrollTo(l);
+                }
+            },
+            {
+                title: 'Acción: Eliminar',
+                content: 'Link <strong style="color:#dc2626">Eliminar</strong> (rojo): elimina el usuario. ' +
+                         '<span style="color:#dc2626"><strong>Precaución:</strong> esta acción borra permanentemente ' +
+                         'todos sus archivos, storages asignados y enlaces compartidos. Te pedirá confirmación.</span>',
+                icon: 'fa-trash-alt',
+                color: '#dc2626',
+                selector: function () { return getLink('Eliminar'); },
+                position: 'left',
+                onShow: function () {
+                    var l = getLink('Eliminar');
+                    if (l) scrollTo(l);
+                }
+            },
+            {
+                title: 'Guía Completada',
+                content: 'Conoces el módulo de Usuarios: ' +
+                         '<strong>crear</strong>, <strong>editar</strong>, <strong>asignar storages</strong>, ' +
+                         '<strong>activar Editor de Medios</strong> y <strong>eliminar</strong>. ' +
+                         'Repite esta guía cuando quieras con el botón morado.',
+                icon: 'fa-check-circle',
+                color: '#16a34a',
+                selector: null,
+                position: 'center'
+            }
+        ]
+    });
+}
+</script>
 @endsection

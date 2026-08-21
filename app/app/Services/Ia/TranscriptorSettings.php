@@ -290,23 +290,11 @@ class TranscriptorSettings
             'label' => 'Pase de coherencia IA',
             'help' => 'Corrige con LLM los segmentos con ingles residual que el diccionario no cubre, dejando la transcripcion en espanol coherente.',
         ],
-        'ai_coherence_threshold' => [
-            'type' => 'float', 'group' => 'ia', 'default' => 0.4, 'min' => 0.0, 'max' => 1.0,
-            'env_key' => 'TRANSCRIPTOR_AI_COHERENCE_THRESHOLD',
-            'label' => 'Umbral de ingles residual',
-            'help' => 'Score minimo (en/(en+es)) para considerar un segmento con ingles residual y enviarlo al LLM. Mismo umbral que el detector.',
-        ],
         'ai_coherence_max_segments' => [
             'type' => 'int', 'group' => 'ia', 'default' => 20, 'min' => 1, 'max' => 200,
             'env_key' => 'TRANSCRIPTOR_AI_COHERENCE_MAX_SEGMENTS',
             'label' => 'Tope de segmentos por transcripcion',
             'help' => 'Maximo de segmentos a corregir con IA por transcripcion. Controla costo/latencia en transcripciones con mucho ingles (ej. musica).',
-        ],
-        'ai_coherence_model' => [
-            'type' => 'str', 'group' => 'ia', 'default' => '',
-            'env_key' => 'TRANSCRIPTOR_AI_COHERENCE_MODEL',
-            'label' => 'Modelo de coherencia IA',
-            'help' => 'Modelo LLM a usar. Vacio = usa el de llm-correction.model.',
         ],
         'ai_coherence_max_learn' => [
             'type' => 'int', 'group' => 'ia', 'default' => 5, 'min' => 0, 'max' => 50,

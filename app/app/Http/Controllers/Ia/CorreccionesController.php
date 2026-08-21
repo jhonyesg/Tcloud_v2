@@ -162,22 +162,64 @@ class CorreccionesController extends Controller
     }
 
     /**
-     * Devuelve todas las correcciones approved con relaciones, ordenadas por
-     * applies_count desc. Alimenta la pestaña "Aprobadas" vía AJAX para soportar
-     * búsqueda libre, filtro por source y bulk delete con checkboxes (reemplaza
-     * el render server-side anterior que no escalaba con miles de reglas).
+     * Devuelve las correcciones approved con relaciones, paginadas server-side.
+     * Alimenta la pestaña "Aprobadas" vía AJAX. Acepta:
+     *   page (default 1), per_page (default 50, clamp 1..500),
+     *   search (ILIKE case-insensitive sobre wrong_text/correct_text),
+     *   source (filtro exacto).
      *
      * Path: GET /ia/correcciones/approved
      */
-    public function approved()
+    public function approved(Request $request)
     {
-        $approved = Correction::approved()
+        $page = max(1, (int) $request->input('page', 1));
+        $perPage = min(500, max(1, (int) $request->input('per_page', 50)));
+
+        $query = Correction::approved()
             ->with('proposedBy:id,username', 'approvedBy:id,username', 'sourceSegment.transcription')
             ->orderByDesc('applies_count')
-            ->orderByDesc('id')
-            ->get();
+            ->orderByDesc('id');
 
-        return response()->json($approved);
+        $search = trim((string) $request->input('search', ''));
+        if ($search !== '') {
+            $like = '%' . str_replace(['%', '_'], ['\\%', '\\_'], $search) . '%';
+            $query->where(function ($w) use ($like) {
+                $w->where('wrong_text', 'ilike', $like)
+                    ->orWhere('correct_text', 'ilike', $like);
+            });
+        }
+
+        $source = trim((string) $request->input('source', ''));
+        if ($source !== '' && $source !== 'all') {
+            $query->where('source', $source);
+        }
+
+        $sources = Correction::approved()
+            ->whereNotNull('source')
+            ->where('source', '!=', '')
+            ->selectRaw('source, count(*) as source_count')
+            ->groupBy('source')
+            ->orderByDesc('source_count')
+            ->get()
+            ->map(fn ($s) => ['source' => $s->source, 'count' => (int) $s->source_count])
+            ->values()
+            ->all();
+
+        $approved = $query->paginate($perPage, ['*'], 'page', $page);
+
+        // Si la página pedida excede el total (ej: filtro que reduce resultados),
+        // servir la última página real en vez de una página vacía.
+        if ($approved->lastPage() > 0 && $approved->currentPage() > $approved->lastPage()) {
+            $approved = $query->paginate($perPage, ['*'], 'page', $approved->lastPage());
+        }
+
+        return response()->json([
+            'items' => $approved->items(),
+            'total' => $approved->total(),
+            'page' => $approved->currentPage(),
+            'last_page' => $approved->lastPage(),
+            'sources' => $sources,
+        ]);
     }
 
     /**
@@ -188,24 +230,62 @@ class CorreccionesController extends Controller
      *
      * Path: GET /ia/correcciones/ai-suggest-results
      */
-    public function aiSuggestResults()
+    public function aiSuggestResults(Request $request)
     {
+        $page = max(1, (int) $request->input('page', 1));
+        $perPage = min(500, max(1, (int) $request->input('per_page', 50)));
+
+        $search = trim((string) $request->input('search', ''));
+        $source = trim((string) $request->input('source', ''));
+
+        $like = '';
+        if ($search !== '') {
+            $like = '%' . str_replace(['%', '_'], ['\\%', '\\_'], $search) . '%';
+        }
+
         // Última auto-aprobación por source (correlaciona created_at today y Y-day).
-        $approvedList = Correction::where('status', Correction::STATUS_APPROVED)
+        $approvedQuery = Correction::where('status', Correction::STATUS_APPROVED)
             ->where('source', 'LIKE', 'ai-suggest-%')
             ->with('proposedBy:id,username', 'approvedBy:id,username')
-            ->orderByDesc('id')
-            ->get();
+            ->orderByDesc('id');
 
         // Pendientes cuya source es AI Suggest (caso: auto_approve=false temporal).
-        $pendingList = Correction::where('status', Correction::STATUS_PENDING)
+        $pendingQuery = Correction::where('status', Correction::STATUS_PENDING)
             ->where('source', 'LIKE', 'ai-suggest-%')
             ->with('proposedBy:id,username')
-            ->orderByDesc('id')
-            ->get();
+            ->orderByDesc('id');
+
+        if ($source !== '' && $source !== 'all') {
+            $approvedQuery->where('source', $source);
+            $pendingQuery->where('source', $source);
+        }
+        if ($like !== '') {
+            $approvedQuery->where(function ($w) use ($like) {
+                $w->where('wrong_text', 'ilike', $like)
+                    ->orWhere('correct_text', 'ilike', $like);
+            });
+            $pendingQuery->where(function ($w) use ($like) {
+                $w->where('wrong_text', 'ilike', $like)
+                    ->orWhere('correct_text', 'ilike', $like);
+            });
+        }
+
+        $approved = $approvedQuery->paginate($perPage, ['*'], 'approved_page', $page);
+        $pending = $pendingQuery->paginate($perPage, ['*'], 'pending_page', $page);
+
+        if ($approved->lastPage() > 0 && $approved->currentPage() > $approved->lastPage()) {
+            $approved = $approvedQuery->paginate($perPage, ['*'], 'approved_page', $approved->lastPage());
+        }
+        if ($pending->lastPage() > 0 && $pending->currentPage() > $pending->lastPage()) {
+            $pending = $pendingQuery->paginate($perPage, ['*'], 'pending_page', $pending->lastPage());
+        }
 
         // Resumen por source: agrupa auto-aprobadas de las últimas corridas.
-        $runs = Correction::where('source', 'LIKE', 'ai-suggest-%')
+        $runsQuery = Correction::where('source', 'LIKE', 'ai-suggest-%');
+        if ($source !== '' && $source !== 'all') {
+            $runsQuery->where('source', $source);
+        }
+        $runs = $runsQuery
             ->selectRaw('source, count(*) as total, max(created_at) as last_run_at, sum(case when status = ? then 1 else 0 end) as approved_count, sum(case when status = ? then 1 else 0 end) as pending_count, sum(case when status = ? then 1 else 0 end) as rejected_count',
                 [Correction::STATUS_APPROVED, Correction::STATUS_PENDING, Correction::STATUS_REJECTED])
             ->groupBy('source')
@@ -213,10 +293,28 @@ class CorreccionesController extends Controller
             ->limit(5)
             ->get();
 
+        $sources = Correction::where('source', 'LIKE', 'ai-suggest-%')
+            ->whereNotNull('source')
+            ->where('source', '!=', '')
+            ->selectRaw('source, count(*) as total')
+            ->groupBy('source')
+            ->orderByDesc('total')
+            ->get()
+            ->map(fn ($s) => ['source' => $s->source, 'count' => (int) $s->total])
+            ->values()
+            ->all();
+
         return response()->json([
             'runs' => $runs,
-            'approved_list' => $approvedList,
-            'pending_list' => $pendingList,
+            'approved_items' => $approved->items(),
+            'approved_total' => $approved->total(),
+            'approved_page' => $approved->currentPage(),
+            'approved_last_page' => $approved->lastPage(),
+            'pending_items' => $pending->items(),
+            'pending_total' => $pending->total(),
+            'pending_page' => $pending->currentPage(),
+            'pending_last_page' => $pending->lastPage(),
+            'sources' => $sources,
         ]);
     }
 

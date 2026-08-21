@@ -22,13 +22,25 @@ use Illuminate\Support\Facades\Log;
  *
  * Config (DB-overridable via TranscriptorSettings):
  *   - ai_coherence_enabled
- *   - ai_coherence_threshold
  *   - ai_coherence_max_segments
- *   - ai_coherence_model (vacío = usa llm-correction.model)
+ *   - ai_coherence_max_learn
+ *   - ai_coherence_batch_size
+ *
+ * `ai_coherence_threshold` y `ai_coherence_model` existieron como ajustes en la
+ * pantalla de configuración hasta el 2026-08-20 y no los leía nadie: el criterio
+ * de selección vive en `apply()` (mezcla EN+ES, más un corte fijo de 0.5 sobre el
+ * score del detector) y el modelo sale siempre de `llm-correction.model`. Se
+ * retiraron para que la pantalla no prometa palancas que no mueven nada.
  */
 class TranscriptionCoherencePass
 {
     use CallsLlmChatCompletion;
+
+    /**
+     * Score del detector (en/(en+es)) a partir del cual un segmento se considera
+     * mayormente inglés aunque no haya mezcla EN+ES. Ver apply().
+     */
+    private const MOSTLY_EN_SCORE = 0.5;
 
     public function __construct(
         private EnglishResidualSegmentDetector $detector,
@@ -91,7 +103,11 @@ class TranscriptionCoherencePass
             $enContent = $this->countEnContentWords($text);
             $totalEn = $score['en'] + $enContent;
             $isMix = $totalEn >= 1 && $score['es'] > 0;
-            $isMostlyEn = $score['score'] >= 0.5;
+            // Corte fijo a propósito: este es EL umbral del pase, y vive aquí
+            // junto a la heurística de mezcla que lo acompaña. Tocarlo cambia
+            // qué segmentos van al LLM, así que es un cambio de código revisable,
+            // no un deslizador de la UI.
+            $isMostlyEn = $score['score'] >= self::MOSTLY_EN_SCORE;
             if ($isMix || $isMostlyEn) {
                 $flagged[] = [
                     'index' => $i,

@@ -316,6 +316,8 @@ class StorageProviderController extends Controller
 
         $userStorage->delete();
 
+        // Quitarle el acceso a un cliente no cambia si el canal se transcribe:
+        // eso lo decide API Transcriptor sobre el storage. Son cosas distintas.
         return response()->json(['message' => 'User assignment removed']);
     }
 
@@ -337,6 +339,9 @@ class StorageProviderController extends Controller
                 'assigned_at'          => $now,
             ])->toArray();
 
+            // insert() masivo: no dispara eventos de modelo. Las filas nacen con
+            // transcription_enabled=false, así que la derivación no cambia y no
+            // hace falta recalcular aquí (a diferencia de los borrados).
             \App\Models\UserStorage::insert($records);
         }
 

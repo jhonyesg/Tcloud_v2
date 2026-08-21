@@ -4,11 +4,15 @@ namespace App\Services;
 
 use App\Models\File;
 use App\Models\StorageProvider;
+use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 
 class StorageSyncService
 {
+    /** Segundos que el camino manual espera por el lock antes de rendirse. */
+    private const MANUAL_LOCK_WAIT = 3;
+
     public function __construct(
         private FileScannerService $scanner,
         private FileRegistry $registry,
@@ -26,8 +30,23 @@ class StorageSyncService
      */
     public function syncFolder(StorageProvider $storage, ?int $parentId = null, ?int $userId = null, bool $forcePrune = false): array
     {
+        return $this->syncFolderWithReport($storage, $parentId, $userId, $forcePrune)['files'];
+    }
+
+    /**
+     * Igual que syncFolder(), pero ademas cuenta que hizo.
+     *
+     * Existe porque el listado devuelto no distingue "escanee y no habia nada
+     * que cambiar" de "no llegue a escanear": el boton Actualizar mostraba el
+     * mismo mensaje de exito en ambos casos. `status` nombra cual de las salidas
+     * se tomo, para que la UI pueda decir la verdad.
+     *
+     * @return array{files: list<array<string,mixed>>, stats: array<string,mixed>}
+     */
+    public function syncFolderWithReport(StorageProvider $storage, ?int $parentId = null, ?int $userId = null, bool $forcePrune = false): array
+    {
         if (!config('storage_sync.enabled', true)) {
-            return $this->currentListing($storage->id, $parentId);
+            return $this->report($this->currentListing($storage->id, $parentId), 'sync_disabled');
         }
 
         $lock = Cache::lock(
@@ -35,11 +54,21 @@ class StorageSyncService
             (int) config('storage_sync.lock.folder_ttl', 300)
         );
 
-        // No bloqueante a proposito: si otro proceso ya esta escaneando esta
-        // carpeta, devolvemos el listado actual en vez de esperar y repetir el
-        // trabajo. N peticiones concurrentes => 1 escaneo.
-        if (!$lock->get()) {
-            return $this->currentListing($storage->id, $parentId);
+        if ($forcePrune) {
+            // El camino forzado nace de un clic humano sobre una ruta concreta.
+            // Ahi si conviene esperar: el cron corre cada 15 minutos y silentSync
+            // se dispara en cada navegacion, asi que rendirse al instante convertia
+            // el boton en un no-op justo cuando el usuario mira la pantalla.
+            try {
+                $lock->block(self::MANUAL_LOCK_WAIT);
+            } catch (LockTimeoutException) {
+                return $this->report($this->currentListing($storage->id, $parentId), 'locked');
+            }
+        } elseif (!$lock->get()) {
+            // No bloqueante a proposito: si otro proceso ya esta escaneando esta
+            // carpeta, devolvemos el listado actual en vez de esperar y repetir el
+            // trabajo. N peticiones concurrentes => 1 escaneo.
+            return $this->report($this->currentListing($storage->id, $parentId), 'locked');
         }
 
         try {
@@ -47,6 +76,26 @@ class StorageSyncService
         } finally {
             $lock->release();
         }
+    }
+
+    /**
+     * @param  list<array<string,mixed>>  $files
+     * @return array{files: list<array<string,mixed>>, stats: array<string,mixed>}
+     */
+    private function report(array $files, string $status, array $stats = []): array
+    {
+        return [
+            'files' => $files,
+            'stats' => $stats + [
+                'status' => $status,
+                'created' => 0,
+                'updated' => 0,
+                'deleted' => 0,
+                'disk_count' => 0,
+                'pruned' => false,
+                'reason' => null,
+            ],
+        ];
     }
 
     private function doSyncFolder(StorageProvider $storage, ?int $parentId, ?int $userId, bool $forcePrune): array
@@ -58,18 +107,18 @@ class StorageSyncService
         if ($parentId !== null) {
             $parentFolder = File::find($parentId);
             if (!$parentFolder || $parentFolder->storage_provider_id !== $storage->id) {
-                return [];
+                return $this->report([], 'unknown_folder');
             }
             $scanPath = rtrim($basePath, '/') . '/' . ltrim($parentFolder->path, '/');
         }
 
         $realPath = realpath($scanPath);
         if (!$realPath || !is_dir($realPath)) {
-            return $this->currentListing($storage->id, $parentId);
+            return $this->report($this->currentListing($storage->id, $parentId), 'path_missing');
         }
 
         if (!$this->scanner->isPathWithinBase($basePath, $realPath)) {
-            return [];
+            return $this->report([], 'path_outside_base');
         }
 
         // Un montaje de red caido deja el punto de montaje como directorio local
@@ -82,21 +131,38 @@ class StorageSyncService
             ]);
             $this->markInaccessible($storage);
 
-            return $this->currentListing($storage->id, $parentId);
+            return $this->report(
+                $this->currentListing($storage->id, $parentId),
+                'mount_detached',
+                ['reason' => $detached]
+            );
         }
 
         $scan = $this->scanner->scanDirectory($realPath);
 
-        // Escaneo no fiable: ni se crea ni se borra nada. Devolver lo que hay en
+        // Escaneo inservible: ni se crea ni se borra nada. Devolver lo que hay en
         // BD es lo correcto — el disco no dijo nada creible sobre este estado.
-        if (!$scan->ok) {
+        if (!$scan->usable()) {
             Log::warning('storage_sync.scan_untrusted', [
                 'storage_id' => $storage->id,
                 'parent_id' => $parentId,
             ] + $scan->context());
             $this->markInaccessible($storage);
 
-            return $this->currentListing($storage->id, $parentId);
+            return $this->report(
+                $this->currentListing($storage->id, $parentId),
+                'scan_untrusted',
+                ['reason' => $scan->failureReason]
+            );
+        }
+
+        // Escaneo parcial: se leyo el directorio pero alguna entrada concreta dio
+        // error. Se sigue adelante con las que si se leyeron — antes se descartaba
+        // la carpeta entera y con ella los archivos sanos. NO se llama a
+        // markInaccessible(): un archivo roto de junio no puede marcar como caido
+        // un storage que responde perfectamente.
+        if ($scan->isPartial()) {
+            $this->logUnreadableEntries($storage, $parentId, $scan);
         }
 
         $realEntries = $scan->entries;
@@ -119,6 +185,12 @@ class StorageSyncService
                 $duplicatesSeen += $rows->count() - 1;
             }
         }
+
+        // Total de la carpeta ANTES de ir descontando los emparejados. Es lo que
+        // PruneGuard necesita para su regla de proporcion: mas abajo $bdFiles ya
+        // solo contiene huerfanos, y pasarle ese conteo hacia que el ratio midiera
+        // huerfanos-menos-disco sobre huerfanos, que no significa nada.
+        $totalDbRows = $bdFiles->count();
 
         if ($duplicatesSeen > 0) {
             Log::warning('storage_sync.duplicate_rows', [
@@ -173,10 +245,18 @@ class StorageSyncService
         // Aqui es donde el 2026-07-27 se borro el arbol completo: el escaneo de
         // un NFS caido devolvio 0 entradas y todo lo que habia en BD quedo
         // marcado como huerfano.
+        //
+        // scanOk sale del escaneo y ya no es un `true` fijo: arriba solo se
+        // descarto lo inservible, y un escaneo parcial llega hasta aqui. Con
+        // $scan->ok en false, PruneGuard rechaza por 'scan_untrusted' sin
+        // necesitar logica propia — lo que no se pudo leer no puede contarse como
+        // desaparecido del disco. Ni siquiera $forcePrune levanta ese rechazo.
+        $orphanCount = $bdFiles->count();
+
         $decision = $this->pruneGuard->decide(
-            dbCount: $bdFiles->count(),
+            dbCount: $totalDbRows,
             diskCount: count($realEntries),
-            scanOk: true,          // ya se descarto arriba el escaneo no fiable
+            scanOk: $scan->ok,
             forced: $forcePrune,
         );
 
@@ -185,18 +265,22 @@ class StorageSyncService
                 'storage_id' => $storage->id,
                 'parent_id' => $parentId,
                 'path' => $parentFolder?->path ?? '/',
-                'db_count' => $bdFiles->count(),
+                'db_count' => $totalDbRows,
                 'disk_count' => count($realEntries),
+                'orphans' => $orphanCount,
                 'reason' => $decision->reason,
             ] + $decision->context);
         } else {
             foreach ($bdFiles as $orphanFile) {
                 if ($orphanFile->is_folder) {
-                    $this->deleteRecursively($orphanFile->id);
+                    // Cuenta el subarbol entero: borrar una carpeta-dia de prensa
+                    // se lleva cientos de filas, y decir "1 eliminado" en la UI
+                    // seria enganoso.
+                    $deleted += $this->deleteRecursively($orphanFile->id);
                 } else {
                     $orphanFile->delete();
+                    $deleted++;
                 }
-                $deleted++;
             }
         }
 
@@ -210,7 +294,16 @@ class StorageSyncService
             $this->invalidateFolderCache($storage->id, $parentId);
         }
 
-        return $this->currentListing($storage->id, $parentId);
+        return $this->report($this->currentListing($storage->id, $parentId), 'synced', [
+            'created' => $created,
+            'updated' => $updated,
+            'deleted' => $deleted,
+            'disk_count' => count($realEntries),
+            'orphans' => $orphanCount,
+            'pruned' => !$decision->refused(),
+            'reason' => $decision->refused() ? $decision->reason : null,
+            'partial' => $scan->isPartial(),
+        ]);
     }
 
     /**
@@ -228,6 +321,32 @@ class StorageSyncService
             ->orderBy('created_at', 'desc')
             ->get()
             ->toArray();
+    }
+
+    /**
+     * Avisa de las entradas ilegibles UNA vez por carpeta y ventana.
+     *
+     * Sin throttle esto genera un warning por carpeta en cada pasada del
+     * sincronizador: 30 carpetas dañadas producian ~1476 lineas al dia repitiendo
+     * exactamente la misma informacion. El evento es distinto de
+     * 'scan_untrusted', que debe seguir significando "no me fio de nada de este
+     * directorio".
+     */
+    private function logUnreadableEntries(StorageProvider $storage, ?int $parentId, ScanResult $scan): void
+    {
+        $key = "storage_sync:unreadable:{$storage->id}:" . ($parentId ?? 'root');
+
+        if (Cache::has($key)) {
+            return;
+        }
+
+        Cache::put($key, true, (int) config('storage_sync.unreadable_log_ttl', 21600));
+
+        Log::warning('storage_sync.entries_unreadable', [
+            'storage_id' => $storage->id,
+            'parent_id' => $parentId,
+            'hint' => 'entradas ilegibles en disco (EIO/stat fallido); el resto de la carpeta si se sincronizo',
+        ] + $scan->context());
     }
 
     private function markInaccessible(StorageProvider $storage): void
@@ -337,7 +456,10 @@ class StorageSyncService
         }
 
         try {
-            $this->syncRootFolder($storage, $userId);
+            $rootReport = $this->syncFolderWithReport($storage, null, $userId, $forcePrune);
+            $stats['created'] += $rootReport['stats']['created'];
+            $stats['updated'] += $rootReport['stats']['updated'];
+            $stats['deleted'] += $rootReport['stats']['deleted'];
 
             // $seenPaths evita el amplificador: fullSync recorria TODAS las filas
             // de carpeta, duplicados incluidos. Como cada copia resuelve al mismo
@@ -371,8 +493,13 @@ class StorageSyncService
                             continue;
                         }
 
-                        $folderEntries = $this->syncFolder($storage, $folder->id, $userId, $forcePrune);
-                        $stats['created'] += count(array_filter($folderEntries, fn ($e) => !isset($e['id'])));
+                        // Contadores reales del sync. Antes se contaban las entradas
+                        // devueltas sin 'id', que siempre era cero: el listado sale
+                        // de la BD y todas las filas tienen id.
+                        $report = $this->syncFolderWithReport($storage, $folder->id, $userId, $forcePrune);
+                        $stats['created'] += $report['stats']['created'];
+                        $stats['updated'] += $report['stats']['updated'];
+                        $stats['deleted'] += $report['stats']['deleted'];
                     }
                 });
 
@@ -382,16 +509,21 @@ class StorageSyncService
         }
     }
 
-    private function deleteRecursively(int $fileId): void
+    /** @return int filas borradas, contando el subarbol completo */
+    private function deleteRecursively(int $fileId): int
     {
+        $count = 0;
         $children = File::where('parent_id', $fileId)->get();
         foreach ($children as $child) {
             if ($child->is_folder) {
-                $this->deleteRecursively($child->id);
+                $count += $this->deleteRecursively($child->id);
             } else {
                 $child->delete();
+                $count++;
             }
         }
         File::destroy($fileId);
+
+        return $count + 1;
     }
 }

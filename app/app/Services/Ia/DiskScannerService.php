@@ -88,8 +88,17 @@ class DiskScannerService
                 if (!preg_match('/\.(mp4|mkv|opus|flac|wav|mp3|aac)$/i', $name)) continue;
 
                 $scanned++;
-                $mtime = filemtime($full);
-                if ($mtime === false || $mtime > $cutoff) continue; // aún escribiéndose
+
+                // stat suprimido y comprobado: sin la @, el E_WARNING que emite un
+                // archivo ilegible (EIO en los NFS, o borrado entre el is_file y
+                // esta linea) se convierte en ErrorException y aborta el escaneo
+                // COMPLETO del storage. La comprobacion de false ni siquiera
+                // llegaba a ejecutarse.
+                $mtime = @filemtime($full);
+                if ($mtime === false || $mtime > $cutoff) continue; // ilegible o aún escribiéndose
+
+                $size = @filesize($full);
+                if ($size === false) continue;
 
                 $path = $folderRel === '' ? $name : $folderRel . '/' . $name;
                 $candidates[] = [
@@ -97,7 +106,7 @@ class DiskScannerService
                     'path' => $path,
                     'name' => $name,
                     'mtime' => $mtime,
-                    'size' => (int) filesize($full),
+                    'size' => (int) $size,
                 ];
             }
         }

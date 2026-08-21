@@ -114,11 +114,32 @@ class FileController extends Controller
             if ($storageId !== null && $request->boolean('sync')) {
                 $storage = StorageProvider::find($storageId);
                 if ($storage && $storage->type === 'local') {
+                    // `prune=1` solo lo manda el boton Actualizar; el silentSync que
+                    // se dispara al navegar usa `sync=1` a secas y sigue bajo las
+                    // guardas heuristicas. Es decir: la purga forzada exige un clic
+                    // humano sobre una ruta concreta, nunca ocurre de fondo.
+                    //
+                    // Borrar filas es destructivo (transcriptions y shares cuelgan
+                    // de files con ON DELETE CASCADE), asi que se pide el mismo
+                    // nivel que para administrar el storage, no un simple 'read'.
+                    $forcePrune = $request->boolean('prune')
+                        && ($user->isAdmin() || $user->hasStoragePermission($storageId, 'full'));
+
                     $syncService = app(StorageSyncService::class);
-                    $files = $syncService->syncFolder($storage, $parentId, $user->id);
+                    $report = $syncService->syncFolderWithReport($storage, $parentId, $user->id, $forcePrune);
+                    $files = $report['files'];
                     $syncService->invalidateFolderCache($storageId, $parentId);
                     $pagination = ['page' => 1, 'per_page' => count($files), 'total' => count($files), 'has_more' => false];
-                    return response()->json(['files' => $files, 'breadcrumbs' => $breadcrumbs, 'pagination' => $pagination]);
+
+                    $payload = ['files' => $files, 'breadcrumbs' => $breadcrumbs, 'pagination' => $pagination];
+
+                    // Las estadisticas solo viajan al refresco explicito: es el
+                    // unico que las muestra, y silentSync no debe pagar el peso.
+                    if ($request->boolean('prune')) {
+                        $payload['stats'] = $report['stats'] + ['allowed_to_prune' => $forcePrune];
+                    }
+
+                    return response()->json($payload);
                 }
             }
 

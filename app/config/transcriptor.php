@@ -6,17 +6,29 @@ return [
 
     'api_key' => env('TRANSCRIPTOR_API_KEY', ''),
 
-    // Host de callback. SOLO PARA MOSTRAR en la UI: la spec
-    // transcription-orchestrator-runtime §9 prohibe cablear una ruta de webhook.
-    // La variable ya existia en .env pero no estaba mapeada, asi que la vista
-    // pintaba un valor vacio.
-    'callback_host' => env('TRANSCRIPTOR_CALLBACK_HOST', ''),
+    // 'callback_host' eliminado el 2026-08-12. Solo se pintaba en el panel de
+    // ayuda, y ahi hacia dano: daba cuerpo a un mecanismo de callback que no
+    // existe (no hay ruta /webhooks/transcription, y submit() con callback_url
+    // era codigo muerto). Los resultados se recogen SOLO por polling; ver
+    // TranscriptionPollingService.
+    //
+    // TRANSCRIPTOR_CALLBACK_HOST queda huerfano en .env: se puede borrar de ahi
+    // cuando se toque el fichero, ya no lo lee nadie.
 
     // Idioma por defecto enviado a la API del transcriptor (es, en, ...)
     'language' => env('TRANSCRIPTOR_LANGUAGE', 'es'),
 
     // Modo de correccion de idioma: off | async | auto
     'lang_fix' => env('TRANSCRIPTOR_LANG_FIX', 'async'),
+
+    // Formato al que ffmpeg convierte antes de subir a POST /v1/transcribe: wav | opus.
+    //
+    // wav  = pcm_s16le 16kHz mono, sin perdida (~1,9 MB/min).
+    // opus = libopus 64k 16kHz mono (~0,5 MB/min, con perdida).
+    //
+    // La API del transcriptor acepta ambos; wav es el que consume directamente
+    // el modelo ASR, asi que evita una etapa de decodificacion con perdida.
+    'audio_output_format' => env('TRANSCRIPTOR_AUDIO_OUTPUT_FORMAT', 'wav'),
 
     // Timeout en segundos para el POST de envio del archivo
     'submit_timeout' => (int) env('TRANSCRIPTOR_SUBMIT_TIMEOUT', 60),
@@ -105,6 +117,13 @@ return [
     // al dispatch.
     'poll_limit' => (int) env('TRANSCRIPTOR_POLL_LIMIT', 140),
 
+    // Antiguedad tras la cual una fila en queued/processing se cierra como dead
+    // en vez de seguir sondeandose. Sin este corte, un job cuyo resultado se
+    // perdio upstream se reconsulta cada minuto para siempre y ocupa un slot de
+    // poll_limit: el 2026-08-12 habia 33.571 filas asi (1-5 de agosto), que
+    // gastaban ~139 de los 140 slots de cada ciclo.
+    'poll_max_age_hours' => (int) env('TRANSCRIPTOR_POLL_MAX_AGE_HOURS', 48),
+
     // Reintentos del POST de envio ante fallo de conexion o 5xx (nunca 4xx).
     // Sin esto un 502 transitorio mandaba la transcripcion directa a markError().
     'submit_max_attempts' => (int) env('TRANSCRIPTOR_SUBMIT_MAX_ATTEMPTS', 3),
@@ -133,4 +152,51 @@ return [
     // Se incrementa en TranscriptionSubmitService::markError() y se valida contra este
     // limite en DiskScannerService::collectFailedCandidates() con el flag --include-failed.
     'max_retries' => (int) env('TRANSCRIPTOR_MAX_RETRIES', 3),
+
+    // Tamano minimo (bytes) del archivo de audio para enviar a transcripcion.
+    // Por debajo de esto el archivo casi seguro esta corrupto o truncado
+    // (tipico de radios en vivo: el grabador crea el MP3 al iniciar y el tick
+    // lo dispatcha mientras aun se esta escribiendo). ffmpeg falla con
+    // "Failed to read frame size" y tras 3 retries termina en dead, gastando
+    // un slot de cola. Filtrar aqui evita el ciclo completo.
+    'min_file_size_bytes' => (int) env('TRANSCRIPTOR_MIN_FILE_SIZE_BYTES', 1024),
+
+    // === Claves que vivian solo en el esquema de TranscriptorSettings ===
+    //
+    // Todas funcionaban (el accessor cae al default del esquema), pero la
+    // pantalla de configuracion informaba "Origen: archivo" sobre una clave que
+    // el archivo no tenia, y el test que vigila esa correspondencia llevaba
+    // tiempo en rojo. Se declaran aqui con su mismo default.
+
+    // Minutos que espera un job rebotado por pre-flight antes de reintentarse.
+    'requeue_after_minutes' => (int) env('TRANSCRIPTOR_REQUEUE_AFTER_MINUTES', 5),
+
+    // Porcentaje de uso de /dev/shm a partir del cual el centinela avisa.
+    'shm_warn_percent' => (int) env('TRANSCRIPTOR_SHM_WARN_PERCENT', 80),
+
+    // === Pase de coherencia IA sobre segmentos con ingles residual ===
+    // El umbral de seleccion y el modelo NO son configurables: viven en
+    // TranscriptionCoherencePass y en llm-correction.model respectivamente.
+    'ai_coherence_enabled' => (bool) env('TRANSCRIPTOR_AI_COHERENCE_ENABLED', true),
+    'ai_coherence_max_segments' => (int) env('TRANSCRIPTOR_AI_COHERENCE_MAX_SEGMENTS', 20),
+    'ai_coherence_max_learn' => (int) env('TRANSCRIPTOR_AI_COHERENCE_MAX_LEARN', 5),
+    'ai_coherence_batch_size' => (int) env('TRANSCRIPTOR_AI_COHERENCE_BATCH_SIZE', 5),
+
+    // Espacio libre minimo en /dev/shm (bytes) para aceptar una conversion. Por
+    // debajo, TranscriptionSubmitService rebota el job con requeue en vez de
+    // llenar el tmpfs.
+    //
+    // La clave existia en el esquema de TranscriptorSettings pero no aqui: el
+    // valor efectivo salia del default del esquema y la columna "Origen" de la
+    // pantalla de configuracion mentia diciendo "archivo".
+    'min_shm_free_bytes' => (int) env('TRANSCRIPTOR_MIN_SHM_FREE_BYTES', 200000000),
+
+    // Destinatario del centinela de flujo (transcription:health-check). Vacio =
+    // solo se registra el WARNING en laravel.log, sin correo.
+    //
+    // El centinela existe porque el 2026-08-18 el pipeline se paro por completo
+    // durante 44 horas sin que ninguna pieza avisara: cada una reportaba su
+    // propio estado como normal y nadie hacia la pregunta de arriba (¿esta
+    // entrando trabajo?).
+    'health_alert_email' => env('TRANSCRIPTOR_HEALTH_ALERT_EMAIL', ''),
 ];

@@ -14,6 +14,10 @@
 <div class="p-3 sm:p-6 pb-24 sm:pb-8" x-data="jsonData()" x-init="init()">
     <div class="flex justify-between items-center mb-4 sm:mb-6">
         <h1 class="text-lg sm:text-2xl font-bold text-gray-800">Administracion PostgreSQL</h1>
+        <button onclick="startPostgresTour()" class="flex items-center gap-2 bg-purple-600 hover:bg-purple-700 text-white px-3 py-2 rounded text-sm transition-colors" title="Guía interactiva">
+            <i class="fas fa-map-marked-alt"></i>
+            <span class="hidden sm:inline">Guía</span>
+        </button>
     </div>
 
     <div class="bg-white rounded-lg shadow">
@@ -1712,6 +1716,464 @@ function jsonData() {
             this.tour.step = 0;
         },
     };
+}
+</script>
+
+<script src="/js/interactive-tour.js?v=20"></script>
+<script>
+function startPostgresTour() {
+    function getAlpine() {
+        var allData = document.querySelectorAll('[x-data]');
+        for (var i = 0; i < allData.length; i++) {
+            var el = allData[i];
+            if (el._x_dataStack && el._x_dataStack[0]) {
+                var data = el._x_dataStack[0];
+                if (data.activeTab !== undefined && data.config !== undefined) return data;
+            }
+        }
+        var first = document.querySelector('[x-data]');
+        return first ? (first._x_dataStack ? first._x_dataStack[0] : null) : null;
+    }
+
+    // Cancelar tour interno antiguo si está activo
+    var alpine = getAlpine();
+    if (alpine) {
+        alpine.dismissTour();
+        alpine.showCreateModal = false;
+        alpine.showEditModal = false;
+        alpine.showDeleteModal = false;
+        alpine.backupModal.show = false;
+    }
+
+    function scrollTo(selector) {
+        var el = typeof selector === 'string' ? document.querySelector(selector) : selector;
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+        return el;
+    }
+
+    function switchTab(tab) {
+        var a = getAlpine();
+        if (a && a.setTab) {
+            a.setTab(tab);
+            if (tab === 'diagram') a.loadSchema();
+            if (tab === 'query') a.loadQueryTables();
+        }
+    }
+
+    var currentTab = alpine ? alpine.activeTab : 'config';
+
+    if (currentTab === 'config') {
+        TcloudTour.start({
+            steps: [
+                {
+                    title: 'Configuración de PostgreSQL',
+                    content: 'Esta sección define los datos de conexión al servidor PostgreSQL. ' +
+                             'Los cambios se guardan con <strong>Guardar Configuración</strong> y puedes verificar con <strong>Probar Conexión</strong>.',
+                    icon: 'fa-cogs',
+                    color: '#3b82f6',
+                    selector: null,
+                    position: 'center',
+                    onShow: function () { switchTab('config'); }
+                },
+                {
+                    title: 'Host',
+                    content: 'IP o hostname del servidor PostgreSQL. Por defecto <code>127.0.0.1</code> (localhost). ' +
+                             'Si el servidor está en otra máquina, define su IP o dominio.',
+                    icon: 'fa-server',
+                    color: '#3b82f6',
+                    selector: 'input[x-model="config.host"]',
+                    position: 'bottom'
+                },
+                {
+                    title: 'Puerto',
+                    content: 'Puerto TCP del servidor PostgreSQL. Por defecto <code>5432</code>. ' +
+                             'Cámbialo solo si tu servidor escucha en otro puerto.',
+                    icon: 'fa-plug',
+                    color: '#3b82f6',
+                    selector: 'input[x-model="config.port"]',
+                    position: 'bottom'
+                },
+                {
+                    title: 'Base de Datos',
+                    content: 'Nombre de la base de datos a la que conectarse. ' +
+                             'Por defecto <code>tcloudstorage</code>. Esta BD contiene todas las tablas de la aplicación.',
+                    icon: 'fa-database',
+                    color: '#3b82f6',
+                    selector: 'input[x-model="config.database"]',
+                    position: 'bottom'
+                },
+                {
+                    title: 'Usuario',
+                    content: 'Usuario PostgreSQL con permisos para generar dumps. ' +
+                             'Por defecto <code>postgres</code>. Se recomienda crear un usuario específico con permisos limitados.',
+                    icon: 'fa-user',
+                    color: '#3b82f6',
+                    selector: 'input[x-model="config.username"]',
+                    position: 'bottom'
+                },
+                {
+                    title: 'Contraseña',
+                    content: 'Contraseña del usuario PostgreSQL. Se almacena de forma segura. ' +
+                             'Para mayor seguridad, usa un usuario con permisos de solo lectura o backup.',
+                    icon: 'fa-key',
+                    color: '#dc2626',
+                    selector: 'input[x-model="config.password"]',
+                    position: 'bottom'
+                },
+                {
+                    title: 'Guardar Configuración',
+                    content: 'Guarda los cambios. Tras guardar, todos los módulos (Diagram, Query, Backup) usarán esta nueva conexión.',
+                    icon: 'fa-save',
+                    color: '#16a34a',
+                    selector: 'button[\\@click="saveConfig()"]',
+                    position: 'bottom'
+                },
+                {
+                    title: 'Probar Conexión',
+                    content: 'Verifica que la conexión al servidor PostgreSQL funciona con los datos configurados. ' +
+                             'Muestra un mensaje verde (éxito) o rojo (error) con el detalle.',
+                    icon: 'fa-plug',
+                    color: '#16a34a',
+                    selector: 'button[\\@click="testConnection()"]',
+                    position: 'bottom'
+                },
+                {
+                    title: 'Pestañas',
+                    content: 'Cambia entre <strong>Configuración</strong>, <strong>Diagrama</strong>, <strong>Query SQL</strong> y <strong>Backup</strong>. ' +
+                             'Cada una tiene su propósito: configuración, visualización del esquema, consultas y respaldos.',
+                    icon: 'fa-layer-group',
+                    color: '#6366f1',
+                    selector: 'nav.flex.-mb-px',
+                    position: 'bottom'
+                },
+                {
+                    title: 'Guía Completada',
+                    content: 'Conoces la sección de Configuración. Para guardar, edita los campos y haz clic en <strong>Guardar Configuración</strong>. ' +
+                             'Repite esta guía cuando quieras con el botón morado.',
+                    icon: 'fa-check-circle',
+                    color: '#16a34a',
+                    selector: null,
+                    position: 'center'
+                }
+            ]
+        });
+    } else if (currentTab === 'diagram') {
+        TcloudTour.start({
+            steps: [
+                {
+                    title: 'Diagrama del Esquema',
+                    content: 'Visualiza todas las tablas de la base de datos con sus columnas, primary keys, foreign keys y relaciones. ' +
+                             'Arrastra las tablas para organizarlas, usa la rueda del mouse para zoom, y haz clic para ver detalles.',
+                    icon: 'fa-project-diagram',
+                    color: '#6366f1',
+                    selector: null,
+                    position: 'center',
+                    onShow: function () {
+                        switchTab('diagram');
+                        scrollTo('nav.flex.-mb-px');
+                    }
+                },
+                {
+                    title: 'Controles de Zoom',
+                    content: 'Botones <strong>−</strong> y <strong>+</strong> para acercar/alejar, ' +
+                             '<strong>Reset</strong> para volver al 100%, y el porcentaje actual a la derecha.',
+                    icon: 'fa-search-plus',
+                    color: '#475569',
+                    selector: 'button[\\@click="diagramZoomOut()"]',
+                    position: 'bottom'
+                },
+                {
+                    title: 'Auto-organizar',
+                    content: 'Reorganiza automáticamente las tablas por jerarquía de dependencias (de padres a hijas). ' +
+                             'Útil cuando arrastraste tablas o el layout se desordenó.',
+                    icon: 'fa-sitemap',
+                    color: '#0d9488',
+                    selector: 'button[\\@click="autoArrange()"]',
+                    position: 'bottom'
+                },
+                {
+                    title: 'Animar Flujo',
+                    content: 'Activa una animación visual del flujo de datos a través de las foreign keys. ' +
+                             'Útil para entender cómo se conectan las tablas entre sí.',
+                    icon: 'fa-route',
+                    color: '#f59e0b',
+                    selector: 'button[\\@click="toggleFlowAnimation()"]',
+                    position: 'bottom'
+                },
+                {
+                    title: 'Guardar Posiciones',
+                    content: 'Persiste la posición arrastrada de las tablas en la BD. ' +
+                             'La próxima vez que entres, las encontrarás donde las dejaste.',
+                    icon: 'fa-save',
+                    color: '#4f46e5',
+                    selector: 'button[\\@click="saveDiagramPositions()"]',
+                    position: 'bottom'
+                },
+                {
+                    title: 'Leyenda de Colores',
+                    content: '<span style="color:#f59e0b"><strong>● Ámbar</strong></span> = Primary Key (PK), ' +
+                             '<span style="color:#4f46e5"><strong>● Índigo</strong></span> = Foreign Key (FK), ' +
+                             'línea índigo = relación N:1 entre tablas.',
+                    icon: 'fa-palette',
+                    color: '#475569',
+                    selector: 'div.mb-3.flex.items-center.gap-4',
+                    position: 'bottom'
+                },
+                {
+                    title: 'Área del Diagrama',
+                    content: 'Aquí están las tablas como tarjetas con columnas. ' +
+                             'Haz <strong>clic en una tabla</strong> para ver su detalle en el panel lateral: filas estimadas, columnas, PKs, FKs y JOINs sugeridos.',
+                    icon: 'fa-table',
+                    color: '#2563eb',
+                    selector: '#diagram-container',
+                    position: 'top'
+                },
+                {
+                    title: 'Panel de Detalle',
+                    content: 'Al seleccionar una tabla, aparece este panel lateral con: ' +
+                             '<strong>filas estimadas</strong>, <strong>columnas</strong>, <strong>PK</strong>, ' +
+                             '<strong>FKs salientes</strong> (a qué tablas apunta), <strong>FKs entrantes</strong> (qué tablas la apuntan) y <strong>JOIN sugerido</strong>.',
+                    icon: 'fa-info-circle',
+                    color: '#7c3aed',
+                    selector: function () { return document.querySelector('.w-80.flex-shrink-0'); },
+                    position: 'left'
+                },
+                {
+                    title: 'Tour Completado',
+                    content: 'Conoces el Diagrama. Ahora puedes explorar tablas, ver sus relaciones y entender el modelo de datos. ' +
+                             'Repite esta guía cuando quieras con el botón morado.',
+                    icon: 'fa-check-circle',
+                    color: '#16a34a',
+                    selector: null,
+                    position: 'center'
+                }
+            ]
+        });
+    } else if (currentTab === 'query') {
+        TcloudTour.start({
+            steps: [
+                {
+                    title: 'Query SQL',
+                    content: 'Ejecuta consultas SQL de solo <strong>SELECT</strong> contra la base de datos. ' +
+                             'Útil para inspección rápida, debugging y reportes ad-hoc.',
+                    icon: 'fa-terminal',
+                    color: '#6366f1',
+                    selector: null,
+                    position: 'center',
+                    onShow: function () {
+                        switchTab('query');
+                        scrollTo('nav.flex.-mb-px');
+                    }
+                },
+                {
+                    title: 'Sidebar: Tablas',
+                    content: 'Lista de todas las tablas de la base de datos. ' +
+                             'Haz clic en una tabla para insertar <code>SELECT * FROM tabla LIMIT 50;</code> en el editor y ejecutarla.',
+                    icon: 'fa-table',
+                    color: '#4f46e5',
+                    selector: '.query-sidebar',
+                    position: 'right'
+                },
+                {
+                    title: 'Sidebar: Quick Queries',
+                    content: 'Consultas rápidas predefinidas agrupadas por categoría (esquema, mantenimiento, diagnóstico). ' +
+                             'Útil para inspeccionar estructura, tamaños y rendimiento sin escribir SQL.',
+                    icon: 'fa-bolt',
+                    color: '#f59e0b',
+                    selector: function () {
+                        var sidebar = document.querySelector('.query-sidebar');
+                        if (sidebar) {
+                            var groups = sidebar.querySelectorAll('.space-y-0\\:5, .space-y-1\\.5, [class*="space-y-"]');
+                            return sidebar;
+                        }
+                        return null;
+                    },
+                    position: 'right'
+                },
+                {
+                    title: 'Editor SQL',
+                    content: 'Área de texto donde escribes tu consulta SQL. ' +
+                             '<strong>Solo se permiten SELECT</strong> (no INSERT/UPDATE/DELETE por seguridad). ' +
+                             'Atajo: <strong>Ctrl+Enter</strong> para ejecutar.',
+                    icon: 'fa-keyboard',
+                    color: '#1e293b',
+                    selector: 'textarea[x-model="querySql"]',
+                    position: 'top'
+                },
+                {
+                    title: 'Limpiar',
+                    content: 'Borra el contenido del editor SQL.',
+                    icon: 'fa-eraser',
+                    color: '#94a3b8',
+                    selector: 'button[\\@click="querySql = \'\'"]',
+                    position: 'bottom'
+                },
+                {
+                    title: 'Ejecutar',
+                    content: 'Ejecuta la consulta SQL. Los resultados aparecen en la tabla inferior. ' +
+                             'Si hay error, se muestra un mensaje rojo con el detalle.',
+                    icon: 'fa-play',
+                    color: '#4f46e5',
+                    selector: 'button[\\@click="executeQuery()"]',
+                    position: 'left'
+                },
+                {
+                    title: 'Resultados',
+                    content: 'Tabla con los resultados de la consulta. ' +
+                             'Muestra número de filas, tiempo de ejecución en ms, y todas las columnas devueltas. ' +
+                             'Pasa el mouse sobre una celda para ver el valor completo si está truncado.',
+                    icon: 'fa-list-alt',
+                    color: '#16a34a',
+                    selector: function () {
+                        return document.querySelector('.overflow-auto.border.rounded') || null;
+                    },
+                    position: 'top'
+                },
+                {
+                    title: 'Copiar CSV',
+                    content: 'Copia los resultados en formato CSV al portapapeles. ' +
+                             'Pega en Excel, Google Sheets o cualquier editor.',
+                    icon: 'fa-copy',
+                    color: '#64748b',
+                    selector: 'button[\\@click="copyResultsCSV()"]',
+                    position: 'bottom'
+                },
+                {
+                    title: 'Tour Completado',
+                    content: 'Conoces el módulo Query SQL. Recuerda: solo SELECT, usa Ctrl+Enter, y aprovecha las quick queries para diagnóstico. ' +
+                             'Repite esta guía cuando quieras con el botón morado.',
+                    icon: 'fa-check-circle',
+                    color: '#16a34a',
+                    selector: null,
+                    position: 'center'
+                }
+            ]
+        });
+    } else if (currentTab === 'backup') {
+        TcloudTour.start({
+            steps: [
+                {
+                    title: 'Backup PostgreSQL',
+                    content: 'Genera respaldos de la base de datos en formato <code>.sql</code>. ' +
+                             'Puedes descargar el backup localmente o subirlo a un servidor FTP automáticamente.',
+                    icon: 'fa-shield-alt',
+                    color: '#6366f1',
+                    selector: null,
+                    position: 'center',
+                    onShow: function () {
+                        switchTab('backup');
+                        scrollTo('nav.flex.-mb-px');
+                    }
+                },
+                {
+                    title: 'Sección: Backup Local',
+                    content: 'Genera y descarga un archivo <code>.sql</code> con el esquema completo y todos los datos. ' +
+                             'El archivo se descarga directamente al navegador.',
+                    icon: 'fa-download',
+                    color: '#16a34a',
+                    selector: 'div[\\@click="startBackup"]',
+                    position: 'bottom'
+                },
+                {
+                    title: 'Descargar Backup SQL',
+                    content: 'Haz clic para generar el backup. Puede tardar segundos o minutos dependiendo del tamaño de la BD. ' +
+                             'El archivo descargado contiene todas las tablas y datos.',
+                    icon: 'fa-cloud-download-alt',
+                    color: '#16a34a',
+                    selector: 'button[\\@click="startBackup()"]',
+                    position: 'bottom'
+                },
+                {
+                    title: 'Estado del Backup',
+                    content: 'Aquí aparece el resultado después de generar el backup: ' +
+                             '<strong style="color:#16a34a">verde</strong> = éxito, <strong style="color:#dc2626">rojo</strong> = error.',
+                    icon: 'fa-check-circle',
+                    color: '#475569',
+                    selector: function () {
+                        return document.querySelector('[x-show="backupInlineStatus !== null"]') || null;
+                    },
+                    position: 'top'
+                },
+                {
+                    title: 'Sección: Backup via FTP',
+                    content: 'Sube el backup a un servidor FTP automáticamente. ' +
+                             'Ideal para programar respaldos remotos fuera del servidor.',
+                    icon: 'fa-server',
+                    color: '#7c3aed',
+                    selector: 'h3.font-medium.text-gray-800.mb-4',
+                    position: 'bottom'
+                },
+                {
+                    title: 'Host FTP',
+                    content: 'IP o hostname del servidor FTP destino.',
+                    icon: 'fa-server',
+                    color: '#7c3aed',
+                    selector: 'input[x-model="ftp.host"]',
+                    position: 'bottom'
+                },
+                {
+                    title: 'Puerto FTP',
+                    content: 'Puerto TCP del servidor FTP. Por defecto <code>21</code>. ' +
+                             'Para FTP implícito usa <code>990</code>, para SFTP <code>22</code> (pero este módulo es solo FTP).',
+                    icon: 'fa-plug',
+                    color: '#7c3aed',
+                    selector: 'input[x-model="ftp.port"]',
+                    position: 'bottom'
+                },
+                {
+                    title: 'Usuario FTP',
+                    content: 'Usuario con permisos de escritura en el directorio destino.',
+                    icon: 'fa-user',
+                    color: '#7c3aed',
+                    selector: 'input[x-model="ftp.username"]',
+                    position: 'bottom'
+                },
+                {
+                    title: 'Contraseña FTP',
+                    content: 'Contraseña del usuario FTP. Se almacena de forma segura.',
+                    icon: 'fa-key',
+                    color: '#dc2626',
+                    selector: 'input[x-model="ftp.password"]',
+                    position: 'bottom'
+                },
+                {
+                    title: 'Ruta FTP (opcional)',
+                    content: 'Directorio remoto donde se subirá el backup. ' +
+                             'Si está vacío, se sube a la raíz del usuario FTP.',
+                    icon: 'fa-folder-open',
+                    color: '#7c3aed',
+                    selector: 'input[x-model="ftp.path"]',
+                    position: 'bottom'
+                },
+                {
+                    title: 'Guardar Config FTP',
+                    content: 'Persiste los datos de conexión FTP para usarlos en futuros respaldos.',
+                    icon: 'fa-save',
+                    color: '#3b82f6',
+                    selector: 'button[\\@click="saveFtpConfig()"]',
+                    position: 'bottom'
+                },
+                {
+                    title: 'Subir a FTP',
+                    content: 'Genera el backup y lo sube al servidor FTP configurado. ' +
+                             'El archivo se nombra con timestamp para evitar colisiones.',
+                    icon: 'fa-upload',
+                    color: '#7c3aed',
+                    selector: 'button[\\@click="startBackupToFtp()"]',
+                    position: 'bottom'
+                },
+                {
+                    title: 'Tour Completado',
+                    content: 'Conoces el módulo de Backup. Para hacer un respaldo, edita la config FTP (si vas a subir) y haz clic en <strong>Descargar Backup SQL</strong> o <strong>Subir a FTP</strong>. ' +
+                             'Repite esta guía cuando quieras con el botón morado.',
+                    icon: 'fa-check-circle',
+                    color: '#16a34a',
+                    selector: null,
+                    position: 'center'
+                }
+            ]
+        });
+    }
 }
 </script>
 @endsection

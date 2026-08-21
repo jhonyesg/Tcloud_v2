@@ -44,6 +44,11 @@ class DashboardController extends Controller
             $diskFree    = @disk_free_space($clipTmpDir) ?: 0;
             $diskUsed    = $diskTotal - $diskFree;
 
+            $shmDir       = '/dev/shm';
+            $shmTotal     = @disk_total_space($shmDir) ?: 0;
+            $shmFree      = @disk_free_space($shmDir) ?: 0;
+            $shmUsed      = $shmTotal - $shmFree;
+
             return view('dashboard.admin', [
                 'stats' => [
                     'total_users'    => User::count(),
@@ -58,6 +63,13 @@ class DashboardController extends Controller
                     'used_gb'    => round($diskUsed  / 1073741824, 2),
                     'free_gb'    => $diskTotal > 0 ? round($diskFree  / 1073741824, 1) : 0,
                     'percent'    => $diskTotal > 0 ? round(($diskUsed / $diskTotal) * 100, 1) : 0,
+                ],
+                'shm' => [
+                    'available'  => $shmTotal > 0,
+                    'total_gb'   => $shmTotal > 0 ? round($shmTotal / 1073741824, 1) : 0,
+                    'used_gb'    => round($shmUsed  / 1073741824, 2),
+                    'free_gb'    => $shmTotal > 0 ? round($shmFree  / 1073741824, 1) : 0,
+                    'percent'    => $shmTotal > 0 ? round(($shmUsed / $shmTotal) * 100, 1) : 0,
                 ],
                 'user' => $user,
                 'personalStorageId' => $this->personalStorageId($user),

@@ -41,6 +41,15 @@ return [
     ],
 
     /*
+     * Ventana de silencio, en segundos, para el aviso de entradas ilegibles.
+     *
+     * Una entrada que devuelve EIO lo hace en cada pasada, asi que sin esto el
+     * sincronizador repite el mismo warning indefinidamente: 30 carpetas dañadas
+     * en los NFS de difusor01 generaban ~1476 lineas al dia.
+     */
+    'unreadable_log_ttl' => (int) env('STORAGE_SYNC_UNREADABLE_LOG_TTL', 21600),
+
+    /*
      * Locks distribuidos (Redis) para serializar el sincronizado.
      *
      * Sin ellos, N cargas de pagina concurrentes sobre una carpeta vacia lanzaban

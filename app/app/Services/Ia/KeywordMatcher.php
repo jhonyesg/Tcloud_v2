@@ -40,10 +40,30 @@ class KeywordMatcher
             return 0;
         }
 
-        // Usuarios con el módulo activo.
+        // Fail-safe: si la transcripción no tiene file asociado (caso raro:
+        // borrado manual, fk rota), no hay storage del que inferir acceso, así
+        // que no generamos matches para nadie.
+        $storageId = $transcription->file?->storage_provider_id;
+        if (!$storageId) {
+            return 0;
+        }
+
+        // Usuarios con módulo activo Y con transcription_access=true sobre el
+        // storage de esta transcripción. El filtro respeta la concesión de
+        // acceso admin-only definida en user_storages.transcription_access:
+        // un cliente sin acceso a un storage concreto no recibe matches ni
+        // emails de ese storage, aunque tenga el módulo activo y keywords que
+        // coincidan. Los keyword_matches históricos no se eliminan; el filtro
+        // aplica solo a matches nuevos a partir de este deploy.
         $users = User::whereHas('alertsInteligente', function ($q) {
             $q->where('enabled', true);
-        })->with(['userKeywords:id,normalized', 'alertsInteligente'])->get();
+        })
+            ->whereHas('userStorages', function ($q) use ($storageId) {
+                $q->where('storage_provider_id', $storageId)
+                    ->where('transcription_access', true);
+            })
+            ->with(['userKeywords:id,normalized', 'alertsInteligente'])
+            ->get();
 
         if ($users->isEmpty()) {
             return 0;

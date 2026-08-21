@@ -22,6 +22,12 @@ class MisAvisosController extends Controller
 
         $matches = $user->keywordMatches()
             ->with(['transcription.file', 'keyword'])
+            ->whereHas('transcription.file.storageProvider', function ($q) use ($user) {
+                $q->whereHas('userStorages', function ($sq) use ($user) {
+                    $sq->where('user_id', $user->id)
+                        ->where('transcription_access', true);
+                });
+            })
             ->orderByDesc('matched_at')
             ->paginate(25);
 

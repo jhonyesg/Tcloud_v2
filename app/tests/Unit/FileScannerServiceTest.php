@@ -155,4 +155,95 @@ class FileScannerServiceTest extends TestCase
         $this->assertSame('video/mp4', $entry['mime_type']);
         $this->assertIsInt($entry['modified_at']);
     }
+
+    // ------------------------------------------------- entradas ilegibles
+    //
+    // En los NFS de difusor01 hay 67 archivos que devuelven EIO al hacer stat.
+    // Como el try/catch envolvia el bucle entero, UNA de esas entradas descartaba
+    // el directorio completo: en Atlantico/BARRANQUILLA_RADIO_YA/12062026 habia 4
+    // rotos y 64 sanos, y los 64 quedaban invisibles para la app.
+    //
+    // Un symlink colgante reproduce fielmente la condicion sin necesidad de NFS:
+    // scandir() lo lista, is_dir() da false y el stat falla.
+
+    private function crearEntradaIlegible(string $name): void
+    {
+        symlink($this->tmp . '/destino_que_no_existe', $this->tmp . '/' . $name);
+    }
+
+    public function testUnaEntradaIlegibleNoDescartaElRestoDelDirectorio(): void
+    {
+        file_put_contents($this->tmp . '/a.mp3', 'x');
+        file_put_contents($this->tmp . '/b.mp3', 'yy');
+        file_put_contents($this->tmp . '/c.mp3', 'zzz');
+        $this->crearEntradaIlegible('roto.mp3');
+
+        $r = $this->scanner()->scanDirectory($this->tmp);
+
+        $this->assertSame(3, $r->count(), 'los archivos sanos deben seguir llegando');
+        $this->assertSame(['roto.mp3'], $r->unreadable);
+        $this->assertSame(
+            ['a.mp3', 'b.mp3', 'c.mp3'],
+            array_column($r->entries, 'name')
+        );
+    }
+
+    public function testUnaEntradaIlegibleMarcaElEscaneoComoParcial(): void
+    {
+        file_put_contents($this->tmp . '/a.mp3', 'x');
+        $this->crearEntradaIlegible('roto.mp3');
+
+        $r = $this->scanner()->scanDirectory($this->tmp);
+
+        $this->assertTrue($r->isPartial());
+        $this->assertTrue($r->usable(), 'sirve para crear/actualizar filas');
+        $this->assertFalse($r->ok, 'pero nunca para purgar');
+        $this->assertSame(ScanResult::PARTIAL_UNREADABLE, $r->failureReason);
+    }
+
+    /** Sin entradas rotas el resultado debe seguir siendo fiable, no parcial. */
+    public function testUnDirectorioSanoNoSeMarcaComoParcial(): void
+    {
+        file_put_contents($this->tmp . '/a.mp3', 'x');
+
+        $r = $this->scanner()->scanDirectory($this->tmp);
+
+        $this->assertTrue($r->ok);
+        $this->assertFalse($r->isPartial());
+        $this->assertSame([], $r->unreadable);
+    }
+
+    /**
+     * El caso de Valle_Cauca/Cali_FM/10062026: la carpeta-dia entera da EIO. Se
+     * lista pero no se puede consultar, asi que cuenta como entrada ilegible.
+     */
+    public function testTodasLasEntradasIlegiblesDejaUnParcialVacio(): void
+    {
+        $this->crearEntradaIlegible('roto1.mp3');
+        $this->crearEntradaIlegible('roto2.mp3');
+
+        $r = $this->scanner()->scanDirectory($this->tmp);
+
+        $this->assertSame(0, $r->count());
+        $this->assertCount(2, $r->unreadable);
+        $this->assertTrue($r->isPartial());
+        $this->assertFalse(
+            $r->isTrustworthyEmpty(),
+            'vacio por ilegible NO es un vacio de confianza: purgar aqui borraria la carpeta en BD'
+        );
+    }
+
+    /** Las carpetas legibles se siguen describiendo bien aunque haya rotas al lado. */
+    public function testLasCarpetasSanasConvivenConEntradasRotas(): void
+    {
+        mkdir($this->tmp . '/sub');
+        $this->crearEntradaIlegible('roto.mp3');
+
+        $r = $this->scanner()->scanDirectory($this->tmp);
+
+        $this->assertSame(1, $r->count());
+        $this->assertTrue($r->entries[0]['is_folder']);
+        $this->assertSame('sub', $r->entries[0]['name']);
+        $this->assertSame(0, $r->entries[0]['size']);
+    }
 }

@@ -355,9 +355,15 @@
 ">
     <div class="flex justify-between items-center mb-4 sm:mb-6">
         <h1 class="text-lg sm:text-2xl font-bold text-gray-800">Gestionar Storages</h1>
-        <button @click="showCreateModal = true" class="bg-green-600 text-white px-3 sm:px-4 py-2 rounded hover:bg-green-700 text-sm">
-            <span class="hidden sm:inline">Crear Storage</span><span class="sm:hidden">Crear</span>
-        </button>
+        <div class="flex items-center gap-2">
+            <button onclick="startStoragesTour()" class="flex items-center gap-2 bg-purple-600 hover:bg-purple-700 text-white px-3 py-2 rounded text-sm transition-colors" title="Guía interactiva">
+                <i class="fas fa-map-marked-alt"></i>
+                <span class="hidden sm:inline">Guía</span>
+            </button>
+            <button @click="showCreateModal = true" class="bg-green-600 text-white px-3 sm:px-4 py-2 rounded hover:bg-green-700 text-sm">
+                <span class="hidden sm:inline">Crear Storage</span><span class="sm:hidden">Crear</span>
+            </button>
+        </div>
     </div>
 
     <!-- Barra de controles: búsqueda, filtros, paginación -->
@@ -819,4 +825,368 @@
         </div>
     </div>
 </div>
+
+<script src="/js/interactive-tour.js?v=20"></script>
+<script>
+function startStoragesTour() {
+    // Obtener Alpine dinámicamente
+    function getAlpine() {
+        var allData = document.querySelectorAll('[x-data]');
+        for (var i = 0; i < allData.length; i++) {
+            var el = allData[i];
+            if (el._x_dataStack && el._x_dataStack[0]) {
+                var data = el._x_dataStack[0];
+                if (data.storages !== undefined) return data;
+            }
+        }
+        var first = document.querySelector('[x-data]');
+        return first ? (first._x_dataStack ? first._x_dataStack[0] : null) : null;
+    }
+
+    // Cerrar modales abiertos
+    var alpine = getAlpine();
+    if (alpine) {
+        alpine.showCreateModal = false;
+        alpine.showEditModal = false;
+        alpine.showDeleteModal = false;
+        alpine.showUsersModal = false;
+        alpine.showEditAssignment = false;
+        alpine.editingAssignment = null;
+    }
+
+    // Helper: scroll suave a un elemento
+    function scrollTo(selector) {
+        var el = typeof selector === 'string' ? document.querySelector(selector) : selector;
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+        return el;
+    }
+
+    // Helper: obtener la primera fila de storage si existe
+    function getFirstStorageRow() {
+        return document.querySelector('table tbody tr:first-child') ||
+               document.querySelector('.sm\\:hidden .bg-white.rounded-xl') ||
+               null;
+    }
+
+    // Helper: obtener el primer botón de acción de un tipo en la primera fila
+    function getActionButton(text) {
+        var row = getFirstStorageRow();
+        if (!row) return null;
+        var btns = row.querySelectorAll('button');
+        for (var i = 0; i < btns.length; i++) {
+            if (btns[i].textContent.trim().toLowerCase().indexOf(text.toLowerCase()) !== -1) return btns[i];
+        }
+        return null;
+    }
+
+    TcloudTour.start({
+        steps: [
+            {
+                title: 'Gestionar Storages',
+                content: 'Los storages son los backends de almacenamiento donde residen los archivos de los usuarios. ' +
+                         'Soportan dos tipos: <strong style="color:#2563eb">Local</strong> (disco del servidor) y <strong style="color:#ea580c">S3</strong> (AWS S3 compatible). ' +
+                         'Aquí puedes crearlos, editar su configuración, asignar usuarios y verificar conectividad.',
+                icon: 'fa-hdd',
+                color: '#6366f1',
+                selector: null,
+                position: 'center'
+            },
+            {
+                title: 'Barra de Filtros',
+                content: 'Cuatro controles para acotar la lista: ' +
+                         '<ul style="margin:6px 0 0 16px;padding:0;">' +
+                         '<li><strong>Búsqueda</strong> por nombre, tipo o estado</li>' +
+                         '<li>Filtro de tipo (<strong>Local/S3</strong>)</li>' +
+                         '<li>Filtro de estado (<strong>Activo/Inactivo</strong>)</li>' +
+                         '<li>Resultados por página (10, 25, 50, 100, 250, 500)</li>' +
+                         '</ul>',
+                icon: 'fa-filter',
+                color: '#3b82f6',
+                selector: '.bg-white.rounded-lg.shadow.p-4',
+                position: 'bottom',
+                onShow: function () {
+                    scrollTo('.bg-white.rounded-lg.shadow.p-4');
+                }
+            },
+            {
+                title: 'Encabezados de la Tabla',
+                content: 'Las columnas disponibles para ordenar (clic en cualquier encabezado): ' +
+                         '<strong>ID</strong>, <strong>Nombre</strong>, <strong>Tipo</strong>, <strong>Archivos</strong>, <strong>Estado</strong> y <strong>Acciones</strong>. ' +
+                         'La flecha junto al nombre indica la columna activa (↑ ascendente, ↓ descendente).',
+                icon: 'fa-columns',
+                color: '#2563eb',
+                selector: 'table thead',
+                position: 'bottom',
+                onShow: function () {
+                    scrollTo('table thead');
+                }
+            },
+            {
+                title: 'Columna: ID',
+                content: 'Identificador numérico único del storage en la base de datos. ' +
+                         'Se asigna automáticamente al crear. Útil para referencias técnicas o scripts.',
+                icon: 'fa-hashtag',
+                color: '#475569',
+                selector: function () {
+                    var row = getFirstStorageRow();
+                    if (row) {
+                        var cells = row.querySelectorAll('td');
+                        if (cells.length > 0) return cells[0];
+                    }
+                    return null;
+                },
+                position: 'bottom',
+                onShow: function () {
+                    var row = getFirstStorageRow();
+                    if (row) scrollTo(row.querySelectorAll('td')[0]);
+                }
+            },
+            {
+                title: 'Columna: Nombre',
+                content: 'Nombre legible del storage. ' +
+                         'Se muestra a los usuarios en sus listados de storages disponibles, así que usa un nombre descriptivo (ej: "Compartido Marketing", "Archivos Legales").',
+                icon: 'fa-tag',
+                color: '#1e293b',
+                selector: function () {
+                    var row = getFirstStorageRow();
+                    if (row) {
+                        var cells = row.querySelectorAll('td');
+                        if (cells.length > 1) return cells[1];
+                    }
+                    return null;
+                },
+                position: 'bottom',
+                onShow: function () {
+                    var row = getFirstStorageRow();
+                    if (row) scrollTo(row.querySelectorAll('td')[1]);
+                }
+            },
+            {
+                title: 'Columna: Tipo',
+                content: 'Badge con el tipo de backend: ' +
+                         '<span style="color:#2563eb"><strong>local</strong></span> (disco del servidor) o ' +
+                         '<span style="color:#ea580c"><strong>s3</strong></span> (AWS S3 o compatible). ' +
+                         'Determina qué campos aparecen al editar (ruta base vs credenciales S3).',
+                icon: 'fa-server',
+                color: '#2563eb',
+                selector: function () {
+                    var row = getFirstStorageRow();
+                    if (row) {
+                        var cells = row.querySelectorAll('td');
+                        if (cells.length > 2) return cells[2];
+                    }
+                    return null;
+                },
+                position: 'bottom',
+                onShow: function () {
+                    var row = getFirstStorageRow();
+                    if (row) scrollTo(row.querySelectorAll('td')[2]);
+                }
+            },
+            {
+                title: 'Columna: Archivos',
+                content: 'Cantidad de archivos físicos asociados a este storage. ' +
+                         'Sirve para identificar storages muy usados antes de hacer tareas de mantenimiento.',
+                icon: 'fa-file',
+                color: '#3b82f6',
+                selector: function () {
+                    var row = getFirstStorageRow();
+                    if (row) {
+                        var cells = row.querySelectorAll('td');
+                        if (cells.length > 3) return cells[3];
+                    }
+                    return null;
+                },
+                position: 'bottom',
+                onShow: function () {
+                    var row = getFirstStorageRow();
+                    if (row) scrollTo(row.querySelectorAll('td')[3]);
+                }
+            },
+            {
+                title: 'Columna: Estado',
+                content: 'Badge del estado actual: ' +
+                         '<span style="color:#16a34a"><strong>Activo</strong></span> (verde, disponible para usuarios) o ' +
+                         '<span style="color:#dc2626"><strong>Inactivo</strong></span> (rojo, deshabilitado). ' +
+                         'Los storages inactivos no son visibles para los usuarios, pero sus archivos se conservan.',
+                icon: 'fa-circle',
+                color: '#16a34a',
+                selector: function () {
+                    var row = getFirstStorageRow();
+                    if (row) {
+                        var cells = row.querySelectorAll('td');
+                        if (cells.length > 4) return cells[4];
+                    }
+                    return null;
+                },
+                position: 'bottom',
+                onShow: function () {
+                    var row = getFirstStorageRow();
+                    if (row) scrollTo(row.querySelectorAll('td')[4]);
+                }
+            },
+            {
+                title: 'Acción: Usuarios',
+                content: 'Haz clic en <strong style="color:#16a34a">Usuarios</strong> para abrir un modal donde puedes: ' +
+                         '<ul style="margin:6px 0 0 16px;padding:0;">' +
+                         '<li>Ver quién tiene acceso con chips de color (<span style="color:#16a34a">verde=Completo</span>, <span style="color:#2563eb">azul=Escritura</span>, <span style="color:#f59e0b">ámbar=Subida</span>, <span style="color:#64748b">gris=Lectura</span>)</li>' +
+                         '<li>Asignar nuevos usuarios con permisos específicos</li>' +
+                         '<li>Editar permisos de usuarios existentes (incluido si pueden compartir)</li>' +
+                         '<li>Remover usuarios individualmente o todos a la vez</li>' +
+                         '</ul>',
+                icon: 'fa-users',
+                color: '#16a34a',
+                selector: function () {
+                    var btn = getActionButton('Usuarios');
+                    if (btn) return btn;
+                    var row = getFirstStorageRow();
+                    if (row) {
+                        var btns = row.querySelectorAll('button');
+                        if (btns.length > 0) return btns[0];
+                    }
+                    return null;
+                },
+                position: 'left',
+                onShow: function () {
+                    var btn = getActionButton('Usuarios');
+                    if (btn) scrollTo(btn);
+                }
+            },
+            {
+                title: 'Acción: Probar',
+                content: 'El botón <strong style="color:#64748b">Probar</strong> verifica que el storage responda correctamente. ' +
+                         '<ul style="margin:6px 0 0 16px;padding:0;">' +
+                         '<li>Para <strong>Local</strong>: comprueba que la ruta exista y sea escribible.</li>' +
+                         '<li>Para <strong>S3</strong>: valida credenciales, región y acceso al bucket.</li>' +
+                         '</ul>' +
+                         'Útil para detectar problemas antes de que los usuarios los reporten.',
+                icon: 'fa-plug',
+                color: '#64748b',
+                selector: function () {
+                    var btn = getActionButton('Probar');
+                    if (btn) return btn;
+                    var row = getFirstStorageRow();
+                    if (row) {
+                        var btns = row.querySelectorAll('button');
+                        if (btns.length > 1) return btns[1];
+                    }
+                    return null;
+                },
+                position: 'left',
+                onShow: function () {
+                    var btn = getActionButton('Probar');
+                    if (btn) scrollTo(btn);
+                }
+            },
+            {
+                title: 'Acción: Editar',
+                content: 'Haz clic en <strong style="color:#4f46e5">Editar</strong> para abrir un modal con: ' +
+                         '<ul style="margin:6px 0 0 16px;padding:0;">' +
+                         '<li>Cambio de nombre</li>' +
+                         '<li>Modificación de ruta base (local) o credenciales S3</li>' +
+                         '<li>Casilla para activar/desactivar el storage</li>' +
+                         '</ul>' +
+                         '<span style="color:#dc2626"><strong>Nota:</strong> desactivar un storage impide que los usuarios vean sus archivos, pero no los elimina.</span>',
+                icon: 'fa-edit',
+                color: '#4f46e5',
+                selector: function () {
+                    var btn = getActionButton('Editar');
+                    if (btn) return btn;
+                    var row = getFirstStorageRow();
+                    if (row) {
+                        var btns = row.querySelectorAll('button');
+                        if (btns.length > 2) return btns[2];
+                    }
+                    return null;
+                },
+                position: 'left',
+                onShow: function () {
+                    var btn = getActionButton('Editar');
+                    if (btn) scrollTo(btn);
+                }
+            },
+            {
+                title: 'Acción: Eliminar',
+                content: '<strong style="color:#dc2626">Eliminar</strong> abre un modal de confirmación que muestra ' +
+                         'cuántos archivos se verán afectados. ' +
+                         '<span style="color:#dc2626"><strong>Advertencia:</strong> esta acción es irreversible. ' +
+                         'Los archivos físicos en disco NO se borran, pero desaparecen de la interfaz de usuarios.</span>',
+                icon: 'fa-trash-alt',
+                color: '#dc2626',
+                selector: function () {
+                    var btn = getActionButton('Eliminar');
+                    if (btn) return btn;
+                    var row = getFirstStorageRow();
+                    if (row) {
+                        var btns = row.querySelectorAll('button');
+                        if (btns.length > 3) return btns[3];
+                    }
+                    return null;
+                },
+                position: 'left',
+                onShow: function () {
+                    var btn = getActionButton('Eliminar');
+                    if (btn) scrollTo(btn);
+                }
+            },
+            {
+                title: 'Crear Nuevo Storage',
+                content: 'Haz clic en el botón verde <strong>Crear Storage</strong> para abrir el modal de creación. ' +
+                         'Define nombre, tipo (<strong>Local</strong> requiere ruta base; <strong>S3</strong> requiere región, key, secret y bucket) y estado inicial. ' +
+                         'Tras crearlo, <strong>asigna usuarios</strong> en el modal de Usuarios para que puedan acceder.',
+                icon: 'fa-plus-circle',
+                color: '#16a34a',
+                selector: 'button[onclick="startStoragesTour()"] + button',
+                position: 'bottom',
+                onShow: function () {
+                    var btn = document.querySelector('button[onclick="startStoragesTour()"] + button');
+                    if (btn) scrollTo(btn);
+                }
+            },
+            {
+                title: 'Paginación',
+                content: 'Aparece automáticamente cuando hay más resultados que el límite por página. ' +
+                         'Muestra el rango de registros actual (ej: "1–25 de 47") y botones numerados para navegar. ' +
+                         'Si solo hay una página, la paginación se oculta.',
+                icon: 'fa-list-ol',
+                color: '#64748b',
+                selector: function () {
+                    return document.querySelector('.flex.items-center.justify-between.px-6.py-4.border-t') ||
+                           document.querySelector('.flex.justify-between') || null;
+                },
+                position: 'top',
+                onShow: function () {
+                    var p = document.querySelector('.flex.items-center.justify-between.px-6.py-4.border-t');
+                    if (p) scrollTo(p);
+                }
+            },
+            {
+                title: 'Notificaciones Toast',
+                content: 'En la esquina inferior derecha aparecen mensajes de confirmación o error tras realizar acciones (crear, editar, eliminar, probar). ' +
+                         '<strong style="color:#16a34a">Verde</strong> = éxito, <strong style="color:#dc2626">rojo</strong> = error. ' +
+                         'Desaparecen automáticamente tras 3.5 segundos.',
+                icon: 'fa-bell',
+                color: '#f59e0b',
+                selector: function () {
+                    return document.querySelector('[x-show="toast.show"]') || null;
+                },
+                position: 'center'
+            },
+            {
+                title: 'Guía Completada',
+                content: 'Conoces todo lo necesario para gestionar Storages: ' +
+                         '<strong>crear</strong>, <strong>editar</strong>, <strong>probar</strong>, <strong>asignar usuarios</strong> y <strong>eliminar</strong>. ' +
+                         'Recuerda siempre <strong>asignar usuarios</strong> tras crear un storage, ' +
+                         '<strong>probar la conexión</strong> antes de notificar problemas, ' +
+                         'y <strong>tener cuidado al eliminar</strong>. ' +
+                         'Repite esta guía cuando quieras con el botón morado.',
+                icon: 'fa-check-circle',
+                color: '#16a34a',
+                selector: null,
+                position: 'center'
+            }
+        ]
+    });
+}
+</script>
 @endsection

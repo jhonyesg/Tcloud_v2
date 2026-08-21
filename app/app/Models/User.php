@@ -34,7 +34,7 @@ class User extends Model
     public function storageProviders(): BelongsToMany
     {
         return $this->belongsToMany(StorageProvider::class, 'user_storages')
-            ->withPivot('permissions', 'can_create_shares', 'assigned_at');
+            ->withPivot('permissions', 'can_create_shares', 'transcription_access', 'assigned_at');
     }
 
     private function loadedStorages(): Collection

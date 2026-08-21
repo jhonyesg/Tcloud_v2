@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Ia;
 
 use App\Http\Controllers\Controller;
 use App\Models\Keyword;
+use App\Models\StorageProvider;
 use App\Models\User;
 use App\Models\UserAlertsInteligente;
 use App\Services\Ia\AlertDispatcher;
@@ -15,8 +16,20 @@ class AvisosInteligentesController extends Controller
     public function index(Request $request)
     {
         if ($request->wantsJson()) {
+            // Cobertura de canales del cliente: cuántos storages habilitados
+            // tiene asignados. Con withCount se resuelve en la misma consulta
+            // (evita el N+1 de recorrer userStorages.storageProvider en PHP).
+            //
+            // Qué se transcribe NO se cuenta aquí: es una decisión de API
+            // Transcriptor sobre el storage, no un atributo del cliente.
             $query = User::with(['alertsInteligente'])
-                ->withCount('userKeywords as keywords_count');
+                ->withCount([
+                    'userKeywords as keywords_count',
+                    'storageProviders as storages_count' => fn ($q) => $q
+                        ->where('storage_providers.enabled', true),
+                    'storageProviders as storages_with_access' => fn ($q) => $q
+                        ->where('user_storages.transcription_access', true),
+                ]);
 
             if ($search = $request->input('q')) {
                 $query->where(function ($q) use ($search) {
@@ -50,9 +63,64 @@ class AvisosInteligentesController extends Controller
             ->orderByDesc('matched_at')
             ->paginate(25);
 
+        // Canales asignados al cliente. Aquí se concede acceso a los resultados
+        // que api-transcriptor produce (transcripción_access); no se decide qué
+        // se transcribe. Eso sigue siendo exclusivo de /ia/api-transcriptor y se
+        // refleja aquí solo como dato informativo del storage.
+        $storages = $user->storageProviders()
+            ->where('storage_providers.enabled', true)
+            ->orderBy('storage_providers.name')
+            ->get(['storage_providers.id', 'storage_providers.name', 'storage_providers.type', 'storage_providers.transcription_enabled', 'user_storages.transcription_access'])
+            ->map(fn ($s) => [
+                'id' => $s->id,
+                'name' => $s->name,
+                'type' => $s->type,
+                'transcription_enabled' => (bool) $s->transcription_enabled,
+                'transcription_access' => (bool) $s->pivot->transcription_access,
+            ])
+            ->values();
+
+        $globalStorages = StorageProvider::where('enabled', true)->count();
+        $globalTranscribing = StorageProvider::transcriptionEnabled()->count();
+
         return view('ia.avisos-inteligentes.user-detail', [
             'user' => $user,
             'matches' => $matches,
+            'storages' => $storages,
+            'globalStorages' => $globalStorages,
+            'globalTranscribing' => $globalTranscribing,
+        ]);
+    }
+
+    public function toggleStorageAccess(Request $request, int $userId, int $storageId)
+    {
+        $request->validate([
+            'access' => 'required|boolean',
+        ]);
+
+        $user = User::findOrFail($userId);
+        $storage = StorageProvider::findOrFail($storageId);
+
+        $pivot = DB::table('user_storages')
+            ->where('user_id', $user->id)
+            ->where('storage_provider_id', $storage->id)
+            ->first();
+
+        if (!$pivot) {
+            return response()->json([
+                'error' => 'Este storage no está asignado al cliente. Asígnalo primero en /admin/storages.',
+            ], 422);
+        }
+
+        $access = $request->boolean('access');
+        DB::table('user_storages')
+            ->where('user_id', $user->id)
+            ->where('storage_provider_id', $storage->id)
+            ->update(['transcription_access' => $access]);
+
+        return response()->json([
+            'storage_id' => $storage->id,
+            'transcription_access' => $access,
         ]);
     }
 

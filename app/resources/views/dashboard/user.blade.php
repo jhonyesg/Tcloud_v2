@@ -4,9 +4,15 @@
 
 @section('content')
 <div class="p-6">
-    <div class="mb-6">
-        <h1 class="text-2xl font-bold text-slate-800">Bienvenido, {{ $user->email }}</h1>
-        <p class="text-slate-500 mt-0.5">Gestiona tus archivos y carpetas</p>
+    <div class="mb-6 flex items-center justify-between flex-wrap gap-3">
+        <div>
+            <h1 class="text-2xl font-bold text-slate-800">Bienvenido, {{ $user->email }}</h1>
+            <p class="text-slate-500 mt-0.5">Gestiona tus archivos y carpetas</p>
+        </div>
+        <button onclick="startUserDashboardTour()" class="flex items-center gap-2 bg-purple-600 hover:bg-purple-700 text-white px-3 py-2 rounded text-sm transition-colors" title="Guía interactiva">
+            <i class="fas fa-map-marked-alt"></i>
+            <span class="hidden sm:inline">Guía</span>
+        </button>
     </div>
 
     <!-- Quick-access cards -->
@@ -307,4 +313,190 @@
         </div>
     </div>
 </div>
+
+<script src="/js/interactive-tour.js?v=20"></script>
+<script>
+function startUserDashboardTour() {
+    function scrollTo(selector) {
+        var el = typeof selector === 'string' ? document.querySelector(selector) : selector;
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+        return el;
+    }
+
+    function getCardByTitle(title) {
+        var cards = document.querySelectorAll('a, .bg-white.rounded-xl');
+        for (var i = 0; i < cards.length; i++) {
+            var h3 = cards[i].querySelector('h3');
+            if (h3 && h3.textContent.trim() === title) return cards[i];
+        }
+        return null;
+    }
+
+    TcloudTour.start({
+        steps: [
+            {
+                title: 'Bienvenido a Tcloud',
+                content: 'Este es tu panel principal. Desde aquí accedes a tus <strong>archivos</strong>, ' +
+                         '<strong>enlaces compartidos</strong>, <strong>perfil</strong>, ' +
+                         'y tus <strong>storages asignados</strong>. ' +
+                         'También encuentras la documentación oficial en <strong>Guías e Instructivos</strong>.',
+                icon: 'fa-home',
+                color: '#6366f1',
+                selector: null,
+                position: 'center'
+            },
+            {
+                title: 'Mis Archivos',
+                content: 'Tarjeta de acceso directo a tu gestor de archivos. ' +
+                         'Muestra cuántos storages tienes asignados. ' +
+                         'Haz clic para entrar al listado de storages y explorar tus archivos.',
+                icon: 'fa-folder-open',
+                color: '#6366f1',
+                selector: function () { return getCardByTitle('Mis Archivos'); },
+                position: 'bottom',
+                onShow: function () {
+                    var c = getCardByTitle('Mis Archivos');
+                    if (c) scrollTo(c);
+                }
+            },
+            {
+                title: 'Compartidos',
+                content: 'Acceso a tus <strong>enlaces públicos</strong> (shares). ' +
+                         'Aquí puedes ver, copiar y revocar los enlaces que has generado para compartir archivos.',
+                icon: 'fa-link',
+                color: '#6366f1',
+                selector: function () { return getCardByTitle('Compartidos'); },
+                position: 'bottom',
+                onShow: function () {
+                    var c = getCardByTitle('Compartidos');
+                    if (c) scrollTo(c);
+                }
+            },
+            {
+                title: 'Mi Perfil',
+                content: 'Configuración de tu cuenta: cambio de contraseña, datos personales, ' +
+                         'gestión de sesiones activas y preferencias.',
+                icon: 'fa-user-cog',
+                color: '#16a34a',
+                selector: function () { return getCardByTitle('Mi Perfil'); },
+                position: 'bottom',
+                onShow: function () {
+                    var c = getCardByTitle('Mi Perfil');
+                    if (c) scrollTo(c);
+                }
+            },
+            {
+                title: 'Mi Espacio Personal',
+                content: 'Acceso directo a tu <strong>storage personal</strong> exclusivo. ' +
+                         'A diferencia de los storages compartidos, nadie más tiene acceso. ' +
+                         'Es ideal para guardar archivos privados.',
+                icon: 'fa-user-circle',
+                color: '#f59e0b',
+                selector: function () { return getCardByTitle('Mi Espacio Personal'); },
+                position: 'bottom',
+                onShow: function () {
+                    var c = getCardByTitle('Mi Espacio Personal');
+                    if (c) scrollTo(c);
+                }
+            },
+            {
+                title: 'Medios Puntuales',
+                content: 'Si te han asignado canales de grabación, aparece esta tarjeta con el conteo. ' +
+                         'Haz clic para ver el detalle y ejecutar grabaciones.',
+                icon: 'fa-satellite-dish',
+                color: '#ea580c',
+                selector: function () { return getCardByTitle('Medios Puntuales'); },
+                position: 'bottom',
+                onShow: function () {
+                    var c = getCardByTitle('Medios Puntuales');
+                    if (c) scrollTo(c);
+                }
+            },
+            {
+                title: 'Editor de Medios',
+                content: 'Si tienes habilitado el Editor de Medios, esta tarjeta muestra el estado y tu ' +
+                         '<strong>consumo mensual</strong> (clips usados / límite). ' +
+                         'Si el límite es 0, no tienes restricción.',
+                icon: 'fa-film',
+                color: '#7c3aed',
+                selector: function () { return getCardByTitle('Editor de Medios'); },
+                position: 'bottom',
+                onShow: function () {
+                    var c = getCardByTitle('Editor de Medios');
+                    if (c) scrollTo(c);
+                }
+            },
+            {
+                title: 'Guías e Instructivos',
+                content: 'Documentación oficial en PDF. ' +
+                         'Haz clic en cualquier PDF para abrirlo en el navegador. ' +
+                         'Esta sección se irá actualizando conforme evolucione la plataforma.',
+                icon: 'fa-book-open',
+                color: '#dc2626',
+                selector: function () {
+                    var btn = document.querySelector('button[onclick*="openInstructivo"]');
+                    return btn || null;
+                },
+                position: 'top',
+                onShow: function () {
+                    var btn = document.querySelector('button[onclick*="openInstructivo"]');
+                    if (btn) scrollTo(btn);
+                }
+            },
+            {
+                title: 'Storages Asignados',
+                content: 'Lista de todos los <strong>storages</strong> a los que tienes acceso con tus <strong>permisos</strong>: ' +
+                         '<span style="color:#16a34a"><strong>Full</strong></span> (completo), ' +
+                         '<span style="color:#6366f1"><strong>Write</strong></span> (escritura), ' +
+                         '<span style="color:#f59e0b"><strong>Upload</strong></span> (subida) o ' +
+                         '<span style="color:#475569"><strong>Read</strong></span> (lectura). ' +
+                         'Haz clic para entrar a cualquiera.',
+                icon: 'fa-hdd',
+                color: '#3b82f6',
+                selector: function () {
+                    var h3s = document.querySelectorAll('h3.text-lg');
+                    for (var i = 0; i < h3s.length; i++) {
+                        if (h3s[i].textContent.trim() === 'Storages Asignados') return h3s[i];
+                    }
+                    return null;
+                },
+                position: 'top',
+                onShow: function () {
+                    var h3s = document.querySelectorAll('h3.text-lg');
+                    for (var i = 0; i < h3s.length; i++) {
+                        if (h3s[i].textContent.trim() === 'Storages Asignados') {
+                            scrollTo(h3s[i]);
+                            return;
+                        }
+                    }
+                }
+            },
+            {
+                title: 'Mis Sesiones',
+                content: 'Sección desplegable con tus <strong>dispositivos conectados</strong>. ' +
+                         'Puedes ver dispositivos, IPs, fechas de inicio/actividad y <strong>cerrar otras sesiones</strong> ' +
+                         'por seguridad si ves algo sospechoso.',
+                icon: 'fa-shield-alt',
+                color: '#475569',
+                selector: 'button[\\@click="toggle()"]',
+                position: 'top',
+                onShow: function () {
+                    var btn = document.querySelector('button[\\@click="toggle()"]');
+                    if (btn) scrollTo(btn);
+                }
+            },
+            {
+                title: 'Guía Completada',
+                content: 'Conoces tu panel personal y todas sus funciones. ' +
+                         'Desde aquí puedes acceder a archivos, storage personal, shares, perfil y sesiones. ' +
+                         'Repite esta guía cuando quieras con el botón morado.',
+                icon: 'fa-check-circle',
+                color: '#16a34a',
+                selector: null,
+                position: 'center'
+            }
+        ]
+    });
+}
+</script>
 @endsection

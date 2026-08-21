@@ -53,8 +53,14 @@ class TranscriptorApiClient
      * directa a markError() y, tras max_retries, a dead. Solo se reintenta ante
      * fallo de conexion o 5xx — un 4xx/401 es permanente y reintentarlo solo
      * multiplica la carga.
+     *
+     * IMPORTANTE: $stream debe ser un resource ABIERTO por el caller (fopen).
+     * El caller es responsable de cerrarlo con fclose() en un bloque finally.
+     * Esto evita la fuga de fd que vimos en 2026-08-12 cuando los workers
+     * acumulaban ~100 wavs (deleted) en /dev/shm porque Guzzle/Laravel no
+     * cierran el stream en todas las rutas (retry, throw: false, 5xx).
      */
-    private function submitRequest(string $opusPath)
+    private function submitRequest(string $audioPath, $stream)
     {
         return Http::timeout($this->submitTimeout())
             ->retry(
@@ -73,88 +79,67 @@ class TranscriptorApiClient
                 },
                 throw: false
             )
-            // Streaming en vez de file_get_contents(): cargar el opus entero en
-            // un string PHP se multiplicaba por N workers con memory_limit=512M.
-            ->attach('file', fopen($opusPath, 'r'), basename($opusPath))
+            // El Content-Type va explicito: si no, Guzzle lo deduce de la
+            // extension del nombre y el tipo que ve la API depende de un
+            // detalle interno de la dependencia.
+            ->attach('file', $stream, basename($audioPath), [
+                'Content-Type' => str_ends_with($audioPath, '.wav') ? 'audio/wav' : 'audio/ogg',
+            ])
             ->asMultipart();
     }
 
     /**
-     * Envia el archivo opus a POST /v1/transcribe SIN callback_url.
-     * La recepción del SRT se hace por polling (TranscriptionPollingService).
-     * Devuelve ['job_id'=>..., 'priority'=>..., 'state'=>..., 'node_id'=>...] o lanza.
+     * Abre el archivo de audio y devuelve un resource PHP.
+     * Lanza RuntimeException si no se puede abrir (permisos, path invalido).
+     * El caller es responsable de cerrarlo con fclose().
      */
-    public function submitNoCallback(File $file, string $opusPath): array
+    private function openAudioStream(string $audioPath)
     {
-        if (!is_file($opusPath) || !is_readable($opusPath)) {
-            throw new \RuntimeException("Archivo opus no legible: {$opusPath}");
+        if (!is_file($audioPath) || !is_readable($audioPath)) {
+            throw new \RuntimeException("Archivo de audio no legible: {$audioPath}");
         }
-
-        $endpoint = $this->baseUrl() . '/v1/transcribe';
-
-        try {
-            $response = $this->submitRequest($opusPath)->post($endpoint, [
-                'language' => $this->settings->str('language'),
-                'lang_fix' => $this->settings->str('lang_fix'),
-                'original_name' => $file->name,
-                'file_id' => (string) $file->id,
-                'storage_id' => (string) $file->storage_provider_id,
-                'tcloud_callback' => json_encode([
-                    'file_id' => $file->id,
-                    'original_name' => $file->name,
-                    'storage_id' => $file->storage_provider_id,
-                    'path' => $file->path,
-                ]),
-            ]);
-        } catch (ConnectionException $e) {
-            throw new \RuntimeException("No se pudo conectar al transcriptor: {$e->getMessage()}", 0, $e);
+        $stream = @fopen($audioPath, 'r');
+        if ($stream === false) {
+            throw new \RuntimeException("No se pudo abrir el archivo para envio: {$audioPath}");
         }
-
-        if ($response->status() === 401) {
-            throw new \RuntimeException('API auth required');
-        }
-
-        if (!$response->successful()) {
-            throw new \RuntimeException('Transcriptor API error ' . $response->status() . ': ' . $response->body());
-        }
-
-        $data = $response->json();
-        if (!is_array($data) || empty($data['job_id'])) {
-            throw new \RuntimeException('Respuesta inesperada del transcriptor: ' . $response->body());
-        }
-
-        return $data;
+        return $stream;
     }
 
     /**
-     * Envia el archivo opus a POST /v1/transcribe.
-     * Devuelve ['job_id'=>..., 'priority'=>..., 'state'=>...] o lanza.
+     * Cierra un resource de forma segura. No-op si no es un resource (defensivo:
+     * un cierre explicito previo nunca deberia pasar, pero si lo hace, no
+     * queremos un TypeError).
      */
-    public function submit(File $file, string $opusPath, string $callbackUrl): array
+    private function closeStream($stream): void
     {
-        if (!is_file($opusPath) || !is_readable($opusPath)) {
-            throw new \RuntimeException("Archivo opus no legible: {$opusPath}");
+        if (is_resource($stream)) {
+            @fclose($stream);
         }
+    }
+
+    /**
+     * Envia el archivo de audio ya convertido a POST /v1/transcribe SIN callback_url.
+     * La recepción del SRT se hace por polling (TranscriptionPollingService).
+     * Devuelve ['job_id'=>..., 'priority'=>..., 'state'=>...] o lanza.
+     *
+     * Solo se envian los campos documentados por la API: file, language, lang_fix.
+     * Campos previos como `original_name`, `file_id`, `tcloud_callback` se eliminaron
+     * al alinear con la versión actualizada — la API los ignoraba pero no aportaban.
+     */
+    public function submitNoCallback(File $file, string $audioPath): array
+    {
+        $stream = $this->openAudioStream($audioPath);
 
         $endpoint = $this->baseUrl() . '/v1/transcribe';
-
         try {
-            $response = $this->submitRequest($opusPath)->post($endpoint, [
+            $response = $this->submitRequest($audioPath, $stream)->post($endpoint, [
                 'language' => $this->settings->str('language'),
                 'lang_fix' => $this->settings->str('lang_fix'),
-                'callback_url' => $callbackUrl,
-                'original_name' => $file->name,
-                'file_id' => (string) $file->id,
-                'storage_id' => (string) $file->storage_provider_id,
-                'tcloud_callback' => json_encode([
-                    'file_id' => $file->id,
-                    'original_name' => $file->name,
-                    'storage_id' => $file->storage_provider_id,
-                    'path' => $file->path,
-                ]),
             ]);
         } catch (ConnectionException $e) {
             throw new \RuntimeException("No se pudo conectar al transcriptor: {$e->getMessage()}", 0, $e);
+        } finally {
+            $this->closeStream($stream);
         }
 
         if ($response->status() === 401) {
@@ -172,6 +157,18 @@ class TranscriptorApiClient
 
         return $data;
     }
+
+    /*
+     * Aqui vivia submit(File, string, string $callbackUrl), que mandaba un
+     * callback_url apuntando a /webhooks/transcription.
+     *
+     * Eliminado el 2026-08-12: no lo llamaba nadie y esa ruta nunca existio.
+     * Su presencia sostenia la ficcion de que los resultados vuelven solos por
+     * webhook — el panel de ayuda y el tour lo repetian, y durante una semana
+     * nadie miro el polling cuando 33.571 transcripciones dejaron de cerrarse.
+     *
+     * El unico camino de retorno es TranscriptionPollingService.
+     */
 
     /**
      * Descarga el SRT desde una URL absoluta o relativa devuelta por el nodo.
@@ -192,7 +189,11 @@ class TranscriptorApiClient
             ->get($endpoint);
 
         if (!$response->successful()) {
-            throw new \RuntimeException("No se pudo descargar el SRT ({$response->status()}): {$response->body()}");
+            throw new TranscriptorUpstreamException(
+                "No se pudo descargar el SRT ({$response->status()}): {$response->body()}",
+                $response->status(),
+                'srt',
+            );
         }
 
         return $response->body();
@@ -211,7 +212,11 @@ class TranscriptorApiClient
             ->get($endpoint);
 
         if (!$response->successful()) {
-            throw new \RuntimeException("No se pudo descargar el SRT ({$response->status()}): {$response->body()}");
+            throw new TranscriptorUpstreamException(
+                "No se pudo descargar el SRT ({$response->status()}): {$response->body()}",
+                $response->status(),
+                'srt',
+            );
         }
 
         return $response->body();
@@ -230,7 +235,11 @@ class TranscriptorApiClient
             ->get($endpoint);
 
         if (!$response->successful()) {
-            throw new \RuntimeException("getJob error {$response->status()}: {$response->body()}");
+            throw new TranscriptorUpstreamException(
+                "getJob error {$response->status()}: {$response->body()}",
+                $response->status(),
+                'job',
+            );
         }
 
         $data = $response->json();
@@ -302,6 +311,113 @@ class TranscriptorApiClient
     public function getBaseUrl(): string
     {
         return $this->baseUrl();
+    }
+
+    /**
+     * Re-encola un job fallido (error|dead) en el transcriptor, reusando el
+     * `.bin` aún en disco. Solo funciona si el `.bin` no ha sido purgado
+     * (ventana BIN_RETENTION_HOURS, default 24h). Más rápido que re-ffmpeg +
+     * re-upload, pero limitado en el tiempo.
+     *
+     * Endpoint: POST /v1/jobs/{id}/retry
+     * Respuesta 200: {job_id, state:"queued"}
+     * 404: job no existe | 409: job no está en error|dead
+     */
+    public function retryUpstream(string $jobId, string $nodeUrl = ''): array
+    {
+        $base = rtrim($nodeUrl ?: $this->baseUrl(), '/');
+        $endpoint = "{$base}/v1/jobs/{$jobId}/retry";
+
+        $response = Http::withHeaders($this->authHeaders())
+            ->timeout($this->getTimeout())
+            ->post($endpoint);
+
+        if ($response->status() === 404) {
+            throw new \RuntimeException("retry upstream 404: job no existe en la API externa");
+        }
+        if ($response->status() === 409) {
+            throw new \RuntimeException("retry upstream 409: job no está en estado error/dead");
+        }
+        if (!$response->successful()) {
+            throw new \RuntimeException("retry upstream {$response->status()}: {$response->body()}");
+        }
+
+        return $response->json() ?: [];
+    }
+
+    /**
+     * Saca un job processing colgado de vuelta a queued. Solo permitido si
+     * lleva más de WORKER_TIMEOUT en processing. Runbook para motores hung.
+     *
+     * Endpoint: POST /v1/jobs/{id}/unstick
+     * Respuesta 200: {job_id, state:"queued", was_stuck_s}
+     * 409: job no está en processing, o no lleva suficiente tiempo.
+     */
+    public function unstickUpstream(string $jobId, string $nodeUrl = ''): array
+    {
+        $base = rtrim($nodeUrl ?: $this->baseUrl(), '/');
+        $endpoint = "{$base}/v1/jobs/{$jobId}/unstick";
+
+        $response = Http::withHeaders($this->authHeaders())
+            ->timeout($this->getTimeout())
+            ->post($endpoint);
+
+        if (!$response->successful()) {
+            throw new \RuntimeException("unstick upstream {$response->status()}: {$response->body()}");
+        }
+
+        return $response->json() ?: [];
+    }
+
+    /**
+     * Cambia la prioridad de un job en queued. El worker_loop ordena por
+     * priority DESC, así que el job se reordena automáticamente.
+     *
+     * Endpoint: PATCH /v1/jobs/{id}/priority
+     */
+    public function changePriority(string $jobId, int $priority, string $nodeUrl = ''): array
+    {
+        $base = rtrim($nodeUrl ?: $this->baseUrl(), '/');
+        $endpoint = "{$base}/v1/jobs/{$jobId}/priority";
+
+        $response = Http::withHeaders($this->authHeaders())
+            ->timeout($this->getTimeout())
+            ->asMultipart()
+            ->patch($endpoint, ['priority' => $priority]);
+
+        if (!$response->successful()) {
+            throw new \RuntimeException("priority upstream {$response->status()}: {$response->body()}");
+        }
+
+        return $response->json() ?: [];
+    }
+
+    /**
+     * Elimina un job terminal en la API externa (SRT + .bin). Destructivo e
+     * irreversible. Solo permitido en estados done|error|dead|cancelled.
+     *
+     * Endpoint: DELETE /v1/jobs/{id}
+     */
+    public function deleteUpstream(string $jobId, string $nodeUrl = ''): bool
+    {
+        $base = rtrim($nodeUrl ?: $this->baseUrl(), '/');
+        $endpoint = "{$base}/v1/jobs/{$jobId}";
+
+        $response = Http::withHeaders($this->authHeaders())
+            ->timeout($this->getTimeout())
+            ->delete($endpoint);
+
+        if ($response->status() === 404) {
+            return true;
+        }
+        if ($response->status() === 409) {
+            throw new \RuntimeException("delete upstream 409: job no está en estado terminal");
+        }
+        if (!$response->successful()) {
+            throw new \RuntimeException("delete upstream {$response->status()}: {$response->body()}");
+        }
+
+        return true;
     }
 
     /**

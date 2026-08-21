@@ -86,6 +86,40 @@ class PruneGuardTest extends TestCase
         $this->assertTrue($d->allowed, 'por debajo de min_rows_for_ratio no se aplica la regla de proporcion');
     }
 
+    /**
+     * Rotacion diaria: los storages de prensa conservan ~2 dias en disco y la BD
+     * lleva meses. Automaticamente se rechaza — bien, porque es indistinguible de
+     * un disco que dejo de responder. El boton Actualizar manda `forced` y por eso
+     * es la unica via de reconciliarlos.
+     *
+     * `dbCount` es el TOTAL de la carpeta, no los huerfanos: el llamador pasaba lo
+     * segundo y el ratio medida algo sin sentido.
+     */
+    public function testRotacionDiariaSoloSeReconciliaForzando(): void
+    {
+        $automatico = $this->guard()->decide(dbCount: 118, diskCount: 4, scanOk: true);
+        $manual = $this->guard()->decide(dbCount: 118, diskCount: 4, scanOk: true, forced: true);
+
+        $this->assertTrue($automatico->refused());
+        $this->assertSame('mass_delete_ratio', $automatico->reason);
+        $this->assertTrue($manual->allowed, 'una orden explicita del operador si reconcilia');
+    }
+
+    /**
+     * El caso que el llamador roto dejaba pasar: 100 filas, 40 desaparecen.
+     *
+     * Con el conteo de huerfanos (40) como dbCount y 60 en disco, max(0, 40-60)
+     * daba 0 y el ratio salia 0 — permitia borrar el 40% saltandose el umbral del
+     * 34%. Con el total como denominador la regla hace lo que su nombre dice.
+     */
+    public function testBorradoDelCuarentaPorCientoSuperaElUmbral(): void
+    {
+        $d = $this->guard()->decide(dbCount: 100, diskCount: 60, scanOk: true);
+
+        $this->assertTrue($d->refused());
+        $this->assertSame(0.4, $d->context['ratio']);
+    }
+
     /** Regla 4: --force salta las reglas 2 y 3. */
     public function testForceSaltaVacioYRatio(): void
     {
