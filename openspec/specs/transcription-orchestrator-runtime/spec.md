@@ -1,8 +1,10 @@
 # Spec — Transcription Orchestrator Runtime
 
-> Single source of truth for the runtime behavior of the transcription module: every-2-minutes scan + regulator-bounded dispatch, current-day only.
+## Purpose
 
-## ADDED Requirements
+Fuente unica de verdad del comportamiento en ejecucion del modulo de transcripcion: descubrimiento cada 2 minutos, despacho acotado por el regulador, solo del dia en curso, y la configuracion en caliente que gobierna ese ritmo.
+
+## Requirements
 
 ### 1. Unified Tick Phase
 
@@ -92,7 +94,8 @@
 - Ningun ServiceProvider **SHALL** volcar los valores de BD sobre el repositorio de config: añadiria un hit a BD en cada boot, rompería `artisan` con la base caida, y ocultaria el origen del valor.
 - Borrar una fila `transcriptor.*` **SHALL** restaurar el valor de `config/transcriptor.php`. Esa distincion de tres estados (`bd` / `env` / `archivo`) **MUST** reportarse en `effective()` y mostrarse en la UI.
 - Claves nuevas sobre las ya listadas: `dispatch_paused`, `tick_interval_minutes`, `dispatch_stagger_ms`, `inflight_max`, `scan_max_dispatch_per_cycle`, `stale_resend_limit`, `poll_limit`, `submit_max_attempts`, `submit_retry_base_ms`, `worker_min`, `worker_max`, `worker_ratio`, `worker_override`, `ui_max_parallel_sends`, `ui_batch_max`, `corrections_chunk` (existia y no la leia nadie), `scan_days_back` (idem).
-- `callback_host` se mapea a `TRANSCRIPTOR_CALLBACK_HOST` **solo para mostrar** — la vista la pintaba vacia. La prohibicion de cablear una ruta de webhook `TRANSCRIPTOR_WEBHOOK_*` **sigue vigente**.
+- `callback_host` **eliminado** (2026-08-12). Se mapeaba a `TRANSCRIPTOR_CALLBACK_HOST` "solo para mostrar", pero pintarlo en el panel de ayuda daba cuerpo a un mecanismo de callback inexistente: los operadores leian que el resultado volvia solo y no miraban el polling. La prohibicion de cablear una ruta de webhook `TRANSCRIPTOR_WEBHOOK_*` **sigue vigente**, y ahora nada en la UI sugiere lo contrario.
+- `poll_max_age_hours` (grupo `confiabilidad`, default 48): plazo tras el cual una fila en `queued`/`processing` se cierra como `dead` en vez de sondearse indefinidamente.
 
 ### 10. Semaforo de concurrencia
 
@@ -123,14 +126,6 @@
 - Las escrituras **MUST** validarse desde la misma constante de esquema que renderiza el formulario, y **MUST** registrarse en log con el id del admin tomado de `session('user')` (este proyecto usa auth por sesion, nunca `auth()->user()`).
 - Invariantes cruzadas **MUST** aplicarse en escritura sobre el estado RESULTANTE: `min_batch <= max_batch`, `worker_min <= worker_max`, `runway <= target_redis_queue`, `submit_timeout < ConvertAndTranscribeJob::$timeout`.
 - Un comando `transcription:config {--json} {--set=*} {--reset=*}` **SHALL** ofrecer la misma superficie por CLI, como salida de emergencia cuando la UI no este disponible.
-
-## MODIFIED Requirements
-
-None. This change only documents existing operational behavior.
-
-## REMOVED Requirements
-
-None. No existing capability is dropped.
 
 ---
 

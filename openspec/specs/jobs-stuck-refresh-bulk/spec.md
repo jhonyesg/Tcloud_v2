@@ -4,31 +4,42 @@
 TBD - created by syncing change process-pending-jobs-unified. Update Purpose after archive.
 ## Requirements
 ### Requirement: Stuck-job refresh endpoint
-The system SHALL expose `POST /ia/api-transcriptor/jobs/{id}/refresh-status` which loads the `Transcription`, calls the existing `syncFromUpstream()` helper to poll the upstream transcriptor API for the row's `job_id`, and returns the updated local state.
 
-#### Scenario: Refresh a job that finished upstream but the webhook was lost
-- **WHEN** an admin POSTs to `/jobs/{id}/refresh-status` for a job with `state = 'queued'`, a non-null `job_id`, and the upstream API returns `state = 'done'`
-- **THEN** the controller MUST update the local row to `state = 'done'`, download the SRT via the existing `processDone()` path, populate `transcription_segments`, run `KeywordMatcher`, and return 200 with the updated job state
-- **AND** the row MUST move to the Completados sub-tab on the next `load()`
+El sistema SHALL exponer `POST /ia/api-transcriptor/jobs/{id}/refresh-status`, que carga la
+`Transcription`, llama al helper `syncFromUpstream()` para consultar la API externa por el
+`job_id` de la fila, y devuelve el estado local actualizado.
 
-#### Scenario: Refresh a job that is still processing upstream
-- **WHEN** an admin POSTs to `/jobs/{id}/refresh-status` and the upstream API returns `state = 'processing'`
-- **THEN** the controller MUST reflect that local state if not already `processing` and return 200 with `state = 'processing'`
-- **AND** the row MUST remain in the Pendientes sub-tab
+El destino de la fila tras el refresco SHALL respetar la separación en tres sub-tabs: las
+que pasan a `done` van a **Completados**, y las que pasan a `error` o `dead` van a
+**Fallidos** (antes ambas iban a Completados).
 
-#### Scenario: Refresh a job that errored upstream
-- **WHEN** an admin POSTs to `/jobs/{id}/refresh-status` and the upstream API returns `state ∈ {error, dead}`
-- **THEN** the controller MUST mark the local row as `state = error` (or `dead`) with the upstream error message and `finished_at = now()`
-- **AND** the row MUST move to the Completados sub-tab (since the sub-tab filter is `state ∈ {done, error, dead}`)
+#### Scenario: Refrescar un job que terminó upstream pero perdió el webhook
+- **WHEN** un admin hace POST sobre un job en `queued` con `job_id` no nulo y la API externa
+  responde `state = 'done'`
+- **THEN** el controlador actualiza la fila a `done`, descarga el SRT por la vía
+  `processDone()`, puebla `transcription_segments`, ejecuta `KeywordMatcher` y devuelve 200
+- **AND** la fila pasa a la sub-tab **Completados** en el siguiente `load()`
 
-#### Scenario: Refresh on a row with no job_id
-- **WHEN** an admin POSTs to `/jobs/{id}/refresh-status` for a row with a null `job_id`
-- **THEN** the controller MUST return 422 with an error explaining the row has never been submitted upstream, and MUST NOT make any upstream call
+#### Scenario: Refrescar un job que sigue procesándose upstream
+- **WHEN** la API externa responde `state = 'processing'`
+- **THEN** el controlador refleja ese estado local y devuelve 200
+- **AND** la fila permanece en la sub-tab Pendientes
 
-#### Scenario: Upstream unreachable
-- **WHEN** an admin POSTs to `/jobs/{id}/refresh-status` and the upstream API call throws
-- **THEN** the controller MUST log the error and return 502 with a descriptive message
-- **AND** the local row state MUST remain unchanged
+#### Scenario: Refrescar un job que falló upstream
+- **WHEN** la API externa responde `state ∈ {error, dead}`
+- **THEN** el controlador marca la fila con ese estado, el mensaje de error remoto y
+  `finished_at = now()`
+- **AND** la fila pasa a la sub-tab **Fallidos**
+
+#### Scenario: Refrescar una fila sin job_id
+- **WHEN** un admin hace POST sobre una fila con `job_id` nulo
+- **THEN** el controlador devuelve 422 explicando que la fila nunca se envió upstream, y no
+  hace ninguna llamada externa
+
+#### Scenario: API externa inalcanzable
+- **WHEN** la llamada a la API externa lanza excepción
+- **THEN** el controlador loguea el error y devuelve 502 con un mensaje descriptivo
+- **AND** el estado local no cambia
 
 ### Requirement: Per-row refresh action in the Pendientes sub-tab
 The system SHALL surface a per-row button on every job in `state ∈ {queued, processing}` that, when clicked, calls the appropriate endpoint: `POST /jobs/{id}/refresh-status` if the row already has a `job_id`, or the existing `POST /jobs/{id}/dispatch-now` otherwise.
