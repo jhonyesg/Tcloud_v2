@@ -82,7 +82,20 @@ class FileController extends Controller
                 }
 
                 $files = $query->orderBy('is_folder', 'desc')->orderBy('created_at', 'desc')->limit(500)->get();
-                return response()->json($files);
+
+                $payload = ['files' => $files];
+
+                if ($storageId !== null) {
+                    $sp = StorageProvider::find((int) $storageId);
+                    if ($sp) {
+                        $payload['storage_accessible'] = (bool) $sp->is_accessible;
+                        $payload['storage_kind'] = $sp->kind ?? 'local';
+                        $payload['storage_name'] = $sp->name;
+                        $payload['search_unreliable'] = !$sp->is_accessible;
+                    }
+                }
+
+                return response()->json($payload);
             }
 
             $parentId  = $request->has('parent_id')  ? (int) $request->parent_id  : null;
@@ -174,6 +187,22 @@ class FileController extends Controller
 
             $paginator = $query->orderBy('is_folder', 'desc')->orderBy('created_at', 'desc')->paginate($perPage, ['*'], 'page', $page);
 
+            // Estado del storage activo para que el frontend muestre el banner
+            // "Disco no disponible" cuando el storage está caído. kind indica
+            // si es local o external (NFS/SMB) para colorear el banner.
+            $storageAccess = null;
+            if ($storageId !== null) {
+                $sp = StorageProvider::find($storageId);
+                if ($sp) {
+                    $storageAccess = [
+                        'storage_accessible' => (bool) $sp->is_accessible,
+                        'storage_kind' => $sp->kind ?? 'local',
+                        'storage_name' => $sp->name,
+                        'last_checked_at' => $sp->last_checked_at?->toIso8601String(),
+                    ];
+                }
+            }
+
             $isAutoScan = false;
 
             // auto-scan on first visit if folder is empty in DB (new folder, cron hasn't run yet)
@@ -208,6 +237,20 @@ class FileController extends Controller
             ];
 
             $responseData = ['files' => $paginator->items(), 'breadcrumbs' => $breadcrumbs, 'pagination' => $pagination];
+
+            // Estado del storage activo (si aplica). search_unreliable=true
+            // cuando el storage está caído: la búsqueda puede devolver filas
+            // que el scanner no ha confirmado en el último estado.
+            if ($storageAccess !== null) {
+                $responseData['storage_accessible'] = $storageAccess['storage_accessible'];
+                $responseData['storage_kind'] = $storageAccess['storage_kind'];
+                $responseData['storage_name'] = $storageAccess['storage_name'];
+                $responseData['storage_last_checked_at'] = $storageAccess['last_checked_at'];
+
+                if ($searchTerm !== null) {
+                    $responseData['search_unreliable'] = !$storageAccess['storage_accessible'];
+                }
+            }
 
             // TTL: root=60s, today's folder=300s, past folder=86400s
             if ($parentId === null) {
@@ -295,7 +338,9 @@ class FileController extends Controller
             'owner_id' => $user->id,
             'parent_id' => $parentId,
             'is_folder' => true,
-            'is_personal' => false,
+            'availability_state' => 'available',
+            'last_verified_at' => now(),
+            'missing_since_at' => null,
         ]);
 
         return response()->json($file, 201);
@@ -389,7 +434,7 @@ class FileController extends Controller
         $mimeType = $file->getMimeType();
         $size = $file->getSize();
 
-        $isPersonalStorage = str_starts_with($storage->base_path ?? '', '/home/www/Usuarios_tcloud/');
+        $isPersonalStorage = (bool) $storage->is_personal;
         if ($user->personal_quota_bytes > 0 && $isPersonalStorage) {
             if ($user->personal_used_bytes + $size > $user->personal_quota_bytes) {
                 return response()->json(['error' => 'Personal quota exceeded'], 413);
@@ -430,11 +475,13 @@ class FileController extends Controller
             'owner_id' => $user->id,
             'parent_id' => $parentId,
             'is_folder' => false,
-            'is_personal' => $parentId === null,
             'file_modified_at' => $modifiedAt,
+            'availability_state' => 'available',
+            'last_verified_at' => now(),
+            'missing_since_at' => null,
         ]);
 
-        if (str_starts_with($storage->base_path ?? '', '/home/www/Usuarios_tcloud/')) {
+        if ($storage->is_personal) {
             $user->increment('personal_used_bytes', $size);
         }
 
@@ -898,7 +945,7 @@ class FileController extends Controller
                 'can_create_shares' => (bool) $us->can_create_shares,
                 'accessible' => $us->storageProvider->is_accessible,
                 'last_checked' => $us->storageProvider->last_checked_at?->format('d M, H:i'),
-                'is_personal' => str_starts_with($us->storageProvider->base_path ?? '', '/home/www/Usuarios_tcloud/'),
+                'is_personal' => (bool) $us->storageProvider->is_personal,
             ];
         });
 
@@ -942,7 +989,7 @@ class FileController extends Controller
 
         $user = User::find($file->owner_id);
         if ($user && $file->size > 0) {
-            if ($storage && str_starts_with($storage->base_path ?? '', '/home/www/Usuarios_tcloud/')) {
+            if ($storage && $storage->is_personal) {
                 $user->decrement('personal_used_bytes', $file->size);
             }
         }
@@ -1041,8 +1088,10 @@ class FileController extends Controller
             'owner_id' => $user->id,
             'parent_id' => $destParentId,
             'is_folder' => false,
-            'is_personal' => false,
             'file_modified_at' => $modifiedAt,
+            'availability_state' => 'available',
+            'last_verified_at' => now(),
+            'missing_since_at' => null,
         ]);
 
         return response()->json($newFile, 201);
@@ -1148,7 +1197,9 @@ class FileController extends Controller
             'owner_id' => $ownerId,
             'parent_id' => $destParentId,
             'is_folder' => true,
-            'is_personal' => false,
+            'availability_state' => 'available',
+            'last_verified_at' => now(),
+            'missing_since_at' => null,
         ]);
 
         $children = File::where('parent_id', $src->id)->get();
@@ -1178,8 +1229,10 @@ class FileController extends Controller
                     'owner_id' => $ownerId,
                     'parent_id' => $newFolder->id,
                     'is_folder' => false,
-                    'is_personal' => false,
                     'file_modified_at' => $modifiedAt,
+                    'availability_state' => file_exists($dstChildPhysical) ? 'available' : 'unknown',
+                    'last_verified_at' => file_exists($dstChildPhysical) ? now() : null,
+                    'missing_since_at' => null,
                 ]);
             }
         }

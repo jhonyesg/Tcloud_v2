@@ -1,0 +1,50 @@
+{
+  "timestamp": "2026-09-05T01:20:42.006Z",
+  "app_url": "https://cloud.mediaserver.com.co",
+  "storage_id": 5,
+  "passed": 8,
+  "failed": 0,
+  "results": [
+    {
+      "name": "A.0 Login admin",
+      "status": "PASS",
+      "detail": "redirigido a /dashboard"
+    },
+    {
+      "name": "B.1 Banner aparece con disco caído",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "B.2 Banner desaparece tras remonte",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "C.1 Transcripción preservada",
+      "status": "PASS",
+      "detail": "file_id=4522395 sigue en transcriptions"
+    },
+    {
+      "name": "C.2 Fila preservada",
+      "status": "PASS",
+      "detail": "state=unknown (no fue DELETEada)"
+    },
+    {
+      "name": "D.1 Dry-run devuelve conteo",
+      "status": "PASS",
+      "detail": "1,323,993 candidatos"
+    },
+    {
+      "name": "E.1 storage:health tick",
+      "status": "PASS",
+      "detail": "checked=174 changed=0 reconciled=0"
+    },
+    {
+      "name": "Limpieza",
+      "status": "PASS",
+      "detail": "is_accessible=true restaurado"
+    }
+  ],
+  "console_errors": []
+}

@@ -68,7 +68,7 @@
         <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-5 hover:shadow-md transition-shadow">
             <div class="flex items-center justify-between">
                 <div>
-                    <p class="text-sm text-slate-500">Total Shares</p>
+                        <p class="text-sm text-slate-500">Total enlaces</p>
                     <p class="text-3xl font-bold text-slate-800 mt-1">{{ $stats['total_shares'] }}</p>
                 </div>
                 <div class="w-12 h-12 bg-brand-100 rounded-xl flex items-center justify-center">
@@ -76,7 +76,7 @@
                 </div>
             </div>
             <div class="mt-4 flex items-center text-sm text-slate-400">
-                <i class="fas fa-external-link-alt mr-1 text-brand-300 text-xs"></i> Enlaces activos
+                        <i class="fas fa-external-link-alt mr-1 text-brand-300 text-xs"></i> {{ $stats['active_shares'] ?? $stats['total_shares'] }} activos de {{ $stats['total_shares'] }}
             </div>
         </div>
     </div>

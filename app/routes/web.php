@@ -12,9 +12,12 @@ Route::post('/login', [App\Http\Controllers\AuthController::class, 'login'])->mi
 Route::post('/logout', [App\Http\Controllers\AuthController::class, 'logout'])->middleware('auth');
 Route::get('/auth/me', [App\Http\Controllers\AuthController::class, 'me'])->middleware('auth');
 Route::post('/auth/ping', [App\Http\Controllers\AuthController::class, 'ping'])->middleware('auth');
+Route::get('/auth/forgot-password', [App\Http\Controllers\AuthController::class, 'showForgotPassword'])->name('forgot-password');
 Route::post('/auth/forgot-password', [App\Http\Controllers\AuthController::class, 'forgotPassword'])->middleware('throttle:5,1');
 Route::get('/auth/reset-password/{token}', [App\Http\Controllers\AuthController::class, 'showResetPassword'])->name('reset-password');
 Route::post('/auth/reset-password', [App\Http\Controllers\AuthController::class, 'resetPassword'])->middleware('throttle:5,1');
+Route::get('/auth/setup-password/{token}', [App\Http\Controllers\AuthController::class, 'showSetupPassword'])->name('setup-password');
+Route::post('/auth/setup-password', [App\Http\Controllers\AuthController::class, 'setupPassword'])->middleware('throttle:5,1');
 
 Route::get('/dashboard', [App\Http\Controllers\DashboardController::class, 'index'])->middleware('auth')->name('dashboard');
 
@@ -33,6 +36,7 @@ Route::middleware(['auth', 'admin'])->prefix('admin')->group(function () {
     Route::post('/storages/{storage}/users/assign-all', [App\Http\Controllers\StorageProviderController::class, 'assignAll']);
     Route::delete('/storages/{storage}/users/all/remove', [App\Http\Controllers\StorageProviderController::class, 'removeAll']);
     Route::get('/storages/{storage}/test', [App\Http\Controllers\StorageProviderController::class, 'test']);
+    Route::post('/storages/{storage}/reconcile', [App\Http\Controllers\StorageProviderController::class, 'reconcile']);
     Route::post('/users/{user}/toggle-media-editor', [App\Http\Controllers\UserController::class, 'toggleMediaEditor']);
     Route::get('/media-editor', [App\Http\Controllers\MediaEditorAdminController::class, 'index']);
     Route::get('/media-editor/users', [App\Http\Controllers\MediaEditorAdminController::class, 'users']);
@@ -119,6 +123,9 @@ Route::middleware('auth')->group(function () {
     Route::get('/media/{file}/thumbnail', [App\Http\Controllers\MediaPreviewController::class, 'thumbnail']);
 
     Route::resource('shares', App\Http\Controllers\ShareController::class)->only(['index', 'store', 'show', 'update', 'destroy']);
+    Route::post('/shares/bulk-preview', [App\Http\Controllers\ShareController::class, 'bulkPreview'])->name('shares.bulk-preview');
+    Route::post('/shares/bulk-delete', [App\Http\Controllers\ShareController::class, 'bulkDelete'])->name('shares.bulk-delete');
+    Route::post('/shares/availability/verify', [App\Http\Controllers\ShareController::class, 'verifyAvailability'])->name('shares.availability.verify');
     Route::post('/files/{file}/clip', [App\Http\Controllers\MediaClipController::class, 'clip']);
     Route::get('/media-clip/history', [App\Http\Controllers\MediaClipController::class, 'history']);
     Route::get('/media-clip/{jobId}/reclip', [App\Http\Controllers\MediaClipController::class, 'reclip']);
@@ -148,6 +155,7 @@ Route::middleware('auth')->group(function () {
 Route::middleware('auth')->get('/sites/{externalSite}', [App\Http\Controllers\ExternalSiteViewController::class, 'show']);
 
 Route::get('/s/{token}', [App\Http\Controllers\PublicShareController::class, 'show']);
+Route::post('/s/{token}/authenticate', [App\Http\Controllers\PublicShareController::class, 'authenticate'])->name('share.authenticate');
 Route::get('/s/{token}/folder/{folder_id}', [App\Http\Controllers\PublicShareController::class, 'folder'])->name('share.folder');
 Route::get('/s/{token}/download', [App\Http\Controllers\PublicShareController::class, 'download'])->name('share.download');
 Route::get('/s/{token}/download/{file_id}', [App\Http\Controllers\PublicShareController::class, 'download'])->name('share.file-download');

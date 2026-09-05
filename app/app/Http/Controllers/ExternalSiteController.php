@@ -24,7 +24,7 @@ class ExternalSiteController extends Controller
             'name'    => 'required|string|max:120',
             'url'     => ['required', 'string', 'max:500'],
             'icon'    => 'required|string|max:60',
-            'color'   => 'required|in:blue,green,red,purple,amber,cyan,rose,slate',
+            'color'   => 'required|in:blue,sky,cyan,teal,green,lime,yellow,amber,orange,red,rose,pink,fuchsia,purple,indigo,slate',
             'enabled' => 'boolean',
         ]);
 
@@ -51,7 +51,7 @@ class ExternalSiteController extends Controller
             'name'    => 'sometimes|required|string|max:120',
             'url'     => ['sometimes', 'required', 'url', 'starts_with:https://'],
             'icon'    => 'sometimes|required|string|max:60',
-            'color'   => 'sometimes|required|in:blue,green,red,purple,amber,cyan,rose,slate',
+            'color'   => 'sometimes|required|in:blue,sky,cyan,teal,green,lime,yellow,amber,orange,red,rose,pink,fuchsia,purple,indigo,slate',
             'enabled' => 'boolean',
         ]);
 

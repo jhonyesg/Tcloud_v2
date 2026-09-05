@@ -76,6 +76,19 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Modo sensibles de la lista de revisión de transcripciones
+    |--------------------------------------------------------------------------
+    | corrections-manual-only-and-context-search (2026-09-05): el filtro y el
+    | conteo de matches sensibles corren acotados a las N candidatas y bajo
+    | statement_timeout; al agotarse se responde degradado (counts vacíos +
+    | flag), nunca un 504 de nginx.
+    */
+    'review_sensitive' => [
+        'timeout_ms' => (int) env('CORRECTIONS_REVIEW_SENSITIVE_TIMEOUT_MS', 10000),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Blocklist de términos context-sensitive
     |--------------------------------------------------------------------------
     | Cambios/2026-08-02-corrections-dictionary-atomicity: detecta muletillas

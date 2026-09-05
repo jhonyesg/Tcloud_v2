@@ -22,7 +22,7 @@ class CorreoPlantillaSeeder extends Seeder
                 'display_name' => 'Recuperación de contraseña',
                 'subject' => 'Recuperar tu contraseña - TCloud',
                 'body_html' => $this->resetPasswordTemplate(),
-                'variables' => 'nombre_usuario, enlace_recuperacion',
+                'variables' => 'nombre_usuario, enlace_recuperacion, expiracion',
             ],
             [
                 'name' => 'compartir-enlace',
@@ -37,6 +37,13 @@ class CorreoPlantillaSeeder extends Seeder
                 'subject' => '[TCloud] {{titulo}}',
                 'body_html' => $this->systemAlertTemplate(),
                 'variables' => 'titulo, detalle, accion, fecha',
+            ],
+            [
+                'name' => 'bienvenida-setup',
+                'display_name' => 'Bienvenida con establecimiento de contraseña',
+                'subject' => 'Bienvenido a TCloud - Establece tu contraseña',
+                'body_html' => $this->welcomeSetupTemplate(),
+                'variables' => 'nombre_usuario, email, set_password_url, expiracion',
             ],
         ];
 
@@ -113,6 +120,7 @@ body { margin: 0; padding: 0; background-color: #f3f4f6; font-family: -apple-sys
 .content { padding: 32px 30px; color: #374151; font-size: 16px; line-height: 1.6; }
 .btn { display: inline-block; background: #f59e0b; color: #ffffff; text-decoration: none; padding: 14px 28px; border-radius: 8px; font-weight: 600; font-size: 15px; }
 .footer { padding: 24px 30px; text-align: center; font-size: 12px; color: #9ca3af; background: #f9fafb; }
+.expiry { font-size: 13px; color: #6b7280; margin-top: 24px; text-align: center; }
 </style>
 </head>
 <body>
@@ -126,7 +134,8 @@ body { margin: 0; padding: 0; background-color: #f3f4f6; font-family: -apple-sys
     <p style="text-align:center; margin: 28px 0;">
       <a href="{{enlace_recuperacion}}" class="btn">Restablecer contrasena</a>
     </p>
-    <p style="font-size:13px; color:#6b7280;">Si no solicitaste este correo, ignoralo. Tu cuenta esta segura.</p>
+    <div class="expiry">Este enlace expira el {{expiracion}} (24 horas desde que se solicito). Si no lo usas antes de esa fecha y hora, tendras que pedir uno nuevo desde la pantalla de inicio de sesion.</div>
+    <p style="font-size:13px; color:#6b7280; margin-top:24px;">Si no solicitaste este correo, ignoralo. Tu cuenta esta segura.</p>
   </div>
   <div class="footer">
     TCloud. Soporte de seguridad.
@@ -227,6 +236,57 @@ body { margin: 0; padding: 0; background-color: #f3f4f6; font-family: -apple-sys
   </div>
   <div class="footer">
     TCloud - Aviso automatico de sistema.
+  </div>
+</div>
+</body>
+</html>
+HTML;
+    }
+
+    /**
+     * Bienvenida con link para que el nuevo usuario establezca su propia
+     * contraseña. Usada por el flujo automático al crear el user; el admin
+     * ya NO escribe la contraseña inicial.
+     */
+    private function welcomeSetupTemplate(): string
+    {
+        return <<<'HTML'
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bienvenido a TCloud - Establece tu contraseña</title>
+<style>
+body { margin: 0; padding: 0; background-color: #f3f4f6; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+.wrapper { width: 100%; max-width: 600px; margin: 0 auto; background: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }
+.header { background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%); padding: 40px 30px; text-align: center; }
+.header h1 { color: #ffffff; margin: 0; font-size: 24px; font-weight: 700; }
+.header p { color: #dbeafe; margin: 8px 0 0; font-size: 14px; }
+.content { padding: 32px 30px; color: #374151; font-size: 16px; line-height: 1.6; }
+.content p { margin: 0 0 16px; }
+.btn { display: inline-block; background: #2563eb; color: #ffffff; text-decoration: none; padding: 14px 28px; border-radius: 8px; font-weight: 600; font-size: 15px; }
+.footer { padding: 24px 30px; text-align: center; font-size: 12px; color: #9ca3af; background: #f9fafb; }
+.highlight { background: #eff6ff; border-left: 4px solid #2563eb; padding: 16px 20px; border-radius: 0 8px 8px 0; margin: 20px 0; }
+.expiry { font-size: 13px; color: #6b7280; margin-top: 24px; text-align: center; }
+</style>
+</head>
+<body>
+<div class="wrapper">
+  <div class="header">
+    <h1>Hola, {{nombre_usuario}}!</h1>
+    <p>Te han creado una cuenta en TCloud.</p>
+  </div>
+  <div class="content">
+    <p>El administrador de TCloud registro tu correo <strong>{{email}}</strong> como una nueva cuenta. Para empezar a usarla, establece tu propia contraseña haciendo click en el siguiente boton:</p>
+    <p style="text-align:center; margin: 28px 0;">
+      <a href="{{set_password_url}}" class="btn">Establecer mi contraseña</a>
+    </p>
+    <div class="expiry">Este enlace expira el {{expiracion}}. Si no lo usas antes, pidele al administrador que te lo reenvie.</div>
+    <p style="font-size:13px; color:#6b7280; margin-top:24px;">Si tienes alguna pregunta, contacta al equipo de soporte de TCloud.</p>
+  </div>
+  <div class="footer">
+    TCloud. Este correo fue generado automaticamente.
   </div>
 </div>
 </body>

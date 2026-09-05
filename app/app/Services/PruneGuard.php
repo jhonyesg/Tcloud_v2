@@ -20,16 +20,24 @@ class PruneGuard
     public function __construct(private ?array $config = null) {}
 
     /**
-     * @param  int   $dbCount    TOTAL de filas que la BD tiene para esa carpeta, no
-     *                           solo las huerfanas: la regla de proporcion compara
-     *                           lo que hay contra lo que se vio en disco, asi que
-     *                           necesita el denominador completo.
-     * @param  int   $diskCount  entradas realmente vistas en disco
-     * @param  bool  $scanOk     si el escaneo fue fiable (ScanResult::$ok)
-     * @param  bool  $forced     orden explicita: --force-prune o el boton Actualizar
+     * @param  int   $dbCount      TOTAL de filas que la BD tiene para esa carpeta, no
+     *                             solo las huerfanas: la regla de proporcion compara
+     *                             lo que hay contra lo que se vio en disco, asi que
+     *                             necesita el denominador completo.
+     * @param  int   $diskCount    entradas realmente vistas en disco
+     * @param  bool  $scanOk       si el escaneo fue fiable (ScanResult::$ok)
+     * @param  int   $linkedCount  numero de candidatas a borrar que tienen FK aguas abajo
+     *                             (transcriptions.file_id, shares.file_id,
+     *                             media_edit_jobs.source_file_id). Regla 5.
+     * @param  bool  $forced       orden explicita: --force-prune o el boton Actualizar
      */
-    public function decide(int $dbCount, int $diskCount, bool $scanOk, bool $forced = false): PruneDecision
-    {
+    public function decide(
+        int $dbCount,
+        int $diskCount,
+        bool $scanOk,
+        int $linkedCount = 0,
+        bool $forced = false
+    ): PruneDecision {
         $cfg = $this->config();
 
         if (!($cfg['enabled'] ?? true)) {
@@ -44,6 +52,20 @@ class PruneGuard
 
         if ($dbCount <= 0) {
             return PruneDecision::allow();
+        }
+
+        // 5. Candidatas con FK aguas abajo: se marcan 'missing', nunca DELETE.
+        //    El CASCADE sobre transcriptions.file_id es destructivo: borrar una
+        //    fila con transcripcion arrastra la transcripcion, sus segmentos,
+        //    sus keyword matches y sus alert logs en una sola sentencia. El
+        //    refresco forzado NO levanta esta guarda: solo el operador con
+        //    orden explicita (proxima iteracion) podra desacoplar el vinculo.
+        //    Evaluar ANTES de forced() para que la proteccion se mantenga
+        //    simetrica.
+        if ($linkedCount > 0) {
+            return PruneDecision::refuse('orphan_linked', [
+                'linked' => $linkedCount,
+            ]);
         }
 
         if ($forced) {

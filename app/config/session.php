@@ -6,7 +6,7 @@ return [
     'expire_on_close' => false,
     'encrypt' => false,
     'files' => storage_path('framework/sessions'),
-    'connection' => env('SESSION_CONNECTION', 'default'),
+    'connection' => env('SESSION_CONNECTION', 'session'),
     'table' => 'sessions',
     'store' => env('SESSION_STORE'),
     'lottery' => [2, 100],

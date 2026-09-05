@@ -5,6 +5,7 @@ namespace App\Services\Ia;
 use App\Models\Correction;
 use App\Models\Transcription;
 use App\Models\TranscriptionReview;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 
 class TranscriptionReviewService
@@ -19,6 +20,12 @@ class TranscriptionReviewService
         self::MODE_COMPLETED,
         self::MODE_SENSITIVE,
     ];
+
+    /** SQLSTATE de Postgres para "query canceled" (statement_timeout agotado). */
+    private const SQLSTATE_QUERY_CANCELED = '57014';
+
+    /** Transcripciones candidatas por listado (latest/sensitive/completed). */
+    private const LIST_LIMIT = 10;
 
     public function normalizeMode(string $mode): string
     {
@@ -38,7 +45,7 @@ class TranscriptionReviewService
         $query = Transcription::query()
             ->where('state', Transcription::STATE_DONE)
             ->with('file:id,name', 'review:id,transcription_id,status,reviewed_by,reviewed_at,notes')
-            ->limit(10);
+            ->limit(self::LIST_LIMIT);
 
         if ($mode === self::MODE_REQUESTED) {
             $query->orderByDesc('created_at')->orderByDesc('id');
@@ -49,21 +56,81 @@ class TranscriptionReviewService
         }
 
         if ($mode === self::MODE_SENSITIVE) {
-            $sensitiveSegments = DB::table('transcription_segments as sensitive_segments')
-                ->selectRaw('1')
-                ->join('corrections as sensitive_corrections', function ($join) {
-                    $join->where('sensitive_corrections.status', Correction::STATUS_APPROVED)
-                        ->whereIn('sensitive_corrections.risk_level', [
-                            Correction::RISK_MEDIUM,
-                            Correction::RISK_HIGH,
-                        ])
-                        ->whereRaw("position(lower(sensitive_corrections.wrong_normalized) in lower(sensitive_segments.text_raw)) > 0");
-                })
-                ->whereColumn('sensitive_segments.transcription_id', 'transcriptions.id');
-            $query->whereExists($sensitiveSegments);
+            // Acotado (change: corrections-manual-only-and-context-search):
+            // el whereExists con position() contra 2.3k reglas approved medium/high
+            // sobre el histórico completo no termina. El filtro sensibles solo
+            // decide QUÉ 10 transcripciones entran a la lista, así que se aplica
+            // sobre las candidatas ya resueltas, bajo statement_timeout.
+            $candidates = (clone $query)->get();
+
+            if ($candidates->isEmpty()) {
+                return [];
+            }
+
+            $sensitiveIds = $this->filterSensitiveIds($candidates->pluck('id')->all());
+
+            return $this->buildListItems(
+                $candidates->filter(fn (Transcription $t) => in_array($t->id, $sensitiveIds, true))->values(),
+                $mode
+            );
         }
 
-        $transcriptions = $query->get();
+        return $this->buildListItems($query->get(), $mode);
+    }
+
+    /**
+     * Filtra IDs de transcripciones que tienen al menos un segmento cuyo
+     * text_raw contiene una regla approved medium/high. Bajo transaction con
+     * statement_timeout: en timeout devuelve las que ya matchearon (parcial)
+     * — mejor una respuesta degradada que un 504 de nginx.
+     *
+     * @param array<int, int> $ids
+     * @return array<int, int>
+     */
+    private function filterSensitiveIds(array $ids): array
+    {
+        $timeoutMs = (int) config('corrections.review_sensitive.timeout_ms', 10000);
+
+        try {
+            return DB::transaction(function () use ($ids, $timeoutMs) {
+                DB::statement("SET LOCAL statement_timeout = '{$timeoutMs}ms'");
+
+                return (array) DB::table('transcription_segments as sensitive_segments')
+                    ->select('sensitive_segments.transcription_id')
+                    ->whereIn('sensitive_segments.transcription_id', $ids)
+                    ->join('corrections as sensitive_corrections', function ($join) {
+                        $join->where('sensitive_corrections.status', Correction::STATUS_APPROVED)
+                            ->whereIn('sensitive_corrections.risk_level', [
+                                Correction::RISK_MEDIUM,
+                                Correction::RISK_HIGH,
+                            ])
+                            ->whereRaw("position(lower(sensitive_corrections.wrong_normalized) in lower(sensitive_segments.text_raw)) > 0");
+                    })
+                    ->distinct()
+                    ->pluck('sensitive_segments.transcription_id')
+                    ->all();
+            });
+        } catch (QueryException $e) {
+            if (!$this->isTimeout($e)) {
+                throw $e;
+            }
+
+            return [];
+        }
+    }
+
+    private function isTimeout(QueryException $e): bool
+    {
+        return $e->getCode() === self::SQLSTATE_QUERY_CANCELED
+            || str_contains($e->getMessage(), 'statement timeout');
+    }
+
+    /**
+     * @param  \Illuminate\Support\Collection<int, Transcription>  $transcriptions
+     * @return array<int, array<string, mixed>>
+     */
+    private function buildListItems($transcriptions, string $mode): array
+    {
         if ($transcriptions->isEmpty()) {
             return [];
         }
@@ -76,19 +143,9 @@ class TranscriptionReviewService
             ->groupBy('transcription_id')
             ->pluck('changed_segments_count', 'transcription_id');
 
-        $sensitiveCounts = DB::table('transcription_segments as count_segments')
-            ->select('count_segments.transcription_id', DB::raw('count(*) as sensitive_matches_count'))
-            ->whereIn('count_segments.transcription_id', $ids)
-            ->join('corrections as count_corrections', function ($join) {
-                $join->where('count_corrections.status', Correction::STATUS_APPROVED)
-                    ->whereIn('count_corrections.risk_level', [
-                        Correction::RISK_MEDIUM,
-                        Correction::RISK_HIGH,
-                    ])
-                    ->whereRaw("position(lower(count_corrections.wrong_normalized) in lower(count_segments.text_raw)) > 0");
-            })
-            ->groupBy('count_segments.transcription_id')
-            ->pluck('sensitive_matches_count', 'count_segments.transcription_id');
+        // Conteo de matches sensibles bajo el mismo statement_timeout: es la
+        // misma familia de query position() y puede ser igual de pesada.
+        $sensitiveCounts = $this->sensitiveCounts($ids);
 
         return $transcriptions->map(function (Transcription $transcription) use ($changedCounts, $sensitiveCounts, $mode): array {
             return [
@@ -99,10 +156,51 @@ class TranscriptionReviewService
                 'recency_mode' => $mode,
                 'segments_count' => (int) $transcription->segments()->count(),
                 'changed_segments_count' => (int) ($changedCounts[$transcription->id] ?? 0),
-                'sensitive_matches_count' => (int) ($sensitiveCounts[$transcription->id] ?? 0),
+                'sensitive_matches_count' => $sensitiveCounts['counts'][$transcription->id] ?? 0,
+                'sensitive_degraded' => $sensitiveCounts['degraded'],
                 'review' => $this->reviewPayload($transcription->review),
             ];
         })->all();
+    }
+
+    /**
+     * Conteo de matches sensibles por transcripción. En timeout retorna
+     * counts vacíos + degraded=true para que la UI distinga el caso.
+     *
+     * @param array<int, int> $ids
+     * @return array{counts: array<int, int>, degraded: bool}
+     */
+    private function sensitiveCounts(array $ids): array
+    {
+        $timeoutMs = (int) config('corrections.review_sensitive.timeout_ms', 10000);
+
+        try {
+            $counts = DB::transaction(function () use ($ids, $timeoutMs) {
+                DB::statement("SET LOCAL statement_timeout = '{$timeoutMs}ms'");
+
+                return DB::table('transcription_segments as count_segments')
+                    ->select('count_segments.transcription_id', DB::raw('count(*) as sensitive_matches_count'))
+                    ->whereIn('count_segments.transcription_id', $ids)
+                    ->join('corrections as count_corrections', function ($join) {
+                        $join->where('count_corrections.status', Correction::STATUS_APPROVED)
+                            ->whereIn('count_corrections.risk_level', [
+                                Correction::RISK_MEDIUM,
+                                Correction::RISK_HIGH,
+                            ])
+                            ->whereRaw("position(lower(count_corrections.wrong_normalized) in lower(count_segments.text_raw)) > 0");
+                    })
+                    ->groupBy('count_segments.transcription_id')
+                    ->pluck('sensitive_matches_count', 'count_segments.transcription_id');
+            });
+
+            return ['counts' => $counts->all(), 'degraded' => false];
+        } catch (QueryException $e) {
+            if (!$this->isTimeout($e)) {
+                throw $e;
+            }
+
+            return ['counts' => [], 'degraded' => true];
+        }
     }
 
     public function detail(int $id): array

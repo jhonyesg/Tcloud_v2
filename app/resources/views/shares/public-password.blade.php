@@ -24,7 +24,7 @@
                 </div>
             @endif
 
-            <form method="POST" action="/s/{{ $token }}">
+            <form method="POST" action="/s/{{ $token }}/authenticate">
                 @csrf
                 <div class="mb-4">
                     <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Contraseña</label>

@@ -181,6 +181,37 @@ class StorageProviderController extends Controller
         ]);
     }
 
+    /**
+     * Despacha `storage:reconcile` para un storage. Solo `kind='external'`
+     * tiene sentido (un local no necesita reconciliación: su accesibilidad
+     * es trivial). Si el storage ya está healthy, el reconciliador corre
+     * un fullSync con force=true para re-verificar.
+     */
+    public function reconcile(int $id)
+    {
+        $storage = StorageProvider::findOrFail($id);
+
+        if ($storage->kind !== 'external') {
+            return response()->json([
+                'success' => false,
+                'message' => 'Solo storages externos (kind=external) admiten reconciliación',
+            ], 422);
+        }
+
+        \Illuminate\Support\Facades\Process::start([
+            PHP_BINARY,
+            base_path('artisan'),
+            'storage:reconcile',
+            '--storage=' . $storage->id,
+            '--no-pacing',
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'message' => "Reconciliación disparada para {$storage->name}",
+        ], 202);
+    }
+
     public function searchUsers(Request $request)
     {
         $query = $request->input('q', '');

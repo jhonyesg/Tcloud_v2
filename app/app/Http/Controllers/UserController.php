@@ -3,11 +3,15 @@
 namespace App\Http\Controllers;
 
 use App\Models\File;
+use App\Models\PasswordToken;
 use App\Models\Share;
 use App\Models\StorageProvider;
 use App\Models\User;
 use App\Models\UserStorage;
+use App\Modules\Correo\Services\EmailValidationService;
 use App\Modules\Correo\Services\NotificationService;
+use App\Services\Auth\PasswordTokenService;
+use App\Services\SessionService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
@@ -16,10 +20,20 @@ use Illuminate\Support\Facades\Session;
 class UserController extends Controller
 {
     private NotificationService $notificationService;
+    private EmailValidationService $emailValidation;
+    private PasswordTokenService $passwordTokenService;
+    private SessionService $sessionService;
 
-    public function __construct(NotificationService $notificationService)
-    {
+    public function __construct(
+        NotificationService $notificationService,
+        EmailValidationService $emailValidation,
+        PasswordTokenService $passwordTokenService,
+        SessionService $sessionService,
+    ) {
         $this->notificationService = $notificationService;
+        $this->emailValidation = $emailValidation;
+        $this->passwordTokenService = $passwordTokenService;
+        $this->sessionService = $sessionService;
     }
     public function index(Request $request)
     {
@@ -36,17 +50,25 @@ class UserController extends Controller
         $request->validate([
             'email' => 'required|email|unique:users,email',
             'username' => 'nullable|string|min:3|unique:users,username',
-            'password' => 'required|min:8',
             'role' => 'required|in:admin,user',
             'personal_quota_bytes' => 'nullable|integer|min:0',
             'send_email' => 'nullable|boolean',
         ]);
 
+        $emailCheck = $this->emailValidation->validate($request->email);
+        if (!$emailCheck['valid']) {
+            return response()->json([
+                'error' => 'No se puede crear el usuario: ' . $emailCheck['reason'],
+                'field' => 'email',
+            ], 422);
+        }
+
         $user = User::create([
             'email' => $request->email,
             'username' => $request->username ?: null,
-            'password_hash' => Hash::make($request->password),
+            'password_hash' => Hash::make(\Illuminate\Support\Str::random(64)),
             'role' => $request->role,
+            'status' => User::STATUS_PENDING,
             'personal_quota_bytes' => $request->personal_quota_bytes ?? 0,
             'personal_used_bytes' => 0,
         ]);
@@ -55,20 +77,27 @@ class UserController extends Controller
             $this->createPersonalStorage($user);
         }
 
-        if ($request->boolean('send_email')) {
-            $this->notificationService->send(
-                'bienvenida',
-                $user->email,
-                [
-                    'nombre_usuario' => $user->username ?? $user->email,
-                    'email' => $user->email,
-                    'fecha' => now()->format('d/m/Y H:i'),
-                    'app_url' => url('/'),
-                ]
-            );
-        }
+        $this->issueSetupAndMail($user, $request);
 
         return response()->json($user, 201);
+    }
+
+    private function issueSetupAndMail(User $user, Request $request): void
+    {
+        $rawToken = $this->passwordTokenService->issue($user, PasswordToken::TYPE_SETUP, $request->ip());
+
+        $expiresAt = now()->addMinutes((int) config('auth.password_token_ttl', 1440));
+
+        $this->notificationService->send(
+            $request->boolean('send_email') ? 'bienvenida-setup' : 'bienvenida-setup',
+            $user->email,
+            [
+                'nombre_usuario'    => $user->username ?? $user->email,
+                'email'             => $user->email,
+                'set_password_url'  => url('/auth/setup-password/' . $rawToken),
+                'expiracion'        => $expiresAt->format('d/m/Y H:i'),
+            ]
+        );
     }
 
     public function show(int $id)
@@ -85,6 +114,7 @@ class UserController extends Controller
             'email'                    => 'sometimes|email|unique:users,email,' . $id,
             'username'                 => 'nullable|string|min:3|unique:users,username,' . $id,
             'role'                     => 'sometimes|in:admin,user',
+            'status'                   => 'sometimes|in:pending,active,disabled',
             'personal_quota_bytes'     => 'sometimes|integer|min:0',
             'max_sessions'             => 'sometimes|integer|min:0',
             'session_lifetime_minutes' => 'sometimes|nullable|integer|min:0',
@@ -96,7 +126,7 @@ class UserController extends Controller
 
         $request->validate($rules);
 
-        $data = $request->only(['email', 'username', 'role', 'personal_quota_bytes', 'max_sessions', 'session_lifetime_minutes']);
+        $data = $request->only(['email', 'username', 'role', 'status', 'personal_quota_bytes', 'max_sessions', 'session_lifetime_minutes']);
         if (array_key_exists('username', $data) && $data['username'] === '') {
             $data['username'] = null;
         }
@@ -106,6 +136,18 @@ class UserController extends Controller
 
         if ($request->has('password')) {
             $data['password_hash'] = Hash::make($request->password);
+            $data['status'] = User::STATUS_ACTIVE;
+        }
+
+        // Eviction proactiva: si el admin está cambiando el status a algo distinto
+        // de 'active', matar todas las sesiones del usuario AHORA (no esperar al
+        // próximo request del usuario). Se hace ANTES del update usando la instancia
+        // actual del User (cuyo status en memoria sigue siendo el anterior).
+        if ($request->has('status')
+            && array_key_exists('status', $data)
+            && $data['status'] !== User::STATUS_ACTIVE
+            && $user->status === User::STATUS_ACTIVE) {
+            $this->sessionService->killAllUserSessions($user);
         }
 
         $user->update($data);
@@ -255,7 +297,7 @@ class UserController extends Controller
 
     private function createPersonalStorage(User $user): void
     {
-        $basePath = '/home/www/Usuarios_tcloud/' . $user->username;
+        $basePath = rtrim((string) config('storage.personal_base_path', '/home/www/Usuarios_tcloud/'), '/') . '/' . $user->username;
 
         if (!is_dir($basePath)) {
             mkdir($basePath, 0755, true);
@@ -266,6 +308,7 @@ class UserController extends Controller
             'type'     => 'local',
             'base_path' => $basePath,
             'enabled'  => true,
+            'is_personal' => true,
         ]);
 
         UserStorage::create([

@@ -60,6 +60,21 @@ Reproducción y navegación de canales y grabaciones puntuales disponibles para 
 
 El sistema maneja ~1M de archivos distribuidos en ~23,000 carpetas mediante tres mecanismos complementarios.
 
+## Bienvenida y recuperación de contraseña
+
+- Al crear un usuario nuevo se valida que el correo sea entregable
+  (sintaxis + MX + blocklist de disposable). Si lo es, se envía
+  automáticamente el correo **Bienvenida con establecimiento de contraseña**
+  con un enlace válido por 24 horas para que el propio usuario defina su
+  contraseña y active la cuenta. El usuario queda `pending` hasta
+  completar el paso.
+- En "¿Olvidaste tu contraseña?" del login: si el correo es entregable Y
+  el usuario existe Y está `active`, se envía el enlace de recuperación;
+  en cualquier otro caso la respuesta es genérica (no filtra existencia).
+- Los tokens son aleatorios de 32 bytes, se guardan solo como SHA-256 en
+  `password_tokens` (no en `$_SESSION`), y un usuario tiene a lo sumo un
+  token activo por tipo (`setup` o `reset`).
+
 ### Smart sync con mtime
 
 El comando `storage:sync` compara el `mtime` del directorio en disco con `file_modified_at` en la BD antes de escanear. Si el directorio no cambió, lo omite completamente.
@@ -326,3 +341,48 @@ docker exec tcloud_postgres psql -U cloud -d tcloudstorage -c "SELECT 1;"
 □ Cachés limpiados (config:cache, route:cache)
 □ Login exitoso en browser
 ```
+
+---
+
+## Files ↔ Storages — Acoplamiento FK-aware (change `files-storages-fk-aware-prune`)
+
+### Comandos disponibles
+
+```bash
+# Watchdog: cada 5 min detecta remontajes y dispara reconciliación.
+# Puede apagarse sin tocar el schedule:
+#   STORAGE_SYNC_HEALTH_DISPATCH=false
+php artisan storage:health --once
+
+# Reconciliación paced de un storage remontado.
+php artisan storage:reconcile --storage=5 --no-pacing   # operator
+php artisan storage:reconcile --storage=5               # paced (default 2s)
+
+# Purga de huérfanos seguros en dos fases (mark + delete).
+php artisan files:prune-unlinked-safe --dry-run                    # conteo
+php artisan files:prune-unlinked-safe --batch-size=500             # fase 1: mark
+php artisan files:prune-unlinked-safe --confirm-batch=<batch_id>   # fase 2: delete
+```
+
+### Rollback
+
+```bash
+php artisan migrate:rollback --step=2   # files_storages_coupling + files_prune_batches
+```
+
+Tras el rollback, `storage_providers.kind` desaparece, el CHECK de
+`files.availability_state` vuelve a `available|unknown` (los valores
+`missing` y `gone` quedan como texto libre pero ya no se pueden asignar
+nuevos), y el índice parcial `idx_files_missing_reconcile` se elimina.
+Los comandos siguen existiendo pero su comportamiento queda indefinido
+frente a filas en estado `missing`/`gone`.
+
+### Variables de entorno relevantes
+
+| Variable | Default | Función |
+|---|---|---|
+| `STORAGE_SYNC_HEALTH_DISPATCH` | `true` | Si `false`, el watchdog solo observa sin despachar reconciliación |
+| `STORAGE_SYNC_HEALTH_COOLDOWN` | `280` | TTL en Redis para no redespachar el mismo storage en cada tick (s) |
+| `STORAGE_SYNC_RECONCILE_BATCH` | `50` | Tamaño del chunk que `fullSync()` procesa entre sleeps |
+| `STORAGE_SYNC_RECONCILE_PACE` | `2` | Segundos de espera entre rondas de reconciliación |
+| `STORAGE_SYNC_RECONCILE_LOCK_TTL` | `3600` | TTL del lock distribuido por storage (s) |

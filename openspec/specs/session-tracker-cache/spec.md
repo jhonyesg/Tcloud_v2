@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Define el contrato del middleware `SessionTracker`: cómo cachea la validación de sesiones en Redis para evitar queries DB en cada request, cómo invalida esa caché al matar sesiones, cómo renueva el `expires_at` con sliding timeout respetando el lifetime por usuario, y cómo bloquea el paso cuando la sesión es inválida o el usuario no está activo.
+
+## Requirements
 
 ### Requirement: Validación de sesión cacheada en Redis
 El middleware `SessionTracker` SHALL cachear el resultado de la consulta a `user_sessions` en Redis con clave `session_valid:{session_id}` y TTL de 30 segundos, para evitar una query DB en cada request HTTP.
@@ -64,21 +68,21 @@ The system SHALL default `SESSION_LIFETIME` to 1440 minutes (24 hours) in `.env`
 - **THEN** `SESSION_LIFETIME` MUST be 1440
 - **AND** sessions MUST expire only after 24 hours of inactivity, not 2 hours from login
 
-### Requirement: cleanOrphans busca sesiones con el prefijo correcto del cache store
-El método `SessionService::cleanOrphans()` SHALL verificar la existencia de sesiones en Redis usando `Cache::has($session->session_id)` (que aplica el prefijo del cache store `tcloud_cache_`), no `Redis::exists()` (que solo aplica el prefijo de la conexión Redis `tcloud_`). Esto evita falsos negativos que borran sesiones válidas.
+### Requirement: cleanOrphans busca sesiones en la conexión `session`
+El método `SessionService::cleanOrphans()` SHALL verificar la existencia de sesiones en Redis usando el helper `sessionExistsInRedis()`, que consulta la conexión `session` configurada en `config/database.php` (no la conexión `cache` ni la `default`). Esto evita el falso negativo universal que producía el bug original (cleanOrphans borrando 100% de filas cada 30 min).
 
 #### Scenario: Sesión activa no se borra por cleanOrphans
-- **WHEN** `cleanOrphans()` procesa una sesión que está activa en Redis (guardada como `tcloud_tcloud_cache_{session_id}`)
-- **THEN** `Cache::has($session->session_id)` MUST retornar `true`
+- **WHEN** `cleanOrphans()` procesa una sesión que está activa en Redis (guardada como `{redis_prefix}{cache_prefix}{session_id}` en la conexión `session`)
+- **THEN** `sessionExistsInRedis()` MUST retornar `true`
 - **AND** el registro en `user_sessions` MUST NOT ser borrado
 
 #### Scenario: Sesión huérfana real sí se borra
-- **WHEN** `cleanOrphans()` procesa una sesión cuya clave en Redis ya expiró o no existe
-- **THEN** `Cache::has($session->session_id)` MUST retornar `false`
-- **AND** el registro en `user_sessions` MUST ser borrado
+- **WHEN** `cleanOrphans()` procesa una sesión cuya clave en Redis ya expiró o no existe en la conexión `session`
+- **THEN** `sessionExistsInRedis()` MUST retornar `false`
+- **AND** el registro en `user_sessions` MUST ser borrado (salvo que el guardarraíl de ratio máximo aborte la corrida, ver `session-cleanup-safety`)
 
-#### Scenario: Redis cae y Cache::has lanza excepción
-- **WHEN** `Cache::has()` lanza una excepción (Redis inalcanzable)
+#### Scenario: Redis cae y la conexión `session` lanza excepción
+- **WHEN** la conexión `session` lanza una excepción (Redis inalcanzable)
 - **THEN** el sistema MUST capturar la excepción y NO borrar el registro (conservador: si no se puede verificar, no borrar)
 
 ### Requirement: global_session_lifetime alineado con SESSION_LIFETIME
@@ -89,30 +93,21 @@ El valor `global_session_lifetime` en `system_settings` SHALL ser 1440 minutos (
 - **THEN** `SessionService::getEffectiveLifetimeMinutes()` MUST retornar 1440
 - **AND** la sesión MUST expirar solo tras 24h de inactividad
 
-### Requirement: Verificación de existencia de sesión en Redis con conexión y prefijo correctos
-El `SessionService` SHALL verificar la existencia de sesiones en Redis usando `Redis::connection('default')` con el prefijo del cache store (`config('cache.prefix')`), produciendo la clave `{redis_prefix}{cache_prefix}{session_id}` (ej. `tcloud_tcloud_cache_{session_id}`). Esto se centraliza en un helper `sessionExistsInRedis()` para evitar discrepancias entre el cache store (DB 1) y la conexión de sesión (DB 0).
-
-#### Scenario: cleanOrphans no borra sesiones activas
-- **WHEN** `cleanOrphans()` procesa una sesión que está activa en Redis (clave `tcloud_tcloud_cache_{session_id}` existe en DB 0)
-- **THEN** `sessionExistsInRedis()` MUST retornar `true`
-- **AND** el registro en `user_sessions` MUST NOT ser borrado
-
-#### Scenario: cleanOrphans sí borra sesiones huérfanas
-- **WHEN** `cleanOrphans()` procesa una sesión cuya clave en Redis ya expiró o no existe en DB 0
-- **THEN** `sessionExistsInRedis()` MUST retornar `false`
-- **AND** el registro en `user_sessions` MUST ser borrado
+### Requirement: Verificación de existencia de sesión centralizada en helpers
+El `SessionService` SHALL verificar la existencia de sesiones en Redis usando exclusivamente la conexión `session` configurada en `config/database.php`. El prefijo aplicado SHALL ser `{database.redis.options.prefix}{cache.prefix}{session_id}` (ej. `tcloud_tcloud_cache_{session_id}`). La construcción de clave y selección de conexión SHALL estar centralizada en los helpers privados `sessionRedisKey()` y `sessionRedisConnection()` para eliminar la posibilidad de divergencia entre callers. Ver capability `session-redis-connection`.
 
 #### Scenario: countActiveSessions cuenta sesiones correctamente
 - **WHEN** `countActiveSessions()` evalúa las sesiones de un usuario
-- **THEN** cada sesión MUST ser verificada con `sessionExistsInRedis()` en DB 0
+- **THEN** cada sesión MUST ser verificada con `sessionExistsInRedis()` en la conexión `session`
 - **AND** solo las sesiones con clave existente en Redis MUST ser contadas
 
 #### Scenario: killSession elimina la sesión del Redis correcto
 - **WHEN** `killSession()` elimina una sesión
-- **THEN** la clave `tcloud_tcloud_cache_{session_id}` MUST ser eliminada de DB 0 (conexión `default`)
+- **THEN** la clave `{redis_prefix}{cache_prefix}{session_id}` MUST ser eliminada de la conexión `session`
 - **AND** la clave de caché `session_valid:{session_id}` MUST ser eliminada del cache store
+- **AND** el registro en `user_sessions` MUST ser eliminado
 
 #### Scenario: Redis cae y la verificación lanza excepción
-- **WHEN** `Redis::connection('default')` lanza una excepción (Redis inalcanzable)
+- **WHEN** la conexión `session` lanza una excepción (Redis inalcanzable)
 - **THEN** `cleanOrphans()` MUST capturar la excepción y NO borrar el registro (conservador: si no se puede verificar, no borrar)
 - **AND** `countActiveSessions()` MUST capturar la excepción y contar la sesión como activa (conservador)

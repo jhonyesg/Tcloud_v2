@@ -8,13 +8,27 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class File extends Model
 {
-    protected $fillable = ['name', 'path', 'size', 'mime_type', 'storage_provider_id', 'owner_id', 'parent_id', 'is_folder', 'is_personal', 'file_modified_at'];
+    protected $fillable = [
+        'name',
+        'path',
+        'size',
+        'mime_type',
+        'storage_provider_id',
+        'owner_id',
+        'parent_id',
+        'is_folder',
+        'file_modified_at',
+        'availability_state',
+        'last_verified_at',
+        'missing_since_at',
+    ];
 
     protected $casts = [
         'size' => 'integer',
         'is_folder' => 'boolean',
-        'is_personal' => 'boolean',
         'file_modified_at' => 'datetime',
+        'last_verified_at' => 'datetime',
+        'missing_since_at' => 'datetime',
     ];
 
     public function owner(): BelongsTo

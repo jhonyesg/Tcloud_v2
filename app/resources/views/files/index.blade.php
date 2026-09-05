@@ -23,6 +23,10 @@ document.addEventListener('alpine:init', () => {
     currentStorageName: null,
     currentStoragePermission: 'read',
     currentStorageCanShare: false,
+    storageAccessible: true,
+    storageKind: 'local',
+    storageBannerMessage: '',
+    searchUnreliable: false,
     viewMode: 'storages',
     filesViewMode: localStorage.getItem('files_view_mode') || 'grid',
     selectedFiles: [],
@@ -412,6 +416,21 @@ deleteConfirmFile: null,
             if (forceSync) {
                 this.reportSync(data?.stats, serverData);
             }
+
+            // Banner de accesibilidad del storage activo.
+            // El backend inyecta storage_accessible + storage_kind en cada
+            // respuesta. El banner se actualiza reactivamente al navegar, sin
+            // recarga completa.
+            if ('storage_accessible' in (data ?? {})) {
+                const accessible = data.storage_accessible !== false;
+                this.storageAccessible = accessible;
+                this.storageKind = data.storage_kind || 'local';
+                this.searchUnreliable = data.search_unreliable === true;
+                this.storageBannerMessage = accessible
+                    ? ''
+                    : `Disco "${data.storage_name || ''}" no disponible — los datos pueden estar desactualizados.`;
+            }
+
             this.isNavigating = false;
             this.navigatingToId = null;
             this.isLoadingFiles = false;
@@ -875,7 +894,7 @@ deleteConfirmFile: null,
         this.selectedShareIds = [];
         this.bulkDeleteLoading = false;
         this.editingShareId = null;
-        this.shareForm = { permissions: 'read', password: '', expires_at: '' };
+        this.shareForm = { permissions: 'read', password: '', expires_at: '', never_expires: false };
         this.shareFeedback = { type: '', message: '' };
         await this.loadFileShares(file.id);
     },
@@ -1218,7 +1237,7 @@ deleteConfirmFile: null,
         });
         if (res.ok) {
             const data = await res.json();
-            this.fileShares = Array.isArray(data) ? data : (data.shares || []);
+            this.fileShares = Array.isArray(data) ? data : (data.data || data.shares || []);
         }
     },
 
@@ -1237,14 +1256,15 @@ deleteConfirmFile: null,
                 file_id: this.selectedFile.id,
                 permissions: this.shareForm.permissions,
                 password: this.shareForm.password || null,
-                expires_at: this.shareForm.expires_at || null
+                expires_at: this.shareForm.expires_at || null,
+                never_expires: !!this.shareForm.never_expires
             })
         });
 
         if (res.ok) {
             const newShare = await res.json();
             this.fileShares.push(newShare);
-            this.shareForm = { permissions: 'read', password: '', expires_at: '' };
+            this.shareForm = { permissions: 'read', password: '', expires_at: '', never_expires: false };
             this.shareFeedback = { type: 'success', message: 'Enlace generado correctamente' };
             setTimeout(() => this.shareFeedback = { type: '', message: '' }, 3000);
         } else {
@@ -1300,22 +1320,30 @@ deleteConfirmFile: null,
         if (!this.selectedShareIds.length) return;
         this.bulkDeleteLoading = true;
         const ids = [...this.selectedShareIds];
-        const results = await Promise.all(ids.map(id =>
-            apiFetch('/shares/' + id, {
-                method: 'DELETE',
-                credentials: 'include',
-                headers: { 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content, 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
-            }).then(r => ({ id, ok: r.ok }))
-        ));
-        const succeeded = results.filter(r => r.ok).map(r => r.id);
-        const failed = results.filter(r => !r.ok).length;
-        this.fileShares = this.fileShares.filter(s => !succeeded.includes(s.id));
-        this.selectedShareIds = this.selectedShareIds.filter(id => !succeeded.includes(id));
-        this.bulkDeleteLoading = false;
-        if (failed > 0) {
-            this.showToast(succeeded.length + ' eliminados, ' + failed + ' fallaron', 'error');
-        } else {
-            this.showToast(succeeded.length + ' enlace(s) eliminado(s)', 'success');
+        try {
+            const headers = { 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content, 'Accept': 'application/json', 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' };
+            const previewRes = await apiFetch('/shares/bulk-preview', {
+                method: 'POST', credentials: 'include', headers,
+                body: JSON.stringify({ ids })
+            });
+            const preview = await previewRes.json().catch(() => ({}));
+            if (!previewRes.ok) throw new Error(preview.error || 'No se pudo previsualizar la eliminación');
+            if (!confirm('Se eliminarán definitivamente ' + preview.count + ' enlace(s). Los archivos no serán eliminados. ¿Continuar?')) return;
+
+            const res = await apiFetch('/shares/bulk-delete', {
+                method: 'POST', credentials: 'include', headers,
+                body: JSON.stringify({ ids, confirm_count: preview.count })
+            });
+            const result = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(result.error || 'No se pudo completar la depuración');
+            const succeeded = ids.filter(id => !(result.omitted_ids || []).includes(id));
+            this.fileShares = this.fileShares.filter(s => !succeeded.includes(s.id));
+            this.selectedShareIds = this.selectedShareIds.filter(id => !succeeded.includes(id));
+            this.showToast((result.deleted_count || 0) + ' enlace(s) eliminado(s)', 'success');
+        } catch (e) {
+            this.showToast(e.message, 'error');
+        } finally {
+            this.bulkDeleteLoading = false;
         }
     },
 
@@ -1343,7 +1371,8 @@ deleteConfirmFile: null,
         this.editingShareId = share.id;
         this.editingShareData = {
             permissions: share.permissions,
-            expires_at: share.expires_at ? share.expires_at.slice(0, 16) : ''
+            expires_at: share.expires_at ? share.expires_at.slice(0, 16) : '',
+            never_expires: !share.expires_at
         };
     },
 
@@ -1359,7 +1388,8 @@ deleteConfirmFile: null,
             },
             body: JSON.stringify({
                 permissions: this.editingShareData.permissions,
-                expires_at: this.editingShareData.expires_at || null
+                expires_at: this.editingShareData.expires_at || null,
+                never_expires: !!this.editingShareData.never_expires
             })
         });
 
@@ -2268,6 +2298,31 @@ deleteConfirmFile: null,
                 </button>
             </div>
         </div>
+
+        {{-- Banner de accesibilidad del storage activo. Visible solo cuando
+             el storage existe, está en viewMode 'files' y NO está accesible.
+             kind='external' (NFS/SMB) colorea ámbar; kind='local' colorea rojo. --}}
+        <div class="px-3 py-2 sm:px-6 sm:py-3"
+             x-show="viewMode === 'files' && !storageAccessible && storageBannerMessage"
+             x-transition>
+            <div :class="storageKind === 'external'
+                          ? 'bg-amber-50 border border-amber-300 text-amber-900'
+                          : 'bg-red-50 border border-red-300 text-red-900'"
+                 class="flex items-start gap-3 rounded-lg p-3 text-sm">
+                <svg class="w-5 h-5 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                          d="M12 9v2m0 4h.01M4.93 19h14.14c1.54 0 2.5-1.67 1.73-3L13.73 4a2 2 0 00-3.46 0L3.2 16c-.77 1.33.19 3 1.73 3z"/>
+                </svg>
+                <div class="flex-1">
+                    <p class="font-medium" x-text="storageBannerMessage"></p>
+                    <p class="text-xs mt-1 opacity-80"
+                       x-show="searchUnreliable">
+                        Los resultados de búsqueda pueden no corresponderse con el disco actual.
+                    </p>
+                </div>
+            </div>
+        </div>
+
         <div class="px-3 py-2 sm:px-6 sm:py-3 bg-slate-50 border-t border-slate-100" x-show="viewMode === 'files'">
             <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-4">
                 <!-- Breadcrumb normal -->
@@ -3051,7 +3106,10 @@ deleteConfirmFile: null,
                                     <option value="upload">Subida</option>
                                     <option value="full">Completo</option>
                                 </select>
-                                <input type="datetime-local" x-model="shareForm.expires_at" class="w-full border border-purple-200 px-3 py-1.5 rounded-lg text-sm focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none" placeholder="Expira (opcional)">
+                                 <div class="flex items-center gap-2">
+                                     <input type="datetime-local" x-model="shareForm.expires_at" :disabled="shareForm.never_expires" class="w-full border border-purple-200 px-3 py-1.5 rounded-lg text-sm focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none" placeholder="Expira">
+                                     <label class="flex items-center gap-1 text-[11px] text-purple-700 whitespace-nowrap"><input type="checkbox" x-model="shareForm.never_expires" class="rounded text-purple-600"> Nunca</label>
+                                 </div>
                             </div>
                             <input type="password" x-model="shareForm.password" autocomplete="new-password" class="w-full border border-purple-200 px-3 py-1.5 rounded-lg text-sm mb-2 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none" placeholder="Contraseña (opcional)">
                             <button @click="generateShareLink()" class="w-full bg-purple-600 hover:bg-purple-700 text-white px-3 py-1.5 rounded-lg text-sm transition-colors flex items-center justify-center gap-2">
@@ -3132,11 +3190,14 @@ deleteConfirmFile: null,
                                                         'bg-yellow-100 text-yellow-800': share.permissions === 'upload',
                                                         'bg-green-100 text-green-800': share.permissions === 'full'
                                                     }" x-text="share.permissions"></span>
-                                                    <span class="text-xs text-slate-500" x-text="formatDate(share.created_at)"></span>
+                                                     <span class="text-xs text-slate-500" x-text="share.expiry_status === 'expired' ? 'Expirado' : (share.expires_at ? formatDate(share.expires_at) : 'Sin vencimiento')"></span>
                                                 </div>
                                             </div>
                                             <p class="text-sm text-slate-600 mb-2 truncate" :title="window.location.origin + '/s/' + share.token" x-text="truncateUrl(window.location.origin + '/s/' + share.token, 40)"></p>
-                                            <div class="flex gap-2">
+                                             <div class="flex items-center gap-2 mb-2 text-xs">
+                                                 <span :class="share.file?.availability_state === 'missing' ? 'text-orange-600' : (share.file?.availability_state === 'available' ? 'text-green-600' : 'text-slate-400')" x-text="share.file?.availability_state === 'missing' ? 'Archivo no disponible' : (share.file?.availability_state === 'available' ? 'Archivo disponible' : 'Archivo no verificado')"></span>
+                                             </div>
+                                             <div class="flex gap-2">
                                                 <button @click="copyShareLink(share.token)" class="flex-1 flex items-center justify-center gap-1 bg-blue-100 hover:bg-blue-200 text-blue-700 px-2 py-1 rounded text-xs transition-colors">
                                                     <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
@@ -3166,7 +3227,10 @@ deleteConfirmFile: null,
                                                     <option value="upload">Subida</option>
                                                     <option value="full">Completo</option>
                                                 </select>
-                                                <input type="datetime-local" x-model="editingShareData.expires_at" class="w-full border border-slate-300 px-2 py-1 rounded text-sm">
+                                                 <div class="flex items-center gap-2">
+                                                     <input type="datetime-local" x-model="editingShareData.expires_at" :disabled="editingShareData.never_expires" class="w-full border border-slate-300 px-2 py-1 rounded text-sm">
+                                                     <label class="flex items-center gap-1 text-[11px] whitespace-nowrap"><input type="checkbox" x-model="editingShareData.never_expires" class="rounded text-blue-600"> Nunca</label>
+                                                 </div>
                                             </div>
                                             <div class="flex gap-2">
                                                 <button @click="saveShareLink(share.id)" class="flex-1 bg-green-600 hover:bg-green-700 text-white px-2 py-1 rounded text-xs transition-colors">

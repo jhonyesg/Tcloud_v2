@@ -813,6 +813,59 @@
             </button>
         </div>
 
+        {{-- (changes/2026-08-25 llm-coherence-manual-only-defaults-off) Bloque de
+             política manual-only para el pase de coherencia IA. Se muestra
+             siempre en la cabecera del panel AI Settings para que cualquier
+             admin que esté a punto de activar el toggle entienda que está
+             saliendo del modo seguro. El badge refleja el estado actual
+             leído server-side desde transcriptor.ai_coherence_enabled. --}}
+        @php
+            $coherenceHelpId = 'ai-coherence-help-' . uniqid();
+        @endphp
+        <div id="{{ $coherenceHelpId }}" class="px-4 py-3 border-b border-slate-200 bg-amber-50/60"
+             x-data="{
+                 enabled: @json((bool) ($aiCoherenceEnabled ?? false)),
+                 get badgeClass() {
+                     return this.enabled
+                         ? 'bg-amber-100 text-amber-800 border border-amber-300'
+                         : 'bg-emerald-100 text-emerald-800 border border-emerald-300';
+                 },
+                 get badgeText() {
+                     return this.enabled ? 'Modo activo' : 'Modo seguro';
+                 },
+                 get badgeIcon() {
+                     return this.enabled ? 'fa-bolt' : 'fa-shield-halved';
+                 }
+             }">
+            <div class="flex items-start gap-3">
+                <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-semibold"
+                      :class="badgeClass"
+                      data-testid="ai-coherence-badge">
+                    <i class="fas" :class="badgeIcon"></i>
+                    <span x-text="badgeText"></span>
+                </span>
+                <div class="flex-1 min-w-0">
+                    <p class="text-xs text-slate-700 leading-relaxed">
+                        <strong class="font-semibold">Modo seguro por defecto.</strong>
+                        El pase de coherencia IA invoca un LLM para corregir spanglish
+                        residual en cada transcripción nueva. Está apagado por defecto
+                        y solo debe activarse cuando estés revisando resultados
+                        manualmente. Mientras esté apagado, el sistema usa solo el
+                        diccionario de correcciones (instantáneo, sin costo).
+                    </p>
+                    <p class="text-xs text-slate-500 mt-1.5 leading-relaxed"
+                       x-show="enabled"
+                       x-transition>
+                        <i class="fas fa-circle-exclamation text-amber-600 mr-1"></i>
+                        Cada transcripción nueva invocará el LLM. El toggle se persiste
+                        en <code class="font-mono text-[11px] bg-slate-100 px-1 rounded">transcriptor.ai_coherence_enabled</code>
+                        y se respeta desde <code class="font-mono text-[11px] bg-slate-100 px-1 rounded">TranscriptionCoherencePass</code>
+                        y <code class="font-mono text-[11px] bg-slate-100 px-1 rounded">transcription:backfill-coherence</code>.
+                    </p>
+                </div>
+            </div>
+        </div>
+
         <div class="p-4 border-b border-slate-200 bg-slate-50 text-xs text-slate-600 flex items-center gap-3 flex-wrap">
             <span class="font-medium">Origen del valor:</span>
             <span class="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800">BD (override UI)</span>

@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Define la vista cliente "Mis Avisos" (`/mis-avisos`): cómo el cliente gestiona sus keywords, consulta su historial de alertas y visualiza coincidencias, respetando el acceso por storage concedido por el admin.
+
+## Requirements
 
 ### Requirement: "Mis Avisos" aparece en sidebar solo si el módulo está activo
 El sistema SHALL renderizar la entrada "Mis Avisos" dentro del bloque Multimedia del sidebar (`layouts/app.blade.php`) únicamente cuando existe una fila en `user_alerts_inteligentes` para el usuario autenticado con `enabled=true`.
@@ -80,3 +84,27 @@ El sistema SHALL retornar 403 al cliente que intenta acceder a `/mis-avisos` sin
 #### Scenario: Cliente sin módulo intenta la URL directa
 - **WHEN** el cliente "otro" (sin fila en `user_alerts_inteligentes` con `enabled=true`) hace GET a `/mis-avisos`
 - **THEN** el sistema responde 403 con mensaje "No tienes acceso al módulo de avisos"
+
+---
+
+### Requirement: Listado de matches del cliente respeta `transcription_access`
+
+El sistema SHALL limitar la lista de `KeywordMatch` que el cliente ve en `/mis-avisos` y `/mis-avisos/corrections/mine` a aquellos cuyas transcripciones pertenecen a storages en los que el usuario autenticado tiene `transcription_access = true`. Matches históricos de storages sin acceso SHALL permanecer visibles (filtro prospectivo, no retroactivo).
+
+#### Scenario: Cliente con acceso al storage ve el match
+- **WHEN** el cliente "prueba" abre `/mis-avisos` y existe un `KeywordMatch` suyo cuya transcripción es del storage 11
+- **AND** `user_storages(prueba, 11).transcription_access = true`
+- **THEN** el match aparece en su listado
+
+#### Scenario: Cliente sin acceso al storage no ve el match nuevo
+- **WHEN** el cliente "prueba" abre `/mis-avisos` y llega un `KeywordMatch` suyo del storage 11
+- **AND** `user_storages(prueba, 11).transcription_access = false`
+- **THEN** el match NO aparece en el listado (porque el KeywordMatcher upstream ya lo bloqueó)
+
+#### Scenario: Match histórico de storage sin acceso sigue visible
+- **WHEN** el cliente "prueba" tiene un match del storage 11 del 2026-08-15 y al 2026-08-21 el admin le revocó el acceso a 11
+- **THEN** ese match histórico sigue apareciendo en su listado
+
+#### Scenario: Cliente sin acceso a ningún storage ve listado vacío
+- **WHEN** el cliente no tiene `user_storages.transcription_access = true` para ningún storage
+- **THEN** `/mis-avisos` muestra el estado vacío "Aún no se han detectado coincidencias" aunque el `KeywordMatcher` haya generado matches históricos

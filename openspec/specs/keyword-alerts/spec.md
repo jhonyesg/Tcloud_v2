@@ -114,71 +114,6 @@ El sistema SHALL permitir al admin enviar un email de prueba usando la plantilla
 
 ---
 
-### Requirement: La transcripción se habilita por (cliente, storage), no por storage
-El sistema SHALL registrar en `user_storages.transcription_enabled` si un cliente concreto tiene contratada la transcripción sobre un storage concreto. Dos clientes que comparten el mismo storage SHALL poder tener estados distintos.
-
-#### Scenario: Un cliente contrata y el otro no
-- **WHEN** el cliente A y el cliente B tienen asignado el storage "11 Telepacifico" y el admin habilita transcripción solo para A
-- **THEN** `user_storages(A, Telepacifico).transcription_enabled = true` y `user_storages(B, Telepacifico).transcription_enabled = false`
-- **AND** B no recibe avisos de ese storage ni ve señal alguna de que A los recibe
-
-#### Scenario: Desactivar a un cliente no afecta a los demás
-- **WHEN** un storage lo comparten 6 clientes con transcripción activa y el admin la desactiva para uno
-- **THEN** los otros 5 conservan `transcription_enabled = true` y el storage sigue transcribiendo
-
----
-
-### Requirement: `storage_providers.transcription_enabled` es un valor derivado
-El sistema SHALL mantener `storage_providers.transcription_enabled` como la existencia de al menos un `user_storages` con `transcription_enabled = true` para ese storage, recalculándolo tras cada escritura sobre `user_storages`.
-
-#### Scenario: El primer cliente que contrata enciende el storage
-- **WHEN** un storage sin ningún cliente con transcripción recibe la primera habilitación
-- **THEN** `storage_providers.transcription_enabled` pasa a `true` y el storage entra en el pipeline
-
-#### Scenario: El último cliente que cancela apaga el storage
-- **WHEN** se desactiva la transcripción del único cliente que la tenía sobre un storage
-- **THEN** `storage_providers.transcription_enabled` pasa a `false` y el storage deja de transcribirse
-
-#### Scenario: Desasignación masiva de clientes recalcula la bandera
-- **WHEN** se eliminan las asignaciones de un storage mediante query builder masivo (sin eventos de modelo)
-- **THEN** el punto de escritura invoca `StorageTranscriptionSync::recalculate()` y la bandera queda consistente
-
-#### Scenario: Reconciliación detecta deriva
-- **WHEN** se ejecuta `php artisan avisos:sync-storage-transcription --dry-run`
-- **THEN** el sistema reporta cuántos storages tienen la bandera desalineada, sin escribir nada
-
----
-
-### Requirement: El admin habilita transcripción desde la ficha del cliente
-El sistema SHALL permitir al admin activar y desactivar la transcripción de cada storage asignado a un cliente desde `/ia/avisos-inteligentes/{user}`, sin poder asignar ni desasignar storages desde esa pantalla.
-
-#### Scenario: Activar transcripción sobre un storage asignado
-- **WHEN** el admin abre la ficha de "Punto" y activa "01 Radio FM Bogota"
-- **THEN** el sistema marca el pivote en `true`, recalcula la bandera del storage y devuelve el estado nuevo
-
-#### Scenario: Toggle sobre un storage no asignado al cliente
-- **WHEN** se hace POST a `/ia/avisos-inteligentes/{userId}/storages/{storageId}/transcription` para un storage que ese cliente no tiene en `user_storages`
-- **THEN** el sistema rechaza la petición y no modifica ninguna fila
-
-#### Scenario: La pantalla no asigna storages
-- **WHEN** el admin abre la ficha de un cliente
-- **THEN** solo ve los storages ya asignados, sin controles para agregar ni quitar acceso (eso sigue en `/admin/storages`)
-
----
-
-### Requirement: El índice de Avisos Inteligentes muestra la cobertura por cliente
-El sistema SHALL listar en `/ia/avisos-inteligentes` los clientes con el número de storages con transcripción sobre el total asignado.
-
-#### Scenario: Listado con cobertura
-- **WHEN** el admin abre el índice
-- **THEN** ve por cliente `storages con transcripción / storages totales` — p.ej. "Punto 24 / 123", "sigloprensa 0 / 12"
-
-#### Scenario: Los filtros existentes se conservan
-- **WHEN** el admin usa la búsqueda por usuario/email o el filtro de módulo activo/inactivo
-- **THEN** siguen funcionando como antes del cambio
-
----
-
 ### Requirement: El switch de transcripción de `/ia/api-transcriptor` es de solo lectura
 El sistema SHALL mostrar en `/ia/api-transcriptor` el estado de transcripción de cada storage como indicador derivado, sin permitir escribirlo desde esa pantalla.
 
@@ -190,22 +125,25 @@ El sistema SHALL mostrar en `/ia/api-transcriptor` el estado de transcripción d
 - **WHEN** se hace POST a `/ia/api-transcriptor/storages/{id}/toggle`
 - **THEN** la ruta ya no está registrada
 
-### Requirement: La ficha del cliente informa qué canales se transcriben, sin controlarlo
+---
 
-El sistema SHALL mostrar en `/ia/avisos-inteligentes/{userId}` los `StorageProvider` habilitados que el cliente tiene asignados, cada uno con el estado de transcripción del **storage** (`storage_providers.transcription_enabled`) en modo **solo lectura**.
+### Requirement: KeywordMatcher respeta `transcription_access` por storage
 
-La pantalla NO SHALL ofrecer ningún control para habilitar o deshabilitar la transcripción, y SHALL enlazar a `/ia/api-transcriptor`, que es donde vive esa decisión. Avisos Inteligentes consume transcripciones ya producidas; no decide qué se produce.
+El sistema SHALL limitar la creación de `KeywordMatch` y el envío de emails de alerta a los usuarios que tengan `transcription_access = true` para el `storage_provider_id` de la transcripción recién completada. Si el usuario tiene el módulo de avisos activo pero no tiene acceso a ese storage concreto, el sistema SHALL NO crear match ni enviar email para esa transcripción. El filtro aplica desde el deploy; los `keyword_matches` históricos existentes NO se eliminan.
 
-El listado de clientes SHALL contar los canales asignados a cada uno, y NO SHALL presentar un conteo de "canales con transcripción contratada": la transcripción es un atributo del canal, no del cliente.
+#### Scenario: Usuario con módulo activo pero sin acceso al storage
+- **WHEN** la transcripción T del storage 11 completa sus segmentos y el usuario "prueba" tiene `enabled=true` con la keyword "paro"
+- **AND** `user_storages(prueba, 11).transcription_access = false`
+- **THEN** no se crea `KeywordMatch` para (prueba, T) y no se envía email
 
-#### Scenario: Admin abre la ficha de un cliente
-- **WHEN** el admin entra a la ficha de un cliente con canales asignados
-- **THEN** ve cada canal con la etiqueta "Transcribe" o "Sin transcripción" según la bandera del storage, sin ningún interruptor, y con enlace a API Transcriptor
+#### Scenario: Usuario con acceso al storage recibe el match
+- **WHEN** la misma situación anterior pero `user_storages(prueba, 11).transcription_access = true`
+- **THEN** se crean los `KeywordMatch` correspondientes y se envía el email consolidado
 
-#### Scenario: El canal se enciende desde el otro módulo
-- **WHEN** el operador enciende ese canal en `/ia/api-transcriptor` y vuelve a la ficha del cliente
-- **THEN** la ficha refleja el nuevo estado, porque lee la misma bandera del storage
+#### Scenario: Coalescing por storage se mantiene
+- **WHEN** la transcripción T del storage 11 produce 2 matches para "prueba" y "prueba" tiene acceso a 11
+- **THEN** se crean 2 `KeywordMatch` y se envía UN solo email con ambos (comportamiento existente conservado)
 
-#### Scenario: Dos clientes comparten un canal
-- **WHEN** un mismo storage está asignado a dos clientes y se está transcribiendo
-- **THEN** ambas fichas lo muestran como "Transcribe": el canal se transcribe una sola vez y sus transcripciones alimentan las keywords de cada cliente por separado
+#### Scenario: Histórico no se borra
+- **WHEN** se desplegó el filtro y existían `KeywordMatch` previos de un usuario sobre un storage al que luego se le revocó el acceso
+- **THEN** esos matches históricos siguen visibles para el usuario (filtro prospectivo, no retroactivo)

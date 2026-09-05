@@ -36,7 +36,10 @@
                 </div>
                 <div>
                     <h3 class="font-semibold text-slate-800">Compartidos</h3>
-                    <p class="text-xs text-slate-500">{{ $user->shares->count() }} enlaces activos</p>
+                    <p class="text-xs text-slate-500">{{ $shareStats['active'] }} enlaces activos</p>
+                    @if(($shareStats['expired'] ?? 0) > 0 || ($shareStats['unavailable'] ?? 0) > 0)
+                        <p class="text-[11px] text-amber-600 mt-0.5">{{ $shareStats['expired'] }} expirados, {{ $shareStats['unavailable'] }} no disponibles</p>
+                    @endif
                 </div>
             </div>
         </a>

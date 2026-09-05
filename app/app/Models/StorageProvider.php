@@ -8,7 +8,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class StorageProvider extends Model
 {
-    protected $fillable = ['name', 'type', 'config', 'base_path', 'enabled', 'is_accessible', 'last_checked_at', 'transcription_enabled', 'folder_layout', 'allow_parent_overlap'];
+    protected $fillable = ['name', 'type', 'config', 'base_path', 'enabled', 'is_accessible', 'last_checked_at', 'transcription_enabled', 'folder_layout', 'allow_parent_overlap', 'is_personal', 'kind'];
 
     protected $casts = [
         'config' => 'array',
@@ -18,6 +18,8 @@ class StorageProvider extends Model
         'transcription_enabled' => 'boolean',
         'folder_layout' => 'string',
         'allow_parent_overlap' => 'boolean',
+        'is_personal' => 'boolean',
+        'kind' => 'string',
     ];
 
     public function userStorages(): HasMany

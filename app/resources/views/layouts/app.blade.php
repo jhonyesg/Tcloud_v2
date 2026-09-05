@@ -378,13 +378,21 @@
                     @php
                         $siteColors = [
                             'blue'   => ['bg' => '#dbeafe', 'text' => '#2563eb'],
-                            'green'  => ['bg' => '#dcfce7', 'text' => '#16a34a'],
-                            'red'    => ['bg' => '#fee2e2', 'text' => '#dc2626'],
-                            'purple' => ['bg' => '#f3e8ff', 'text' => '#9333ea'],
-                            'amber'  => ['bg' => '#fef3c7', 'text' => '#d97706'],
-                            'slate'  => ['bg' => '#f1f5f9', 'text' => '#64748b'],
+                            'sky'    => ['bg' => '#e0f2fe', 'text' => '#0284c7'],
                             'cyan'   => ['bg' => '#cffafe', 'text' => '#0891b2'],
+                            'teal'   => ['bg' => '#ccfbf1', 'text' => '#0d9488'],
+                            'green'  => ['bg' => '#dcfce7', 'text' => '#16a34a'],
+                            'lime'   => ['bg' => '#ecfccb', 'text' => '#65a30d'],
+                            'yellow' => ['bg' => '#fef9c3', 'text' => '#ca8a04'],
+                            'amber'  => ['bg' => '#fef3c7', 'text' => '#d97706'],
+                            'orange' => ['bg' => '#ffedd5', 'text' => '#ea580c'],
+                            'red'    => ['bg' => '#fee2e2', 'text' => '#dc2626'],
                             'rose'   => ['bg' => '#ffe4e6', 'text' => '#e11d48'],
+                            'pink'   => ['bg' => '#fce7f3', 'text' => '#db2777'],
+                            'fuchsia'=> ['bg' => '#fae8ff', 'text' => '#c026d3'],
+                            'purple' => ['bg' => '#f3e8ff', 'text' => '#9333ea'],
+                            'indigo' => ['bg' => '#e0e7ff', 'text' => '#4f46e5'],
+                            'slate'  => ['bg' => '#f1f5f9', 'text' => '#64748b'],
                         ];
                         $clr = $siteColors[$extSite->color] ?? $siteColors['blue'];
                         $isActive = request()->is('sites/' . $extSite->id) || request()->is('sites/' . $extSite->id . '/*');

@@ -34,27 +34,39 @@ use Illuminate\Support\Facades\DB;
 class CycleSuggestionsCommand extends Command
 {
     protected $signature = 'corrections:cycle-suggestions
-                            {--days=1 : Ventana de análisis en días (default 1, recomendado <= 1 para cron)}
-                            {--hours= : Alternativa a --days, ventana en horas (ej: 4 para cron cada 4h)}
+                            {--days=1 : Ventana de análisis en días (default 1, recomendado <= 1 para corrida manual)}
+                            {--hours= : Alternativa a --days, ventana en horas (ej: 4)}
                             {--threshold=0.25 : Score mínimo de mezcla por segmento}
                             {--min-freq=5 : Frecuencia mínima del trigrama para proponer}
                             {--max-rules=50 : Tope de reglas a proponer por corrida}
-                            {--dry-run : Solo muestra, no inserta ni marca}';
+                            {--dry-run : Solo muestra, no inserta ni marca}
+                            {--confirm : Confirmación explícita para ventanas > 24h sin --dry-run}';
 
     protected $description = 'Cycle automático: detecta segmentos con inglés + propone reglas pending.';
+
+    /** Ventana (horas) a partir de la cual la escritura exige --confirm. */
+    private const CONFIRM_WINDOW_HOURS = 24;
 
     public function handle(EnglishResidualSegmentDetector $detector): int
     {
         $hoursOpt = $this->option('hours');
         if ($hoursOpt !== null) {
-            $days = max(1, (int) ceil(((int) $hoursOpt) / 24));
+            $windowHours = max(1, (int) $hoursOpt);
         } else {
-            $days = max(1, (int) $this->option('days'));
+            $windowHours = max(1, (int) $this->option('days')) * 24;
         }
+        $days = max(1, (int) ceil($windowHours / 24));
         $threshold = (float) $this->option('threshold');
         $minFreq = max(2, (int) $this->option('min-freq'));
         $maxRules = max(1, (int) $this->option('max-rules'));
         $dryRun = (bool) $this->option('dry-run');
+
+        // Guardrail manual-only (change: corrections-manual-only-and-context-search):
+        // escritura real con ventana > 24h sin --confirm degrada a dry-run.
+        if (!$dryRun && $windowHours > self::CONFIRM_WINDOW_HOURS && !$this->option('confirm')) {
+            $dryRun = true;
+            $this->warn("Ventana {$windowHours}h > " . self::CONFIRM_WINDOW_HOURS . "h sin --dry-run requiere --confirm. Degradado a dry-run.");
+        }
 
         $this->info("Cycle suggestions: days={$days} threshold={$threshold} min-freq={$minFreq} max-rules={$maxRules}"
             . ($dryRun ? ' [DRY-RUN]' : ''));

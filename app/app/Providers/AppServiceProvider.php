@@ -14,6 +14,9 @@ use App\Services\Ia\SrtParser;
 use App\Services\Ia\TranscriptionProcessor;
 use App\Services\Ia\TranscriptorApiClient;
 use App\Services\Ia\TranscriptorSettings;
+use App\Modules\Correo\Services\EmailValidationService;
+use App\Observers\UserObserver;
+use App\Services\Auth\PasswordTokenService;
 use Illuminate\Support\Facades\Session;
 use Illuminate\Support\ServiceProvider;
 
@@ -33,10 +36,14 @@ class AppServiceProvider extends ServiceProvider
         $this->app->singleton(TranscriptionProcessor::class);
         $this->app->singleton(KeywordMatcher::class);
         $this->app->singleton(AlertDispatcher::class);
+        $this->app->singleton(EmailValidationService::class);
+        $this->app->singleton(PasswordTokenService::class);
     }
 
     public function boot(): void
     {
+        User::observe(UserObserver::class);
+
         view()->composer('layouts.app', function ($view) {
             $userId = Session::get('user_id');
 

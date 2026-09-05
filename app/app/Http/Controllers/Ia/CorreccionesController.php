@@ -11,6 +11,7 @@ use App\Services\Ia\CorrectionContextFinder;
 use App\Services\Ia\CorrectionService;
 use App\Services\Ia\DictionaryAudit;
 use App\Services\Ia\TranscriptionReviewService;
+use App\Services\Ia\TranscriptorSettings;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
@@ -23,7 +24,7 @@ class CorreccionesController extends Controller
 
     private const CACHE_TTL_HOURS = 4;
 
-    public function index()
+    public function index(TranscriptorSettings $transcriptorSettings)
     {
         $approved = Correction::approved()
             ->with('proposedBy', 'approvedBy')
@@ -35,12 +36,19 @@ class CorreccionesController extends Controller
         $rejectedCount = Correction::where('status', 'rejected')->count();
         $totalCount = $pendingCount + $approvedCount + $rejectedCount;
 
+        // (changes/2026-08-25 llm-coherence-manual-only-defaults-off) Exponer el
+        // estado del toggle maestro del pase de coherencia IA al panel AI
+        // Settings para renderizar el badge Modo seguro/Modo activo sin
+        // agregar un endpoint nuevo (constraint del change: sin routes nuevas).
+        $aiCoherenceEnabled = $transcriptorSettings->bool('ai_coherence_enabled');
+
         return view('ia.correcciones.index', [
             'approved' => $approved,
             'pendingCount' => $pendingCount,
             'approvedCount' => $approvedCount,
             'rejectedCount' => $rejectedCount,
             'totalCount' => $totalCount,
+            'aiCoherenceEnabled' => $aiCoherenceEnabled,
         ]);
     }
 

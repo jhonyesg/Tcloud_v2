@@ -51,16 +51,16 @@ class LlmCorrectionSettings
      */
     private const SCHEMA = [
         'enabled' => [
-            'type' => 'bool', 'default' => true,
+            'type' => 'bool', 'default' => false,
             'env_key' => 'LLM_CORRECTION_ENABLED',
             'label' => 'Habilitado',
-            'help' => 'Switch maestro. false = el suggester sale sin gastar tokens, manual o vía cron.',
+            'help' => 'Switch maestro. false = el suggester sale sin gastar tokens, manual o vía cron. Default false desde 2026-08-25 (modo manual-only).',
         ],
         'primary_enabled' => [
-            'type' => 'bool', 'default' => true,
+            'type' => 'bool', 'default' => false,
             'env_key' => 'LLM_PRIMARY_ENABLED',
             'label' => 'Proveedor primario (Kilo) habilitado',
-            'help' => 'Kilo tiene un rate limit bajo. Si se usan los proveedores rápidos (Ollama, MiniMax, OpenCode), se puede deshabilitar Kilo para el pase de coherencia.',
+            'help' => 'Kilo tiene un rate limit bajo. Si se usan los proveedores rápidos (Ollama, MiniMax, OpenCode), se puede deshabilitar Kilo para el pase de coherencia. Default false desde 2026-08-25 (modo manual-only).',
         ],
         'model' => [
             'type' => 'str', 'default' => 'minimax/minimax-m3',

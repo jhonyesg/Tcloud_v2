@@ -15,10 +15,40 @@ Artisan::command('inspire', function () {
 // avisar. 30 min deja margen holgado sobre los ~4 min de ejecucion real.
 Schedule::command('storage:sync --all')->everyFifteenMinutes()->withoutOverlapping(30);
 
+// Watchdog de accesibilidad: detecta remontajes de discos externos y dispara
+// storage:reconcile paced. withoutOverlapping TTL 4 min: si el tick se cuelga,
+// el siguiente cae y libera el lock antes de los 5 min del schedule.
+Schedule::command('storage:health')->everyFiveMinutes()->withoutOverlapping(4);
+
+// Limpieza de sesiones huérfanas y expiradas. La frecuencia (default 30 min)
+// es la del scheduler; el setting `sessions_cleanup_interval_minutes` se
+// consulta DENTRO del closure solo para emitir un warning si es demasiado
+// agresivo. Cambiar la frecuencia real requiere editar este archivo (Laravel
+// cachea la expresión cron al boot, así que no es seguro componerla
+// dinámicamente desde system_settings).
+//
+// Guardarraíles:
+//  - cleanOrphans aborta si would_delete/scanned > sessions_cleanup_max_ratio.
+//  - Cualquier excepción no manejada se loguea con sessions.cleanup.unhandled_exception.
 Schedule::call(function () {
-    $service = app(SessionService::class);
-    $service->cleanOrphans();
-    $service->cleanExpired();
+    $intervalMinutes = (int) \App\Models\SystemSetting::get('sessions_cleanup_interval_minutes', 30);
+
+    if ($intervalMinutes < 5) {
+        \Illuminate\Support\Facades\Log::warning('sessions.cleanup.interval_too_aggressive', [
+            'interval_minutes' => $intervalMinutes,
+        ]);
+    }
+
+    try {
+        $service = app(SessionService::class);
+        $service->cleanOrphans();
+        $service->cleanExpired();
+    } catch (\Throwable $e) {
+        \Illuminate\Support\Facades\Log::error('sessions.cleanup.unhandled_exception', [
+            'error' => $e->getMessage(),
+            'trace' => $e->getTraceAsString(),
+        ]);
+    }
 })->everyThirtyMinutes()->name('sessions:cleanup')->withoutOverlapping();
 
 // Limpieza de logs de acceso a shares más antiguos de 90 días (corre 1 vez/semana)
@@ -103,32 +133,30 @@ Schedule::command('corrections:triage-pending --dry-run')
     ->withoutOverlapping(60)
     ->appendOutputTo(storage_path('logs/corrections-triage.log'));
 
-// === Auto-cycle de detección y sugerencias EN→ES (cambios 2026-08-11-english-residual-segment-detector) ===
+// === Auto-cycle de detección y sugerencias EN→ES: DESPROGRAMADOS el 2026-09-05 ===
 //
-// Cada 4 horas ejecuta el ciclo:
-//   1) findFlaggedTranscriptions (umbral 0.5) sobre las últimas 4h
-//   2) extrae bigramas (function_en, ES_noun) recurrentes
-//   3) filtra contra pending/approved existentes y la heurística de sustantivos
-//   4) inserta candidatos como PENDING (NO approved) con source='auto-cycle-YYYY-MM-DD'
+// (change: corrections-manual-only-and-context-search) Aquí corrían dos tareas
+// automáticas sin LLM que alimentaban pendientes y marcas de revisión sin que
+// nadie las pidiera:
 //
-// El admin revisa las pendientes en /ia/correcciones y las aprueba/rechaza.
-// Genera max 5 reglas por corrida para mantener ruido bajo. Threshold alto
-// (0.7) marca solo segmentos con mezcla EN/ES severa. min-freq=15 evita
-// rules espurias de un solo segmento.
-Schedule::command('corrections:cycle-suggestions --hours=4 --threshold=0.7 --min-freq=15 --max-rules=5')
-    ->everyFourHours()
-    ->withoutOverlapping(120)
-    ->appendOutputTo(storage_path('logs/corrections-cycle.log'));
+//   Schedule::command('corrections:cycle-suggestions --hours=4 --threshold=0.7 --min-freq=15 --max-rules=5')
+//       ->everyFourHours()->withoutOverlapping(120)->appendOutputTo(...cycle.log);
+//   Schedule::command('corrections:detect-english-residual --hours=4 --threshold=0.5 --apply')
+//       ->everyFourHours()->withoutOverlapping(120)->appendOutputTo(...detect.log);
+//
+// El ASR sigue devolviendo inglés residual en audio español (caída de la causa
+// raíz en el transcriptor), así que el detector marcaba ~4.500 transcripciones
+// needs_review/día (pila acumulada: 119.405) y el cycle insertaba 2-5 reglas
+// pending/día. La decisión manual-only del 2026-08-21 (ratificada 2026-09-05)
+// cierra el ciclo: todo el flujo detectar → sugerir → moderar ocurre bajo
+// demanda explícita del admin.
+//
+// Los comandos siguen existiendo para corrida manual (con guardrail --confirm
+// para ventanas > 24 h). El miner/ai-suggest siguen desprogramados desde el
+// bloque del 2026-08-11.
 
-// === Detector de transcripciones con inglés residual (mismo ritmo) ===
-//
-// Marca como needs_review las transcripciones done de las últimas 4h
-// con segmentos que superen threshold 0.5 (mezcla EN/ES severa).
-// Idempotente: no pisa status humano preexistente (correct/ignored).
-Schedule::command('corrections:detect-english-residual --hours=4 --threshold=0.5 --apply')
-    ->everyFourHours()
-    ->withoutOverlapping(120)
-    ->appendOutputTo(storage_path('logs/corrections-detect.log'));
+// transcription:apply-corrections queda SOLO manual (no se agenda).
+// transcription-tick es el unico scheduled de descubrimiento+encolado.
 
 // === Minería EN->ES: DESPROGRAMADA el 2026-08-11 ===
 //

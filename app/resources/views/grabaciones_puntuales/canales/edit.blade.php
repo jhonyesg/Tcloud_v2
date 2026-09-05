@@ -58,9 +58,13 @@
             <div class="space-y-5">
                 <div>
                     <label class="block text-sm font-medium text-slate-700 mb-1.5">Grabador</label>
-                    <div class="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm bg-slate-50 text-slate-500 flex items-center gap-2">
-                        <i class="fas fa-server text-slate-400 text-xs"></i>
+                    @php($tipo = $canal->grabador->tipo ?? null)
+                    <div class="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm bg-slate-50 text-slate-600 flex items-center gap-2">
+                        <i class="fas {{ $tipo === 'tv' ? 'fa-tv text-purple-600' : ($tipo === 'radio' ? 'fa-radio text-emerald-600' : 'fa-server text-slate-400') }} text-xs"></i>
                         {{ $canal->grabador->nombre }} ({{ $canal->grabador->ip }})
+                        @if($tipo === 'tv' || $tipo === 'radio')
+                            <span class="inline-flex ml-auto px-2 py-0.5 rounded-full text-[10px] font-medium {{ $tipo === 'tv' ? 'bg-purple-100 text-purple-700' : 'bg-emerald-100 text-emerald-700' }}">{{ $tipo === 'tv' ? 'TV' : 'Radio' }}</span>
+                        @endif
                     </div>
                 </div>
 

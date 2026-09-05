@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Models\Transcription;
 use App\Services\Ia\TranscriptionProcessor;
+use App\Services\Ia\TranscriptorSettings;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -35,8 +36,18 @@ class TranscriptionBackfillCoherenceCommand extends Command
 
     protected $description = 'Re-procesa transcripciones done con el pase de coherencia IA, en lotes pequeños.';
 
-    public function handle(TranscriptionProcessor $processor): int
+    public function handle(TranscriptionProcessor $processor, TranscriptorSettings $settings): int
     {
+        // (changes/2026-08-25 llm-coherence-manual-only-defaults-off) El pase
+        // de coherencia IA es manual-only por defecto. Si el toggle maestro
+        // está apagado, salimos sin gastar tokens ni tocar BD: el admin tiene
+        // que activarlo explícitamente desde AI Settings o vía .env.
+        if (!$settings->bool('ai_coherence_enabled')) {
+            $this->warn('[WARNING] El pase de coherencia IA está deshabilitado. Activalo desde AI Settings antes de correr este comando.');
+            Log::warning('transcription:backfill-coherence abortado: ai_coherence_enabled=0');
+            return self::SUCCESS;
+        }
+
         $days = max(1, (int) $this->option('days'));
         $batch = max(1, (int) $this->option('batch'));
         $sleep = max(0, (int) $this->option('sleep'));

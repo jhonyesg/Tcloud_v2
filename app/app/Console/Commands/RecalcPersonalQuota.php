@@ -39,7 +39,7 @@ class RecalcPersonalQuota extends Command
                 INNER JOIN storage_providers sp ON sp.id = f.storage_provider_id
                 WHERE f.owner_id = ?
                   AND f.is_folder = FALSE
-                  AND sp.base_path LIKE '/home/www/Usuarios_tcloud/%'
+                  AND sp.is_personal = TRUE
             ", [$user->id])->total;
 
             if ($real !== (int) $user->personal_used_bytes) {

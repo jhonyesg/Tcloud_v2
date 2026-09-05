@@ -114,6 +114,7 @@ class StorageSyncService
 
         $realPath = realpath($scanPath);
         if (!$realPath || !is_dir($realPath)) {
+            $this->markFolderUnknown($storage, $parentId);
             return $this->report($this->currentListing($storage->id, $parentId), 'path_missing');
         }
 
@@ -130,6 +131,7 @@ class StorageSyncService
                 'mount_point' => $detached,
             ]);
             $this->markInaccessible($storage);
+            $this->markFolderUnknown($storage, $parentId);
 
             return $this->report(
                 $this->currentListing($storage->id, $parentId),
@@ -148,6 +150,7 @@ class StorageSyncService
                 'parent_id' => $parentId,
             ] + $scan->context());
             $this->markInaccessible($storage);
+            $this->markFolderUnknown($storage, $parentId);
 
             return $this->report(
                 $this->currentListing($storage->id, $parentId),
@@ -229,6 +232,11 @@ class StorageSyncService
                         $changes['file_modified_at'] = $entryModified;
                     }
                 }
+                if ($existingFile->availability_state !== 'available') {
+                    $changes['availability_state'] = 'available';
+                }
+                $changes['last_verified_at'] = now();
+                $changes['missing_since_at'] = null;
                 if ($changes) {
                     $existingFile->update($changes);
                     $updated++;
@@ -253,14 +261,31 @@ class StorageSyncService
         // desaparecido del disco. Ni siquiera $forcePrune levanta ese rechazo.
         $orphanCount = $bdFiles->count();
 
+        // Regla 5: cuentas FK antes de pasar el veredicto a PruneGuard. Esto se
+        // hace ANTES del decision() para que el rechazo por orphan_linked sepa
+        // cuantos vinculos hay. Cada consulta es un EXISTS acotado, no una
+        // agregacion: no satura el server aunque haya 700k candidatos.
+        $linkedCount = 0;
+        foreach ($bdFiles as $orphan) {
+            if ($this->isFileLinked($orphan->id)) {
+                $linkedCount++;
+            }
+        }
+
         $decision = $this->pruneGuard->decide(
             dbCount: $totalDbRows,
             diskCount: count($realEntries),
             scanOk: $scan->ok,
+            linkedCount: $linkedCount,
             forced: $forcePrune,
         );
 
         if ($decision->refused()) {
+            if ($decision->reason === 'orphan_linked') {
+                $this->markOrphansMissing($bdFiles, $storage->id, $parentId);
+            } else {
+                $this->markOrphansUnknown($bdFiles);
+            }
             Log::warning('storage_sync.prune_refused', [
                 'storage_id' => $storage->id,
                 'parent_id' => $parentId,
@@ -268,6 +293,7 @@ class StorageSyncService
                 'db_count' => $totalDbRows,
                 'disk_count' => count($realEntries),
                 'orphans' => $orphanCount,
+                'orphans_linked' => $linkedCount,
                 'reason' => $decision->reason,
             ] + $decision->context);
         } else {
@@ -395,9 +421,116 @@ class StorageSyncService
             'owner_id' => $storage->userStorages()->first()?->user_id ?? 1,
             'parent_id' => $parentId,
             'is_folder' => $entry['is_folder'],
-            'is_personal' => false,
             'file_modified_at' => $modifiedAt,
+            'availability_state' => 'available',
+            'last_verified_at' => now(),
+            'missing_since_at' => null,
         ]);
+    }
+
+    private function markFolderUnknown(StorageProvider $storage, ?int $parentId): void
+    {
+        if ($parentId !== null) {
+            File::where('id', $parentId)
+                ->where('storage_provider_id', $storage->id)
+                ->update([
+                    'availability_state' => 'unknown',
+                    'last_verified_at' => null,
+                    'missing_since_at' => null,
+                ]);
+        }
+
+        File::where('storage_provider_id', $storage->id)
+            ->where('parent_id', $parentId)
+            ->where('availability_state', '!=', 'unknown')
+            ->update([
+                'availability_state' => 'unknown',
+                'last_verified_at' => null,
+                'missing_since_at' => null,
+            ]);
+    }
+
+    private function markOrphansUnknown(iterable $orphans): void
+    {
+        foreach ($orphans as $orphan) {
+            if ($orphan->availability_state !== 'unknown') {
+                $orphan->update([
+                    'availability_state' => 'unknown',
+                    'last_verified_at' => null,
+                    'missing_since_at' => null,
+                ]);
+            }
+        }
+    }
+
+    /**
+     * Marca huérfanos como 'missing' cuando PruneGuard rechaza por
+     * orphan_linked. Preserva el file_id y, con él, la trazabilidad de
+     * transcripciones, shares y media_edit_jobs. `missing_since_at` se
+     * establece para que la UI pueda mostrar "no disponible desde X".
+     */
+    private function markOrphansMissing(iterable $orphans, int $storageId, ?int $parentId): void
+    {
+        $count = 0;
+        foreach ($orphans as $orphan) {
+            if ($orphan->availability_state === 'missing') {
+                continue;
+            }
+            $orphan->update([
+                'availability_state' => 'missing',
+                'missing_since_at' => now(),
+                'last_verified_at' => now(),
+            ]);
+            $count++;
+        }
+
+        if ($count > 0) {
+            Log::info('storage_sync.orphan_marked_missing', [
+                'storage_id' => $storageId,
+                'parent_id' => $parentId,
+                'marked' => $count,
+                'reason' => 'orphan_linked — preservando FKs aguas abajo',
+            ]);
+        }
+    }
+
+    /**
+     * Detecta si una fila de files esta enlazada por FKs aguas abajo.
+     * Las consultas son EXISTS acotados (LIMIT 1): no agregan ni ordenan,
+     * asi que un lote de 700k filas no satura el server.
+     *
+     * Las 3 tablas que enlazan son:
+     *  - transcriptions.file_id           (UNIQUE: una por archivo)
+     *  - shares.file_id                   (0..N comparticiones)
+     *  - media_edit_jobs.source_file_id   (0..N ediciones)
+     */
+    private function isFileLinked(int $fileId): bool
+    {
+        static $hasMediaJobsColumn = null;
+        if ($hasMediaJobsColumn === null) {
+            $hasMediaJobsColumn = DB::selectOne(
+                "SELECT 1 AS ok FROM information_schema.columns WHERE table_name = 'media_edit_jobs' AND column_name = 'source_file_id'"
+            ) !== null;
+        }
+
+        $hasTx = DB::selectOne('SELECT 1 AS ok FROM transcriptions WHERE file_id = ? LIMIT 1', [$fileId]) !== null;
+        if ($hasTx) {
+            return true;
+        }
+
+        $hasShare = DB::selectOne('SELECT 1 AS ok FROM shares WHERE file_id = ? LIMIT 1', [$fileId]) !== null;
+        if ($hasShare) {
+            return true;
+        }
+
+        if ($hasMediaJobsColumn) {
+            $hasJob = DB::selectOne('SELECT 1 AS ok FROM media_edit_jobs WHERE source_file_id = ? LIMIT 1', [$fileId]) !== null;
+            if ($hasJob) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function detectOrphans(StorageProvider $storage, int $parentId, array $realPaths): array

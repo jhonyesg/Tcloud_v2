@@ -67,7 +67,7 @@ class TranscriptionTuneCommand extends Command
             Log::warning('TranscriptionTune: 0 storages con transcripcion habilitada; el pool queda apagado', [
                 'workers_activos' => $activos,
                 'apply' => $apply,
-                'pista' => 'revisar user_storages.transcription_enabled: si esta vacio, el pipeline no descubre ni envia nada',
+                'pista' => 'revisar storage_providers.transcription_enabled: si esta vacio, el pipeline no descubre ni envia nada',
             ]);
 
             $stoppedOrphans = $apply ? $this->reconcileForbiddenPools() : [];

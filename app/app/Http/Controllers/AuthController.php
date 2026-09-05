@@ -2,19 +2,24 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\PasswordToken;
 use App\Models\User;
+use App\Modules\Correo\Services\EmailValidationService;
 use App\Modules\Correo\Services\NotificationService;
+use App\Services\Auth\PasswordTokenService;
 use App\Services\SessionService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Session;
-use Illuminate\Support\Str;
 
 class AuthController extends Controller
 {
     public function __construct(
         private NotificationService $notificationService,
         private SessionService $sessionService,
+        private EmailValidationService $emailValidation,
+        private PasswordTokenService $passwordTokenService,
     ) {}
 
     public function showLogin()
@@ -43,6 +48,13 @@ class AuthController extends Controller
 
         if (!Hash::check($request->password, $user->password_hash)) {
             return back()->withInput($request->only('login'))->with('error', 'La contraseña es incorrecta. Verifica e intenta de nuevo.');
+        }
+
+        if (!$user->isActive()) {
+            return back()->withInput($request->only('login'))->with(
+                'error',
+                'Tu cuenta aún no está activa. Revisa el correo de bienvenida que te envió el administrador para establecer tu contraseña. Si no te llegó, pídele al admin que la reactive.'
+            );
         }
 
         $maxSessions = $this->sessionService->getEffectiveMaxSessions($user);
@@ -96,41 +108,66 @@ class AuthController extends Controller
         return response()->json(['ok' => true]);
     }
 
+    public function showForgotPassword()
+    {
+        return view('auth.forgot-password');
+    }
+
     public function forgotPassword(Request $request)
     {
         $request->validate([
             'email' => 'required|email',
         ]);
 
-        $user = User::where('email', $request->email)->first();
+        $genericResponse = 'Si tu correo existe, es válido y la cuenta está activa, recibirás un enlace para restablecer tu contraseña.';
+
+        $emailCheck = $this->emailValidation->validate($request->email);
+        if (!$emailCheck['valid']) {
+            Log::info('forgot-password: email inválido o no entregable', [
+                'email' => $request->email,
+                'reason' => $emailCheck['reason'],
+            ]);
+            return back()->with('success', $genericResponse);
+        }
+
+        $user = User::whereRaw('LOWER(email) = ?', [strtolower($request->email)])
+            ->where('status', User::STATUS_ACTIVE)
+            ->first();
 
         if ($user) {
-            $token = Str::random(32);
-            Session::put('password_reset_token', $token);
-            Session::put('password_reset_email', $user->email);
+            $rawToken = $this->passwordTokenService->issue($user, PasswordToken::TYPE_RESET, $request->ip());
+            $expiresAt = now()->addMinutes((int) config('auth.password_token_ttl', 1440));
 
             $this->notificationService->send(
                 'recuperar-password',
                 $user->email,
                 [
-                    'nombre_usuario' => $user->email,
-                    'enlace_recuperacion' => url('/auth/reset-password/' . $token),
+                    'nombre_usuario'      => $user->username ?? $user->email,
+                    'enlace_recuperacion' => url('/auth/reset-password/' . $rawToken),
+                    'expiracion'          => $expiresAt->format('d/m/Y H:i'),
                 ]
             );
         }
 
-        return back()->with('success', 'Si tu correo existe en el sistema, recibirás un enlace de recuperación.');
+        return back()->with('success', $genericResponse);
     }
 
     public function showResetPassword(string $token)
     {
-        $storedToken = Session::get('password_reset_token');
+        $hash = PasswordToken::hash($token);
+        $tokenRecord = PasswordToken::where('token_hash', $hash)
+            ->where('type', PasswordToken::TYPE_RESET)
+            ->first();
 
-        if (!$storedToken || $storedToken !== $token) {
-            return redirect('/login')->with('error', 'Token inválido o expirado.');
+        if (!$tokenRecord || $tokenRecord->used_at !== null || $tokenRecord->expires_at->isPast()) {
+            return redirect('/login')->with('error', 'El enlace de recuperación es inválido o expiró. Solicita uno nuevo desde "¿Olvidaste tu contraseña?".');
         }
 
-        return view('auth.reset-password', ['token' => $token]);
+        return view('auth.reset-password', [
+            'token' => $token,
+            'email' => $tokenRecord->user->email,
+            'username' => $tokenRecord->user->username,
+        ]);
     }
 
     public function resetPassword(Request $request)
@@ -140,24 +177,56 @@ class AuthController extends Controller
             'password' => 'required|min:8|confirmed',
         ]);
 
-        $storedToken = Session::get('password_reset_token');
-        $email = Session::get('password_reset_email');
+        $user = $this->passwordTokenService->consume($request->token, $request->ip());
 
-        if (!$storedToken || $storedToken !== $request->token || !$email) {
-            return redirect('/login')->with('error', 'Token inválido o expirado.');
+        if (!$user) {
+            return redirect('/login')->with('error', 'El enlace de recuperación es inválido o expiró.');
         }
 
-        $user = User::where('email', $email)->first();
+        $this->passwordTokenService->applyPassword($user, $request->password);
 
-        if ($user) {
-            $user->update(['password_hash' => Hash::make($request->password)]);
+        return redirect('/login')->with('success', 'Contraseña actualizada correctamente. Ya puedes iniciar sesión.');
+    }
 
-            Session::forget('password_reset_token');
-            Session::forget('password_reset_email');
+    public function showSetupPassword(string $token)
+    {
+        $hash = PasswordToken::hash($token);
+        $tokenRecord = PasswordToken::where('token_hash', $hash)
+            ->where('type', PasswordToken::TYPE_SETUP)
+            ->first();
 
-            return redirect('/login')->with('success', 'Contraseña actualizada correctamente.');
+        if (!$tokenRecord || $tokenRecord->used_at !== null || $tokenRecord->expires_at->isPast()) {
+            return redirect('/login')->with('error', 'El enlace de bienvenida es inválido o expiró. Pídele al administrador que te lo reenvíe.');
         }
 
-        return redirect('/login')->with('error', 'Usuario no encontrado.');
+        return view('auth.setup-password', [
+            'token' => $token,
+            'email' => $tokenRecord->user->email,
+            'username' => $tokenRecord->user->username,
+        ]);
+    }
+
+    public function setupPassword(Request $request)
+    {
+        $request->validate([
+            'token' => 'required',
+            'password' => 'required|min:8|confirmed',
+        ]);
+
+        $hash = PasswordToken::hash($request->token);
+        $tokenRecord = PasswordToken::where('token_hash', $hash)
+            ->where('type', PasswordToken::TYPE_SETUP)
+            ->first();
+
+        if (!$tokenRecord || $tokenRecord->used_at !== null || $tokenRecord->expires_at->isPast()) {
+            return redirect('/login')->with('error', 'El enlace de bienvenida es inválido o expiró. Pídele al administrador que te lo reenvíe.');
+        }
+
+        $user = $tokenRecord->user;
+
+        $this->passwordTokenService->consume($request->token, $request->ip());
+        $this->passwordTokenService->applyPassword($user, $request->password);
+
+        return redirect('/login')->with('success', 'Contraseña establecida correctamente. Ya puedes iniciar sesión.');
     }
 }

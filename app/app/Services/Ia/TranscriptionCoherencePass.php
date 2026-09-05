@@ -3,6 +3,7 @@
 namespace App\Services\Ia;
 
 use App\Services\Concerns\CallsLlmChatCompletion;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -41,6 +42,21 @@ class TranscriptionCoherencePass
      * mayormente inglés aunque no haya mezcla EN+ES. Ver apply().
      */
     private const MOSTLY_EN_SCORE = 0.5;
+
+    /**
+     * Circuit breaker por proveedor: tras N fallos consecutivos dentro de la
+     * ventana móvil (X segundos), el proveedor queda excluido de la lista
+     * round-robin para el resto del job actual. (changes/2026-08-25
+     * llm-coherence-manual-only-defaults-off)
+     *
+     * Estado persistido en Laravel Cache bajo la clave
+     * `coherence_breaker:{provider}` con TTL = ventana móvil. Cache miss
+     * (Redis rebalancé, flush, etc.) cae a estado cerrado por fail-safe:
+     * peor caso = una llamada extra con error; mejor que quedar bloqueado
+     * para siempre.
+     */
+    private const BREAKER_FAILURE_THRESHOLD = 5;
+    private const BREAKER_WINDOW_SECONDS = 600;
 
     public function __construct(
         private EnglishResidualSegmentDetector $detector,
@@ -507,6 +523,38 @@ class TranscriptionCoherencePass
             $providers[] = 'quaternary';
         }
 
+        // Circuit breaker (2026-08-25): excluir proveedores que llevan N
+        // fallos consecutivos en la ventana móvil. Si todos quedan excluidos,
+        // lanzamos RuntimeException para que apply() caiga al fallback de
+        // diccionario en vez de gastar tiempo en reintentos contra un
+        // proveedor muerto.
+        $available = [];
+        $excluded = [];
+        foreach ($providers as $p) {
+            if ($this->isBreakerOpen($p)) {
+                $excluded[] = $p;
+                continue;
+            }
+            $available[] = $p;
+        }
+
+        if (!empty($excluded)) {
+            Log::warning('coherence_breaker: providers excluded from round-robin', [
+                'excluded' => array_values(array_unique($excluded)),
+                'reason' => 'consecutive failures >= ' . self::BREAKER_FAILURE_THRESHOLD
+                    . ' within ' . self::BREAKER_WINDOW_SECONDS . 's',
+            ]);
+        }
+
+        if (empty($available)) {
+            throw new \RuntimeException(
+                'Todos los proveedores LLM están en circuit breaker: '
+                . implode(', ', array_values(array_unique($excluded)))
+            );
+        }
+
+        $providers = $available;
+
         if (empty($providers)) {
             throw new \RuntimeException('No hay proveedores LLM habilitados.');
         }
@@ -520,9 +568,20 @@ class TranscriptionCoherencePass
             // Alternar proveedor round-robin con offset aleatorio.
             $provider = $providers[($offset + $attempt) % count($providers)];
 
+            // Doble check: si el proveedor elegido quedó abierto durante el
+            // backoff anterior (otro job que incrementó el contador), salta
+            // al siguiente sin reintentar contra él.
+            if ($this->isBreakerOpen($provider)) {
+                Log::warning("coherence_breaker: provider {$provider} newly excluded mid-retry, skipping");
+                continue;
+            }
+
             try {
-                return $this->callChatCompletion($systemPrompt, $userPrompt, true, $provider);
+                $result = $this->callChatCompletion($systemPrompt, $userPrompt, true, $provider);
+                $this->recordSuccess($provider);
+                return $result;
             } catch (\Throwable $e) {
+                $this->recordFailure($provider);
                 $isRateLimit = str_contains($e->getMessage(), '429')
                     || str_contains($e->getMessage(), 'rate limit')
                     || str_contains($e->getMessage(), 'too many requests');
@@ -538,6 +597,72 @@ class TranscriptionCoherencePass
         }
 
         throw new \RuntimeException('LLM rate limit persistente');
+    }
+
+    /**
+     * Clave del cache para el circuit breaker de un proveedor.
+     */
+    private function breakerKey(string $provider): string
+    {
+        return "coherence_breaker:{$provider}";
+    }
+
+    /**
+     * Registra un fallo consecutivo para el proveedor e inicializa el TTL
+     * de la ventana móvil si era la primera entrada. Usa Cache::increment
+     * (atómico en Redis) y Cache::put para garantizar expiración.
+     */
+    private function recordFailure(string $provider): void
+    {
+        $key = $this->breakerKey($provider);
+        try {
+            $count = Cache::increment($key);
+            if ($count === 1 || $count === false) {
+                // Cache::increment devuelve false si la key no existía (driver
+                // sin soporte atómico de increment). Forzar el put con TTL.
+                Cache::put($key, 1, now()->addSeconds(self::BREAKER_WINDOW_SECONDS));
+            } else {
+                // Refrescar TTL en cada fallo para mantener la ventana móvil.
+                Cache::put($key, $count, now()->addSeconds(self::BREAKER_WINDOW_SECONDS));
+            }
+        } catch (\Throwable $e) {
+            // Si el cache está caído, no bloquear el flujo — peor caso, el
+            // breaker queda abierto hasta que el cache vuelva.
+            Log::warning('coherence_breaker: no se pudo registrar el fallo', [
+                'provider' => $provider,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Limpia el contador del proveedor tras un éxito (resetea la racha).
+     */
+    private function recordSuccess(string $provider): void
+    {
+        try {
+            Cache::forget($this->breakerKey($provider));
+        } catch (\Throwable $e) {
+            Log::warning('coherence_breaker: no se pudo limpiar el contador tras éxito', [
+                'provider' => $provider,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * ¿El circuit breaker está abierto para este proveedor? (>= N fallos
+     * consecutivos en la ventana móvil).
+     */
+    private function isBreakerOpen(string $provider): bool
+    {
+        try {
+            $count = (int) Cache::get($this->breakerKey($provider), 0);
+        } catch (\Throwable $e) {
+            // Fail-safe: si el cache falla, asumimos breaker cerrado.
+            return false;
+        }
+        return $count >= self::BREAKER_FAILURE_THRESHOLD;
     }
 
     private function systemPrompt(): string

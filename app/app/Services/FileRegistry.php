@@ -117,6 +117,19 @@ class FileRegistry
             }
         }
 
+        if (array_key_exists('availability_state', $attributes)
+            && $file->availability_state !== $attributes['availability_state']) {
+            $changes['availability_state'] = $attributes['availability_state'];
+        }
+
+        if (array_key_exists('last_verified_at', $attributes) && $attributes['last_verified_at'] !== null) {
+            $changes['last_verified_at'] = $attributes['last_verified_at'];
+        }
+
+        if (array_key_exists('missing_since_at', $attributes)) {
+            $changes['missing_since_at'] = $attributes['missing_since_at'];
+        }
+
         if ($changes !== []) {
             $file->update($changes);
         }

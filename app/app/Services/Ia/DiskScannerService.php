@@ -152,7 +152,6 @@ class DiskScannerService
                         'owner_id' => $ownerId,
                         'parent_id' => $this->resolveParentId($storage, $c['path']),
                         'is_folder' => false,
-                        'is_personal' => false,
                         'file_modified_at' => Carbon::createFromTimestamp($c['mtime'], $tz),
                     ]);
                     $filesCreated++;
@@ -514,7 +513,6 @@ class DiskScannerService
                     'owner_id' => $storage->userStorages()->first()?->user_id ?? 1,
                     'parent_id' => $parentId,
                     'is_folder' => true,
-                    'is_personal' => false,
                     'file_modified_at' => now(),
                 ]);
             }

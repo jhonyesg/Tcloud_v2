@@ -53,14 +53,18 @@
 {{-- Vista móvil: tarjetas --}}
 <div class="sm:hidden space-y-3" id="cards-canales">
     @forelse($canales as $canal)
+    @php($tipo = $canal->grabador->tipo ?? null)
     <div class="canal-card bg-white rounded-xl shadow-sm border border-slate-200 p-4">
         <div class="flex items-start justify-between gap-3 mb-2">
             <div class="flex items-center gap-3 min-w-0">
-                <div class="w-9 h-9 bg-indigo-100 rounded-lg flex items-center justify-center flex-shrink-0">
-                    <i class="fas fa-broadcast-tower text-indigo-600 text-sm"></i>
+                <div class="w-9 h-9 {{ $tipo === 'tv' ? 'bg-purple-100' : ($tipo === 'radio' ? 'bg-emerald-100' : 'bg-indigo-100') }} rounded-lg flex items-center justify-center flex-shrink-0">
+                    <i class="fas {{ $tipo === 'tv' ? 'fa-tv text-purple-600' : ($tipo === 'radio' ? 'fa-radio text-emerald-600' : 'fa-broadcast-tower text-indigo-600') }} text-sm"></i>
                 </div>
                 <div class="min-w-0">
                     <p class="font-semibold text-slate-800 text-sm truncate">{{ $canal->slot_nombre }}</p>
+                    @if($tipo === 'tv' || $tipo === 'radio')
+                        <span class="inline-flex mt-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium {{ $tipo === 'tv' ? 'bg-purple-100 text-purple-700' : 'bg-emerald-100 text-emerald-700' }}">{{ $tipo === 'tv' ? 'TV' : 'Radio' }}</span>
+                    @endif
                     @if($canal->api_canal_id)
                         <p class="text-xs font-mono text-slate-400 truncate">API: {{ $canal->api_canal_id }}</p>
                     @endif
@@ -148,13 +152,22 @@
         </thead>
         <tbody class="divide-y divide-slate-100">
             @forelse($canales as $canal)
+            @php($tipo = $canal->grabador->tipo ?? null)
             <tr class="hover:bg-slate-50 transition-colors">
                 <td class="px-4 py-3.5 text-center text-xs text-slate-400 font-mono row-num"></td>
                 @if($user && $user->isAdmin())
                     <td class="px-5 py-3.5 text-sm text-slate-600">{{ $canal->usuario->username ?? 'N/A' }}</td>
                     <td class="px-5 py-3.5 text-sm text-slate-600">{{ $canal->grabador->nombre }}</td>
                 @endif
-                <td class="px-5 py-3.5 text-sm font-semibold text-slate-800">{{ $canal->slot_nombre }}</td>
+                <td class="px-5 py-3.5">
+                    <div class="flex items-center gap-2">
+                        <i class="fas {{ $tipo === 'tv' ? 'fa-tv text-purple-600' : ($tipo === 'radio' ? 'fa-radio text-emerald-600' : 'fa-broadcast-tower text-indigo-500') }} text-sm flex-shrink-0"></i>
+                        <span class="text-sm font-semibold text-slate-800">{{ $canal->slot_nombre }}</span>
+                        @if($tipo === 'tv' || $tipo === 'radio')
+                            <span class="text-[10px] font-medium uppercase tracking-wide {{ $tipo === 'tv' ? 'text-purple-500' : 'text-emerald-600' }}">{{ $tipo === 'tv' ? 'TV' : 'Radio' }}</span>
+                        @endif
+                    </div>
+                </td>
                 <td class="px-5 py-3.5 text-sm font-mono text-slate-500">{{ $canal->api_canal_id ?? '—' }}</td>
                 <td class="px-5 py-3.5 text-sm text-slate-600 max-w-[200px] truncate" title="{{ $canal->detalle ?? '' }}">{{ $canal->detalle ?? '—' }}</td>
                 <td class="px-5 py-3.5">
@@ -608,16 +621,20 @@ function startCanalesTour() {
             {
                 title: 'Columna: Slot',
                 content: 'Nombre del slot de grabación (ej: "Radio_01", "TV_Manana"). ' +
-                         'Es el nombre que verás en el sistema de agendamiento y en los reportes.',
+                         'Es el nombre que verás en el sistema de agendamiento y en los reportes. ' +
+                         'Además, cada canal muestra el <strong>medio</strong> del grabador al que pertenece: ' +
+                         '<span style="color:#059669"><strong>📻 Radio</strong></span> (esmeralda) o ' +
+                         '<span style="color:#9333ea"><strong>📺 TV</strong></span> (púrpura), ' +
+                         'con el mismo código de colores de la sección Grabadores.',
                 icon: 'fa-tag',
                 color: '#1e293b',
                 selector: function () {
                     var row = getFirstRow();
                     if (!row) return null;
                     var cells = row.querySelectorAll('td');
-                    // Buscar la celda que tiene el slot_nombre (font-semibold)
+                    // Buscar la celda del slot: contiene el nombre (font-semibold en el span interno)
                     for (var i = 0; i < cells.length; i++) {
-                        if (cells[i].classList.contains('font-semibold')) return cells[i];
+                        if (cells[i].querySelector('span.font-semibold')) return cells[i];
                     }
                     return cells[1] || null;
                 },
@@ -627,7 +644,7 @@ function startCanalesTour() {
                     if (!row) return;
                     var cells = row.querySelectorAll('td');
                     for (var i = 0; i < cells.length; i++) {
-                        if (cells[i].classList.contains('font-semibold')) {
+                        if (cells[i].querySelector('span.font-semibold')) {
                             scrollTo(cells[i]);
                             return;
                         }

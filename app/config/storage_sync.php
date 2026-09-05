@@ -83,4 +83,32 @@ return [
         // dispositivo, pero exige crearlo en cada export NFS.
         'sentinel' => env('STORAGE_SYNC_MOUNT_SENTINEL', ''),
     ],
+
+    /*
+     * Watchdog de accesibilidad (storage:health).
+     *
+     * `dispatch_reconcile` deja el sistema en modo observacion sin disparar
+     * reconciliaciones automaticas: util para ventanas de mantenimiento.
+     * `reconcile_cooldown` controla el TTL en Redis que evita redespachar
+     * sobre el mismo storage en cada tick (mientras el lock siga siendo true).
+     */
+    'health' => [
+        'dispatch_reconcile' => (bool) env('STORAGE_SYNC_HEALTH_DISPATCH', true),
+        'reconcile_cooldown' => (int) env('STORAGE_SYNC_HEALTH_COOLDOWN', 280),
+    ],
+
+    /*
+     * Pacing del reconciliador (storage:reconcile).
+     *
+     * Tras detectar un remonte, el reconciliador procesa las carpetas del
+     * storage en chunks de N filas con `pace_seconds` segundos entre cada
+     * uno. Asi no satura el server aunque el storage tenga 700k archivos.
+     * `disable_via_env` permite cortar el reconciliador en operacion sin
+     * retirar el schedule.
+     */
+    'reconcile' => [
+        'batch_size' => (int) env('STORAGE_SYNC_RECONCILE_BATCH', 50),
+        'pace_seconds' => (int) env('STORAGE_SYNC_RECONCILE_PACE', 2),
+        'lock_ttl_seconds' => (int) env('STORAGE_SYNC_RECONCILE_LOCK_TTL', 3600),
+    ],
 ];

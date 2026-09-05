@@ -26,9 +26,13 @@ class DetectEnglishResidualCommand extends Command
                             {--threshold= : Score mínimo para flag (default desde config)}
                             {--id=* : Solo estas transcripciones (omite ventana)}
                             {--apply : Persiste en transcription_reviews (default: dry-run)}
+                            {--confirm : Confirmación explícita para ventanas > 24h con --apply}
                             {--json : Output JSON}';
 
     protected $description = 'Detecta segmentos con inglés residual y los marca como needs_review.';
+
+    /** Ventana (horas) a partir de la cual --apply exige --confirm. */
+    private const CONFIRM_WINDOW_HOURS = 24;
 
     public function handle(EnglishResidualSegmentDetector $detector): int
     {
@@ -39,6 +43,17 @@ class DetectEnglishResidualCommand extends Command
         $ids = (array) $this->option('id');
         $apply = (bool) $this->option('apply');
         $json = (bool) $this->option('json');
+
+        // Guardrail manual-only (change: corrections-manual-only-and-context-search):
+        // sin cron, el riesgo es una corrida manual con ventana amplia que escriba
+        // cientos de miles de marcas. Ventana > 24h sin --confirm degrada a dry-run.
+        if ($apply && empty($ids)) {
+            $windowHours = $this->windowHours();
+            if ($windowHours > self::CONFIRM_WINDOW_HOURS && !$this->option('confirm')) {
+                $apply = false;
+                $this->warn("Ventana {$windowHours}h > " . self::CONFIRM_WINDOW_HOURS . "h con --apply requiere --confirm. Degradado a dry-run.");
+            }
+        }
 
         $this->info("English residual detector: threshold={$threshold} "
             . ($apply ? '[APPLY]' : '[DRY-RUN]')
@@ -60,13 +75,7 @@ class DetectEnglishResidualCommand extends Command
                 }
             }
         } else {
-            $hoursOpt = $this->option('hours');
-            if ($hoursOpt !== null) {
-                $days = max(1, (int) ceil(((int) $hoursOpt) / 24));
-            } else {
-                $days = max(1, (int) $this->option('days'));
-            }
-            $flagged = $detector->findFlaggedTranscriptions($threshold, $days);
+            $flagged = $detector->findFlaggedTranscriptions($threshold, $this->windowDays());
         }
 
         if (empty($flagged)) {
@@ -131,5 +140,24 @@ class DetectEnglishResidualCommand extends Command
         }
 
         return self::SUCCESS;
+    }
+
+    /**
+     * Ventana efectiva en horas: --hours gana sobre --days; --days se
+     * interpreta como días completos. Con --id la ventana no aplica.
+     */
+    private function windowHours(): int
+    {
+        $hoursOpt = $this->option('hours');
+        if ($hoursOpt !== null) {
+            return max(1, (int) $hoursOpt);
+        }
+
+        return max(1, (int) $this->option('days')) * 24;
+    }
+
+    private function windowDays(): int
+    {
+        return max(1, (int) ceil($this->windowHours() / 24));
     }
 }
