@@ -119,3 +119,12 @@ redis-cli -a 'Clouding2026!Redis' -n 2 --scan --pattern 'tcloud_tcloud_cache_*' 
 - **OpenSpec**: specs en `openspec/specs/`, cambios activos en `openspec/changes/`.
 - **Auth**: SIEMPRE `session('user_id')`, NUNCA `auth()->user()`.
 - **Servidor**: NO Vercel ni Supabase. nginx + PHP-FPM sobre cloud.mediaserver.com.co.
+- **Facades**: todo facade (`DB`, `Cache`, `Log`, `Storage`, `Mail`, etc.)
+  usado dentro de `app/app/Services/*.php` debe tener su
+  `use Illuminate\Support\Facades\X;` correspondiente. Sin el import, PHP
+  resuelve `X` dentro del namespace actual (`App\Services\X`) y lanza
+  `Class "App\Services\X" not found` → HTTP 500. Referencia: regresión del
+  2026-09-06 documentada en
+  `openspec/changes/fix-storage-sync-missing-db-facade-import/` (caso
+  `StorageSyncService::isFileLinked()` con `DB`). Harness de regresión:
+  `tests/harness_storage_sync_is_file_linked.php`.
