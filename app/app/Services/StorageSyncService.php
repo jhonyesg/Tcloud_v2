@@ -6,6 +6,7 @@ use App\Models\File;
 use App\Models\StorageProvider;
 use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 class StorageSyncService
