@@ -60,6 +60,13 @@ Schedule::command('correo:cleanup-logs --days=90')->weekly()->sundays()->at('03:
 // Corrección de cuotas personales — detecta y corrige drift (corre 1 vez/semana)
 Schedule::command('files:recalc-personal-quota')->weekly()->sundays()->at('03:30');
 
+// Papelera — purga diaria de items trashados que superaron retention_days.
+// Hora rara (03:17) para no coincidir con shares/correo/quota. withoutOverlapping
+// con TTL 30 min: si la purga se cuelga en NFS caido, el siguiente tick cae
+// y libera el lock antes de las 24h. runInBackground: la salida del comando
+// no bloquea el scheduler mientras dura.
+Schedule::command('trash:purge')->dailyAt('03:17')->withoutOverlapping(30)->runInBackground();
+
 // Modulo IA — transcripción
 //
 // Tick unificado: corre cada 2 minutos. Phase 1 (discovery) escanea los archivos
@@ -123,6 +130,17 @@ Schedule::command('transcription:check-shm-health')
 // Limpieza diaria del log de undo de bulk actions (corrections-bulk-moderation).
 // Borra entries con expires_at < now() - retention (default 7d).
 Schedule::command('corrections:cleanup-undo-log')->daily()->at('04:00')->withoutOverlapping(60);
+
+// === Entrega de avisos de menciones (mis-avisos-menciones Fase 1) ===
+//
+// El scan de keywords NO envía correo: deja pendientes en alert_deliveries
+// con due_at según la cadencia elegida por cada cliente. Este ciclo por
+// minuto agrupa vencidos, respeta el techo diario (emails_quota) y encola
+// el digest en Redis con rate limiter global del relay. withoutOverlapping:
+// si un minuto se atrasa, el siguiente no duplica.
+Schedule::command('avisos:deliver-alerts')
+    ->everyMinute()
+    ->withoutOverlapping(5);
 
 // Reporte semanal de triage (cambios/2026-08-18-corrections-coherence-learn-fix-and-pending-triage).
 // Solo dry-run: el admin revisa el log y decide si aplicar desde la UI.

@@ -15,6 +15,7 @@ use App\Services\Ia\TranscriptionProcessor;
 use App\Services\Ia\TranscriptorApiClient;
 use App\Services\Ia\TranscriptorSettings;
 use App\Modules\Correo\Services\EmailValidationService;
+use App\Modules\Papelera\Services\PapeleraService;
 use App\Observers\UserObserver;
 use App\Services\Auth\PasswordTokenService;
 use Illuminate\Support\Facades\Session;
@@ -34,10 +35,22 @@ class AppServiceProvider extends ServiceProvider
         $this->app->singleton(SrtParser::class);
         $this->app->singleton(CorrectionService::class);
         $this->app->singleton(TranscriptionProcessor::class);
-        $this->app->singleton(KeywordMatcher::class);
         $this->app->singleton(AlertDispatcher::class);
         $this->app->singleton(EmailValidationService::class);
         $this->app->singleton(PasswordTokenService::class);
+        $this->app->singleton(PapeleraService::class);
+
+        // Motor de menciones seleccionable (mis-avisos-menciones): universal
+        // por defecto; legacy preservado como fallback de rollback. La costura
+        // que consume TranscriptionProcessor sigue siendo KeywordMatcher::run().
+        $this->app->singleton(KeywordMatcher::class, function ($app) {
+            if (config('avisos.engine') === 'legacy') {
+                return $app->make(\App\Services\Ia\LegacyKeywordMatcher::class);
+            }
+
+            // build(): instancia sin pasar de nuevo por este binding (evita recursión).
+            return $app->build(KeywordMatcher::class);
+        });
     }
 
     public function boot(): void
@@ -49,12 +62,14 @@ class AppServiceProvider extends ServiceProvider
 
             $misAvisosEnabled = false;
             $correctionsPendingCount = 0;
+            $trashCounts = ['total' => 0, 'urgent' => 0];
 
             if (!$userId) {
                 $view->with('sidebarQuota', $this->emptyQuota());
                 $view->with('userExternalSites', collect());
                 $view->with('misAvisosEnabled', $misAvisosEnabled);
                 $view->with('correctionsPendingCount', $correctionsPendingCount);
+                $view->with('trashCounts', $trashCounts);
                 return;
             }
 
@@ -64,6 +79,7 @@ class AppServiceProvider extends ServiceProvider
                 $view->with('userExternalSites', collect());
                 $view->with('misAvisosEnabled', $misAvisosEnabled);
                 $view->with('correctionsPendingCount', $correctionsPendingCount);
+                $view->with('trashCounts', $trashCounts);
                 return;
             }
 
@@ -80,6 +96,15 @@ class AppServiceProvider extends ServiceProvider
 
             $view->with('misAvisosEnabled', $misAvisosEnabled);
             $view->with('correctionsPendingCount', $correctionsPendingCount);
+
+            // Papelera: conteos para el badge del sidebar. Cacheado 60s en
+            // PapeleraService::countFor(); aqui solo delegamos.
+            try {
+                $trashCounts = app(PapeleraService::class)->countFor((int) $userId);
+            } catch (\Throwable $e) {
+                $trashCounts = ['total' => 0, 'urgent' => 0];
+            }
+            $view->with('trashCounts', $trashCounts);
 
             $used  = (int) $user->personal_used_bytes;
             $limit = (int) $user->personal_quota_bytes;

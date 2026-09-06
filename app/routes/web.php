@@ -4,6 +4,7 @@ use Illuminate\Support\Facades\Route;
 use App\Modules\Correo\Http\Controllers\CorreoConfigController;
 use App\Modules\Correo\Http\Controllers\CorreoPlantillaController;
 use App\Modules\Correo\Http\Controllers\CorreoLogController;
+use App\Modules\Papelera\Http\Controllers\PapeleraController;
 
 Route::get('/', fn() => redirect('/login'));
 
@@ -108,6 +109,12 @@ Route::middleware('auth')->group(function () {
     Route::post('/files/upload', [App\Http\Controllers\FileController::class, 'upload']);
     Route::post('/files/download-multi', [App\Http\Controllers\FileController::class, 'downloadMulti']);
     Route::resource('files', App\Http\Controllers\FileController::class)->only(['index', 'store', 'show', 'update', 'destroy']);
+
+    // Papelera de reciclaje
+    Route::get('/papelera', [PapeleraController::class, 'index'])->name('papelera.index');
+    Route::post('/papelera/{file}/restore', [PapeleraController::class, 'restore'])->name('papelera.restore');
+    Route::delete('/papelera/{file}', [PapeleraController::class, 'destroy'])->name('papelera.destroy');
+    Route::post('/papelera/empty', [PapeleraController::class, 'empty'])->name('papelera.empty');
     Route::get('/user/storages', [App\Http\Controllers\FileController::class, 'storages']);
     Route::get('/files/{file}/download', [App\Http\Controllers\FileController::class, 'download']);
     Route::get('/files/{file}/download-folder', [App\Http\Controllers\FileController::class, 'downloadFolder']);
@@ -292,6 +299,34 @@ Route::middleware(['auth', 'admin'])->prefix('ia')->group(function () {
     Route::post('/correcciones/triage-pending', [App\Http\Controllers\Ia\CorreccionesController::class, 'triagePending']);
     Route::get('/correcciones/triage-pending/{runId}', [App\Http\Controllers\Ia\CorreccionesController::class, 'triageRunStatus'])
         ->where('runId', '[A-Za-z0-9_-]+');
+
+    // Corrección IA inline por ejemplo en el modal de contexto
+    // (changes/2026-09-05-corrections-ai-context-correct-inline). Manual-only,
+    // mismo master switch que ai-suggest-now.
+    Route::post('/correcciones/{correctionId}/examples/{exampleId}/ai-context-correct',
+        [App\Http\Controllers\Ia\CorreccionesAiContextCorrectController::class, 'suggest'])
+        ->whereNumber('correctionId')->whereNumber('exampleId');
+    Route::post('/correcciones/{correctionId}/examples/{exampleId}/ai-context-correct/approve',
+        [App\Http\Controllers\Ia\CorreccionesAiContextCorrectController::class, 'approve'])
+        ->whereNumber('correctionId')->whereNumber('exampleId');
+
+    // Curación de marcas protegidas desde el modal de contexto
+    // (changes/2026-09-05-corrections-ai-context-aware-with-mark-curation).
+    Route::post('/correcciones/protected-terms',
+        [App\Http\Controllers\Ia\ProtectedTermsInlineController::class, 'store']);
+    Route::post('/correcciones/brands/suggest',
+        [App\Http\Controllers\Ia\ProtectedTermsInlineController::class, 'suggestBrands']);
+
+    // Corrección IA con contexto ampliado (vecinos ±5) — remplaza al flow
+    // básico de ai-context-correct-inline una vez adoptada por la UI.
+    // Coexiste con el endpoint anterior (con semantics "sin vecinos") hasta
+    // que la UI migre totalmente.
+    Route::post('/correcciones/{correctionId}/examples/{exampleId}/ai-context-correct-context',
+        [App\Http\Controllers\Ia\CorreccionesAiContextAwareController::class, 'suggest'])
+        ->whereNumber('correctionId')->whereNumber('exampleId');
+    Route::post('/correcciones/{correctionId}/examples/{exampleId}/ai-context-correct-context/approve',
+        [App\Http\Controllers\Ia\CorreccionesAiContextAwareController::class, 'approve'])
+        ->whereNumber('correctionId')->whereNumber('exampleId');
 });
 
 // Modulo IA — cliente (M3): Mis Avisos + propuestas de corrección
@@ -301,4 +336,25 @@ Route::middleware(['auth', 'misavisos'])->group(function () {
     Route::delete('/mis-avisos/keywords/{keywordId}', [App\Http\Controllers\MisAvisosController::class, 'destroyKeyword']);
     Route::get('/mis-avisos/corrections/mine', [App\Http\Controllers\CorreccionPropuestaController::class, 'mine']);
     Route::post('/mis-avisos/corrections', [App\Http\Controllers\CorreccionPropuestaController::class, 'store']);
+
+    // mis-avisos-menciones: feed en vivo, alcance keyword→store, preferencias
+    Route::get('/mis-avisos/feed', [App\Http\Controllers\MisAvisosController::class, 'feed'])->middleware('throttle:30,1');
+    Route::get('/mis-avisos/storages', [App\Http\Controllers\MisAvisosController::class, 'storages']);
+    Route::put('/mis-avisos/keywords/{keywordId}/scope', [App\Http\Controllers\MisAvisosController::class, 'updateKeywordScope']);
+    Route::get('/mis-avisos/preferences', [App\Http\Controllers\MisAvisosController::class, 'preferences']);
+    Route::put('/mis-avisos/preferences', [App\Http\Controllers\MisAvisosController::class, 'preferences']);
+
+    // mis-avisos-mentions-viewer: transcripción anclada a la mención
+    Route::get('/mis-avisos/transcriptions/{transcriptionId}', [App\Http\Controllers\MisAvisosController::class, 'transcription'])
+        ->whereNumber('transcriptionId')->middleware('throttle:20,1');
+    Route::get('/mis-avisos/transcriptions/{transcriptionId}/segments', [App\Http\Controllers\MisAvisosController::class, 'transcriptionSegments'])
+        ->whereNumber('transcriptionId')->middleware('throttle:20,1');
+
+    // mis-avisos-menciones: histórico 60 días + export CSV/Excel
+    Route::get('/mis-avisos/history', [App\Http\Controllers\MisAvisosController::class, 'history'])->middleware('throttle:10,1');
+    Route::post('/mis-avisos/exports', [App\Http\Controllers\MisAvisosController::class, 'requestExport'])->middleware('throttle:6,1');
+    Route::get('/mis-avisos/exports/{exportId}', [App\Http\Controllers\MisAvisosController::class, 'exportStatus']);
+    Route::post('/mis-avisos/exports/{exportId}/email', [App\Http\Controllers\MisAvisosController::class, 'emailExport'])->middleware('throttle:4,1');
+    Route::get('/mis-avisos/exports/{export}/download', [App\Http\Controllers\MisAvisosController::class, 'downloadExport'])
+        ->name('mis-avisos.exports.download')->middleware('signed');
 });

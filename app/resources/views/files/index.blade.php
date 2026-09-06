@@ -1211,7 +1211,9 @@ deleteConfirmFile: null,
             }
         }
         if (errors > 0) {
-            this.showToast(errors + ' elemento(s) no se pudieron eliminar.');
+            this.showToast(errors + ' elemento(s) no se pudieron mover a la papelera.');
+        } else if (toDelete.length > 1) {
+            this.showToast(toDelete.length + ' elementos movidos a la papelera.', 'success', 3500);
         }
     },
 

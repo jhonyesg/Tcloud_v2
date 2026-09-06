@@ -229,6 +229,18 @@
                         <span x-show="sidebarOpen" x-transition class="font-medium text-sm">Mis Archivos</span>
                     </a>
 
+                    <a href="/papelera" data-nav-path="/papelera"                       class="nav-link flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg transition-colors text-brand-200 hover:bg-brand-800 hover:text-white {{ request()->is('papelera*') ? 'bg-brand-700 text-white' : '' }}">
+                        <i class="nav-icon fas fa-trash-can w-5 text-center text-brand-300"></i>
+                        <span x-show="sidebarOpen" x-transition class="font-medium text-sm">Papelera</span>
+                        @php
+                            $trashTotal = $trashCounts['total'] ?? 0;
+                            $trashUrgent = $trashCounts['urgent'] ?? 0;
+                        @endphp
+                        @if($trashTotal > 0)
+                            <span class="ml-auto {{ $trashUrgent > 0 ? 'bg-red-500' : 'bg-slate-500' }} text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">{{ $trashTotal }}</span>
+                        @endif
+                    </a>
+
                     <a href="/shares" data-nav-path="/shares"                       class="nav-link flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg transition-colors text-brand-200 hover:bg-brand-800 hover:text-white">
                         <i class="nav-icon fas fa-link w-5 text-center text-brand-300"></i>
                         <span x-show="sidebarOpen" x-transition class="font-medium text-sm">Compartidos</span>

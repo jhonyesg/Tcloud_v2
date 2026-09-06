@@ -176,8 +176,13 @@ class StorageSyncService
         // limpiarlos nunca. Aqui se toma el primero como canonico y los extras se
         // registran — borrarlos corresponde a `files:dedupe`, que re-parenta
         // antes (la FK parent_id es ON DELETE CASCADE).
+        // Papelera: excluimos filas trashadas del matching para que el sync
+        // no las toque, no las actualice ni las considere candidatas a prune.
+        // El indice parcial files_trash_sweep_idx + el WHERE is_trashed=false
+        // aqui mantienen este escaneo O(no-trash) incluso con papelera llena.
         $grouped = File::where('storage_provider_id', $storage->id)
             ->where('parent_id', $parentId)
+            ->where('is_trashed', false)
             ->get()
             ->groupBy('path');
 
@@ -344,6 +349,11 @@ class StorageSyncService
     {
         return File::where('storage_provider_id', $storageId)
             ->where('parent_id', $parentId)
+            // Papelera: nunca devolver filas trashadas en el listing que se
+            // sincroniza al frontend. parent_id puede ser null porque el trash
+            // nulifica el padre original, asi que este where es la unica red
+            // de seguridad para que el listado del root no muestre basura.
+            ->where('is_trashed', false)
             ->orderBy('is_folder', 'desc')
             ->orderBy('created_at', 'desc')
             ->get()
@@ -407,6 +417,24 @@ class StorageSyncService
                 $path = $parentFolder->path . '/' . $name;
                 $parentPath = $parentFolder->path;
             }
+        }
+
+        // Papelera: si ya existe una fila trashada con este path, no creamos
+        // una nueva — la fila trashada es la canonica hasta que se restaure
+        // o se purgue. Esto evita que el sync "recree" items que el usuario
+        // acaba de mover a papelera (bug original reportado 2026-09-06).
+        $existingTrashed = File::where('storage_provider_id', $storage->id)
+            ->where('path', $path)
+            ->where('is_trashed', true)
+            ->first();
+        if ($existingTrashed) {
+            Log::info('storage_sync.skipped_trashed_collision', [
+                'storage_id' => $storage->id,
+                'path' => $path,
+                'trashed_file_id' => $existingTrashed->id,
+                'parent_id' => $parentId,
+            ]);
+            return $existingTrashed;
         }
 
         $modifiedAt = isset($entry['modified_at']) ? \Carbon\Carbon::createFromTimestamp($entry['modified_at']) : null;

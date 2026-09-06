@@ -56,6 +56,14 @@ class PublicShareController extends Controller
 
         $file = $share->file;
 
+        // Papelera: si el archivo del share esta trashado, respondemos 410 Gone
+        // con mensaje claro. 410 (no 404) porque el recurso existio y el share
+        // token es valido: solo el archivo se movio a papelera por su dueno.
+        $trashResp = $this->rejectIfTrashed($file, $request);
+        if ($trashResp !== null) {
+            return $trashResp;
+        }
+
         if (!$file || $file->availability_state === 'missing') {
             if ($request->ajax() || $request->wantsJson()) {
                 return response()->json(['error' => 'File not found'], 404);
@@ -234,6 +242,11 @@ class PublicShareController extends Controller
             return response()->json(['error' => 'File not in shared folder'], 403);
         }
 
+        $trashResp = $this->rejectIfTrashed($file, $request);
+        if ($trashResp !== null) {
+            return $trashResp;
+        }
+
         $mimeType = $file->mime_type ?? 'application/octet-stream';
         $isPreviewable = $this->isPreviewable($mimeType);
 
@@ -276,6 +289,11 @@ class PublicShareController extends Controller
 
         if (!$this->isDescendantOf($file, $rootFolder)) {
             return response()->json(['error' => 'File not in shared folder'], 403);
+        }
+
+        $trashResp = $this->rejectIfTrashed($file, $request);
+        if ($trashResp !== null) {
+            return $trashResp;
         }
 
         $mimeType = $file->mime_type ?? 'application/octet-stream';
@@ -372,6 +390,32 @@ class PublicShareController extends Controller
         return false;
     }
 
+    /**
+     * Papelera: si el File esta trashado, devuelve una respuesta 410 Gone
+     * para JSON o HTML. Devuelve null si NO esta trashado (sigue el flujo).
+     * Centraliza la regla para no duplicar la misma respuesta en cada metodo.
+     * Return type: cualquier subclase de Symfony Response (JsonResponse o
+     * view response). JsonResponse NO extiende Illuminate\Http\Response
+     * directamente, asi que usamos el ancestro comun.
+     */
+    private function rejectIfTrashed(?File $file, Request $request): ?\Symfony\Component\HttpFoundation\Response
+    {
+        if (!$file || !$file->is_trashed) {
+            return null;
+        }
+
+        if ($request->ajax() || $request->wantsJson()) {
+            return response()->json([
+                'error' => 'file_in_trash',
+                'message' => 'El archivo fue movido a la papelera por su propietario.',
+            ], 410);
+        }
+
+        return response()->view('shares.public-not-found', [
+            'message' => 'El archivo fue movido a la papelera por su propietario.',
+        ], 410);
+    }
+
     public function download(Request $request, string $token, ?int $fileId = null)
     {
         $share = Share::where('token', $token)->first();
@@ -400,6 +444,11 @@ class PublicShareController extends Controller
             }
         } else {
             $file = File::findOrFail($share->file_id);
+        }
+
+        $trashResp = $this->rejectIfTrashed($file, $request);
+        if ($trashResp !== null) {
+            return $trashResp;
         }
 
         if ($file->availability_state === 'missing') {
@@ -685,6 +734,14 @@ class PublicShareController extends Controller
 
         if (!$this->isDescendantOf($file, $rootFolder)) {
             return response()->json(['error' => 'File not in shared folder'], 403);
+        }
+
+        // Papelera: si el archivo esta trashado no permitimos operaciones de
+        // mutacion desde un share publico. El dueno tendria que restaurarlo
+        // primero desde su papelera.
+        $trashResp = $this->rejectIfTrashed($file, $request);
+        if ($trashResp !== null) {
+            return $trashResp;
         }
 
         $fullPath = $file->storageProvider->base_path . '/' . $file->path;

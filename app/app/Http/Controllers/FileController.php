@@ -401,13 +401,20 @@ class FileController extends Controller
             return response()->json(['error' => 'Only owner can delete'], 403);
         }
 
-        if ($file->is_folder) {
-            $this->deleteRecursive($file);
-        } else {
-            $this->deleteFile($file);
-        }
+        // Papelera de reciclaje (2026-09-06): delete ahora es soft-trash en lugar
+        // de hard-delete. El hard-delete solo lo hace PapeleraService::hardDelete,
+        // llamado desde el cron trash:purge, desde /papelera/{id} DELETE, o
+        // desde /papelera/empty. Esto resuelve el bug de "se borra la fila pero
+        // no el dir de disco y el sync lo recreaba".
+        $service = app(\App\Modules\Papelera\Services\PapeleraService::class);
+        $service->softTrash($file, (int) Session::get('user_id'));
 
-        return response()->json(['message' => 'Deleted']);
+        // Invalidar la cache de listado del padre (la fila ya no aparece ahi).
+        $service->invalidateSidebarCache((int) $file->owner_id);
+        app(\App\Services\StorageSyncService::class)
+            ->invalidateFolderCache((int) $file->storage_provider_id, $file->getOriginal('parent_id'));
+
+        return response()->json(['message' => 'Moved to trash', 'trashed_id' => $file->id]);
     }
 
     public function upload(Request $request)
@@ -912,7 +919,7 @@ class FileController extends Controller
         return response()->json(['error' => 'Preview not supported for this file type'], 400);
     }
 
-    public function view(int $id)
+    public function view(int $id, Request $request)
     {
         $file = File::findOrFail($id);
 
@@ -924,6 +931,9 @@ class FileController extends Controller
             'fileId'   => $id,
             'fileMime' => $file->mime_type,
             'fileName' => $file->name,
+            // Deep-link: segundo inicial del reproductor (?t=), usado por los
+            // avisos de menciones para abrir el archivo en el minuto exacto.
+            'startSeconds' => max(0, (int) $request->query('t', 0)),
         ]);
     }
 
