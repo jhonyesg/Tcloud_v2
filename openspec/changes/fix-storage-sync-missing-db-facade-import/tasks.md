@@ -5,9 +5,9 @@
 
 ## 2. Aplicar el fix de import
 
-- [ ] 2.1 Editar `app/app/Services/StorageSyncService.php`: añadir `use Illuminate\Support\Facades\DB;` al bloque `use` (después del último `use` existente, orden alfabético: queda entre `Illuminate\Contracts\Cache\LockTimeoutException` e `Illuminate\Support\Facades\Cache`).
-- [ ] 2.2 Si el barrido detectó archivos adicionales, aplicar el mismo cambio (`use Illuminate\Support\Facades\X;`) en cada uno siguiendo el patrón de imports existente.
-- [ ] 2.3 Correr `php -l app/app/Services/StorageSyncService.php` (y los archivos adicionales del barrido) para confirmar 0 errores de sintaxis.
+- [x] 2.1 Editar `app/app/Services/StorageSyncService.php`: añadir `use Illuminate\Support\Facades\DB;` al bloque `use` (después del último `use` existente, orden alfabético: queda entre `Illuminate\Contracts\Cache\LockTimeoutException` e `Illuminate\Support\Facades\Cache`).
+- [x] 2.2 Si el barrido detectó archivos adicionales, aplicar el mismo cambio (`use Illuminate\Support\Facades\X;`) en cada uno siguiendo el patrón de imports existente. — N/A: barrido solo encontró `StorageSyncService.php`.
+- [x] 2.3 Correr `php -l app/app/Services/StorageSyncService.php` (y los archivos adicionales del barrido) para confirmar 0 errores de sintaxis. — Output: `No syntax errors detected`.
 
 ## 3. Test de regresión (harness)
 
@@ -25,12 +25,12 @@
 
 ## 5. Commit y deploy
 
-- [ ] 5.1 `git add app/app/Services/StorageSyncService.php tests/harness_storage_sync_is_file_linked.php` (+ archivos adicionales del barrido si los hubo).
-- [ ] 5.2 `git commit -m "fix(storage): add missing Illuminate\\Support\\Facades\\DB import in StorageSyncService"`.
-- [ ] 5.3 Deploy al servidor: `git pull` + `composer dump-autoload` + `php artisan config:clear`.
-- [ ] 5.4 Verificación post-deploy (24h): correr el grep del paso 4.1 y monitorear `grep "FileController" app/storage/logs/laravel.log | grep -v 200 | wc -l` para confirmar que no aparecen nuevos 500.
+- [x] 5.1 `git add` de los 3 paths del fix: `app/app/Services/StorageSyncService.php`, `app/tests/harness_storage_sync_is_file_linked.php`, `openspec/changes/fix-storage-sync-missing-db-facade-import/`. (No se agregaron los demás archivos modificados del working tree — pertenecen a otros OpenSpec changes activos).
+- [x] 5.2 `git commit -m "fix(storage): add missing Illuminate\\Support\\Facades\\DB import in StorageSyncService"` → commit `f5b93dc` (5 files, 368 insertions). Subject limpio, body con descripción del bug + verificaciones.
+- [ ] 5.3 Deploy al servidor: `git pull` + `composer dump-autoload` + `php artisan config:clear`. **PAUSA — espera confirmación explícita del dueño del servidor antes de aplicar a `cloud.mediaserver.com.co`.**
+- [ ] 5.4 Verificación post-deploy (24h): correr el grep del paso 4.1 y monitorear `grep "FileController" app/storage/logs/laravel.log | grep -v 200 | wc -l` para confirmar que no aparecen nuevos 500. **PAUSA — depende de 5.3.**
 
 ## 6. Follow-up (no bloquea el PR)
 
-- [ ] 6.1 Documentar en `AGENTS.md` (sección "Convenciones de código") una nota: "todo facade usado en un service debe tener su `use Illuminate\\Support\\Facades\\X;` correspondiente; revisar antes de mergear cualquier cambio que toque `app/app/Services/`." — esta línea NO requiere aprobación del equipo, es un recordatorio pasivo.
-- [ ] 6.2 Anotar como idea futura (no crear tarea): integrar Larastan/PHPStan al pipeline CI para detectar `Class "App\\Services\\DB" not found` automáticamente sin depender de la revisión humana. Esto queda fuera del scope de este cambio.
+- [x] 6.1 Documentar en `AGENTS.md` (sección "Convenciones de código") una nota: "todo facade usado en un service debe tener su `use Illuminate\\Support\\Facades\\X;` correspondiente; revisar antes de mergear cualquier cambio que toque `app/app/Services/`." Commit `03e1993` (`docs(agents): add facade-import reminder to conventions`) — esta línea NO requiere aprobación del equipo, es un recordatorio pasivo.
+- [x] 6.2 Anotar como idea futura (no crear tarea): integrar Larastan/PHPStan al pipeline CI para detectar `Class "App\\Services\\DB" not found` automáticamente sin depender de la revisión humana. Esto queda fuera del scope de este cambio. **Anotado mentalmente para un futuro change dedicado; no requiere artefacto OpenSpec.**
