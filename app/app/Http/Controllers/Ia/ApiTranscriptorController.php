@@ -890,7 +890,10 @@ class ApiTranscriptorController extends Controller
     public function processFolder(Request $request, int $id)
     {
         $storage = StorageProvider::findOrFail($id);
-        $generateAlerts = (bool) $request->input('generate_alerts', false);
+        // Default TRUE (avisos-scan-configuration): las grabaciones
+        // contratadas se monitorean por defecto; solo un request explícito
+        // con generate_alerts=false excluye el medio de los avisos.
+        $generateAlerts = (bool) $request->input('generate_alerts', true);
         $parentId = $request->input('parent_id');
         if ($parentId === '' || $parentId === 'null') $parentId = null;
         $parentId = $parentId !== null ? (int) $parentId : null;
@@ -975,7 +978,10 @@ class ApiTranscriptorController extends Controller
     public function processDay(Request $request, int $id)
     {
         $storage = StorageProvider::findOrFail($id);
-        $generateAlerts = (bool) $request->input('generate_alerts', false);
+        // Default TRUE (avisos-scan-configuration): las grabaciones
+        // contratadas se monitorean por defecto; solo un request explícito
+        // con generate_alerts=false excluye el medio de los avisos.
+        $generateAlerts = (bool) $request->input('generate_alerts', true);
         $mode = $request->input('mode', 'today');
 
         $date = $mode === 'yesterday' ? now()->subDay() : now();
@@ -1060,7 +1066,10 @@ class ApiTranscriptorController extends Controller
         // el slider. Antes eran dos numeros independientes (500 en la UI, 200
         // aqui) y el exceso se truncaba en silencio.
         $batch = max(1, min($this->settings->int('ui_batch_max'), (int) $request->input('batch', 50)));
-        $generateAlerts = (bool) $request->input('generate_alerts', false);
+        // Default TRUE (avisos-scan-configuration): las grabaciones
+        // contratadas se monitorean por defecto; solo un request explícito
+        // con generate_alerts=false excluye el medio de los avisos.
+        $generateAlerts = (bool) $request->input('generate_alerts', true);
         $includeFailed = (bool) $request->input('include_failed', false);
         $runId = 'batch_' . time() . '_' . substr(md5(uniqid('', true)), 0, 6);
         $cacheKey = 'transcription_batch:' . $runId;
@@ -1102,7 +1111,7 @@ class ApiTranscriptorController extends Controller
         $cmd .= ' >> ' . escapeshellarg($logFile) . ' 2>&1 &';
 
         try {
-            $this->execBackground($cmd);
+            $this->execBackground($cmd, 'transcriptor:scan');
         } catch (\Throwable $e) {
             \Illuminate\Support\Facades\Cache::put($cacheKey, [
                 'status' => 'error',

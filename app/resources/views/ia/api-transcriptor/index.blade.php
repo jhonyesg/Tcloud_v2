@@ -1411,8 +1411,8 @@
                             <input type="checkbox" x-model="batchAlerts" class="w-4 h-4 accent-brand-600 rounded">
                             <span class="text-sm text-slate-700">Generar alertas</span>
                         </label>
-                        <span class="text-xs text-slate-400" x-show="!batchAlerts"><i class="fas fa-info-circle mr-1"></i>Las transcripciones se guardarán sin disparar emails de keywords</span>
-                        <span class="text-xs text-amber-600" x-show="batchAlerts"><i class="fas fa-bell mr-1"></i>Se enviarán alertas por email cuando se detecten keywords</span>
+                        <span class="text-xs text-slate-400" x-show="!batchAlerts"><i class="fas fa-info-circle mr-1"></i>Las transcripciones se guardarán SIN generar menciones de keywords</span>
+                        <span class="text-xs text-amber-600" x-show="batchAlerts"><i class="fas fa-bell mr-1"></i>Generará menciones de keywords; los correos los recibe cada cliente según su cadencia</span>
                     </div>
                     {{-- Checkbox reintentar fallidos --}}
                     <div class="flex items-center gap-3 p-3 bg-amber-50 border border-amber-200 rounded-lg">
@@ -1833,7 +1833,7 @@ function apiTranscriptor() {
         showBatchModal: false,
         batchRunning: false,
         batchSize: {{ (int) ($ui_limits['scan_batch'] ?? 100) }},
-        batchAlerts: false,
+        batchAlerts: true,
         batchIncludeFailed: false,
         batchResult: null,
         batchRunId: null,
@@ -1843,7 +1843,7 @@ function apiTranscriptor() {
         showProcessConfirm: false,
         processConfirmText: '',
         processConfirmAction: null,
-        processAlerts: false,
+        processAlerts: true,
         batch: 10,
         // Multi-selección de archivos para envío en lote
         selectedFileIds: new Set(),
@@ -2904,7 +2904,6 @@ const data = await res.json().catch(() => ({}));
         confirmProcessFolder() {
             this.processConfirmText = 'Procesar carpeta actual';
             this.processConfirmAction = 'folder';
-            this.processAlerts = false;
             this.showProcessConfirm = true;
         },
         confirmProcessDay() {

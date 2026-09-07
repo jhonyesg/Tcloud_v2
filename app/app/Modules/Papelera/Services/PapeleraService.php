@@ -141,7 +141,7 @@ class PapeleraService
         return true;
     }
 
-    public function purgeExpired(int $batchSize = 500, float $maxRatio = 0.5): int
+    public function purgeExpired(int $batchSize = 500, float $maxRatio = 0.5, bool $dryRun = false): int
     {
         $lock = Cache::lock('trash:purge', (int) config('trash.lock_ttl', 600));
         if (!$lock->get()) {
@@ -168,6 +168,17 @@ class PapeleraService
                     'max_ratio' => $maxRatio,
                 ]);
                 return 0;
+            }
+
+            // Dry-run: cuenta y reporta, no toca BD ni disco.
+            if ($dryRun) {
+                Log::info('papelera.purge.dry_run', [
+                    'candidates' => $candidates,
+                    'cutoff' => $cutoff->toIso8601String(),
+                    'ratio' => round($ratio, 4),
+                    'max_ratio' => $maxRatio,
+                ]);
+                return $candidates;
             }
 
             $deleted = 0;
@@ -243,6 +254,60 @@ class PapeleraService
 
             return ['total' => $total, 'urgent' => $urgent];
         });
+    }
+
+    /**
+     * Stats completos para el view /papelera: total, urgent, critical,
+     * espacio que se liberara en la proxima purga (excluyendo linked items
+     * que el guardarrail skip), y fecha estimada de la proxima ejecucion
+     * del cron trash:purge (03:17 local).
+     */
+    public function statsFor(int $userId): array
+    {
+        if ($userId <= 0) {
+            return [
+                'total' => 0,
+                'urgent' => 0,
+                'critical' => 0,
+                'size_bytes' => 0,
+                'next_purge_date' => null,
+            ];
+        }
+
+        $retentionDays = (int) config('trash.retention_days', 15);
+        $urgentThreshold = (int) config('trash.urgent_threshold_days', 3);
+        $cutoff = now()->subDays($retentionDays);
+        $urgentCutoff = now()->subDays($retentionDays - $urgentThreshold);
+
+        $base = File::trashed()->where('owner_id', $userId);
+        $total = (clone $base)->count();
+        $urgent = (clone $base)->where('deleted_at', '>=', $urgentCutoff)->count();
+        $critical = (clone $base)->where('deleted_at', '>=', now()->subDays($retentionDays - 1))->count();
+
+        // Espacio que se liberara al purgar: solo items no-linked (los linked
+        // sobreviven a la purga por el guardarrail isFileLinked).
+        $purgableItems = (clone $base)->where('deleted_at', '<', $cutoff)->get();
+        $sizeBytes = 0;
+        foreach ($purgableItems as $f) {
+            if (!$this->isFileLinked($f->id)) {
+                $sizeBytes += (int) $f->size;
+            }
+        }
+
+        // Proxima purga: 03:17 de hoy si aun no paso, manana si ya paso.
+        $now = now();
+        $nextPurge = $now->copy()->setTime(3, 17);
+        if ($nextPurge->isPast()) {
+            $nextPurge->addDay();
+        }
+
+        return [
+            'total' => $total,
+            'urgent' => $urgent,
+            'critical' => $critical,
+            'size_bytes' => $sizeBytes,
+            'next_purge_date' => $nextPurge->toIso8601String(),
+        ];
     }
 
     public function daysRemaining(File $file): int

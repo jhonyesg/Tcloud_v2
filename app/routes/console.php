@@ -142,6 +142,23 @@ Schedule::command('avisos:deliver-alerts')
     ->everyMinute()
     ->withoutOverlapping(5);
 
+// === Escaneo de menciones (avisos-scan-configuration) ===
+//
+// El matching por transcripción también lo dispara el pipeline al terminar
+// (TranscriptionProcessor). Este cron cubre lo que el pipeline no escaneó:
+// backfill de lo terminado sin hits, fallos previos, terminadas por vías
+// alternas. Tick fijo cada 5 min: el comando decide internamente si toca
+// correr consultando SystemSetting (avisos_scan_enabled, avisos_scan_
+// interval_minutes) y la última corrida exitosa — MISMO patrón que
+// sessions_cleanup_interval_minutes: la expresión cron no puede componerse
+// dinámicamente porque Laravel la cachea al boot. withoutOverlapping(15):
+// corrida de escaneo puede tardar minutos; si un tick se solapa, cae.
+// El escaneo JAMÁS envía correos: la entrega sigue siendo
+// avisos:deliver-alerts.
+Schedule::command('avisos:scan')
+    ->everyFiveMinutes()
+    ->withoutOverlapping(15);
+
 // Reporte semanal de triage (cambios/2026-08-18-corrections-coherence-learn-fix-and-pending-triage).
 // Solo dry-run: el admin revisa el log y decide si aplicar desde la UI.
 Schedule::command('corrections:triage-pending --dry-run')

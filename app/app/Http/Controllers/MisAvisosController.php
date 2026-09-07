@@ -144,11 +144,13 @@ class MisAvisosController extends Controller
     {
         $user = User::findOrFail((int) Session::get('user_id'));
 
+        $perPage = in_array((int) $request->input('per_page', 25), [25, 50, 100, 500]) ? (int) $request->input('per_page', 25) : 25;
+
         $page = $search->todayHits($user, [
             'q' => $request->input('q', ''),
             'storage_ids' => (array) $request->input('storage_ids', []),
             'keyword_id' => $request->input('keyword_id'),
-        ]);
+        ], $perPage);
 
         return response()->json([
             'data' => $page->items(),
@@ -281,13 +283,15 @@ class MisAvisosController extends Controller
             return response()->json(['error' => "Consulta mínima de {$minLen} caracteres"], 422);
         }
 
+        $perPage = in_array((int) $request->input('per_page', 25), [25, 50, 100, 500]) ? (int) $request->input('per_page', 25) : 25;
+
         $page = $search->searchHistory($user, [
             'q' => $q,
             'from' => $request->input('from'),
             'to' => $request->input('to'),
             'storage_ids' => $request->input('storage_ids', []),
             'keyword_id' => $request->input('keyword_id'),
-        ]);
+        ], $perPage);
 
         return response()->json([
             'data' => $page->items(),

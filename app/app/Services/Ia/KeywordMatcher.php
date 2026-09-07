@@ -81,6 +81,9 @@ class KeywordMatcher
                         'segment_id' => $segment->id,
                         'keyword_id' => $keywordId,
                         'snippet' => $this->buildSnippet((string) $segment->text, $keywordNorm),
+                        // Cuántas veces la keyword aparece en el segmento
+                        // (misma normalización del motor). mention-occurrence-detail.
+                        'occurrences' => max(1, substr_count($segmentText, $keywordNorm)),
                         'matched_at' => $now,
                     ];
                 }

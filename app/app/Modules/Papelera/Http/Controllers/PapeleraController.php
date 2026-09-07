@@ -89,6 +89,7 @@ class PapeleraController extends Controller
                 'total' => $paginator->total(),
                 'has_more' => $paginator->hasMorePages(),
             ],
+            'stats' => $this->service->statsFor($user->id),
         ]);
     }
 
@@ -110,6 +111,17 @@ class PapeleraController extends Controller
         }
 
         $restored = $this->service->restore($item, $user->id);
+
+        // Invalidar el cache del folder de destino para que el archivo
+        // restaurado aparezca en el browser sin esperar el TTL (60-300s).
+        // Si el destino es root (parent_id NULL después del restore porque
+        // el parent original estaba missing/trashed), invalidamos el root
+        // listing. Mismo patrón que FileController@destroy.
+        $syncService = app(\App\Services\StorageSyncService::class);
+        $syncService->invalidateFolderCache(
+            (int) $restored->storage_provider_id,
+            $restored->parent_id
+        );
 
         return response()->json([
             'message' => 'Restored',

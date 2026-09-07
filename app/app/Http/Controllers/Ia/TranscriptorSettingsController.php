@@ -144,7 +144,7 @@ class TranscriptorSettingsController extends Controller
         }
         $cmd .= ' >> ' . escapeshellarg($logFile) . ' 2>&1 &';
 
-        $this->execBackground($cmd);
+        $this->execBackground($cmd, 'transcriptor:settings');
 
         Log::info('TranscriptorSettings: tick lanzado manualmente', [
             'user_id' => Session::get('user_id'),

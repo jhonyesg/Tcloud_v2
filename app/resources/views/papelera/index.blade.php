@@ -142,6 +142,61 @@
         </div>
     </div>
 
+    <!-- Stat tiles -->
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+        <div class="bg-white rounded-lg border border-slate-200 px-4 py-3">
+            <div class="text-2xl font-semibold text-slate-800 tabular-nums" x-text="stats.total"></div>
+            <div class="text-xs text-slate-500 mt-0.5">En papelera</div>
+        </div>
+        <div class="bg-white rounded-lg border border-slate-200 px-4 py-3"
+             :class="stats.urgent > 0 ? 'border-amber-300' : ''">
+            <div class="text-2xl font-semibold tabular-nums"
+                 :class="stats.urgent > 0 ? 'text-amber-600' : 'text-slate-800'"
+                 x-text="stats.urgent"></div>
+            <div class="text-xs text-slate-500 mt-0.5">Por expirar pronto</div>
+        </div>
+        <div class="bg-white rounded-lg border border-slate-200 px-4 py-3">
+            <div class="text-2xl font-semibold text-slate-800 tabular-nums" x-text="formatSize(stats.size_bytes)"></div>
+            <div class="text-xs text-slate-500 mt-0.5">A liberar al purgar</div>
+        </div>
+        <div class="bg-white rounded-lg border border-slate-200 px-4 py-3">
+            <div class="text-2xl font-semibold text-slate-800 tabular-nums" x-text="daysUntilPurge()"></div>
+            <div class="text-xs text-slate-500 mt-0.5">Próxima purga</div>
+        </div>
+    </div>
+
+    <!-- Banner urgente -->
+    <div x-show="stats.urgent > 0"
+         x-transition.opacity
+         class="mb-4 px-4 py-3 bg-amber-50 border border-amber-200 rounded-lg flex items-center gap-3">
+        <i class="fas fa-exclamation-triangle text-amber-500"></i>
+        <span class="text-sm text-amber-800">
+            Tienes <b x-text="stats.urgent"></b>
+            archivo<span x-show="stats.urgent > 1">s</span>
+            que se borrarán en menos de 3 días.
+            <a href="#" @click.prevent="filter = 'urgent'" class="underline font-medium">Ver cuáles</a>
+        </span>
+    </div>
+
+    <!-- Filtros -->
+    <div class="flex flex-wrap gap-2 mb-4" x-show="!isLoading">
+        <button type="button" @click="filter = 'all'"
+                :class="filter === 'all' ? 'bg-brand-500 text-white border-brand-500' : 'bg-white text-slate-600 border-slate-200'"
+                class="px-3 py-1.5 text-xs font-medium border rounded-md transition-colors">
+            Todos (<span x-text="items.length"></span>)
+        </button>
+        <button type="button" @click="filter = 'urgent'"
+                :class="filter === 'urgent' ? 'bg-amber-500 text-white border-amber-500' : 'bg-white text-slate-600 border-slate-200'"
+                class="px-3 py-1.5 text-xs font-medium border rounded-md transition-colors">
+            Por expirar (<span x-text="countByFilter('urgent')"></span>)
+        </button>
+        <button type="button" @click="filter = 'critical'"
+                :class="filter === 'critical' ? 'bg-red-500 text-white border-red-500' : 'bg-white text-slate-600 border-slate-200'"
+                class="px-3 py-1.5 text-xs font-medium border rounded-md transition-colors">
+            Críticos (<span x-text="countByFilter('critical')"></span>)
+        </button>
+    </div>
+
     <div x-show="isLoading" class="text-center py-12 text-slate-500">
         <i class="fas fa-spinner fa-spin text-2xl mb-2"></i>
         <p>Cargando papelera...</p>
@@ -154,19 +209,20 @@
     </div>
 
     <div x-show="!isLoading && items.length > 0" class="bg-white rounded-lg shadow-sm border border-slate-200 overflow-hidden">
-        <div class="overflow-x-auto">
+        <!-- Desktop: tabla -->
+        <div class="hidden sm:block overflow-x-auto">
             <table class="w-full">
                 <thead class="bg-slate-50 border-b border-slate-200">
                     <tr>
-                        <th class="px-4 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">Nombre</th>
-                        <th class="px-4 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">Eliminado</th>
-                        <th class="px-4 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">Días restantes</th>
-                        <th class="px-4 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">Ubicación original</th>
-                        <th class="px-4 py-3 text-right text-xs font-semibold text-slate-600 uppercase tracking-wider">Acciones</th>
+                        <th class="px-4 py-3 text-left text-xs font-semibold text-slate-600">Nombre</th>
+                        <th class="px-4 py-3 text-left text-xs font-semibold text-slate-600">Eliminado</th>
+                        <th class="px-4 py-3 text-left text-xs font-semibold text-slate-600">Días restantes</th>
+                        <th class="px-4 py-3 text-left text-xs font-semibold text-slate-600">Ubicación original</th>
+                        <th class="px-4 py-3 text-right text-xs font-semibold text-slate-600">Acciones</th>
                     </tr>
                 </thead>
                 <tbody class="divide-y divide-slate-100">
-                    <template x-for="item in items" :key="item.id">
+                    <template x-for="item in filteredItems()" :key="item.id">
                         <tr class="hover:bg-slate-50">
                             <td class="px-4 py-3">
                                 <div class="flex items-center gap-2">
@@ -176,9 +232,16 @@
                             </td>
                             <td class="px-4 py-3 text-sm text-slate-600" x-text="formatDate(item.deleted_at)"></td>
                             <td class="px-4 py-3">
-                                <span class="text-sm font-semibold"
-                                      :class="item.is_urgent ? 'text-red-600' : 'text-slate-700'"
-                                      x-text="item.days_remaining + ' días'"></span>
+                                <div class="flex items-center gap-2">
+                                    <span class="text-sm font-semibold tabular-nums w-12 text-right"
+                                          :class="progressColorClass(item.days_remaining)"
+                                          x-text="item.days_remaining + 'd'"></span>
+                                    <div class="flex-1 h-1.5 bg-slate-100 rounded-full overflow-hidden min-w-[60px]">
+                                        <div class="h-full rounded-full transition-all"
+                                             :class="progressBarClass(item.days_remaining)"
+                                             :style="`width: ${progressPct(item.days_remaining)}%`"></div>
+                                    </div>
+                                </div>
                             </td>
                             <td class="px-4 py-3 text-xs text-slate-500 font-mono" x-text="item.path || '/'"></td>
                             <td class="px-4 py-3 text-right">
@@ -191,7 +254,7 @@
                                     <button type="button"
                                             @click="confirmAction('hardDelete', item)"
                                             class="px-3 py-1.5 bg-red-500 hover:bg-red-600 text-white text-xs font-medium rounded transition-colors">
-                                        <i class="fas fa-trash mr-1"></i> Eliminar definitivamente
+                                        <i class="fas fa-trash mr-1"></i> Eliminar
                                     </button>
                                 </div>
                             </td>
@@ -199,6 +262,41 @@
                     </template>
                 </tbody>
             </table>
+        </div>
+
+        <!-- Móvil: cards -->
+        <div class="sm:hidden divide-y divide-slate-100">
+            <template x-for="item in filteredItems()" :key="item.id">
+                <div class="p-3">
+                    <div class="flex items-center justify-between gap-2">
+                        <div class="flex items-center gap-2 min-w-0 flex-1">
+                            <i :class="item.is_folder ? 'fas fa-folder text-amber-500' : 'fas fa-file text-slate-400'"></i>
+                            <span class="text-sm font-medium text-slate-800 truncate" x-text="item.name"></span>
+                        </div>
+                        <span class="text-sm font-semibold tabular-nums"
+                              :class="progressColorClass(item.days_remaining)"
+                              x-text="item.days_remaining + 'd'"></span>
+                    </div>
+                    <div class="mt-2 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                        <div class="h-full rounded-full transition-all"
+                             :class="progressBarClass(item.days_remaining)"
+                             :style="`width: ${progressPct(item.days_remaining)}%`"></div>
+                    </div>
+                    <div class="mt-1.5 text-xs text-slate-500 font-mono truncate" x-text="item.path || '/'"></div>
+                    <div class="mt-2 flex gap-2 justify-end">
+                        <button type="button"
+                                @click="confirmAction('restore', item)"
+                                class="px-3 py-1 bg-brand-500 hover:bg-brand-600 text-white text-xs font-medium rounded">
+                            Restaurar
+                        </button>
+                        <button type="button"
+                                @click="confirmAction('hardDelete', item)"
+                                class="px-3 py-1 bg-red-500 hover:bg-red-600 text-white text-xs font-medium rounded">
+                            Eliminar
+                        </button>
+                    </div>
+                </div>
+            </template>
         </div>
     </div>
 
@@ -240,6 +338,14 @@ function papeleraApp() {
         pendingItem: null,
         showHelp: false,
         toast: '',
+        filter: 'all',
+        stats: {
+            total: 0,
+            urgent: 0,
+            critical: 0,
+            size_bytes: 0,
+            next_purge_date: null,
+        },
 
         async loadItems() {
             this.isLoading = true;
@@ -259,12 +365,66 @@ function papeleraApp() {
                 }
                 const data = await res.json();
                 this.items = Array.isArray(data?.items) ? data.items : [];
+                if (data?.stats && typeof data.stats === 'object') {
+                    this.stats = { ...this.stats, ...data.stats };
+                }
             } catch (e) {
                 this.showToast('Error de red al cargar la papelera.');
                 this.items = [];
             } finally {
                 this.isLoading = false;
             }
+        },
+
+        progressPct(days) {
+            const retention = 15;
+            const pct = (Math.max(0, days) / retention) * 100;
+            return Math.max(2, Math.min(100, pct));
+        },
+
+        progressBarClass(days) {
+            const pct = this.progressPct(days);
+            if (pct > 30) return 'bg-brand-500';
+            if (pct > 10) return 'bg-amber-500';
+            return 'bg-red-500';
+        },
+
+        progressColorClass(days) {
+            const pct = this.progressPct(days);
+            if (pct > 30) return 'text-slate-700';
+            if (pct > 10) return 'text-amber-600';
+            return 'text-red-600';
+        },
+
+        filteredItems() {
+            if (this.filter === 'all') return this.items;
+            if (this.filter === 'urgent') return this.items.filter(i => i.days_remaining <= 3);
+            if (this.filter === 'critical') return this.items.filter(i => i.days_remaining <= 1);
+            return this.items;
+        },
+
+        countByFilter(filter) {
+            if (filter === 'urgent') return this.items.filter(i => i.days_remaining <= 3).length;
+            if (filter === 'critical') return this.items.filter(i => i.days_remaining <= 1).length;
+            return this.items.length;
+        },
+
+        formatSize(bytes) {
+            if (!bytes || bytes === 0) return '0 B';
+            const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(1024));
+            const val = bytes / Math.pow(1024, i);
+            return val.toFixed(val < 10 ? 1 : 0) + ' ' + units[i];
+        },
+
+        daysUntilPurge() {
+            if (!this.stats.next_purge_date) return '—';
+            const next = new Date(this.stats.next_purge_date);
+            const now = new Date();
+            const diffDays = Math.round((next - now) / (1000 * 60 * 60 * 24));
+            if (diffDays <= 0) return 'hoy';
+            if (diffDays === 1) return 'mañana';
+            return 'en ' + diffDays + ' días';
         },
 
         confirmAction(action, item) {

@@ -13,13 +13,15 @@ class CorrectionsApplyRunCommand extends Command
                             {--dry-run : Solo reporta, no escribe BD}
                             {--chunk=0 : Tamaño del chunk de segments por transacción (0 = usar corrections_chunk)}
                             {--days= : Filtrar a segments creados en últimos N días (omitir = todos los históricos)}
+                            {--since= : Timestamp ISO 8601 desde cuándo filtrar segments. Tiene prioridad sobre --days}
                             {--include-high-risk : Incluir correcciones con risk_level=high (default: omitir)}
                             {--sleep-ms=0 : Pausa en ms entre chunks. Freno para no saturar la BD en producción}
                             {--transcription-id=* : Limitar a estas transcripciones (repetible)}
                             {--from-id= : Id mínimo de segment. Trocea el histórico por PK sin full-scan}
                             {--to-id= : Id máximo de segment}
                             {--transcription-from= : Id mínimo de transcripción. Vía indexada para reparar por días}
-                            {--transcription-to= : Id máximo de transcripción}';
+                            {--transcription-to= : Id máximo de transcripción}
+                            {--correction-id=* : Limitar a estas correcciones aprobadas (repetible). Vacío = todas las approved}';
 
     protected $description = 'Reaplica el diccionario de correcciones approved a todos los TranscriptionSegment. Diseñado para correr desacoplado vía runId + cache polling.';
 
@@ -51,6 +53,11 @@ class CorrectionsApplyRunCommand extends Command
             (array) $this->option('transcription-id')
         )));
 
+        $correctionIds = array_values(array_filter(array_map(
+            'intval',
+            (array) $this->option('correction-id')
+        )));
+
         $intOption = fn (string $name) => $this->option($name) !== null && $this->option($name) !== ''
             ? (int) $this->option($name)
             : null;
@@ -66,6 +73,18 @@ class CorrectionsApplyRunCommand extends Command
             $daysBack = (int) $daysOption;
             if ($daysBack <= 0) {
                 $this->error('--days debe ser un entero positivo. 0 o negativo = todos los históricos.');
+                return self::FAILURE;
+            }
+        }
+
+        // --since tiene prioridad sobre --days (más preciso, unit-agnostic).
+        $sinceOption = $this->option('since');
+        $sinceThreshold = null;
+        if ($sinceOption !== null && $sinceOption !== '') {
+            try {
+                $sinceThreshold = \Carbon\Carbon::parse((string) $sinceOption);
+            } catch (\Throwable $e) {
+                $this->error('--since debe ser un timestamp ISO 8601 válido.');
                 return self::FAILURE;
             }
         }
@@ -88,6 +107,20 @@ class CorrectionsApplyRunCommand extends Command
             $includeHighRisk = (bool) $state['include_high_risk'];
         }
 
+        // Override correctionIds desde cache si no llegaron por CLI.
+        if (empty($correctionIds) && !empty($state['correction_ids'])) {
+            $correctionIds = array_values(array_map('intval', $state['correction_ids']));
+        }
+
+        // Override sinceThreshold desde cache si no llegó por CLI.
+        if ($sinceThreshold === null && !empty($state['since'])) {
+            try {
+                $sinceThreshold = \Carbon\Carbon::parse((string) $state['since']);
+            } catch (\Throwable $e) {
+                // Si el cache tiene un valor inválido, lo ignoramos y seguimos con daysBack.
+            }
+        }
+
         $state['status'] = 'running';
         $state['started_at'] = now()->toIso8601String();
         $state['updated'] = 0;
@@ -95,8 +128,13 @@ class CorrectionsApplyRunCommand extends Command
         Cache::put($cacheKey, $state, now()->addHours(self::CACHE_TTL_HOURS));
 
         $scopeParts = [];
-        if ($daysBack !== null) {
+        if ($sinceThreshold !== null) {
+            $scopeParts[] = 'desde ' . $sinceThreshold->toIso8601String();
+        } elseif ($daysBack !== null) {
             $scopeParts[] = "últimos {$daysBack} días";
+        }
+        if (!empty($correctionIds)) {
+            $scopeParts[] = count($correctionIds) . ' correcciones seleccionadas';
         }
         if (!empty($transcriptionIds)) {
             $scopeParts[] = 'transcripciones ' . implode(',', $transcriptionIds);
@@ -117,7 +155,9 @@ class CorrectionsApplyRunCommand extends Command
         // en vez del "0 segmentos" engañoso mientras procesa el primer chunk.
         try {
             $totalSegments = \App\Models\TranscriptionSegment::query()
-                ->when($daysBack !== null && $daysBack > 0,
+                ->when($sinceThreshold !== null,
+                    fn ($q) => $q->where('created_at', '>=', $sinceThreshold))
+                ->when($sinceThreshold === null && $daysBack !== null && $daysBack > 0,
                     fn ($q) => $q->where('created_at', '>=', now()->subDays($daysBack)))
                 ->when(!empty($transcriptionIds),
                     fn ($q) => $q->whereIn('transcription_id', $transcriptionIds))
@@ -153,7 +193,9 @@ class CorrectionsApplyRunCommand extends Command
                 $fromId,
                 $toId,
                 $transcriptionFrom,
-                $transcriptionTo
+                $transcriptionTo,
+                $correctionIds,
+                $sinceThreshold
             );
             $state['updated'] = $updated;
             $state['total'] = $state['total'] ?? 0;

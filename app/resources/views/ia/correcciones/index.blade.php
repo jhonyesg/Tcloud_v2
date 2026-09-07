@@ -209,6 +209,9 @@
             <button @click="switchTab('ai-settings')" :class="tab === 'ai-settings' ? 'bg-purple-600 text-white' : 'bg-slate-100 text-slate-600'" class="px-4 py-2 rounded-lg text-sm font-medium transition-colors">
                 <i class="fas fa-robot mr-1"></i> IA Suggest
             </button>
+            <button @click="switchTab('variations')" :class="tab === 'variations' ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-600'" class="px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+                <i class="fas fa-search-plus mr-1"></i> Variation Finder
+            </button>
             <button @click="switchTab('ai-suggest-results')" :class="tab === 'ai-suggest-results' ? 'bg-purple-600 text-white' : 'bg-slate-100 text-slate-600'" class="px-4 py-2 rounded-lg text-sm font-medium transition-colors">
                 <i class="fas fa-list-check mr-1"></i> AI Suggest Results
             </button>
@@ -638,6 +641,117 @@
     </div>
 
     <!-- Tab AI Suggest Results (corrections-ai-suggest-auto-approve) -->
+    <div x-show="tab === 'variations'" x-cloak class="bg-white rounded-xl shadow-sm border border-emerald-200 overflow-hidden">
+        <div class="px-4 py-3 bg-emerald-50 border-b border-emerald-200">
+            <h3 class="font-semibold text-slate-800">
+                <i class="fas fa-search-plus text-emerald-600 mr-2"></i>Variation Finder
+            </h3>
+            <p class="text-xs text-slate-500 mt-0.5">
+                Escribí una palabra o frase y un scope temporal. El sistema agrupa las variantes literales en el corpus y te dice cuáles ya están cubiertas por reglas y cuáles faltan.
+                <strong class="text-emerald-700">100% SQL, sin IA</strong> — no consume tokens.
+            </p>
+        </div>
+        <div class="p-4 grid grid-cols-1 md:grid-cols-3 gap-3 border-b border-slate-200">
+            <div class="md:col-span-1">
+                <label class="block text-xs font-medium text-slate-600 mb-1">Palabra o frase</label>
+                <input type="text" x-model="variationWord" placeholder="ej: Pellas" maxlength="200"
+                       class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500">
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-slate-600 mb-1">Scope temporal</label>
+                <select x-model="variationScope" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500">
+                    <optgroup label="Horas">
+                        <option value="1h">Última hora</option>
+                        <option value="8h" selected>Últimas 8 horas</option>
+                    </optgroup>
+                    <optgroup label="Días">
+                        <option value="1d">Último día</option>
+                        <option value="3d">Últimos 3 días</option>
+                        <option value="7d">Últimos 7 días</option>
+                        <option value="14d">Últimos 14 días</option>
+                        <option value="30d">Últimos 30 días</option>
+                    </optgroup>
+                    <option value="all">Todos los históricos (cap 10k matches)</option>
+                </select>
+            </div>
+            <div class="flex items-end">
+                <button @click="runVariationFinder()" :disabled="variationLoading || !variationWord.trim()"
+                        class="w-full px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-medium disabled:opacity-50">
+                    <i class="fas" :class="variationLoading ? 'fa-spinner fa-spin' : 'fa-search'"></i>
+                    <span x-text="variationLoading ? 'Buscando…' : 'Buscar variantes'"></span>
+                </button>
+            </div>
+        </div>
+
+        <div x-show="variationResults" class="p-4">
+            <div class="text-xs text-slate-500 mb-3">
+                <span x-text="variationResults?.matches?.length ?? 0"></span> únicas de
+                <span x-text="variationResults?.total_scanned ?? 0"></span> matches escaneados
+                <template x-if="variationResults?.truncated">
+                    <span class="ml-2 px-2 py-0.5 bg-amber-100 text-amber-800 rounded-full text-[10px] font-semibold">
+                        truncado (cap 10k). Probá un scope más chico o usá
+                        <code class="font-mono">since=<span x-text="variationResults?.next_since"></span></code>
+                        para paginar.
+                    </span>
+                </template>
+            </div>
+
+            <table class="w-full text-sm">
+                <thead>
+                    <tr class="text-left text-xs text-slate-500 border-b border-slate-200">
+                        <th class="py-2 px-2 w-8"><input type="checkbox" @change="toggleAllVariations($event.target.checked)"></th>
+                        <th class="py-2 px-2">Variante</th>
+                        <th class="py-2 px-2 w-20">Frec</th>
+                        <th class="py-2 px-2 w-32">Estado</th>
+                        <th class="py-2 px-2 w-40">Acción</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <template x-for="m in (variationResults?.matches ?? [])" :key="m.variant">
+                        <tr class="border-b border-slate-100 hover:bg-slate-50">
+                            <td class="py-2 px-2">
+                                <input type="checkbox"
+                                       x-show="!m.is_approved_rule && !m.is_pending_rule"
+                                       :checked="variationSelected.has(m.variant)"
+                                       @change="variationSelected.has(m.variant) ? variationSelected.delete(m.variant) : variationSelected.add(m.variant)">
+                            </td>
+                            <td class="py-2 px-2 font-mono text-xs" x-text="m.variant"></td>
+                            <td class="py-2 px-2 text-slate-600" x-text="m.count"></td>
+                            <td class="py-2 px-2">
+                                <span x-show="m.is_approved_rule" class="px-2 py-0.5 bg-emerald-100 text-emerald-800 rounded-full text-[10px] font-semibold">✓ Aprobada</span>
+                                <span x-show="m.is_pending_rule" class="px-2 py-0.5 bg-amber-100 text-amber-800 rounded-full text-[10px] font-semibold">Pendiente</span>
+                                <span x-show="!m.is_approved_rule && !m.is_pending_rule" class="px-2 py-0.5 bg-slate-100 text-slate-600 rounded-full text-[10px]">Sin regla</span>
+                            </td>
+                            <td class="py-2 px-2">
+                                <button x-show="m.is_approved_rule || m.is_pending_rule"
+                                        @click="viewExistingRule(m)"
+                                        class="text-xs text-emerald-700 hover:text-emerald-900 underline">
+                                    Ver regla
+                                </button>
+                                <button x-show="!m.is_approved_rule && !m.is_pending_rule"
+                                        @click="openVariationCreateModal(m)"
+                                        class="text-xs px-2 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded">
+                                    Crear corrección
+                                </button>
+                            </td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+
+            <div x-show="variationSelected.size > 0" class="mt-4 px-3 py-2 bg-emerald-50 border border-emerald-200 rounded-lg flex items-center justify-between">
+                <span class="text-xs text-emerald-800">
+                    <span x-text="variationSelected.size"></span> seleccionada(s)
+                </span>
+                <button @click="openVariationBulkCreateModal()" class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-medium">
+                    <i class="fas fa-plus mr-1"></i> Crear corrección para N
+                </button>
+            </div>
+        </div>
+
+        <div x-show="variationError" class="p-4 bg-red-50 border-t border-red-200 text-sm text-red-800" x-text="variationError"></div>
+    </div>
+
     <div x-show="tab === 'ai-suggest-results'" x-cloak class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
         <div class="px-4 py-3 bg-purple-50 border-b border-purple-200 flex items-center justify-between">
             <div>
@@ -2065,22 +2179,59 @@
                     <div x-show="!applying && !runFinished" class="mb-4">
                         <label class="block text-sm font-medium text-slate-700 mb-2">Alcance temporal</label>
                         <select x-model="applyScope" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-brand-500">
+                            <optgroup label="Horas">
+                                <option value="1h">Última hora</option>
+                                <option value="8h">Últimas 8 horas</option>
+                            </optgroup>
+                            <optgroup label="Días">
+                                <option value="1d">Último día</option>
+                                <option value="3d" selected>Últimos 3 días</option>
+                                <option value="7d">Últimos 7 días (recomendado)</option>
+                                <option value="14d">Últimos 14 días</option>
+                                <option value="30d">Últimos 30 días</option>
+                            </optgroup>
                             <option value="all">Todos los históricos (puede tardar horas)</option>
-                            <option value="1">Último día (más rápido, riesgo de falsos positivos en corrección)</option>
-                            <option value="3">Últimos 3 días</option>
-                            <option value="7" selected>Últimos 7 días (recomendado)</option>
-                            <option value="14">Últimos 14 días</option>
-                            <option value="30">Últimos 30 días</option>
-                            <option value="90">Últimos 90 días</option>
                         </select>
                         <p class="mt-2 text-xs text-slate-500">
                             <template x-if="applyScope === 'all'">
-                                <span>Re-aplica a TODOS los segmentos del corpus. Use con precaución.</span>
+                                <span>Re-aplica a TODOS los segmentos del corpus. Usá con precaución.</span>
                             </template>
-                            <template x-if="applyScope !== 'all'">
-                                <span>Solo segmentos creados en los últimos <span x-text="applyScope"></span> días. Más rápido y seguro para probar reglas nuevas.</span>
+                            <template x-if="applyScope.endsWith('h')">
+                                <span>Solo segmentos creados en la última <span x-text="applyScope.replace('h','')"></span> hora(s). Ideal para validar reglas recién aprobadas.</span>
+                            </template>
+                            <template x-if="applyScope.endsWith('d')">
+                                <span>Solo segmentos creados en los últimos <span x-text="applyScope.replace('d','')"></span> día(s). Más rápido y seguro para probar reglas nuevas.</span>
                             </template>
                         </p>
+                    </div>
+
+                    <div x-show="!applying && !runFinished" class="mb-4">
+                        <label class="block text-sm font-medium text-slate-700 mb-2">Correcciones a aplicar</label>
+                        <div class="space-y-1.5">
+                            <label class="flex items-center gap-2 text-sm text-slate-700">
+                                <input type="radio" x-model="applyMode" value="all" class="text-brand-600">
+                                <span>Aplicar todo el diccionario aprobado (<span x-text="(approvedCount ?? 0).toLocaleString('es-CO')"></span>)</span>
+                            </label>
+                            <label x-show="(approvedSelectedIds?.size ?? 0) > 0" class="flex items-center gap-2 text-sm text-slate-700">
+                                <input type="radio" x-model="applyMode" value="selected" class="text-brand-600">
+                                <span>Aplicar solo las seleccionadas (<span x-text="approvedSelectedIds.size"></span>)</span>
+                            </label>
+                            <p x-show="(approvedSelectedIds?.size ?? 0) === 0" class="text-xs text-slate-400 ml-6">
+                                Para aplicar solo algunas, seleccioná filas en la pestaña Aprobadas antes de abrir Re-aplicar.
+                            </p>
+                        </div>
+                    </div>
+
+                    <div x-show="!applying && !runFinished && applyPreview" class="mb-4 px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-700">
+                        <div class="flex justify-between items-center mb-1">
+                            <span class="font-semibold text-slate-600"><i class="fas fa-info-circle text-brand-500 mr-1"></i>Vista previa</span>
+                            <button @click="applyPreview = null" class="text-slate-400 hover:text-slate-600">×</button>
+                        </div>
+                        <div x-show="applyPreview">
+                            <span class="font-mono" x-text="(applyPreview?.segments_total ?? 0).toLocaleString('es-CO')"></span> segmentos
+                            × <span class="font-mono" x-text="(applyPreview?.corrections_total ?? 0).toLocaleString('es-CO')"></span> reglas
+                            → ETA aprox. <span class="font-mono" x-text="applyPreview?.estimated_minutes ?? 0"></span> min
+                        </div>
                     </div>
 
                     <div x-show="applying || runFinished" class="mb-4">
@@ -2093,11 +2244,14 @@
                         </div>
                         <div x-show="runStuck" class="mt-2 px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800">
                             <i class="fas fa-exclamation-triangle"></i>
-                            Sin avances desde las <span x-text="runStuckSinceText"></span> — la corrida pudo haberse detenido (kill -9, OOM, error de PHP). La barra seguirá viva por si retoma sola.
+                            Sin avances desde las <span x-text="runStuckSinceText"></span> — la corrida pudo haberse detenido (kill -9, OOM, error de PHP, o el worker no llegó a arrancar). Revisá <code class="font-mono">/tmp/kilo_artisan_bg.log</code> filtrando por <code class="font-mono">[corrections:apply]</code>. La barra seguirá viva por si retoma sola.
                         </div>
                     </div>
-                    <div class="flex gap-3">
-                        <button @click="runApply()" :disabled="applying || runFinished" class="flex-1 py-2.5 bg-brand-600 hover:bg-brand-700 text-white rounded-xl text-sm font-medium disabled:opacity-50">
+                    <div class="flex gap-2">
+                        <button @click="runPreview()" :disabled="applying || runFinished || (applyMode === 'selected' && (approvedSelectedIds?.size ?? 0) === 0)" class="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-sm font-medium disabled:opacity-50">
+                            <i class="fas fa-eye mr-1"></i> Vista previa
+                        </button>
+                        <button @click="runApply()" :disabled="applying || runFinished || (applyMode === 'selected' && (approvedSelectedIds?.size ?? 0) === 0)" class="flex-1 py-2.5 bg-brand-600 hover:bg-brand-700 text-white rounded-xl text-sm font-medium disabled:opacity-50">
                             <span x-text="applying ? 'Aplicando...' : (runFinished ? 'Terminado' : 'Confirmar y aplicar')"></span>
                         </button>
                         <button @click="closeApply()" class="px-5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-sm font-medium" x-show="!applying">Cerrar</button>
@@ -2127,7 +2281,7 @@
                     </div>
                     <div x-show="runStuck" class="mb-3 px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800">
                         <i class="fas fa-exclamation-triangle"></i>
-                        Sin avances desde las <span x-text="runStuckSinceText"></span> — la corrida pudo haberse detenido (kill -9, OOM, error de PHP).
+                        Sin avances desde las <span x-text="runStuckSinceText"></span> — la corrida pudo haberse detenido (kill -9, OOM, error de PHP, o el worker no llegó a arrancar). Revisá <code class="font-mono">/tmp/kilo_artisan_bg.log</code> filtrando por <code class="font-mono">[corrections:apply]</code>.
                     </div>
                     <div class="flex gap-3">
                         <button @click="refreshApplyNow()" class="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-sm font-medium">
@@ -2252,6 +2406,75 @@
                     Coste estimado: ~<span x-text="(aiSuggest.sample * 0.0003).toFixed(4)"></span> USD por corrida
                 </span>
                 <span x-text="aiSuggest.result?.source ?? ''"></span>
+            </div>
+        </div>
+    </div>
+
+    {{-- Variation Finder: modal individual para crear 1 corrección. --}}
+    <div x-show="variationCreateModal.open" x-cloak class="fixed inset-0 z-40 bg-black/40 flex items-center justify-center px-4" @click.self="variationCreateModal.open = false">
+        <div class="bg-white rounded-2xl shadow-xl w-full max-w-md p-6">
+            <h3 class="text-lg font-semibold text-slate-800 mb-3">
+                <i class="fas fa-plus-circle text-emerald-600 mr-2"></i>Crear corrección pendiente
+            </h3>
+            <p class="text-sm text-slate-600 mb-4">
+                Se creará como <strong>pendiente</strong>. Aprobala desde el tab Pendientes para que entre al diccionario activo.
+            </p>
+            <div class="space-y-3">
+                <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Wrong (variante detectada)</label>
+                    <input type="text" x-model="variationCreateModal.wrong" readonly
+                           class="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-slate-50 font-mono">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Correct (texto normalizado)</label>
+                    <input type="text" x-model="variationCreateModal.correct" placeholder="ej: Abelardo de la Espriella" maxlength="500"
+                           class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500">
+                </div>
+                <div x-show="variationCreateModal.error" class="px-3 py-2 bg-red-50 border border-red-200 rounded text-xs text-red-800" x-text="variationCreateModal.error"></div>
+            </div>
+            <div class="flex gap-2 mt-5">
+                <button @click="variationCreateModal.open = false" class="flex-1 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-sm">Cancelar</button>
+                <button @click="confirmVariationCreate()" :disabled="variationCreateModal.saving || !variationCreateModal.correct.trim()"
+                        class="flex-1 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-medium disabled:opacity-50">
+                    <i class="fas" :class="variationCreateModal.saving ? 'fa-spinner fa-spin' : 'fa-plus'"></i>
+                    <span x-text="variationCreateModal.saving ? 'Creando…' : 'Crear pendiente'"></span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    {{-- Variation Finder: modal bulk para crear N correcciones con el mismo `correct`. --}}
+    <div x-show="variationBulkCreateModal.open" x-cloak class="fixed inset-0 z-40 bg-black/40 flex items-center justify-center px-4" @click.self="variationBulkCreateModal.open = false">
+        <div class="bg-white rounded-2xl shadow-xl w-full max-w-lg p-6">
+            <h3 class="text-lg font-semibold text-slate-800 mb-3">
+                <i class="fas fa-layer-plus text-emerald-600 mr-2"></i>Crear <span x-text="variationSelected.size"></span> correcciones pendientes
+            </h3>
+            <p class="text-sm text-slate-600 mb-4">
+                Todas compartirán el mismo <code class="text-xs bg-slate-100 px-1 rounded">correct</code>. Se crean en una sola transacción.
+            </p>
+            <div class="space-y-3">
+                <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Correct (común)</label>
+                    <input type="text" x-model="variationBulkCreateModal.correct" placeholder="ej: Abelardo de la Espriella" maxlength="500"
+                           class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Wrong text por variante</label>
+                    <div class="max-h-48 overflow-y-auto px-3 py-2 border border-slate-200 rounded-lg text-xs font-mono bg-slate-50">
+                        <template x-for="v in Array.from(variationSelected)" :key="v">
+                            <div class="py-0.5">• <span x-text="v"></span></div>
+                        </template>
+                    </div>
+                </div>
+                <div x-show="variationBulkCreateModal.error" class="px-3 py-2 bg-red-50 border border-red-200 rounded text-xs text-red-800" x-text="variationBulkCreateModal.error"></div>
+            </div>
+            <div class="flex gap-2 mt-5">
+                <button @click="variationBulkCreateModal.open = false" class="flex-1 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-sm">Cancelar</button>
+                <button @click="confirmVariationBulkCreate()" :disabled="variationBulkCreateModal.saving || !variationBulkCreateModal.correct.trim()"
+                        class="flex-1 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-medium disabled:opacity-50">
+                    <i class="fas" :class="variationBulkCreateModal.saving ? 'fa-spinner fa-spin' : 'fa-layer-plus'"></i>
+                    <span x-text="variationBulkCreateModal.saving ? 'Creando…' : 'Crear pendientes'"></span>
+                </button>
             </div>
         </div>
     </div>
@@ -2479,7 +2702,9 @@ aiContextCorrect: {},
         applying: false,
         applyResult: '',
         applyError: '',
-        applyScope: '7',
+        applyScope: '3d',
+        applyMode: 'all',     // 'all' = aplicar todas las approved; 'selected' = sólo las de approvedSelectedIds
+        applyPreview: null,   // {segments_total, corrections_total, estimated_minutes} cuando se pidio preview
         runId: null,
         runStatusText: '',
         runProgress: '',
@@ -2539,6 +2764,18 @@ aiContextCorrect: {},
             report: null,        // resultado final al cerrar el modal de progreso
             error: null,
             pollTimer: null,
+        },
+
+        // Variation Finder (cambia corrections-variation-finder) — discovery
+        // de variantes literales por palabra + scope. 100% SQL.
+        variationWord: '',
+        variationScope: '8h',
+        variationLoading: false,
+        variationResults: null,   // { matches, total_scanned, unique_variants, truncated, next_since }
+        variationError: '',
+        variationSelected: new Set(),
+        variationCreateModal: { open: false, wrong: '', correct: '', error: '', saving: false },
+        variationBulkCreateModal: { open: false, correct: '', error: '', saving: false },
             layers: [],          // copia para mostrar en UI sin tocar `report`
             survivorsForReview: 0,
             autoApproveCandidates: 0,
@@ -4257,6 +4494,8 @@ aiContextCorrect: {},
             this.runId = null; this.runStatusText = ''; this.runProgress = '';
             this.runProgressPct = 0; this.runFinished = false;
             this.runStuck = false; this.runStuckSinceText = '';
+            this.applyMode = 'all';
+            this.applyPreview = null;
             if (this.runStuckTimer) { clearTimeout(this.runStuckTimer); this.runStuckTimer = null; }
             if (this.runPollTimer) { clearInterval(this.runPollTimer); this.runPollTimer = null; }
             this.showApply = true;
@@ -4284,12 +4523,59 @@ aiContextCorrect: {},
                 this.showApply = false;
             }
         },
+        // Convierte el valor del dropdown de alcance (1h/8h/1d/3d/.../all) a un
+        // timestamp ISO `since` (o null si es 'all'). El backend acepta `since`
+        // con prioridad sobre `days_back`, lo que permite granularidad horaria
+        // sin ensuciar el contrato legacy.
+        applyScopeToSince() {
+            const s = this.applyScope;
+            if (!s || s === 'all') return null;
+            const m = /^(\d+)([hd])$/.exec(s);
+            if (!m) return null;
+            const n = parseInt(m[1], 10);
+            const unit = m[2] === 'h' ? 'hours' : 'days';
+            return new Date(Date.now() - n * (unit === 'hours' ? 3600_000 : 86_400_000)).toISOString();
+        },
+        applyScopeLabel() {
+            const s = this.applyScope;
+            if (!s || s === 'all') return ' (todos)';
+            const m = /^(\d+)([hd])$/.exec(s);
+            if (!m) return ` (${s})`;
+            const n = m[1];
+            const unit = m[2] === 'h' ? (n === '1' ? 'hora' : 'horas') : (n === '1' ? 'día' : 'días');
+            return ` (últimos ${n} ${unit})`;
+        },
+        buildApplyBody() {
+            const body = {};
+            const since = this.applyScopeToSince();
+            if (since) body.since = since;
+            if (this.applyMode === 'selected' && this.approvedSelectedIds.size > 0) {
+                body.correction_ids = Array.from(this.approvedSelectedIds);
+            }
+            return body;
+        },
+        async runPreview() {
+            this.applyResult = ''; this.applyError = '';
+            const body = this.buildApplyBody();
+            try {
+                const res = await apiFetch('/ia/correcciones/apply-retroactive/preview', {
+                    method: 'POST', credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content },
+                    body: JSON.stringify(body),
+                });
+                const d = await res.json().catch(() => ({}));
+                if (res.ok) {
+                    this.applyPreview = d;
+                } else {
+                    this.applyError = d.error || `Error HTTP ${res.status}`;
+                }
+            } catch (e) {
+                this.applyError = 'Error de red al pedir la vista previa.';
+            }
+        },
         async runApply() {
             this.applying = true; this.applyResult = ''; this.applyError = '';
-            const body = {};
-            if (this.applyScope && this.applyScope !== 'all') {
-                body.days_back = parseInt(this.applyScope, 10);
-            }
+            const body = this.buildApplyBody();
             try {
                 const res = await apiFetch('/ia/correcciones/apply-retroactive', {
                     method: 'POST', credentials: 'same-origin',
@@ -4310,8 +4596,7 @@ aiContextCorrect: {},
                 if (res.ok || res.status === 202) {
                     const d = await res.json();
                     this.runId = d.runId;
-                    const scopeMsg = d.days_back ? ` (últimos ${d.days_back} días)` : ' (todos)';
-                    this.runStatusText = 'Iniciando…' + scopeMsg;
+                    this.runStatusText = 'Iniciando…' + this.applyScopeLabel();
                     this.pollRun();
                     this.runPollTimer = setInterval(() => this.pollRun(), 2000);
                 } else {
@@ -4358,20 +4643,34 @@ aiContextCorrect: {},
                     ? Math.min(100, Math.round((done / total) * 100))
                     : (d.status === 'done' ? 100 : 0);
 
-                // Stuck detection: status=running Y heartbeat > 3 min.
+                // Stuck detection: cubre dos casos.
+                //   1) status=running Y heartbeat > 3 min (corrida zombie).
+                //   2) status=queued SIN started_at Y queued_at > 60s
+                //      (huérfana — el worker murió al arrancar y nadie lo nota).
+                // Ver openspec/changes/corrections-apply-retroactive-bg-launcher/.
                 // No matamos el polling: una corrida viva retoma sola cuando
-                // el próximo chunk renueve last_progress_at.
+                // el práximo chunk renueve last_progress_at.
+                let isStuck = false;
+                let stuckSince = '';
                 if (d.status === 'running' && typeof d.last_progress_at === 'string') {
                     const last = Date.parse(d.last_progress_at);
                     const ageMs = isNaN(last) ? 0 : (Date.now() - last);
                     if (ageMs > 180000) {
-                        if (!this.runStuck) {
-                            this.runStuck = true;
-                            this.runStuckSinceText = new Date(last).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
-                        }
-                    } else if (this.runStuck) {
-                        this.runStuck = false;
-                        this.runStuckSinceText = '';
+                        isStuck = true;
+                        stuckSince = new Date(last).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
+                    }
+                } else if (d.status === 'queued' && !d.started_at && typeof d.queued_at === 'string') {
+                    const qAt = Date.parse(d.queued_at);
+                    const qAge = isNaN(qAt) ? 0 : (Date.now() - qAt);
+                    if (qAge > 60000) {
+                        isStuck = true;
+                        stuckSince = new Date(qAt).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
+                    }
+                }
+                if (isStuck) {
+                    if (!this.runStuck) {
+                        this.runStuck = true;
+                        this.runStuckSinceText = stuckSince;
                     }
                 } else if (this.runStuck) {
                     this.runStuck = false;
@@ -5072,6 +5371,147 @@ aiContextCorrect: {},
         },
 
         formatDate(d) { return d ? new Date(d).toLocaleString('es-CO', { dateStyle: 'short', timeStyle: 'short' }) : '—'; },
+
+        // ===== Variation Finder (cambia corrections-variation-finder) =====
+        variationScopeToSince() {
+            const s = this.variationScope;
+            if (!s || s === 'all') return null;
+            const m = /^(\d+)([hd])$/.exec(s);
+            if (!m) return null;
+            const n = parseInt(m[1], 10);
+            const unit = m[2] === 'h' ? 'hours' : 'days';
+            return new Date(Date.now() - n * (unit === 'hours' ? 3600_000 : 86_400_000)).toISOString();
+        },
+        async runVariationFinder() {
+            const word = (this.variationWord || '').trim();
+            if (!word) return;
+            this.variationLoading = true;
+            this.variationError = '';
+            this.variationResults = null;
+            this.variationSelected = new Set();
+            try {
+                const res = await apiFetch('/ia/correcciones/variations/find', {
+                    method: 'POST', credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content },
+                    body: JSON.stringify({
+                        word: word,
+                        since: this.variationScopeToSince(),
+                        limit: 100,
+                    }),
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                    this.variationError = data.error || `Error HTTP ${res.status}`;
+                    return;
+                }
+                this.variationResults = data;
+            } catch (e) {
+                this.variationError = 'Error de red al buscar variantes.';
+            } finally {
+                this.variationLoading = false;
+            }
+        },
+        toggleAllVariations(checked) {
+            if (!this.variationResults?.matches) return;
+            this.variationSelected = new Set();
+            if (checked) {
+                for (const m of this.variationResults.matches) {
+                    if (!m.is_approved_rule && !m.is_pending_rule) {
+                        this.variationSelected.add(m.variant);
+                    }
+                }
+            }
+        },
+        openVariationCreateModal(m) {
+            this.variationCreateModal = { open: true, wrong: m.variant, correct: '', error: '', saving: false };
+        },
+        viewExistingRule(m) {
+            // El admin lo aprueba/rechaza desde Pendientes o ve en Aprobadas.
+            this.tab = m.is_pending_rule ? 'pending' : 'approved';
+            // Cerramos el panel de variation finder sin perder el state.
+        },
+        async confirmVariationCreate() {
+            const wrong = this.variationCreateModal.wrong.trim();
+            const correct = this.variationCreateModal.correct.trim();
+            if (!wrong || !correct) {
+                this.variationCreateModal.error = 'wrong y correct son obligatorios';
+                return;
+            }
+            this.variationCreateModal.saving = true;
+            this.variationCreateModal.error = '';
+            try {
+                // Reusamos POST /ia/correcciones existente (create) pero forzando
+                // status=pending vía el endpoint admin-store. El endpoint actual
+                // crea approved; aquí llamamos bulk-create con 1 elemento.
+                const res = await apiFetch('/ia/correcciones/variations/bulk-create', {
+                    method: 'POST', credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content },
+                    body: JSON.stringify({ variants: [wrong], correct: correct }),
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                    this.variationCreateModal.error = data.error || `Error HTTP ${res.status}`;
+                    return;
+                }
+                this.showToast('success', 'Corrección creada', 'Aprobala desde el tab Pendientes para que entre al diccionario activo.');
+                this.variationCreateModal.open = false;
+                // Marcar la fila como pending para feedback visual.
+                if (this.variationResults?.matches) {
+                    const target = this.variationResults.matches.find(x => x.variant === wrong);
+                    if (target) { target.is_pending_rule = true; target.existing_rule_id = data.correction_ids?.[0]; }
+                }
+                this.variationSelected.delete(wrong);
+                this.pendingCount = (this.pendingCount || 0) + 1;
+            } catch (e) {
+                this.variationCreateModal.error = 'Error de red al crear la corrección.';
+            } finally {
+                this.variationCreateModal.saving = false;
+            }
+        },
+        openVariationBulkCreateModal() {
+            this.variationBulkCreateModal = { open: true, correct: '', error: '', saving: false };
+        },
+        async confirmVariationBulkCreate() {
+            const correct = this.variationBulkCreateModal.correct.trim();
+            if (!correct || this.variationSelected.size === 0) {
+                this.variationBulkCreateModal.error = 'correct es obligatorio y debe haber al menos 1 variante seleccionada';
+                return;
+            }
+            this.variationBulkCreateModal.saving = true;
+            this.variationBulkCreateModal.error = '';
+            const variants = Array.from(this.variationSelected);
+            try {
+                const res = await apiFetch('/ia/correcciones/variations/bulk-create', {
+                    method: 'POST', credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content },
+                    body: JSON.stringify({ variants: variants, correct: correct }),
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                    this.variationBulkCreateModal.error = data.error || `Error HTTP ${res.status}`;
+                    return;
+                }
+                this.showToast('success', `${data.created} correcciones creadas`, 'Aprobá las que correspondan desde el tab Pendientes.');
+                this.variationBulkCreateModal.open = false;
+                // Marcar las filas como pending.
+                if (this.variationResults?.matches) {
+                    const idMap = new Map();
+                    (data.correction_ids || []).forEach((id, i) => idMap.set(variants[i], id));
+                    for (const m of this.variationResults.matches) {
+                        if (idMap.has(m.variant)) {
+                            m.is_pending_rule = true;
+                            m.existing_rule_id = idMap.get(m.variant);
+                        }
+                    }
+                }
+                this.variationSelected = new Set();
+                this.pendingCount = (this.pendingCount || 0) + variants.length;
+            } catch (e) {
+                this.variationBulkCreateModal.error = 'Error de red al crear las correcciones.';
+            } finally {
+                this.variationBulkCreateModal.saving = false;
+            }
+        },
     };
 }
 </script>

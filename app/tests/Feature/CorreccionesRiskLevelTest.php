@@ -55,7 +55,11 @@ class CorreccionesRiskLevelTest extends LaravelTestCase
     {
         $ref = new \ReflectionMethod(\App\Services\Ia\CorrectionService::class, 'applyRetroactively');
         $params = $ref->getParameters();
-        $this->assertCount(5, $params, 'applyRetroactively ahora tiene 5 parámetros');
+        // 11+ params: progressCb, chunkSize, dryRun, daysBack, includeHighRisk,
+        // sleepMs, transcriptionIds, fromId, toId, transcriptionFrom,
+        // transcriptionTo, correctionIds, sinceThreshold.
+        // Este test verifica específicamente includeHighRisk (índice 4).
+        $this->assertGreaterThanOrEqual(5, count($params), 'applyRetroactively debe tener al menos 5 parámetros');
         $this->assertSame('includeHighRisk', $params[4]->getName());
         $this->assertFalse($params[4]->getDefaultValue(), 'includeHighRisk default debe ser false');
     }

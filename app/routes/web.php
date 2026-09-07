@@ -113,7 +113,7 @@ Route::middleware('auth')->group(function () {
     // Papelera de reciclaje
     Route::get('/papelera', [PapeleraController::class, 'index'])->name('papelera.index');
     Route::post('/papelera/{file}/restore', [PapeleraController::class, 'restore'])->name('papelera.restore');
-    Route::delete('/papelera/{file}', [PapeleraController::class, 'destroy'])->name('papelera.destroy');
+    Route::delete('/papelera/{file}', [PapeleraController::class, 'destroy'])->whereNumber('file')->name('papelera.destroy');
     Route::post('/papelera/empty', [PapeleraController::class, 'empty'])->name('papelera.empty');
     Route::get('/user/storages', [App\Http\Controllers\FileController::class, 'storages']);
     Route::get('/files/{file}/download', [App\Http\Controllers\FileController::class, 'download']);
@@ -184,7 +184,7 @@ Route::middleware(['auth', 'admin'])->prefix('ia')->group(function () {
     Route::post('/api-transcriptor/jobs/{id}/refresh-status', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'refreshStatus']);
     Route::post('/api-transcriptor/jobs/{id}/reprocess', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'reprocess']);
     Route::post('/api-transcriptor/jobs/{id}/cancel', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'cancelJob']);
-    Route::delete('/api-transcriptor/jobs/{id}', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'destroy']);
+    Route::delete('/api-transcriptor/jobs/{id}', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'destroy'])->whereNumber('id');
     // El interruptor de transcripción de un storage vive aquí, en su propio
     // módulo. Entre el 18 y el 20 de agosto estuvo en Avisos Inteligentes (como
     // bandera derivada por cliente); fue un acoplamiento equivocado y costó una
@@ -221,13 +221,26 @@ Route::middleware(['auth', 'admin'])->prefix('ia')->group(function () {
 
     // M2: Avisos Inteligentes
     Route::get('/avisos-inteligentes', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'index']);
+    // Escaneo de menciones (avisos-scan-configuration) — antes de /{userId}
+    // para que "scan" no colisione con el parámetro.
+    Route::get('/avisos-inteligentes/scan', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'scanStatus']);
+    Route::put('/avisos-inteligentes/scan/settings', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'saveScanSettings'])->middleware('throttle:10,1');
+    // El drenaje secuencial encadena tandas de 50 sin recargar: el límite
+    // debe permitir ~1 request/segundo sostenido durante la secuencia.
+    Route::post('/avisos-inteligentes/scan/run', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'runScan'])->middleware('throttle:60,1');
+    // Runner en background (avisos-scan-bg-runner): sobrevive recargas y
+    // cortes de red; la UI hace polling del runId.
+    Route::post('/avisos-inteligentes/scan/run-bg', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'runScanBackground'])->middleware('throttle:10,1');
+    Route::get('/avisos-inteligentes/scan/run-bg/active', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'scanRunActive']);
+    Route::get('/avisos-inteligentes/scan/run-bg/{runId}', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'scanRunStatus'])->where('runId', '[A-Za-z0-9_\-]+');
+    Route::post('/avisos-inteligentes/scan/run-bg/{runId}/stop', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'scanRunStop'])->middleware('throttle:10,1')->where('runId', '[A-Za-z0-9_\-]+');
     Route::get('/avisos-inteligentes/{userId}', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'show']);
     Route::post('/avisos-inteligentes/{userId}', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'updateUser']);
     Route::post('/avisos-inteligentes/{userId}/emails', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'storeEmail']);
     Route::delete('/avisos-inteligentes/{userId}/emails/{email}', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'destroyEmail'])
         ->where('email', '.+');
     Route::post('/avisos-inteligentes/{userId}/keywords', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'storeKeyword']);
-    Route::delete('/avisos-inteligentes/{userId}/keywords/{keywordId}', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'destroyKeyword']);
+    Route::delete('/avisos-inteligentes/{userId}/keywords/{keywordId}', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'destroyKeyword'])->whereNumber('userId')->whereNumber('keywordId');
     Route::post('/avisos-inteligentes/{userId}/emails/{email}/test', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'testEmail'])
         ->where('email', '.+');
     Route::get('/avisos-inteligentes/{userId}/matches', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'matches']);
@@ -261,7 +274,7 @@ Route::middleware(['auth', 'admin'])->prefix('ia')->group(function () {
     Route::post('/correcciones/{id}/reject', [App\Http\Controllers\Ia\CorreccionesController::class, 'reject']);
     Route::post('/correcciones', [App\Http\Controllers\Ia\CorreccionesController::class, 'store']);
     Route::patch('/correcciones/{id}', [App\Http\Controllers\Ia\CorreccionesController::class, 'update'])->whereNumber('id');
-    Route::delete('/correcciones/{id}', [App\Http\Controllers\Ia\CorreccionesController::class, 'destroy']);
+    Route::delete('/correcciones/{id}', [App\Http\Controllers\Ia\CorreccionesController::class, 'destroy'])->whereNumber('id');
     // Atomicity + dictionary audit + context-shift (2026-08-02-corrections-dictionary-atomicity)
     Route::get('/correcciones/{id}/atomicity-suggestions', [App\Http\Controllers\Ia\CorreccionesController::class, 'atomicitySuggestions'])->whereNumber('id');
     Route::post('/correcciones/{id}/atomicity-suggestions/bulk-add', [App\Http\Controllers\Ia\CorreccionesController::class, 'bulkCreateAtomicityFromCorrection'])->whereNumber('id');
@@ -269,7 +282,12 @@ Route::middleware(['auth', 'admin'])->prefix('ia')->group(function () {
     Route::post('/correcciones/bulk-destroy-inactive', [App\Http\Controllers\Ia\CorreccionesController::class, 'bulkDestroyInactive']);
     Route::get('/correcciones/dictionary-audit', [App\Http\Controllers\Ia\CorreccionesController::class, 'auditReport']);
     Route::post('/correcciones/apply-retroactive', [App\Http\Controllers\Ia\CorreccionesController::class, 'applyRetroactive']);
+    Route::post('/correcciones/apply-retroactive/preview', [App\Http\Controllers\Ia\CorreccionesController::class, 'previewApplyRetroactive']);
     Route::get('/correcciones/apply-retroactive/{runId}', [App\Http\Controllers\Ia\CorreccionesController::class, 'runStatus']);
+    // Variation Finder (cambia corrections-variation-finder) — discovery de
+    // variantes literales por palabra + scope. 100% SQL, sin IA.
+    Route::post('/correcciones/variations/find', [App\Http\Controllers\Ia\CorreccionesController::class, 'findVariations']);
+    Route::post('/correcciones/variations/bulk-create', [App\Http\Controllers\Ia\CorreccionesController::class, 'bulkCreateFromVariations']);
     Route::get('/correcciones/apply-retroactive-active', [App\Http\Controllers\Ia\CorreccionesController::class, 'activeApplyRun']);
     // Bulk moderation + undo (2026-07-30-corrections-bulk-moderation)
     Route::post('/correcciones/bulk-approve', [App\Http\Controllers\Ia\CorreccionesController::class, 'bulkApprove']);
@@ -337,7 +355,7 @@ Route::middleware(['auth', 'admin'])->prefix('ia')->group(function () {
 Route::middleware(['auth', 'misavisos'])->group(function () {
     Route::get('/mis-avisos', [App\Http\Controllers\MisAvisosController::class, 'index']);
     Route::post('/mis-avisos/keywords', [App\Http\Controllers\MisAvisosController::class, 'storeKeyword']);
-    Route::delete('/mis-avisos/keywords/{keywordId}', [App\Http\Controllers\MisAvisosController::class, 'destroyKeyword']);
+    Route::delete('/mis-avisos/keywords/{keywordId}', [App\Http\Controllers\MisAvisosController::class, 'destroyKeyword'])->whereNumber('keywordId');
     Route::get('/mis-avisos/corrections/mine', [App\Http\Controllers\CorreccionPropuestaController::class, 'mine']);
     Route::post('/mis-avisos/corrections', [App\Http\Controllers\CorreccionPropuestaController::class, 'store']);
 

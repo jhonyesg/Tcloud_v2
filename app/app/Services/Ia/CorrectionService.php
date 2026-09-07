@@ -659,6 +659,13 @@ class CorrectionService
      *                     `created_at` NO tiene índice y filtrar por días
      *                     obliga a recorrer los 4,8 GB de la tabla.
      * @param int|null $toId Id máximo de segment (inclusive).
+     * @param array<int,int> $correctionIds Si no está vacío, limita el diccionario
+     *                     a esas correcciones aprobadas (en vez de las 2495 del pool).
+     *                     Útil para validar reglas recién aprobadas sin tocar
+     *                     el corpus con reglas inmaduras. Ver
+     *                     openspec/changes/corrections-apply-retroactive-scope-controls/.
+     * @param \Carbon\Carbon|string|null $sinceThreshold Timestamp ISO 8601 o Carbon.
+     *                     Si llega, tiene prioridad sobre $daysBack.
      * @return int número de segments actualizados
      */
     public function applyRetroactively(
@@ -672,7 +679,9 @@ class CorrectionService
         ?int $fromId = null,
         ?int $toId = null,
         ?int $transcriptionFrom = null,
-        ?int $transcriptionTo = null
+        ?int $transcriptionTo = null,
+        array $correctionIds = [],
+        $sinceThreshold = null
     ): int {
         // null = usar corrections_chunk, que existia en config desde siempre y
         // no lo leia nadie: aqui y en previewRetroactive() estaba hardcodeado a
@@ -685,13 +694,27 @@ class CorrectionService
         if (!$includeHighRisk) {
             $query->safe();
         }
+        if (!empty($correctionIds)) {
+            $query->whereIn('id', $correctionIds);
+        }
 
         $corrections = $query->get(['id', 'wrong_normalized', 'correct_text']);
 
-        // Query base: si daysBack, filtra por created_at; si no, todos.
+        // Resolver threshold: sinceThreshold (ISO/Carbon) tiene prioridad sobre daysBack.
+        // Si ninguno llega, el alcance es TODO el corpus.
+        $threshold = null;
+        if ($sinceThreshold !== null) {
+            $threshold = $sinceThreshold instanceof \Carbon\Carbon
+                ? $sinceThreshold
+                : \Carbon\Carbon::parse($sinceThreshold);
+        } elseif ($daysBack !== null && $daysBack > 0) {
+            $threshold = now()->subDays($daysBack);
+        }
+
+        // Query base: si threshold, filtra por created_at; si no, todos.
         $base = TranscriptionSegment::query();
-        if ($daysBack !== null && $daysBack > 0) {
-            $base->where('created_at', '>=', now()->subDays($daysBack));
+        if ($threshold !== null) {
+            $base->where('created_at', '>=', $threshold);
         }
         if (!empty($transcriptionIds)) {
             $base->whereIn('transcription_id', $transcriptionIds);

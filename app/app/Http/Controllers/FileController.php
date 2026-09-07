@@ -412,6 +412,8 @@ class FileController extends Controller
         // llamado desde el cron trash:purge, desde /papelera/{id} DELETE, o
         // desde /papelera/empty. Esto resuelve el bug de "se borra la fila pero
         // no el dir de disco y el sync lo recreaba".
+        $originalParentId = $file->parent_id;
+        $originalStorageId = (int) $file->storage_provider_id;
         $service = app(\App\Modules\Papelera\Services\PapeleraService::class);
         $service->softTrash($file, (int) Session::get('user_id'));
 
@@ -421,14 +423,18 @@ class FileController extends Controller
         // invalidación, la query whereNull('parent_id') devolvería la fila
         // trashed durante toda la ventana TTL del root listing (60s).
         //
+        // Importante: $file->getOriginal('parent_id') después de softTrash()
+        // ya refleja el nuevo valor (NULL) porque la sincronización interna del
+        // modelo ocurre dentro de update(). Por eso capturamos ANTES de llamar
+        // al servicio.
+        //
         // NOTA: la invalidación del sidebar cache YA ocurre dentro de
         // PapeleraService::softTrash(); no se repite aquí (además sería 500:
         // invalidateSidebarCache es protected).
         $syncService = app(\App\Services\StorageSyncService::class);
-        $originalParentId = $file->getOriginal('parent_id');
-        $syncService->invalidateFolderCache((int) $file->storage_provider_id, $originalParentId);
+        $syncService->invalidateFolderCache($originalStorageId, $originalParentId);
         if ($file->parent_id === null && $originalParentId !== null) {
-            $syncService->invalidateFolderCache((int) $file->storage_provider_id, null);
+            $syncService->invalidateFolderCache($originalStorageId, null);
         }
 
         return response()->json(['message' => 'Moved to trash', 'trashed_id' => $file->id]);

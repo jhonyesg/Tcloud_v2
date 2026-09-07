@@ -19,8 +19,15 @@
                     </template>
                     <span x-text="'· ' + (transcriptModal.totalSegments || 0) + ' segmentos'"></span>
                     <template x-if="transcriptModal.hitKeyword">
-                        <span class="px-2 py-0.5 bg-brand-50 text-brand-700 rounded"
-                              x-text="'mención: ' + transcriptModal.hitKeyword"></span>
+                        <button @click="toggleKeywordFilter()"
+                                class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-xs font-medium transition-colors"
+                                :class="isKeywordFilterActive()
+                                    ? 'bg-brand-600 text-white ring-2 ring-brand-300'
+                                    : 'bg-brand-50 text-brand-700 hover:bg-brand-100'"
+                                title="Filtrar la transcripción por esta keyword (clic de nuevo para quitar el filtro)">
+                            <i class="fas fa-filter text-[10px]"></i>
+                            <span x-text="'mención: ' + transcriptModal.hitKeyword"></span>
+                        </button>
                     </template>
                 </p>
             </div>
@@ -78,8 +85,10 @@
                     <i class="fas fa-circle-notch fa-spin mr-1"></i> Cargando segmentos anteriores…
                 </div>
                 <template x-for="seg in visibleSegments()" :key="seg.id">
-                    <div :id="'seg-' + seg.id" @click="seekToSegment(seg)"
-                         class="px-5 py-2.5 text-sm border-l-4 cursor-pointer transition-colors"
+                    <div :id="'seg-' + seg.id"
+                         data-seg
+                         @click="onSegmentClick($event, seg)"
+                         class="segment-row px-5 py-2.5 text-sm border-l-4 cursor-pointer transition-colors"
                          :class="seg.id === transcriptModal.anchorSegmentId
                             ? 'border-brand-600 bg-brand-50'
                             : (seg.segment_index === transcriptModal.activeIndex
@@ -87,7 +96,7 @@
                                 : 'border-transparent hover:bg-slate-50')">
                         <span class="text-[11px] font-mono text-slate-400 mr-2 select-none"
                               x-text="hmsLabel(seg.start_seconds)"></span>
-                        <span class="text-slate-700 leading-relaxed" x-html="highlightKeyword(seg.text)"></span>
+                        <span class="text-slate-700 leading-relaxed" x-html="highlightKeyword(seg)"></span>
                     </div>
                 </template>
                 <div x-show="transcriptModal.loadingAfter" class="py-3 text-center text-xs text-slate-400">

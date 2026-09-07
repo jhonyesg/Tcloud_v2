@@ -106,17 +106,59 @@ class MentionsSearchService
 
         $this->applyHitFilters($q, $user, $filters);
 
-        return $q->orderByDesc('h.matched_at')
+        $page = $q->orderByDesc('h.matched_at')
             ->select($this->hitSelect())
-            ->paginate($perPage)
-            ->through(fn ($r) => $this->hitRow($r, $user));
+            ->paginate($perPage);
+
+        // Total de apariciones por (grabación, keyword) para toda la página
+        // en UNA consulta agrupada (sin N+1).
+        $totals = $this->occurrenceTotals($page->items(), $user);
+
+        return $page->through(function ($r) use ($user, $totals) {
+            return $this->hitRow($r, $user, $totals);
+        });
+    }
+
+    /**
+     * Total de apariciones de la keyword en TODA la grabación (todas sus
+     * segmentos con hits del mismo usuario+keyword), en UNA consulta por
+     * página: SUM(occurrences) agrupado por (transcription_id, keyword_id).
+     */
+    private function occurrenceTotals(array $rows, User $user): array
+    {
+        $pairs = collect($rows)
+            ->filter(fn ($r) => isset($r->transcription_id, $r->keyword_id))
+            ->map(fn ($r) => [$r->transcription_id, $r->keyword_id])
+            ->values();
+
+        if ($pairs->isEmpty()) {
+            return [];
+        }
+
+        $totals = [];
+        foreach ($pairs->chunk(100) as $chunk) {
+            $tIds = $chunk->map(fn ($p) => $p[0])->unique()->values();
+            $kIds = $chunk->map(fn ($p) => $p[1])->unique()->values();
+            DB::table('segment_keyword_hits as h')
+                ->join('transcription_segments as s', 's.id', '=', 'h.segment_id')
+                ->whereIn('h.transcription_id', $tIds)
+                ->whereIn('h.keyword_id', $kIds)
+                ->groupBy('h.transcription_id', 'h.keyword_id')
+                ->selectRaw('h.transcription_id, h.keyword_id, COALESCE(SUM(h.occurrences), 0) AS total')
+                ->get()
+                ->each(function ($row) use (&$totals) {
+                    $totals["{$row->transcription_id}:{$row->keyword_id}"] = (int) $row->total;
+                });
+        }
+
+        return $totals;
     }
 
     /**
      * Búsqueda histórica (≤60 días) con filtros. Respeta la misma base de
      * acceso. Aplica mínimo de caracteres y rango máximo.
      */
-    public function searchHistory(User $user, array $filters = []): LengthAwarePaginator
+    public function searchHistory(User $user, array $filters = [], int $perPage = 25): LengthAwarePaginator
     {
         $maxDays = (int) config('avisos.exports.history_days', 60);
 
@@ -134,10 +176,15 @@ class MentionsSearchService
 
         $this->applyHitFilters($q, $user, $filters);
 
-        return $q->orderByDesc('h.matched_at')
+        $page = $q->orderByDesc('h.matched_at')
             ->select($this->hitSelect())
-            ->paginate(25)
-            ->through(fn ($r) => $this->hitRow($r, $user));
+            ->paginate(max(1, $perPage));
+
+        $totals = $this->occurrenceTotals($page->items(), $user);
+
+        return $page->through(function ($r) use ($user, $totals) {
+            return $this->hitRow($r, $user, $totals);
+        });
     }
 
     /**
@@ -301,6 +348,7 @@ class MentionsSearchService
             'h.transcription_id',
             'h.segment_id',
             'h.keyword_id',
+            'h.occurrences',
             'k.text as keyword',
             'f.id as file_id',
             'f.name as filename',
@@ -369,11 +417,13 @@ class MentionsSearchService
      * futuro). Incluye deep-link al reproductor con el segundo de la
      * mención y capabilities calculadas en el servidor.
      */
-    private function hitRow($r, User $user): array
+    private function hitRow($r, User $user, array $occurrenceTotals = []): array
     {
         $startFloat = (float) $r->start_seconds;
         $start = (int) floor($startFloat);
         $fileId = $r->file_id ? (int) $r->file_id : null;
+        $occ = isset($r->occurrences) ? max(1, (int) $r->occurrences) : 1;
+        $totalInMedia = $occurrenceTotals["{$r->transcription_id}:{$r->keyword_id}"] ?? $occ;
 
         return [
             'id' => (int) $r->id,
@@ -391,6 +441,8 @@ class MentionsSearchService
             'minute_label' => $this->hms($startFloat),
             'transcription_id' => (int) $r->transcription_id,
             'segment_id' => $r->segment_id ? (int) $r->segment_id : null,
+            'occurrences' => $occ,
+            'occurrences_in_media' => $totalInMedia,
             'start_seconds' => $startFloat,
             'end_seconds' => (float) $r->end_seconds,
             'can_view_file' => $this->canViewFile($r->owner_id, $r->file_permissions, $user),

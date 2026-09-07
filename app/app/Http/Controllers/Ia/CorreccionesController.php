@@ -15,6 +15,7 @@ use App\Services\Ia\TranscriptorSettings;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Session;
 
@@ -593,38 +594,152 @@ class CorreccionesController extends Controller
     }
 
     /**
+     * Resuelve el scope de un apply-retroactive desde el request.
+     * Soporta:
+     *   - `since` (ISO 8601, recomendado) — unidad-agnóstico (puede ser horas o días)
+     *   - `days_back` (legacy, int 1-365 o 'all') — backward-compat
+     *   - `correction_ids` (int[], opcional) — filtra el diccionario a un subset
+     *
+     * Retorna [Carbon|null $since, int|null $daysBack, int[] $correctionIds, ?JsonResponse $error].
+     * Si hay error de validación, $error viene poblado con la respuesta 422 y los
+     * callers deben devolverla inmediatamente sin continuar.
+     *
+     * Ver openspec/changes/corrections-apply-retroactive-scope-controls/.
+     */
+    private function resolveScope(Request $request): array
+    {
+        $sinceInput = $request->input('since');
+        $daysBackInput = $request->input('days_back');
+        $correctionIdsInput = $request->input('correction_ids', []);
+
+        $since = null;
+        $daysBack = null;
+
+        if ($sinceInput !== null && $sinceInput !== '') {
+            try {
+                $since = Carbon::parse((string) $sinceInput);
+            } catch (\Throwable $e) {
+                return [null, null, [], response()->json([
+                    'error' => '`since` debe ser un timestamp ISO 8601 válido (ej. 2026-09-06T20:00:00Z).',
+                ], 422)];
+            }
+        } elseif ($daysBackInput !== null && $daysBackInput !== '' && $daysBackInput !== 'all') {
+            $daysBack = (int) $daysBackInput;
+            if ($daysBack <= 0) {
+                return [null, null, [], response()->json([
+                    'error' => 'days_back debe ser entero positivo o "all".',
+                ], 422)];
+            }
+            if ($daysBack > 365) {
+                return [null, null, [], response()->json([
+                    'error' => 'days_back no puede ser > 365 (use --days en CLI para más).',
+                ], 422)];
+            }
+        }
+
+        $correctionIds = [];
+        if (is_array($correctionIdsInput) && !empty($correctionIdsInput)) {
+            $correctionIds = array_values(array_unique(array_filter(array_map(
+                fn ($v) => is_numeric($v) ? (int) $v : null,
+                $correctionIdsInput
+            ))));
+            if (count($correctionIds) > 2495) {
+                return [$since, $daysBack, [], response()->json([
+                    'error' => 'correction_ids no puede tener más de 2495 entradas.',
+                ], 422)];
+            }
+            // Validar que todos existan y estén approved. Devolvemos la lista exacta
+            // de ids problemáticos para que el admin sepa cuáles corregir.
+            // Wrap en try/catch: si la BD no responde (test sin schema, BD caída),
+            // devolvemos 503 en vez de 500 confuso.
+            try {
+                $approvedIds = Correction::approved()
+                    ->whereIn('id', $correctionIds)
+                    ->pluck('id')
+                    ->map(fn ($v) => (int) $v)
+                    ->all();
+            } catch (\Throwable $e) {
+                return [$since, $daysBack, [], response()->json([
+                    'error' => 'No se pudo validar correction_ids contra la BD: ' . $e->getMessage(),
+                ], 503)];
+            }
+            $missing = array_values(array_diff($correctionIds, $approvedIds));
+            if (!empty($missing)) {
+                return [$since, $daysBack, [], response()->json([
+                    'error' => 'correction_ids contiene ids inexistentes o no aprobados: ' . implode(',', $missing),
+                    'missing_ids' => $missing,
+                ], 422)];
+            }
+        }
+
+        return [$since, $daysBack, $correctionIds, null];
+    }
+
+    /**
+     * Cuenta cuántos segments caen en un scope (helper compartido por
+     * applyRetroactive y previewApplyRetroactive para no duplicar la query).
+     * Si $correctionIds está vacío retorna el total de segments en el rango;
+     * si no, retorna el mismo total (la cantidad de correcciones no afecta
+     * el universo de segmentos a tocar).
+     */
+    private function countSegmentsInScope($since, ?int $daysBack): int
+    {
+        try {
+            return \App\Models\TranscriptionSegment::query()
+                ->when($since !== null, fn ($q) => $q->where('created_at', '>=', $since))
+                ->when($since === null && $daysBack !== null && $daysBack > 0,
+                    fn ($q) => $q->where('created_at', '>=', now()->subDays($daysBack)))
+                ->count();
+        } catch (\Throwable $e) {
+            return 0;
+        }
+    }
+
+    /**
+     * Estimación conservadora de minutos para el preview. 5000 segments/min
+     * es un piso realista para 2495 reglas; con menos reglas es más rápido,
+     * pero preferimos sobre-estimar para no engañar al admin.
+     */
+    private function estimateMinutes(int $segments, int $corrections): int
+    {
+        if ($segments === 0) return 0;
+        // Más reglas = más lento. Factor lineal sobre la base de 2495 reglas.
+        $ruleFactor = max(1.0, $corrections / 100.0); // 100 reglas = factor 1x
+        $effective = (int) ceil(($segments / 5000) * $ruleFactor);
+        return max(1, $effective);
+    }
+
+    /**
      * Lanza una corrida async de re-aplicación retroactiva del diccionario.
      * Retorna {runId} para que la UI haga polling.
      *
      * Parámetros:
      *   - dry_run (bool, default false): solo reporta, no escribe
      *   - chunk (int, default 500): tamaño del chunk de segments
-     *   - days_back (int|null, default null): si != null, filtra segments
-     *     a solo los creados en los últimos N días. Útil para aplicar
-     *     correcciones nuevas solo a histórico reciente sin tocar 10M+.
-     *   - include_high_risk (bool, default false): si true, incluye
-     *     correcciones con risk_level='high' (muletillas, falsos amigos).
-     *     Default false: omitir para preservar tono/contexto original.
+     *   - days_back (int|null, legacy): si != null, filtra segments a los
+     *     creados en los últimos N días. Mantenido por compat.
+     *   - since (ISO 8601, recomendado): unit-agnostic, ignora days_back si llega.
+     *     Permite scopes horarios sin tener que expresar en días.
+     *   - correction_ids (int[], opcional): si != [], aplica sólo esas correcciones
+     *     aprobadas en vez de las 2495 del diccionario completo. Ver
+     *     openspec/changes/corrections-apply-retroactive-scope-controls/.
+     *   - include_high_risk (bool, default false): incluye correcciones risk_level='high'.
      */
     public function applyRetroactive(Request $request)
     {
         $dryRun = (bool) $request->input('dry_run', false);
         $chunk = max(50, (int) $request->input('chunk', 500));
         $includeHighRisk = (bool) $request->input('include_high_risk', false);
-        $daysBackInput = $request->input('days_back');
-        $daysBack = null;
-        if ($daysBackInput !== null && $daysBackInput !== '' && $daysBackInput !== 'all') {
-            $daysBack = (int) $daysBackInput;
-            if ($daysBack <= 0) {
-                return response()->json([
-                    'error' => 'days_back debe ser entero positivo o "all".',
-                ], 422);
-            }
-            if ($daysBack > 365) {
-                return response()->json([
-                    'error' => 'days_back no puede ser > 365 (use --days en CLI para más).',
-                ], 422);
-            }
+
+        [$since, $daysBack, $correctionIds, $error] = $this->resolveScope($request);
+        if ($error !== null) {
+            return $error;
+        }
+        if (empty($correctionIds) && $request->has('correction_ids')) {
+            // Admin envió correction_ids pero quedó vacío → selector inválido
+            return response()->json([
+                'error' => 'correction_ids llegó vacío. Si querés aplicar todo, no mandes el parámetro; si querés un subset, seleccioná al menos una corrección aprobada.',
+            ], 422);
         }
 
         $runId = $this->generateRunId('correction_apply');
@@ -676,19 +791,20 @@ class CorreccionesController extends Controller
         // Pre-computar total en la UI para que el primer poll no muestre
         // "0 segmentos" engañoso. Si el pre-conteo falla, el comando async
         // sobreescribe el valor desde su callback de progreso.
-        $preTotal = 0;
-        try {
-            $preTotal = \App\Models\TranscriptionSegment::query()
-                ->when($daysBack !== null && $daysBack > 0,
-                    fn ($q) => $q->where('created_at', '>=', now()->subDays($daysBack)))
-                ->count();
-        } catch (\Throwable $e) {
-            // Si falla, dejamos 0 — el comando completará.
-        }
+        $preTotal = $this->countSegmentsInScope($since, $daysBack);
 
         // Estado inicial con TTL generoso para una corrida real.
-        // days_back se persiste en cache para que el comando async lo lea
-        // aunque --days no se pase por CLI.
+        // since / correction_ids / days_back se persisten en cache para que
+        // el comando async los lea aunque viajen por CLI sólo via runId.
+        $correctionsTotal = 0;
+        try {
+            $correctionsTotal = empty($correctionIds)
+                ? Correction::approved()->count()
+                : count($correctionIds);
+        } catch (\Throwable $e) {
+            // En tests sin BD el conteo puede fallar; seguimos con 0 y el
+            // comando async sobreescribirá desde su callback de progreso.
+        }
         Cache::put($cacheKey, [
             'status' => 'queued',
             'progress' => 0,
@@ -703,6 +819,9 @@ class CorreccionesController extends Controller
             'dry_run' => $dryRun,
             'chunk' => $chunk,
             'days_back' => $daysBack,
+            'since' => $since?->toIso8601String(),
+            'correction_ids' => $correctionIds,
+            'corrections_total' => $correctionsTotal,
             'include_high_risk' => $includeHighRisk,
         ], now()->addHours(self::CACHE_TTL_HOURS));
 
@@ -725,38 +844,310 @@ class CorreccionesController extends Controller
         }
 
         // PATH ABSOLUTOS para que funcione bajo php-fpm (cuyo CWD no es
-        // necesariamente el del proyecto). El bug que acabo de detectar:
+        // necesariamente el del proyecto). El bug histórico era que
         // `php artisan` relativo fallaba porque 'artisan' no se encuentra
-        // en el CWD del worker, así que el comando moría al instante y la
-        // UI quedaba en "queued" para siempre.
+        // en el CWD del worker.
+        //
+        // El binario se resuelve vía RunsBackgroundCommands::resolvePhpCli(),
+        // que detecta SAPI fpm y fuerza /usr/bin/php. Antes este controller
+        // sólo verificaba is_executable($phpBin), que pasaba con php-fpm
+        // (también tiene +x) — el comando moría al instante y la UI quedaba
+        // en "queued" para siempre. Ver change
+        // openspec/changes/corrections-apply-retroactive-bg-launcher/.
         //
         // NOTA: NO redirigimos dentro del $cmd — el wrapper
         // RunsBackgroundCommands::execBackground() ya redirige toda la salida
-        // a /tmp/kilo_artisan_bg.log. Antes había un `> /tmp/kilo_artisan_apply.log`
-        // aquí que era pisado por el redirect del wrapper, dejando ese log
-        // siempre vacío y haciendo confuso el diagnóstico.
-        $phpBin = PHP_BINARY;
-        if (!$phpBin || !is_executable($phpBin)) {
-            $phpBin = '/usr/bin/php';
-        }
+        // a /tmp/kilo_artisan_bg.log (con marcadores [corrections:apply]).
         $artisanPath = base_path('artisan');
+        $correctionIdFlags = '';
+        foreach ($correctionIds as $cid) {
+            $correctionIdFlags .= ' --correction-id=' . escapeshellarg((string) $cid);
+        }
+        $sinceFlag = $since !== null
+            ? ' --since=' . escapeshellarg($since->toIso8601String())
+            : '';
         $cmd = sprintf(
-            '%s %s corrections:apply-run --run-id=%s --chunk=%d%s%s%s',
-            $phpBin,
+            '%s %s corrections:apply-run --run-id=%s --chunk=%d%s%s%s%s',
+            $this->resolvePhpCli(),
             escapeshellarg($artisanPath),
             escapeshellarg($runId),
             $chunk,
             $dryRun ? ' --dry-run' : '',
             $daysBack !== null ? ' --days=' . escapeshellarg((string) $daysBack) : '',
+            $sinceFlag,
             $includeHighRisk ? ' --include-high-risk' : ''
         );
-        $this->execBackground($cmd);
+        $cmd .= $correctionIdFlags;
+        $this->execBackground($cmd, 'corrections:apply');
+
+        // Liveness ping: tras dispatchar, esperamos 2s y verificamos que el
+        // worker haya transicionado el cache de queued → running. Si no lo
+        // hizo, el worker murió al arrancar (binario incorrecto, artisan no
+        // encontrado, error fatal). Marcamos el run como error y devolvemos
+        // 500 con la ruta al log para que el admin sepa qué pasó — antes la
+        // barra quedaba inmóvil durante 4h sin señal alguna.
+        usleep(2_000_000);
+        $postState = Cache::get($cacheKey);
+        $postStatus = is_array($postState) ? ($postState['status'] ?? null) : null;
+        if ($postStatus === null || $postStatus === 'queued') {
+            if (is_array($postState)) {
+                $postState['status'] = 'error';
+                $postState['error_message'] = 'El worker no arrancó — revisá /tmp/kilo_artisan_bg.log (filtro: [corrections:apply])';
+                $postState['finished_at'] = now()->toIso8601String();
+                Cache::put($cacheKey, $postState, now()->addHours(self::CACHE_TTL_HOURS));
+            }
+            Cache::forget('corrections_apply:active');
+            Log::warning('CorreccionesController: worker de apply-retroactive no pasó a running', [
+                'run_id' => $runId,
+                'observed_status' => $postStatus,
+                'cache_key' => $cacheKey,
+            ]);
+            return response()->json([
+                'error' => 'El proceso de re-aplicación no arrancó. Revisá el log en /tmp/kilo_artisan_bg.log (filtrá por [corrections:apply]).',
+                'log' => '/tmp/kilo_artisan_bg.log',
+                'runId' => $runId,
+            ], 500);
+        }
 
         return response()->json([
             'runId' => $runId,
             'days_back' => $daysBack,
+            'since' => $since?->toIso8601String(),
+            'correction_ids' => $correctionIds,
+            'corrections_total' => $correctionsTotal,
             'include_high_risk' => $includeHighRisk,
         ], 202);
+    }
+
+    /**
+     * Preview no-destructivo del impacto de un apply-retroactive.
+     * Retorna conteos sin lanzar worker ni escribir cache de run.
+     * Path: POST /ia/correcciones/apply-retroactive/preview
+     * Body: mismos parámetros que applyRetroactive (since / days_back / correction_ids / dry_run).
+     */
+    public function previewApplyRetroactive(Request $request)
+    {
+        [$since, $daysBack, $correctionIds, $error] = $this->resolveScope($request);
+        if ($error !== null) {
+            return $error;
+        }
+        if ($request->has('correction_ids') && empty($correctionIds)) {
+            return response()->json([
+                'error' => 'correction_ids llegó vacío. Si querés aplicar todo, no mandes el parámetro.',
+            ], 422);
+        }
+        $segmentsTotal = $this->countSegmentsInScope($since, $daysBack);
+        $correctionsTotal = empty($correctionIds)
+            ? Correction::approved()->count()
+            : count($correctionIds);
+        return response()->json([
+            'segments_total' => $segmentsTotal,
+            'corrections_total' => $correctionsTotal,
+            'estimated_minutes' => $this->estimateMinutes($segmentsTotal, $correctionsTotal),
+            'scope' => [
+                'since' => $since?->toIso8601String(),
+                'days_back' => $daysBack,
+                'correction_ids' => $correctionIds,
+            ],
+        ]);
+    }
+
+    /**
+     * Variation Finder — devuelve las variantes literales de una palabra/frase
+     * en los segments del scope temporal. 100% SQL, sin IA.
+     *
+     * Path: POST /ia/correcciones/variations/find
+     * Body: { word: string, since: ISO8601|null, limit?: int (default 100, max 500), context_window?: int (default 25) }
+     * Salida: { matches: [{ variant, count, example_segment_id, example_text,
+     *                        is_approved_rule, is_pending_rule, existing_rule_id }],
+     *           total_scanned: int, truncated: bool, next_since: ISO8601|null }
+     *
+     * Ver openspec/changes/corrections-variation-finder/.
+     */
+    public function findVariations(Request $request)
+    {
+        $request->validate([
+            'word' => 'required|string|min:1|max:200',
+            'since' => 'nullable|date',
+            'limit' => 'nullable|integer|min:1|max:500',
+            'context_window' => 'nullable|integer|min:5|max:100',
+        ]);
+
+        $word = trim((string) $request->input('word'));
+        if ($word === '') {
+            return response()->json(['error' => 'word no puede estar vacío'], 422);
+        }
+        $wordLower = mb_strtolower($word);
+        $since = $request->input('since') ? Carbon::parse($request->input('since')) : null;
+        $limit = (int) ($request->input('limit') ?? 100);
+        $contextWindow = (int) ($request->input('context_window') ?? 25);
+        $maxScan = 10000;
+
+        // Query acotada: full-scan en 'all' está cappeado a $maxScan rows.
+        $query = \App\Models\TranscriptionSegment::query()
+            ->select(['id', 'text', 'created_at'])
+            ->whereRaw('LOWER(text) LIKE ?', ['%' . $this->escapeLike($wordLower) . '%']);
+        if ($since) {
+            $query->where('created_at', '>=', $since);
+        }
+        $rows = $query->orderBy('id', 'asc')->limit($maxScan)->get();
+
+        $truncated = $rows->count() === $maxScan;
+        $oldestCreatedAt = null;
+        $grouped = [];
+
+        foreach ($rows as $row) {
+            $textLower = mb_strtolower($row->text);
+            $pos = mb_strpos($textLower, $wordLower);
+            if ($pos === false) continue;
+
+            // Ventana ±contextWindow alrededor del primer match.
+            $start = max(0, $pos - $contextWindow);
+            $variantRaw = mb_substr($row->text, $start, mb_strlen($word) + ($pos - $start) + $contextWindow);
+            // Si nos quedamos cortos por el final del string, completamos
+            $variantEnd = $pos + mb_strlen($word) + $contextWindow;
+            if ($variantEnd > mb_strlen($row->text)) {
+                $variantEnd = mb_strlen($row->text);
+            }
+            $variantRaw = mb_substr($row->text, max(0, $pos - $contextWindow), $variantEnd - max(0, $pos - $contextWindow));
+
+            $key = $this->normalizeVariant($variantRaw);
+            if (!isset($grouped[$key])) {
+                $grouped[$key] = [
+                    'variant' => $variantRaw,
+                    'count' => 0,
+                    'example_segment_id' => $row->id,
+                    'example_text' => $row->text,
+                ];
+            }
+            $grouped[$key]['count']++;
+            if ($oldestCreatedAt === null || $row->created_at < $oldestCreatedAt) {
+                $oldestCreatedAt = $row->created_at;
+            }
+        }
+
+        // Cross-reference con rules existentes en una sola query.
+        $existingByNorm = Correction::whereIn('wrong_normalized', array_keys($grouped))
+            ->get(['id', 'wrong_normalized', 'status'])
+            ->keyBy('wrong_normalized');
+
+        foreach ($grouped as $key => &$row) {
+            $rule = $existingByNorm[$key] ?? null;
+            $row['is_approved_rule'] = $rule && $rule->status === 'approved';
+            $row['is_pending_rule'] = $rule && $rule->status === 'pending';
+            $row['existing_rule_id'] = $rule?->id;
+        }
+        unset($row);
+
+        // Ordenar por frecuencia DESC, slice por limit.
+        uasort($grouped, fn ($a, $b) => $b['count'] <=> $a['count']);
+        $matches = array_values(array_slice($grouped, 0, $limit, true));
+
+        // Renormalizar keys a índices numéricos.
+        foreach ($matches as $i => $m) {
+            unset($matches[$i]['variant_normalized']); // placeholder si lo agregamos en el futuro
+        }
+
+        return response()->json([
+            'matches' => $matches,
+            'total_scanned' => $rows->count(),
+            'unique_variants' => count($grouped),
+            'truncated' => $truncated,
+            'next_since' => $truncated && $oldestCreatedAt
+                ? $oldestCreatedAt->copy()->subSecond()->toIso8601String()
+                : null,
+        ]);
+    }
+
+    /**
+     * Crea N reglas pending en bulk desde Variation Finder.
+     * Si alguna variante ya existe, aborta toda la transacción con 422.
+     *
+     * Path: POST /ia/correcciones/variations/bulk-create
+     * Body: { variants: string[1..100], correct: string }
+     * Salida: 201 { created: int, correction_ids: int[] }
+     */
+    public function bulkCreateFromVariations(Request $request)
+    {
+        $request->validate([
+            'variants' => 'required|array|min:1|max:100',
+            'variants.*' => 'required|string|min:1|max:500',
+            'correct' => 'required|string|min:1|max:500',
+        ]);
+
+        $variants = $request->input('variants');
+        $correct = trim((string) $request->input('correct'));
+        $adminId = $this->adminUser();
+
+        // Pre-normalizar todas y chequear duplicados contra BD y entre sí.
+        $seen = [];
+        $toCreate = [];
+        foreach ($variants as $v) {
+            $v = trim((string) $v);
+            if ($v === '') continue;
+            $norm = $this->normalizeVariant($v);
+            if (!$norm) continue;
+            if (isset($seen[$norm])) continue;
+            $seen[$norm] = true;
+            $toCreate[] = ['raw' => $v, 'norm' => $norm];
+        }
+
+        if (empty($toCreate)) {
+            return response()->json(['error' => 'Ninguna variante válida para crear'], 422);
+        }
+
+        $existing = Correction::whereIn('wrong_normalized', array_column($toCreate, 'norm'))
+            ->pluck('wrong_normalized')
+            ->all();
+        if (!empty($existing)) {
+            $conflict = $toCreate[array_search($existing[0], array_column($toCreate, 'norm'))]['raw'] ?? $existing[0];
+            return response()->json([
+                'error' => "Ya existe una regla para la variante normalizada: '{$conflict}'",
+                'conflicting_normalized' => $existing,
+            ], 422);
+        }
+
+        $source = 'variation-finder-' . now()->format('Y-m-d');
+        $created = [];
+        DB::transaction(function () use ($toCreate, $correct, $adminId, $source, &$created) {
+            foreach ($toCreate as $entry) {
+                $c = Correction::create([
+                    'wrong_text' => $entry['raw'],
+                    'correct_text' => $correct,
+                    'wrong_normalized' => $entry['norm'],
+                    'status' => 'pending',
+                    'proposed_by' => $adminId,
+                    'source' => $source,
+                    'risk_level' => 'low',
+                    'applies_count' => 0,
+                ]);
+                $created[] = $c->id;
+            }
+        });
+
+        return response()->json([
+            'created' => count($created),
+            'correction_ids' => $created,
+            'source' => $source,
+        ], 201);
+    }
+
+    /**
+     * Normaliza una variante para grouping/lookup:
+     * lowercase + trim + collapse whitespace + collapse internal punctuation.
+     * Devuelve string vacío si el resultado no tiene al menos una letra.
+     */
+    private function normalizeVariant(string $variant): string
+    {
+        $v = mb_strtolower(trim($variant));
+        $v = preg_replace('/\s+/u', ' ', $v);
+        $v = preg_replace('/[^\p{L}\p{N}\s]/u', '', $v); // letras/números/espacio
+        return trim((string) $v);
+    }
+
+    private function escapeLike(string $s): string
+    {
+        return str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], $s);
     }
 
     /**

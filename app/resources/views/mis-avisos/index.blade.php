@@ -179,11 +179,23 @@
                 </div>
                 <div>
                     <label class="text-xs text-slate-500 block mb-1">Desde</label>
-                    <input type="date" x-model="historyFilters.from" class="border border-slate-300 rounded-lg px-3 py-2 text-sm">
+                    <input type="date" x-model="historyFilters.from" @input="activeDateShortcut = null" class="border border-slate-300 rounded-lg px-3 py-2 text-sm">
                 </div>
                 <div>
                     <label class="text-xs text-slate-500 block mb-1">Hasta</label>
                     <input type="date" x-model="historyFilters.to" class="border border-slate-300 rounded-lg px-3 py-2 text-sm">
+                </div>
+                {{-- Atajos de fecha: un clic llena Desde/Hasta y busca --}}
+                <div class="flex items-center gap-1 pb-0.5">
+                    <template x-for="shortcut in dateShortcuts" :key="shortcut.label">
+                        <button @click="applyDateShortcut(shortcut)"
+                                class="px-2.5 py-2 rounded-lg text-xs font-medium transition-all border"
+                                :class="isShortcutActive(shortcut)
+                                    ? 'bg-brand-600 text-white border-brand-600 shadow'
+                                    : 'border-slate-300 text-slate-600 hover:bg-brand-50 hover:border-brand-300'"
+                                x-text="shortcut.label"
+                                :title="shortcut.title"></button>
+                    </template>
                 </div>
                 @include('mis-avisos._filter-storages', ['scope' => 'historyFilters'])
                 <div>
@@ -268,12 +280,12 @@ function misAvisosPage() {
         newKeyword: '',
         selectedKeywordId: null, draftScope: [],
         // En vivo (tabla con filtros + paginación server-side)
-        liveRows: [], livePage: 1, liveLastPage: 1, liveTotal: 0,
+        liveRows: [], livePage: 1, liveLastPage: 1, liveTotal: 0, livePerPage: 25,
         liveFilters: { q: '', storage_ids: [], keyword_id: 0 },
         newLiveCount: 0, liveTimer: null, livePolling: false,
         // Histórico
         historyFilters: { q: '', from: '', to: '', storage_ids: [], keyword_id: 0 },
-        historyRows: [], historyPage: 1, historyLastPage: 1, historyTotal: 0,
+        historyRows: [], historyPage: 1, historyLastPage: 1, historyTotal: 0, historyPerPage: 25,
         historySearched: false, historyError: '',
         // Visor de transcripción (mentions-viewer)
         transcriptModal: {
@@ -406,6 +418,21 @@ function misAvisosPage() {
             else this[scope].storage_ids = list.filter(x => x !== id);
             if (scope === 'liveFilters') this.applyLiveFilters();
         },
+        pageList(current, last) {
+            if (!last || last <= 7) return Array.from({ length: Math.max(1, last || 1) }, (_, i) => i + 1);
+            const pages = [1];
+            const start = Math.max(2, current - 2), end = Math.min(last - 1, current + 2);
+            if (start > 2) pages.push('…');
+            for (let p = start; p <= end; p++) pages.push(p);
+            if (end < last - 1) pages.push('…');
+            pages.push(last);
+            return pages;
+        },
+        setPerPage(mode, n) {
+            const per = [25, 50, 100, 500].includes(+n) ? +n : 25;
+            if (mode === 'live') { this.livePerPage = per; this.livePage = 1; this.pollLive(); }
+            else { this.historyPerPage = per; this.searchHistory(1); }
+        },
         goPage(mode, page) {
             if (mode === 'live') { this.livePage = Math.max(1, page); this.newLiveCount = 0; this.pollLive(); }
             else this.searchHistory(page);
@@ -425,6 +452,7 @@ function misAvisosPage() {
                 const f = this.liveFilters;
                 const params = new URLSearchParams();
                 params.set('page', this.livePage);
+                params.set('per_page', this.livePerPage);
                 if (f.q.trim()) params.set('q', f.q.trim());
                 if (f.keyword_id) params.set('keyword_id', f.keyword_id);
                 f.storage_ids.forEach(id => params.append('storage_ids[]', id));
@@ -443,11 +471,48 @@ function misAvisosPage() {
             } catch (e) { /* silencio: el siguiente ciclo reintenta */ }
         },
 
+        // Atajos de fecha (horario Colombia): llenan Desde/Hasta y buscan.
+        dateShortcuts: [
+            { label: 'Hoy', title: 'Coincidencias de hoy', days: 0 },
+            { label: 'Ayer', title: 'Solo el día de ayer', days: 1, onlyThatDay: true },
+            { label: '3 días', title: 'Últimos 3 días (incluye hoy)', days: 3 },
+            { label: '7 días', title: 'Últimos 7 días (incluye hoy)', days: 7 },
+        ],
+        activeDateShortcut: null,
+        fmtDate(d) {
+            const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, '0'), dd = String(d.getDate()).padStart(2, '0');
+            return `${y}-${m}-${dd}`;
+        },
+        shortcutRange(shortcut) {
+            // Semántica: "Ayer" = SOLO ese día; los rangos acumulan hasta hoy.
+            const now = new Date();
+            const today = this.fmtDate(now);
+            if (shortcut.onlyThatDay) {
+                const y = new Date(now); y.setDate(y.getDate() - 1);
+                return { from: this.fmtDate(y), to: this.fmtDate(y) };
+            }
+            if (shortcut.days === 0) return { from: today, to: today };
+            const s = new Date(now); s.setDate(s.getDate() - (shortcut.days - 1));
+            return { from: this.fmtDate(s), to: today };
+        },
+        isShortcutActive(shortcut) {
+            if (this.activeDateShortcut !== shortcut.label) return false;
+            const r = this.shortcutRange(shortcut);
+            return this.historyFilters.from === r.from && this.historyFilters.to === r.to;
+        },
+        applyDateShortcut(shortcut) {
+            const { from, to } = this.shortcutRange(shortcut);
+            this.historyFilters.from = from;
+            this.historyFilters.to = to;
+            this.activeDateShortcut = shortcut.label;
+            this.searchHistory(1);
+        },
         async searchHistory(page) {
             this.historyError = '';
             const f = this.historyFilters;
             const params = new URLSearchParams();
             params.set('page', page);
+            params.set('per_page', this.historyPerPage);
             if (f.q) params.set('q', f.q);
             if (f.from) params.set('from', f.from);
             if (f.to) params.set('to', f.to);
@@ -613,6 +678,17 @@ function misAvisosPage() {
             return [Math.floor(t / 3600), Math.floor((t % 3600) / 60), t % 60]
                 .map(x => String(x).padStart(2, '0')).join(':');
         },
+        // Atajo rápido: el chip de la mención activa/quita el filtro por
+        // keyword dentro del modal (mismo filtro que la búsqueda, pero a un
+        // clic). La búsqueda manual sigue funcionando encima.
+        isKeywordFilterActive() {
+            const tm = this.transcriptModal;
+            return !!tm.search && this.norm(tm.search) === this.norm(tm.hitKeyword || '');
+        },
+        toggleKeywordFilter() {
+            const tm = this.transcriptModal;
+            tm.search = this.isKeywordFilterActive() ? '' : (tm.hitKeyword || '');
+        },
         accentAware(s) {
             // Regex que iguala con o sin tilde: Álvaro ≍ alvaro.
             const map = { a: '[aáàäâã]', e: '[eéèëê]', i: '[iíìïî]', o: '[oóòöôõ]', u: '[uúùüû]', n: '[nñ]', c: '[cç]' };
@@ -622,24 +698,68 @@ function misAvisosPage() {
                 return ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
             }).join('');
         },
-        highlightKeyword(text) {
-            const esc = (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-            let safe = esc(text || '');
+        // Resaltado por aparición: cada ocurrencia de la keyword (y de la
+        // búsqueda) es un <mark> con su offset en el texto plano; el click
+        // interpola el tiempo dentro del segmento (mention-occurrence-detail).
+        highlightKeyword(seg) {
+            const plain = String(seg?.text || '');
             const tm = this.transcriptModal;
-            // Búsqueda dentro del modal (amarillo) con tokens para no anidar
-            // marcas mal; la keyword de la mención va en ámbar.
-            const q = (tm.search || '').trim();
-            if (q) {
-                safe = safe.replace(new RegExp(this.accentAware(q), 'gi'), m => '\u0001' + m + '\u0002');
+            const esc = (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+            const matches = [];
+            const collect = (needle, cls) => {
+                if (!needle || !needle.trim()) return;
+                const hay = this.norm(plain);
+                const nd = this.norm(needle);
+                if (!nd) return;
+                let i = hay.indexOf(nd), guard = 0;
+                while (i !== -1 && guard < 500) {
+                    matches.push({ start: i, end: i + nd.length, cls });
+                    i = hay.indexOf(nd, i + nd.length);
+                    guard++;
+                }
+            };
+            collect(tm.hitKeyword, 'kw');
+            collect(tm.search, 'search');
+            matches.sort((a, b) => a.start - b.start || b.end - a.end);
+            const merged = [];
+            for (const m of matches) {
+                const last = merged[merged.length - 1];
+                if (last && m.start < last.end) continue; // solape: gana el primero (más largo)
+                merged.push(m);
             }
-            const kw = (tm.hitKeyword || '').trim();
-            if (kw) {
-                safe = safe.replace(new RegExp(this.accentAware(kw), 'gi'), m => '<mark class="bg-amber-200/70 rounded px-0.5">' + m + '</mark>');
+            if (!merged.length) return esc(plain);
+
+            let out = ''; let pos = 0;
+            for (const m of merged) {
+                out += esc(plain.slice(pos, m.start));
+                const cls = m.cls === 'kw' ? 'bg-amber-200/70' : 'bg-yellow-300/80';
+                out += `<mark class="${cls} rounded px-0.5 cursor-pointer hover:ring-2 hover:ring-violet-400" data-pos="${m.start}" data-len="${plain.length}">${esc(plain.slice(m.start, m.end))}</mark>`;
+                pos = m.end;
             }
-            return safe
-                .replace(/\u0001/g, '<mark class="bg-yellow-300/80 rounded px-0.5">')
-                .replace(/\u0002/g, '</mark>');
+            out += esc(plain.slice(pos));
+            return out;
         },
+        // Click sobre una aparición resaltada: tiempo interpolado por la
+        // posición relativa del match dentro del texto del segmento.
+        onSegmentClick(e, seg) {
+            const mark = e.target.closest('mark');
+            if (mark && mark.dataset.pos !== undefined && typeof seg.start_seconds === 'number') {
+                const pos = parseFloat(mark.dataset.pos);
+                const len = parseFloat(mark.dataset.len || plain0(seg)) || 1;
+                const time = seg.start_seconds + (pos / len) * (seg.end_seconds - seg.start_seconds);
+                this.seekToTime(time);
+                return;
+            }
+            this.seekToSegment(seg);
+        },
+        seekToTime(time) {
+            const p = this.$refs.player;
+            if (p && typeof p.currentTime === 'number') {
+                p.currentTime = Math.max(0, time);
+                p.play();
+            }
+        },
+        plain0(seg) { return String(seg?.text || ''); },
         async openTranscript(row, opts = {}) {
             const tm = this.transcriptModal;
             tm.open = true; tm.loading = true; tm.error = ''; tm.meta = null;

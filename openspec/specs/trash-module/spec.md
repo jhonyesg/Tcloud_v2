@@ -104,7 +104,7 @@ The system MUST return HTTP 410 Gone with a JSON body identifying that the file 
 
 ### Requirement: Cache invalidation covers root listing after soft-trash
 
-The system MUST invalidate the `FileController@index` cache for both the file's original parent folder AND for the storage root listing whenever a soft-trash moves the file's `parent_id` from a non-null value to NULL. Without the root-listing invalidation, the cached `whereNull('parent_id')` payload returns the just-trashed row for up to 60 seconds after the delete action, surfacing ghost items in `/files` until the TTL expires. Additionally, the soft-trash endpoint MUST NOT raise an HTTP 500 due to visibility issues when invalidating the sidebar cache — that invalidation happens inside `PapeleraService::softTrash` and MUST NOT be repeated in the controller.
+The system MUST invalidate the `FileController@index` cache for both the file's original parent folder AND for the storage root listing whenever a soft-trash moves the file's `parent_id` from a non-null value to NULL. Without the root-listing invalidation, the cached `whereNull('parent_id')` payload returns the just-trashed row for up to 60 seconds after the delete action, surfacing ghost items in `/files` until the TTL expires. Additionally, the soft-trash endpoint MUST NOT raise an HTTP 500 due to visibility issues when invalidating the sidebar cache — that invalidation happens inside `PapeleraService::softTrash` and MUST NOT be repeated in the controller. The original `parent_id` MUST be captured BEFORE invoking the trash service, since Eloquent's `Model::update()` rewrites the model's `original` array.
 
 #### Scenario: Trashed item vanishes from root listing immediately
 - **WHEN** a user soft-trashes a file whose original parent is a non-root folder (so the post-trash `parent_id` becomes NULL), and another user has loaded the storage's root listing cached
@@ -117,6 +117,18 @@ The system MUST invalidate the `FileController@index` cache for both the file's 
 #### Scenario: Soft-trash returns 200 to the client
 - **WHEN** a user soft-trashes any file via `DELETE /files/{id}`
 - **THEN** the response is 200 OK with body `{message: 'Moved to trash', trashed_id: ...}`, not a 500 server error
+
+### Requirement: Browser listing query excludes trashed rows
+
+The `FileController@index` AJAX query (which serves the JSON listing for the file browser) MUST include `WHERE is_trashed = false` in its base query, applied before any `parent_id` filter. This is defense in depth on top of the cache invalidation: even if a future code path forgets to invalidate the folder cache, trashed rows MUST NOT appear in the browser listing.
+
+#### Scenario: Trashed file does not leak into the browser root listing
+- **WHEN** a file in a subfolder is soft-trashed (its `parent_id` becomes NULL) and the user reloads the storage's root listing
+- **THEN** the JSON response MUST NOT contain the trashed file id
+
+#### Scenario: Trashed file does not leak into the browser subfolder listing
+- **WHEN** any folder is queried via the browser listing endpoint
+- **THEN** no row with `is_trashed=true` is included in the response
 
 ### Requirement: How-it-works info panel on the trash view
 
@@ -134,6 +146,29 @@ The `/papelera` view MUST expose a collapsible accordion titled "¿Cómo funcion
 - **WHEN** an authenticated user navigates to `/papelera` for the first time in a session
 - **THEN** the help panel is rendered collapsed and does not occupy visual space beyond its header
 
+### Requirement: Restore semantics
+
+The system MUST let the original owner (or admin) restore a trashed item. Restoration MUST attempt to place the item back under its `original_parent_id`; if that parent is missing or also trashed, the item MUST be restored to the root of its storage provider. If a name collision exists at the destination, the system MUST suffix the restored name with `-restored-<unix_timestamp>`. Additionally, the restore endpoint MUST invalidate the cached listing of the destination folder so the restored file becomes visible in the file browser without waiting for the cache TTL to expire.
+
+#### Scenario: Restore with original parent still present
+- **WHEN** user restores a trashed file whose `original_parent_id` points to a non-trashed folder
+- **THEN** the file's `parent_id` is set back to `original_parent_id`, `is_trashed=false`, `deleted_at=NULL`, `original_parent_id=NULL`
+- **AND** `StorageSyncService::invalidateFolderCache(storage_id, parent_id)` is called so the destination listing cache is bumped
+
+#### Scenario: Restore with original parent missing
+- **WHEN** user restores a trashed file whose `original_parent_id` no longer resolves to an existing folder
+- **THEN** the file is placed at the root of its storage provider (`parent_id=NULL` but `is_trashed=false`)
+- **AND** the root listing cache of that storage is invalidated
+
+#### Scenario: Restore with name collision
+- **WHEN** user restores a file whose destination already has a sibling with the same name
+- **THEN** the restored file is renamed with the suffix `-restored-<unix_timestamp>` before insertion
+- **AND** the destination folder cache is invalidated after the rename
+
+#### Scenario: Restore with collision uses timestamp-suffixed name (no orphan cache)
+- **WHEN** the restore renames the file due to name collision and the original (pre-restore) cache key pointed to the destination
+- **THEN** the cache for that destination folder is regenerated on the next browser load (the old cache is invalidated, not just orphaned)
+
 ### Requirement: Sidebar entry with badge
 
 The system MUST render a sidebar entry labeled "Papelera" with a numeric badge showing the count of the current user's trashed items. If any item has fewer than 3 days remaining until purge, the badge MUST use a warning color.
@@ -145,3 +180,64 @@ The system MUST render a sidebar entry labeled "Papelera" with a numeric badge s
 #### Scenario: User with empty trash loads any page
 - **WHEN** the sidebar renders for a user with zero trashed items
 - **THEN** the "Papelera" badge is not rendered (the entry may still be visible as a link)
+
+### Requirement: Stat tiles on the trash view
+
+The `/papelera` view MUST display four stat tiles above the listing. The tiles MUST be computed server-side via `PapeleraService::statsFor(userId)` and MUST include: `Total` (count of all trashed items owned by the user), `Por expirar pronto` (count with `days_remaining <= urgent_threshold_days`, default 3), `Espacio a liberar` (sum of `file.size` for items that will be hard-deleted at next purge, excluding linked items that won't be purged), and `Próxima purga` (next `trash:purge` cron run, computed as 03:17 local of the next day if today's is past, otherwise today). Each tile MUST show the big number first, then a small label below. No eyebrow text, no ALL CAPS labels, no decorative borders distinct from the rest of the page.
+
+#### Scenario: User with non-empty trash loads the page
+- **WHEN** the user loads `/papelera` and has at least one trashed item
+- **THEN** the four stat tiles render with non-zero values for at least `Total`
+- **AND** the values match `PapeleraService::statsFor()` output exactly
+
+#### Scenario: User with empty trash loads the page
+- **WHEN** the user loads `/papelera` and has zero trashed items
+- **THEN** the stat tiles render with zeros (or "—" for size/date) without crashing
+
+### Requirement: Per-row progress bar visualizing retention lifecycle
+
+Each row in the trash listing MUST include a progress bar whose width is `(days_remaining / retention_days) * 100`. The bar's color MUST shift based on the fraction remaining: `> 30%` uses `bg-brand-500`, `> 10% and ≤ 30%` uses `bg-amber-500`, `≤ 10%` uses `bg-red-500`.
+
+#### Scenario: Item just trashed (full bar)
+- **WHEN** an item is freshly trashed (today)
+- **THEN** its progress bar is at ~100% width in `bg-brand-500`
+
+#### Scenario: Item close to purge (red bar)
+- **WHEN** an item has ≤ 10% of retention remaining
+- **THEN** its progress bar is short and `bg-red-500`
+
+### Requirement: State filter chips on the trash view
+
+The `/papelera` view MUST display three filter chips: `Todos`, `Por expirar (<3d)`, `Críticos (<1d)`. The active filter MUST be visually distinct. Filtering MUST be client-side only (Alpine state, no server reload). The default filter on page load is `Todos`.
+
+#### Scenario: Filter chip narrows the visible items
+- **WHEN** the user clicks the `Por expirar` chip
+- **THEN** the table renders only items with `days_remaining < 3`
+- **AND** the visible count badge on the chip stays in sync
+
+### Requirement: Urgent banner when items are near expiration
+
+When `stats.urgent > 0`, a banner MUST appear at the top of the listing area with amber background and an exclamation triangle icon. The banner text MUST link to the urgent filter chip via an inline click handler.
+
+#### Scenario: Items exist with urgent threshold days remaining
+- **WHEN** `stats.urgent > 0`
+- **THEN** a banner appears at the top of the listing area
+- **AND** the banner text links to the urgent filter
+
+#### Scenario: No urgent items
+- **WHEN** `stats.urgent == 0`
+- **THEN** the urgent banner is not rendered
+
+### Requirement: Responsive card layout on small viewports
+
+When the viewport width is below Tailwind's `sm:` breakpoint (640px), each row MUST render as a stacked card. When the viewport is at or above `sm:`, the table layout MUST be used instead.
+
+#### Scenario: Listing on viewports below sm: breakpoint
+- **WHEN** the viewport width is below 640px
+- **THEN** rows render as stacked cards (one item per card)
+- **AND** the desktop table is hidden
+
+#### Scenario: Listing on viewports at or above sm: breakpoint
+- **WHEN** the viewport width is at or above 640px
+- **THEN** the table renders normally
+- **AND** the cards are hidden

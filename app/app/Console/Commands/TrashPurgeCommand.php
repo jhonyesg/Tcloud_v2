@@ -17,19 +17,27 @@ use Illuminate\Console\Command;
 class TrashPurgeCommand extends Command
 {
     protected $signature = 'trash:purge {--batch= : tamano del chunk (default config trash.purge_batch_size)}
-                                     {--max-ratio= : ratio maximo candidatos/total (default config trash.purge_max_ratio)}';
+                                     {--max-ratio= : ratio maximo candidatos/total (default config trash.purge_max_ratio)}
+                                     {--dry-run : cuenta candidatos sin borrar (no toca BD ni disco)}';
 
-    protected $description = 'Purga items de papelera que superaron retention_days. Respeta guardarrail de ratio.';
+    protected $description = 'Purga items de papelera que superaron retention_days. Respeta guardarrail de ratio. --dry-run cuenta sin borrar.';
 
     public function handle(PapeleraService $service): int
     {
         $batch = (int) ($this->option('batch') ?? config('trash.purge_batch_size', 500));
         $maxRatio = (float) ($this->option('max-ratio') ?? config('trash.purge_max_ratio', 0.5));
+        $dryRun = (bool) $this->option('dry-run');
 
-        $this->info("trash:purge starting (batch={$batch}, max_ratio={$maxRatio}, retention=" . config('trash.retention_days', 15) . "d)");
+        $this->info(sprintf(
+            "trash:purge starting (batch=%d, max_ratio=%s, retention=%dd%s)",
+            $batch,
+            $maxRatio,
+            (int) config('trash.retention_days', 15),
+            $dryRun ? ', DRY-RUN' : ''
+        ));
 
         try {
-            $deleted = $service->purgeExpired($batch, $maxRatio);
+            $deleted = $service->purgeExpired($batch, $maxRatio, $dryRun);
         } catch (\Throwable $e) {
             $this->error('trash:purge failed: ' . $e->getMessage());
             \Illuminate\Support\Facades\Log::error('papelera.purge.unhandled_exception', [
@@ -39,7 +47,11 @@ class TrashPurgeCommand extends Command
             return self::FAILURE;
         }
 
-        $this->info("trash:purge completed: deleted={$deleted}");
+        $this->info(sprintf(
+            "trash:purge completed: %s=%d",
+            $dryRun ? 'would_delete' : 'deleted',
+            $deleted
+        ));
         return self::SUCCESS;
     }
 }
