@@ -21,7 +21,7 @@ The system MUST mark a File as trashed (instead of hard-deleting the row and its
 
 #### Scenario: Soft-trash hides the item from listings
 - **WHEN** the file browser loads a folder listing after an item is soft-trashed
-- **THEN** the trashed item MUST NOT appear in the listing
+- **THEN** the trashed item MUST NOT appear in the listing — neither in root listings (`whereNull('parent_id')`) nor in any subfolder listing
 - **AND** the user can find it via the dedicated "Papelera" view
 
 ### Requirement: Restore semantics

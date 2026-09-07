@@ -167,6 +167,12 @@ class FileController extends Controller
 
             $query = File::query();
 
+            // Papelera: el browser NO debe listar items trashed (parent_id=NULL
+            // + is_trashed=true). Defense in depth: ademas de la cache
+            // invalidation, la query misma filtra para que un eventual fallo
+            // de invalidacion no exponga items trashados como vivos.
+            $query->where('is_trashed', false);
+
             if ($parentId !== null) {
                 $query->where('parent_id', $parentId);
             } else {
