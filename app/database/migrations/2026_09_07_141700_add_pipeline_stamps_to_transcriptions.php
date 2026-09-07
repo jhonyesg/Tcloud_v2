@@ -39,7 +39,7 @@ return new class extends Migration
 
         DB::statement(<<<'SQL'
 CREATE INDEX IF NOT EXISTS transcriptions_pending_dispatchable_idx
-  ON transcriptions (storage_provider_id, file_id)
+  ON transcriptions (file_id)
   WHERE state = 'pending' AND dispatched_at IS NULL
 SQL);
     }
