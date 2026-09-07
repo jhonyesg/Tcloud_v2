@@ -1092,6 +1092,13 @@ class ApiTranscriptorController extends Controller
         ], now()->addHours(2));
 
         // Lanzar el NUEVO comando scan-and-submit en background con nohup.
+        // El trait centraliza la redirección (>> $logFile 2>&1) y el `&`
+        // final; aquí construimos un comando artisan puro. Antes este
+        // controller le agregaba su propio `&` y `>> log`, lo que combinado
+        // con el `&` del wrapper del trait producía bash inválido
+        // (`bash: -c: syntax error near unexpected token ';'`). El modal
+        // quedaba pegado en "Iniciando proceso en background..." durante
+        // el TTL de 2h porque el artisan nunca arrancaba.
         $artisan = base_path('artisan');
         $php = PHP_BINDIR . '/php';
         if (!is_file($php)) $php = 'php';
@@ -1108,10 +1115,9 @@ class ApiTranscriptorController extends Controller
         if ($generateAlerts) {
             $cmd .= ' --alerts';
         }
-        $cmd .= ' >> ' . escapeshellarg($logFile) . ' 2>&1 &';
 
         try {
-            $this->execBackground($cmd, 'transcriptor:scan');
+            $launched = $this->execBackground($cmd, 'transcriptor:scan', $logFile, $cacheKey);
         } catch (\Throwable $e) {
             \Illuminate\Support\Facades\Cache::put($cacheKey, [
                 'status' => 'error',
@@ -1119,6 +1125,16 @@ class ApiTranscriptorController extends Controller
                 'processed' => 0, 'errors' => 0, 'storages' => [], 'files' => [],
             ], now()->addHours(2));
             return response()->json(['error' => $e->getMessage()], 500);
+        }
+
+        if (!$launched) {
+            // El trait ya escribió `status: error` en el cache; devolvemos
+            // 500 con un mensaje accionable para que el modal pueda
+            // mostrarlo en vez de quedarse mudo en "starting".
+            return response()->json([
+                'error' => 'Lanzador produjo bash inválido, revisá /tmp/kilo_artisan_bg.log (filtro [transcriptor:scan]).',
+                'run_id' => $runId,
+            ], 500);
         }
 
         return response()->json([

@@ -153,3 +153,61 @@ descubrimiento corriendo pero corta el envio. El siguiente tick NO encola,
 los endpoints de envio devuelven HTTP 423, y el resto del sistema sigue
 funcionando. Es el interruptor de seguridad antes de decidirse por el
 rollback completo.
+
+## Rollback del change `fix-transcriptor-batch-bg-launcher`
+
+Tres pasos para volver al estado anterior si el botón "Escanear storages"
+vuelve a fallar en producción. El cambio es NO disruptivo: solo toca el
+trait `RunsBackgroundCommands` y un controller. No hay migración de BD
+involucrada y los workers supervisord (`tcloud-transcription-batch-*`)
+no necesitan reinicio — el bug original era 100% en el wrapper de
+lanzamiento del controller, no en los workers de Redis.
+
+```bash
+# 1. Revertir el merge (un solo archivo crítico: el trait).
+cd /www/wwwroot/cloud.mediaserver.com.co/Tcloud_v2
+git revert <commit-hash-de-la-feature>
+
+# 2. Recargar PHP-FPM para que el trait revieja quede en memoria de
+#    los workers. Sin esto, PHP-FPM sigue corriendo la versión cacheada
+#    en opcode del trait viejo.
+#    Ajustar al sistema de gestión de PHP-FPM propio del servidor:
+systemctl reload php84-php-fpm    # o el equivalente según el entorno
+# (alternativa equivalente): `nginx -s reload` + reload del pool FPM
+
+# 3. Verificación rápida post-rollback (sanity, no obligatoria):
+#    Click en "Escanear storages" manualmente en la UI. Si el bug
+#    ORIGINAL (modal colgado en "Iniciando proceso en background...")
+#    vuelve a aparecer, el rollback no se aplicó completo — revisar
+#    que `git revert` haya tocado
+#    app/app/Http/Controllers/Concerns/RunsBackgroundCommands.php.
+```
+
+**Por qué este rollback es seguro**:
+- Los otros dos callers del trait (`CorreccionesController::apply`,
+  `AvisosInteligentesController::scan`) ya respetaban el contrato
+  antes del cambio (pasaban `$cmd` sin `&` ni redirección). El
+  revert NO rompe esas rutas — siguen funcionando porque la firma
+  del trait con `?string $logFile = null` y `?string $cacheKey = null`
+  es backward-compatible (Laravel/IDE ignoran los args extra en
+  callers que no los pasan).
+- Si el operador quiere volver a usar "Escanear storages" con el
+  revert aplicado, el bug original reaparece (modal colgado). Eso
+  ES la señal de que el revert funcionó: significa que el trait
+  viejo está activo y el controller viejo (que le pasaba `&` al
+  `$cmd`) está corriendo. En ese caso, **no seguir usando el botón
+  manual** y aplicar el fix nuevamente cuando se diagnostique la
+  regresión.
+
+**Freno de emergencia alternativo** (sin deploy): mientras se
+diagnostica, el operador puede ejecutar el escaneo desde CLI
+mientras el botón UI está roto:
+
+```bash
+cd /www/wwwroot/cloud.mediaserver.com.co/Tcloud_v2/app
+/usr/bin/php84 artisan transcription:scan-and-submit --days=0 --batch=200
+```
+
+El cron `TranscriptionTickCommand` también corre el mismo comando
+in-process (no vía `execBackground`), por lo que el escaneo
+automático sigue funcionando aunque el botón manual esté roto.
