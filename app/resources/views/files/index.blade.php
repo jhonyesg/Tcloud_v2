@@ -19,6 +19,8 @@ document.addEventListener('alpine:init', () => {
     storageSortDirection: 'asc',
     currentFolder: null,
     currentFolderName: null,
+    highlightFileId: null,
+    cameFromAvisos: false,
     currentStorage: null,
     currentStorageName: null,
     currentStoragePermission: 'read',
@@ -138,6 +140,11 @@ deleteConfirmFile: null,
         showEmptyState: false,
 
         async init() {
+            // Alpine ejecuta init() dos veces (auto por el objeto + x-init):
+            // la segunda pasada, con availableStorages aún en carrera, caía en
+            // restoreNavState y pizotaba la carpeta del deep-link de mis-avisos.
+            if (this._initDone) return;
+            this._initDone = true;
             await Promise.all([
                 this.loadStorages(),
                 apiFetch('/auth/me', { credentials: 'include', headers: { 'Accept': 'application/json' } })
@@ -146,11 +153,34 @@ deleteConfirmFile: null,
             ]);
             const urlParams = new URLSearchParams(window.location.search);
             const urlStorageId = urlParams.get('storage_id');
+            // Deep-link desde /mis-avisos: ?storage_id=X&clip_file=Y&clip_start=S&clip_end=E
+            const deepClip = {
+                fileId: urlParams.get('clip_file') ? parseInt(urlParams.get('clip_file'), 10) : null,
+                start:  urlParams.get('clip_start') !== null ? parseFloat(urlParams.get('clip_start')) : null,
+                end:    urlParams.get('clip_end') !== null ? parseFloat(urlParams.get('clip_end')) : null,
+            };
             if (urlStorageId) {
                 const sid = parseInt(urlStorageId);
                 const storage = this.availableStorages.find(s => s.id === sid);
                 if (storage) {
+                    // El deep-link manda: restoreNavState no debe pisarlo.
+                    this._deepLinkActive = true;
                     this.enterStorage(storage.id, storage.name);
+                    // Deep-link extendido desde mis-avisos: caer en la carpeta
+                    // del medio y resaltar el archivo de la mención.
+                    const urlFolder = urlParams.get('folder') ? parseInt(urlParams.get('folder'), 10) : null;
+                    if (urlFolder) {
+                        this.currentFolder = urlFolder;
+                        this.currentFolderName = urlParams.get('folder_name') || null;
+                        this.loadFiles(false, false, true);
+                    }
+                    const urlHighlight = urlParams.get('highlight_file') ? parseInt(urlParams.get('highlight_file'), 10) : null;
+                    if (urlHighlight) {
+                        this.highlightFileId = urlHighlight;
+                        // Origen mis-avisos (deep-link de Archivos): el editor
+                        // de corte ofrecerá volver al módulo.
+                        this.cameFromAvisos = true;
+                    }
                     history.replaceState(null, '', '/files');
                 } else {
                     await this.restoreNavState();
@@ -159,6 +189,12 @@ deleteConfirmFile: null,
                 await this.restoreNavState();
             }
             this.ready = true;
+            // Si hay deep-link, esperar a que carguen los archivos y abrir editor
+            if (deepClip.fileId) {
+                // Origen mis-avisos (deep-link legacy de corte).
+                this.cameFromAvisos = true;
+                this.$nextTick(() => this.applyDeepClipLink(deepClip));
+            }
             this.$watch('searchQuery', (val) => {
                 clearTimeout(this.searchTimer);
                 if (val.length >= 2) {
@@ -254,6 +290,8 @@ deleteConfirmFile: null,
     },
 
     async restoreNavState() {
+        // Con deep-link activo, el estado de localStorage es obsoleto.
+        if (this._deepLinkActive) return;
         try {
             const saved = localStorage.getItem('tcloud_files_nav');
             if (!saved) return;
@@ -349,13 +387,28 @@ deleteConfirmFile: null,
         this.currentPage = 1;
         this.hasMore = false;
         this.viewMode = 'files';
+        this.highlightFileId = null;
         this.loadFiles(false, false, true);
         this.saveNavState();
+    },
+
+    // Deep-link de mis-avisos: localiza la fila resaltada aunque el render
+    // tarde (reintenta); deja de intentarlo cuando el usuario navega solo.
+    scrollToHighlightedFile() {
+        if (!this.highlightFileId) return;
+        const tryScroll = (attempt) => {
+            if (!this.highlightFileId) return;
+            const el = document.getElementById('file-row-' + this.highlightFileId);
+            if (el) { el.scrollIntoView({ block: 'center' }); return; }
+            if (attempt < 8) setTimeout(() => tryScroll(attempt + 1), 250);
+        };
+        tryScroll(0);
     },
 
     navigateToRoot() {
         this.currentStorage = null;
         this.currentStorageName = null;
+        this.highlightFileId = null;
         this.currentFolder = null;
         this.currentFolderName = null;
         this.breadcrumbs = [];
@@ -434,6 +487,10 @@ deleteConfirmFile: null,
             this.isNavigating = false;
             this.navigatingToId = null;
             this.isLoadingFiles = false;
+            // Deep-link de mis-avisos: llevar la vista al archivo de la
+            // mención. Reintenta: el silentSync y los re-renders pueden
+            // llegar después de la primera pasada.
+            if (this.highlightFileId) this.scrollToHighlightedFile();
             if (serverData.length === 0) {
                 this._emptyStateTimer = setTimeout(() => { this.showEmptyState = true; }, 1500);
             } else {
@@ -572,6 +629,7 @@ deleteConfirmFile: null,
 
     navigateToFolder(folderId, folderName) {
         if (this.isNavigating || folderId === this.currentFolder) return;
+        this.highlightFileId = null;
         this._prevFolder = this.currentFolder;
         this._prevFolderName = this.currentFolderName;
         this._prevBreadcrumbs = [...this.breadcrumbs];
@@ -1560,6 +1618,67 @@ deleteConfirmFile: null,
         this.clipOutTimeInput = '';
         this.showClipModal = true;
         this.$nextTick(() => this.initClipPlayer(file));
+    },
+
+    /**
+     * Deep-link desde /mis-avisos: dado {fileId, start, end}, abre el
+     * MISMO editor que "openClipEditor" (un solo lugar para mantenerlo)
+     * con los puntos de inicio/fin pre-llenados. Si el archivo está en
+     * una subcarpeta, navega al padre y luego lo busca en this.files.
+     */
+    async applyDeepClipLink(deepClip) {
+        if (!this.canUseMediaEditor) return;
+        try {
+            const resp = await apiFetch('/files/' + deepClip.fileId, {
+                headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+                credentials: 'include',
+            });
+            if (!resp.ok) { console.warn('deep-clip: file fetch failed', resp.status); return; }
+            const fileData = await resp.json();
+            const parentId = fileData.parent_id || null;
+            // Si está en una subcarpeta, navega al padre (alpine state) y
+            // refresca this.files; si está en la raíz, los archivos ya están
+            // cargados y podemos abrir directo.
+            const openFromCurrent = () => {
+                this.$nextTick(() => {
+                    let filesDone = false;
+                    let readyDone = false;
+                    this.$watch('files', (files) => {
+                        if (filesDone) return;
+                        const f = (files || []).find(x => !x.is_folder && x.id === deepClip.fileId);
+                        if (!f) return;
+                        filesDone = true;
+                        this.openClipEditor(f);
+                        this.$watch('clipReady', (ready) => {
+                            if (readyDone || !ready) return;
+                            readyDone = true;
+                            if (deepClip.start !== null && !Number.isNaN(deepClip.start)) {
+                                this.clipSelStart = deepClip.start;
+                                this.clipInTimeInput = this.formatClipTime(deepClip.start);
+                            }
+                            if (deepClip.end !== null && !Number.isNaN(deepClip.end)) {
+                                this.clipSelEnd = deepClip.end;
+                                this.clipOutTimeInput = this.formatClipTime(deepClip.end);
+                            }
+                        });
+                    });
+                    // Seguridad: si el archivo no aparece, soltamos el flag
+                    setTimeout(() => { filesDone = true; }, 15000);
+                });
+            };
+            if (parentId && parentId !== this.currentFolder) {
+                // Navega al padre. setCurrentFolder/setBreadcrumb internos
+                // pueden variar; lo más portable es llamar loadFiles con el
+                // parent y reconstruir breadcrumb manualmente.
+                this.currentFolder = parentId;
+                this.currentFolderName = fileData.name ? '(padre)' : '';
+                this.breadcrumbs = [{ id: parentId, name: this.currentFolderName }];
+                await this.loadFiles(false, false, true);
+            }
+            openFromCurrent();
+        } catch (e) {
+            console.warn('deep-clip: error', e);
+        }
     },
 
     closeClipModal() {
@@ -2578,8 +2697,9 @@ deleteConfirmFile: null,
                 <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2 sm:gap-4" x-show="viewMode === 'files' && files.length > 0 && filesViewMode === 'grid'"
                      @click.self="clearSelection()">
                     <template x-for="file in sortedFiles()" :key="file.id">
-                        <div class="group relative bg-slate-50 hover:bg-blue-50 border border-slate-200 hover:border-blue-300 rounded-xl p-2 sm:p-4 cursor-pointer transition-all"
-                             :class="[isSelected(file) ? 'ring-2 ring-blue-500 bg-blue-50 border-blue-300' : '', navigatingToId === file.id ? 'opacity-60 pointer-events-none' : '']"
+                        <div :id="'file-row-' + file.id"
+                             class="group relative bg-slate-50 hover:bg-blue-50 border border-slate-200 hover:border-blue-300 rounded-xl p-2 sm:p-4 cursor-pointer transition-all"
+                             :class="[isSelected(file) ? 'ring-2 ring-blue-500 bg-blue-50 border-blue-300' : '', highlightFileId === file.id ? 'ring-2 ring-amber-400 bg-amber-50 border-amber-300' : '', navigatingToId === file.id ? 'opacity-60 pointer-events-none' : '']"
                              @click.ctrl.prevent.stop="toggleSelect(file)">
                             <div class="absolute top-1.5 left-1.5 z-10 opacity-0 group-hover:opacity-100 transition-opacity"
                                  :class="isSelected(file) ? 'opacity-100' : ''"
@@ -2740,8 +2860,9 @@ deleteConfirmFile: null,
                         </thead>
                         <tbody class="divide-y divide-slate-200">
                             <template x-for="file in sortedFiles()" :key="file.id">
-                                <tr class="cursor-pointer transition-colors"
-                                    :class="[isSelected(file) ? 'bg-blue-50' : 'hover:bg-slate-50', navigatingToId === file.id ? 'opacity-60 pointer-events-none' : '']"
+                                <tr :id="'file-row-' + file.id"
+                                    class="cursor-pointer transition-colors"
+                                    :class="[isSelected(file) ? 'bg-blue-50' : 'hover:bg-slate-50', highlightFileId === file.id ? 'bg-amber-50 ring-1 ring-inset ring-amber-400' : '', navigatingToId === file.id ? 'opacity-60 pointer-events-none' : '']"
                                     @click="file.is_folder ? navigateToFolder(file.id, file.name) : openViewer(file)"
                                     @click.ctrl.prevent.stop="toggleSelect(file)">
                                     <td class="px-2 sm:px-3 py-2 sm:py-3 text-center w-8" @click.stop>
@@ -3626,6 +3747,15 @@ deleteConfirmFile: null,
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
                 </svg>
                 Salir
+            </button>
+            <!-- Volver al módulo de avisos: solo si la sesión entró desde allí -->
+            <button x-show="cameFromAvisos" @click="window.location.href = '/mis-avisos'"
+                    class="flex items-center gap-1.5 text-xs sm:text-sm font-medium text-brand-700 hover:text-brand-900 transition-colors px-2.5 sm:px-4 py-1.5 sm:py-2 rounded-lg hover:bg-brand-50 border border-brand-300 flex-shrink-0"
+                    title="Volver al módulo de Mis Avisos">
+                <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+                </svg>
+                Volver a Mis Avisos
             </button>
             <div class="w-px h-5 bg-slate-200 hidden sm:block"></div>
             <svg class="w-4 h-4 text-violet-600 flex-shrink-0 hidden sm:block" fill="none" stroke="currentColor" viewBox="0 0 24 24">

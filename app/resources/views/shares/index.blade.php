@@ -146,8 +146,8 @@
                         </th>
                         <th class="px-4 py-3 text-left"><button @click="toggleSort('name')" class="hover:text-gray-700">Recurso <i :class="sortIcon('name')"></i></button></th>
                         <th class="px-4 py-3 text-left">Enlace</th>
-                        <th class="px-4 py-3 text-left">Permiso</th>
-                        <th class="px-4 py-3 text-left">Estado</th>
+                        <th class="px-4 py-3 text-left"><button @click="toggleSort('permission')" class="hover:text-gray-700">Permiso <i :class="sortIcon('permission')"></i></button></th>
+                        <th class="px-4 py-3 text-left"><button @click="toggleSort('status')" class="hover:text-gray-700">Estado <i :class="sortIcon('status')"></i></button></th>
                         <th class="px-4 py-3 text-left"><button @click="toggleSort('expires_at')" class="hover:text-gray-700">Expira <i :class="sortIcon('expires_at')"></i></button></th>
                         <th class="px-4 py-3 text-center"><button @click="toggleSort('accesses')" class="hover:text-gray-700">Accesos <i :class="sortIcon('accesses')"></i></button></th>
                         <th class="px-4 py-3 text-left"><button @click="toggleSort('created_at')" class="hover:text-gray-700">Creado <i :class="sortIcon('created_at')"></i></button></th>
@@ -386,11 +386,13 @@ function sharesApp() {
             this.bulkLoading = true;
             this.showToast(true, `Iniciando verificación en lotes de ${batchSize} (${total} enlace(s))…`);
             let processed = 0, available = 0, missing = 0, unknown = 0;
+            let cursor = null;
             try {
-                while (processed < total) {
+                do {
                     const body = Object.fromEntries(this.queryParams(false).entries());
                     body.all_matching = true;
                     body.limit = batchSize;
+                    if (cursor !== null) body.after_id = cursor;
                     const res = await apiFetch('/shares/availability/verify', { method: 'POST', credentials: 'include', headers: { 'Accept': 'application/json', 'Content-Type': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content }, body: JSON.stringify(body) });
                     const payload = await res.json();
                     if (!res.ok) throw new Error(payload.error || 'Error ' + res.status);
@@ -399,8 +401,8 @@ function sharesApp() {
                     missing += payload.missing || 0;
                     unknown += payload.unknown || 0;
                     this.showToast(true, `Verificados ${processed}/${total}: ${available} disponibles, ${missing} ausentes, ${unknown} no verificados`);
-                    if (!payload.checked || payload.checked < batchSize) break;
-                }
+                    cursor = payload.has_more ? payload.next_cursor : null;
+                } while (cursor !== null);
                 await this.loadShares();
                 this.showToast(true, `Listo: ${available} disponibles, ${missing} ausentes, ${unknown} no verificados`);
             } catch (e) { this.showToast(false, e.message); } finally { this.bulkLoading = false; }
@@ -456,7 +458,7 @@ function sharesApp() {
         formatDate(raw) { if (!raw) return ''; return new Date(raw).toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' }); },
         filePath(path) { const parts = (path || '').split('/').filter(Boolean); return parts.length <= 1 ? '/' : '/' + parts.slice(0, -1).join('/'); },
         fileIcon(file) { if (!file) return '<i class="fas fa-question text-gray-300"></i>'; if (file.is_folder) return '<i class="fas fa-folder text-yellow-400"></i>'; const mime = file.mime_type || ''; if (mime.startsWith('image/')) return '<i class="fas fa-file-image text-blue-400"></i>'; if (mime.startsWith('video/')) return '<i class="fas fa-file-video text-purple-400"></i>'; if (mime.startsWith('audio/')) return '<i class="fas fa-file-audio text-pink-400"></i>'; if (mime === 'application/pdf') return '<i class="fas fa-file-pdf text-red-400"></i>'; return '<i class="fas fa-file text-gray-400"></i>'; },
-        startSharesTour() { if (window.TcloudTour) TcloudTour.start({ steps: [{ title: 'Mis Recursos Compartidos', content: 'Administra tus enlaces con filtros por fecha, estado, disponibilidad y permiso.', icon: 'fa-share-alt', color: '#6366f1', selector: null, position: 'center' }, { title: 'Filtros y fechas', content: 'Busca por nombre o ruta y combina los filtros de vencimiento, disponibilidad y rangos de fecha.', icon: 'fa-filter', color: '#2563eb', selector: '.border-b.border-gray-100', position: 'bottom' }, { title: 'Ordenamiento', content: 'Pulsa los encabezados Recurso, Expira, Accesos o Creado para ordenar ascendente o descendentemente.', icon: 'fa-sort', color: '#4654a8', selector: 'table thead', position: 'bottom' }, { title: 'Depuración masiva', content: 'Selecciona enlaces, verifica disponibilidad y previsualiza la eliminación antes de revocar definitivamente.', icon: 'fa-trash-alt', color: '#dc2626', selector: '[x-show="selectedCount() > 0"]', position: 'bottom' }] }); }
+        startSharesTour() { if (window.TcloudTour) TcloudTour.start({ steps: [{ title: 'Mis Recursos Compartidos', content: 'Administra tus enlaces con filtros por fecha, estado, disponibilidad y permiso.', icon: 'fa-share-alt', color: '#6366f1', selector: null, position: 'center' }, { title: 'Filtros y fechas', content: 'Busca por nombre o ruta y combina los filtros de vencimiento, disponibilidad y rangos de fecha.', icon: 'fa-filter', color: '#2563eb', selector: '.border-b.border-gray-100', position: 'bottom' },             { title: 'Ordenamiento', content: 'Pulsa los encabezados Recurso, Permiso, Estado, Expira, Accesos o Creado para ordenar ascendente o descendentemente.', icon: 'fa-sort', color: '#4654a8', selector: 'table thead', position: 'bottom' }, { title: 'Depuración masiva', content: 'Selecciona enlaces, verifica disponibilidad y previsualiza la eliminación antes de revocar definitivamente.', icon: 'fa-trash-alt', color: '#dc2626', selector: '[x-show="selectedCount() > 0"]', position: 'bottom' }] }); }
     };
 }
 </script>

@@ -1739,7 +1739,7 @@
         <div class="bg-white rounded-2xl w-full max-w-3xl max-h-[92vh] shadow-2xl flex flex-col" @click.outside="closeContext()">
             <div class="px-6 pt-6 pb-4 border-b border-slate-100">
                 <div class="flex items-start justify-between gap-4">
-                    <div>
+                    <div class="flex-1">
                         <h2 class="text-lg font-bold text-slate-800">Ejemplos en transcripciones</h2>
                         <p class="text-sm text-slate-500 mt-1">
                             <span class="font-mono bg-rose-50 text-rose-700 px-1.5 py-0.5 rounded" x-text="contextModal.item?.wrong_text"></span>
@@ -1747,7 +1747,40 @@
                             <span class="font-mono bg-emerald-50 text-emerald-700 px-1.5 py-0.5 rounded" x-text="contextModal.item?.correct_text"></span>
                         </p>
                     </div>
-                    <button @click="closeContext()" class="text-slate-400 hover:text-slate-700"><i class="fas fa-times"></i></button>
+                    <button @click="closeContext()" class="text-slate-400 hover:text-slate-700 -mt-1"><i class="fas fa-times"></i></button>
+                </div>
+                <div class="flex items-center justify-between mt-3 text-xs">
+                    <span class="text-slate-500">Diccionario de marcas:
+                        <span class="font-semibold text-violet-700" x-text="protectedTermsSummary.total || 0"></span> protegidas
+                    </span>
+                    <button @click="loadProtectedTermsList(); showProtectedPanel = !showProtectedPanel"
+                            class="text-violet-600 hover:text-violet-800 hover:underline">
+                        <span x-show="!showProtectedPanel">Ver todas</span>
+                        <span x-show="showProtectedPanel">Cerrar</span>
+                    </button>
+                </div>
+                <div x-show="showProtectedPanel" x-transition class="mt-2 rounded-md border border-slate-200 bg-slate-50 p-2 max-h-56 overflow-y-auto">
+                    <div class="flex items-center gap-2 mb-2">
+                        <span class="text-xs font-medium text-slate-600">Marcas activas</span>
+                        <input type="text" x-model="protectedSearchQuery" placeholder="filtrar…"
+                               class="text-xs px-2 py-0.5 border border-slate-300 rounded bg-white ml-auto">
+                    </div>
+                    <div x-show="!protectedTermsSummary.list || protectedTermsSummary.list.length === 0"
+                         class="text-xs text-slate-400 py-2 text-center">
+                        Cargando…
+                    </div>
+                    <div class="grid grid-cols-2 gap-1 text-xs" x-show="protectedTermsSummary.list && protectedTermsSummary.list.length">
+                        <template x-for="(item, idx) in protectedTermsSummary.list.filter(i => !protectedSearchQuery || i.term.includes(protectedSearchQuery.toLowerCase()))" :key="idx">
+                            <span class="inline-flex items-center gap-1 px-2 py-1 bg-white border border-slate-200 rounded font-mono truncate">
+                                <span class="truncate flex-1" :title="item.term" x-text="item.term"></span>
+                                <button @click="quickUnprotect(item.term, ex.segment_id)"
+                                        title="Quitar esta marca (soft-archive)"
+                                        class="text-slate-400 hover:text-rose-600 shrink-0">
+                                    ×
+                                </button>
+                            </span>
+                        </template>
+                    </div>
                 </div>
             </div>
 
@@ -1827,12 +1860,177 @@
                                     </div>
                                     <div class="p-3 space-y-2.5">
                                         <div>
-                                            <label class="block text-[10px] font-semibold text-slate-400 mb-1 uppercase tracking-wide">Como lo transcribió</label>
-                                            <p class="text-sm text-slate-700 leading-relaxed" x-html="highlightMatches(ex.text_raw, contextModal.item?.wrong_text, 'bg-rose-100 text-rose-800 px-0.5 rounded font-semibold')"></p>
+                                            <p class="text-sm text-slate-700 leading-relaxed"
+                                               @mouseup="captureSelection(ex.segment_id, $event)"
+                                               @keyup="captureSelection(ex.segment_id, $event)"
+                                               x-init="$el.addEventListener('selectionchange', () => captureSelection(ex.segment_id, $event), true); $el.addEventListener('dblclick', () => { captureSelection(ex.segment_id, $event); }); true"
+                                               x-show="!aiFor(ex.segment_id).result"
+                                               x-html="highlightMatches(ex.text_raw, contextModal.item?.wrong_text, 'bg-rose-100 text-rose-800 px-0.5 rounded font-semibold')"></p>
+                                             <p class="text-sm text-slate-700 leading-relaxed"
+                                                x-show="aiFor(ex.segment_id).result"
+                                                x-html="highlightMatches(aiFor(ex.segment_id).result?.wrong, contextModal.item?.wrong_text, 'bg-rose-100 text-rose-800 px-0.5 rounded font-semibold')"></p>
                                         </div>
-                                        <div>
-                                            <label class="block text-[10px] font-semibold text-slate-400 mb-1 uppercase tracking-wide">Cómo quedaría con esta regla</label>
-                                            <p class="text-sm text-slate-700 leading-relaxed" x-html="highlightMatches(ex.preview, contextModal.item?.correct_text, 'bg-emerald-100 text-emerald-800 px-0.5 rounded font-semibold')"></p>
+
+                                        <div x-show="aiFor(ex.segment_id).result" class="border-t border-slate-100 pt-2">
+                                            <p class="text-sm text-slate-800 leading-relaxed" x-text="aiFor(ex.segment_id).result?.correct"></p>
+                                            <p class="text-xs text-slate-400 mt-1" x-show="aiFor(ex.segment_id).result?.reason"
+                                               :title="aiFor(ex.segment_id).result?.reason"
+                                               x-text="'Detalles: ' + (aiFor(ex.segment_id).result?.reason || '')"></p>
+                                        </div>
+
+                                        <div x-show="aiFor(ex.segment_id).error" class="rounded-md bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-800"
+                                             role="alert">
+                                            <div class="flex items-start gap-2">
+                                                <span class="flex-1">
+                                                    <span x-text="aiFor(ex.segment_id).error"></span>
+                                                    <span class="block mt-1 text-[11px] text-amber-700" x-show="aiFor(ex.segment_id).hint" x-text="aiFor(ex.segment_id).hint"></span>
+                                                </span>
+                                                <button @click="requestAiContextCorrect(ex.segment_id, true)"
+                                                        :disabled="aiFor(ex.segment_id).loading"
+                                                        class="text-amber-700 hover:text-amber-900 disabled:text-amber-300 text-xs">
+                                                    Reintentar
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        <div x-show="aiFor(ex.segment_id).loading" class="flex items-center gap-2 text-xs text-slate-500">
+                                            <span class="inline-block w-3 h-3 border-2 border-violet-300 border-t-violet-600 rounded-full animate-spin"></span>
+                                            <span>Consultando el LLM con contexto ampliado...</span>
+                                        </div>
+
+                                        <div class="flex flex-wrap items-center gap-1.5 pt-2 border-t border-slate-100">
+                                            <button @click="requestAiContextCorrect(ex.segment_id, false)"
+                                                    x-show="!aiFor(ex.segment_id).result && !aiFor(ex.segment_id).loading"
+                                                    :disabled="(aiSettings.hasApiKey ?? false) === false || aiSettings.form?.enabled === '0'"
+                                                    class="px-3 py-1.5 bg-violet-600 hover:bg-violet-700 disabled:bg-slate-100 disabled:text-slate-400 text-white text-xs rounded-md font-medium"
+                                                    :title="!(aiSettings.hasApiKey ?? false) ? 'Configura la API key en /ia/correcciones → IA Suggest' : (aiSettings.form?.enabled === '0' ? 'Activa el switch maestro en IA Suggest' : 'Traducir este segmento con los vecinos como contexto')">
+                                                Traducir este segmento con IA
+                                            </button>
+
+                                            <button x-show="aiFor(ex.segment_id).result"
+                                                    @click="approveAiContextCorrect(ex.segment_id)"
+                                                    :disabled="aiFor(ex.segment_id).approving"
+                                                    class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-100 disabled:text-slate-400 text-white text-xs rounded-md font-medium">
+                                                Aprobar y agregar regla
+                                            </button>
+
+                                            <button x-show="aiFor(ex.segment_id).result"
+                                                    @click="requestAiContextCorrect(ex.segment_id, true)"
+                                                    :disabled="aiFor(ex.segment_id).loading"
+                                                    class="px-3 py-1.5 bg-white border border-slate-300 hover:bg-slate-50 disabled:bg-slate-100 text-slate-700 text-xs rounded-md font-medium">
+                                                Reintentar
+                                            </button>
+
+                                            <button x-show="aiFor(ex.segment_id).result && !aiFor(ex.segment_id).approving"
+                                                    @click="resetAiFor(ex.segment_id)"
+                                                    class="px-3 py-1.5 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 text-xs rounded-md font-medium">
+                                                Cerrar
+                                            </button>
+
+                                            <button @click="detectBrandsInExample(ex.segment_id)"
+                                                    :disabled="aiFor(ex.segment_id).detectingBrands || (aiSettings.hasApiKey ?? false) === false"
+                                                    class="px-3 py-1.5 bg-white border border-slate-300 hover:bg-slate-50 disabled:bg-slate-100 disabled:text-slate-400 text-slate-700 text-xs rounded-md font-medium">
+                                                Detectar marcas
+                                            </button>
+
+                                            <span class="ml-2 text-[10px] text-slate-400 font-mono"
+                                                  x-show="aiFor(ex.segment_id).result && aiFor(ex.segment_id).result.tokens_used"
+                                                  x-text="(aiFor(ex.segment_id).result?.tokens_used || '?') + ' tok'"></span>
+
+                                            <div x-show="recentlyProtectedByExample[ex.segment_id] === undefined || recentlyProtectedByExample[ex.segment_id].length > 0 || (brandSuggestionsByExample[ex.segment_id + '_all'] || []).length > 0"
+                                                     class="basis-full mt-1">
+                                                <div class="rounded-md border border-slate-200 p-2 space-y-2">
+                                                    <div class="text-xs text-slate-500 flex items-center justify-between">
+                                                        <span>Resultado de la detección:</span>
+                                                        <button @click="brandSuggestionsByExample[ex.segment_id + '_all'] = null"
+                                                                class="text-[10px] text-slate-400 hover:text-slate-600">
+                                                            × cerrar
+                                                        </button>
+                                                    </div>
+                                                    <!-- NUEVOS (no protegidos): checkboxes + agregar -->
+                                                    <template x-if="(brandSuggestionsByExample[ex.segment_id + '_all'] || {}).new && (brandSuggestionsByExample[ex.segment_id + '_all'].new.length > 0)">
+                                                        <div>
+                                                            <div class="text-[10px] uppercase tracking-wide text-slate-400 mb-1">Nuevos (no protegidos)</div>
+                                                            <template x-for="(b, idx) in (brandSuggestionsByExample[ex.segment_id + '_all'].new || [])" :key="'n'+idx">
+                                                                <label class="flex items-center gap-2 text-xs py-0.5">
+                                                                    <input type="checkbox" :value="b" x-model="checkedBrandsByExample[ex.segment_id][b]" class="rounded border-slate-300">
+                                                                    <span class="font-mono text-slate-700" x-text="b"></span>
+                                                                </label>
+                                                            </template>
+                                                            <button @click="addSelectedBrands(ex.segment_id, (brandSuggestionsByExample[ex.segment_id + '_all'] || {}).new || [])"
+                                                                    :disabled="Object.values(checkedBrandsByExample[ex.segment_id] || {}).filter(Boolean).length === 0"
+                                                                    class="mt-1 px-2.5 py-1 bg-violet-600 hover:bg-violet-700 disabled:bg-slate-200 disabled:text-slate-400 text-white text-xs rounded-md font-medium">
+                                                                Agregar seleccionados
+                                                            </button>
+                                                        </div>
+                                                    </template>
+                                                    <!-- YA PROTEGIDOS: lista visible (sin checkbox) -->
+                                                    <template x-if="(brandSuggestionsByExample[ex.segment_id + '_all'] || {}).already && (brandSuggestionsByExample[ex.segment_id + '_all'].already.length > 0)">
+                                                        <div class="mt-2">
+                                                            <div class="text-[10px] uppercase tracking-wide text-emerald-600 mb-1">Ya están protegidos</div>
+                                                            <div class="flex items-center gap-1 flex-wrap">
+                                                                <template x-for="(b, idx) in (brandSuggestionsByExample[ex.segment_id + '_all'].already || [])" :key="'a'+idx">
+                                                                    <span class="inline-flex items-center gap-1 px-2 py-0.5 bg-emerald-50 text-emerald-700 rounded-full text-[11px] font-mono">
+                                                                        <i class="fas fa-check text-[10px]"></i>
+                                                                        <span x-text="b"></span>
+                                                                    </span>
+                                                                </template>
+                                                            </div>
+                                                        </div>
+                                                    </template>
+                                                    <template x-if="(brandSuggestionsByExample[ex.segment_id + '_all'] || {}).new && (brandSuggestionsByExample[ex.segment_id + '_all'].new.length === 0) && (!(brandSuggestionsByExample[ex.segment_id + '_all'] || {}).already || (brandSuggestionsByExample[ex.segment_id + '_all'].already || []).length === 0)">
+                                                        <div class="text-xs text-slate-400">No se detectaron candidatos en este segmento.</div>
+                                                    </template>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                        <div class="text-xs text-slate-500 mt-2 space-y-2">
+                                            <div class="flex items-center gap-2">
+                                                <span class="text-slate-400">Marca a proteger:</span>
+                                                <input type="text"
+                                                       :value="aiFor(ex.segment_id).selection"
+                                                       @input="aiFor(ex.segment_id).selection = $event.target.value.replace(/\s+/g, ' ').trim(); $event.target.value = aiFor(ex.segment_id).selection"
+                                                       :disabled="aiFor(ex.segment_id).protecting"
+                                                       placeholder="escribe o selecciona arriba"
+                                                       class="flex-1 px-2 py-1 rounded border border-slate-300 font-mono focus:outline-none focus:border-violet-500 bg-white">
+                                                <button @click="protectSelection(ex.segment_id)"
+                                                        :disabled="!(aiFor(ex.segment_id).selection || '').trim() || aiFor(ex.segment_id).protecting"
+                                                        class="px-3 py-1 bg-violet-600 hover:bg-violet-700 disabled:bg-slate-200 disabled:text-slate-400 text-white text-xs rounded font-medium">
+                                                    <span x-show="!aiFor(ex.segment_id).protecting">Proteger marca</span>
+                                                    <span x-show="aiFor(ex.segment_id).protecting">…</span>
+                                                </button>
+                                                <button @click="aiFor(ex.segment_id).selection = ''"
+                                                        class="text-slate-400 hover:text-slate-600 text-xs">×</button>
+                                            </div>
+
+<div x-show="recentlyProtectedFor(ex.segment_id).length > 0"
+                                                 class="flex items-center gap-1.5 flex-wrap pt-1">
+                                                <span class="text-slate-400 text-xs">Protegidas ahora:</span>
+                                                <template x-for="(term, idx) in recentlyProtectedFor(ex.segment_id)" :key="idx">
+                                                    <span class="inline-flex items-center gap-1 px-2 py-0.5 bg-violet-50 text-violet-700 rounded-full text-xs font-mono"
+                                                          :class="{ 'opacity-50': archvingProtectedFor(ex.segment_id, term) }">
+                                                        <span x-text="term"></span>
+                                                        <button @click="retryAfterUnprotect(ex.segment_id, term)"
+                                                                :disabled="archvingProtectedFor(ex.segment_id, term)"
+                                                                title="Quitar esta marca y volver a traducir"
+                                                                class="text-violet-400 hover:text-rose-600 disabled:text-violet-200">
+                                                            <span x-show="!archvingProtectedFor(ex.segment_id, term)">×</span>
+                                                            <span x-show="archvingProtectedFor(ex.segment_id, term)">…</span>
+                                                        </button>
+                                                    </span>
+                                                </template>
+                                                <button x-show="recentlyProtectedFor(ex.segment_id).length > 0"
+                                                        @click="clearAllRecentForExample(ex.segment_id)"
+                                                        class="text-[10px] text-slate-400 hover:text-slate-600 underline ml-1">
+                                                    limpiar
+                                                </button>
+                                            </div>
+
+                                            <div x-show="aiFor(ex.segment_id).protectError" class="text-xs text-rose-700">
+                                                <span x-text="aiFor(ex.segment_id).protectError"></span>
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
@@ -2216,6 +2414,22 @@ function correccionesAdmin() {
         showRejectedTooltip: false,
         // Ejemplos en transcripciones (corrections-context-examples)
         contextModal: { open: false, loading: false, item: null, data: null },
+// Corrección IA inline por ejemplo dentro del modal de contexto
+        // (corrections-ai-context-aware-with-mark-curation, 2026-09-05).
+        // Map por segment_id con {loading, result, error, selection, protecting, approving}.
+aiContextCorrect: {},
+         // Marcas detectadas por el LLM por ejemplo (modal de Contexto).
+         brandSuggestionsByExample: {},
+         // Checkboxes activos del admin por ejemplo.
+         checkedBrandsByExample: {},
+         // Marcas recién protegidas en esta sesión (por ejemplo).
+         recentlyProtectedByExample: {},
+         // Marcas en proceso de archive (por ejemplo) — usado por chips.
+         archivingProtectedFor: [],
+         // Panel consolidado del diccionario de marcas protegidas.
+         showProtectedPanel: false,
+         protectedTermsSummary: { total: 0, list: [] },
+         protectedSearchQuery: '',
          // Revisión manual de transcripciones terminadas.
          transcriptionReviews: [],
          transcriptionReviewMode: 'completed',
@@ -2412,6 +2626,17 @@ function correccionesAdmin() {
             await this.loadApproved();
             await this.loadMiningStatus();
             await this.loadAiSuggestStatus();
+            // Cargar settings (incluye has_api_key + api_key_source) al montar
+            // la página, no solo al visitar la pestaña IA Suggest. Así los
+            // botones que dependen de aiSettings.hasApiKey (corrección IA
+            // inline por ejemplo, etc.) están listos en cualquier tab.
+            // Idempotente: si el usuario entra a la pestaña IA Suggest y la
+            // lista ya está cargada, switchTab() no lo re-fetch (chequeo
+            // Object.keys(this.aiSettings.list).length === 0).
+            await this.loadAiSettings();
+            // Carga el contador de marcas protegidas (panel consolidado).
+            // Es ligero; el service ya cachea por 5 min.
+            this.loadProtectedTermsList();
             // Re-attach a una corrida retroactiva en curso al recargar la página
             // (best-effort; 204 = no hay activa).
             this.attachToActiveRun();
@@ -2571,6 +2796,385 @@ function correccionesAdmin() {
 
         closeContext() {
             this.contextModal = { open: false, loading: false, item: null, data: null };
+            this.aiContextCorrect = {};
+            this.brandSuggestionsByExample = {};
+            this.checkedBrandsByExample = {};
+            // NO limpiar recentlyProtectedByExample aquí: el admin puede
+            // querer ver al volver al modal qué marcas acaba de agregar.
+        },
+
+        /**
+         * Devuelve el slot del estado IA para un ejemplo del modal de
+         * contexto. Crea el slot si no existe, así los templates pueden
+         * leer `aiFor(ex.segment_id)` sin guardas adicionales.
+         */
+        aiFor(segmentId) {
+            if (!this.aiContextCorrect[segmentId]) {
+                this.aiContextCorrect[segmentId] = {
+                    loading: false,
+                    result: null,
+                    error: null,
+                    selection: '',
+                    protecting: false,
+                    approveError: null,
+                    protectError: null,
+                    approving: false,
+                    detectingBrands: false,
+                    addingBrands: false,
+                };
+            }
+            return this.aiContextCorrect[segmentId];
+        },
+
+        /**
+         * Limpia el resultado IA del ejemplo (vuelve a "Cómo quedaría con esta regla").
+         */
+        resetAiFor(segmentId) {
+            this.aiContextCorrect[segmentId] = {
+                loading: false,
+                result: null,
+                error: null,
+                selection: '',
+                protecting: false,
+                protectError: null,
+                approving: false,
+                detectingBrands: false,
+                addingBrands: false,
+            };
+        },
+
+        /**
+         * Dispara la corrección IA inline sobre un ejemplo del modal de
+         * contexto. Si ya hay un resultado cacheado, lo muestra de nuevo
+         * sin consumir tokens (force_fresh=false). Con force=true (botón
+         * Reintentar) ignora cache.
+         */
+        async requestAiContextCorrect(segmentId, forceFresh = false) {
+            const slot = this.aiFor(segmentId);
+            if (slot.loading) return;
+            slot.loading = true;
+            slot.error = null;
+            try {
+                const url = `/ia/correcciones/${this.contextModal.item.id}/examples/${segmentId}/ai-context-correct-context`;
+                const res = await apiFetch(url, {
+                    method: 'POST',
+                    headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ force_fresh: !!forceFresh }),
+                });
+                const data = await res.json();
+                if (!res.ok || data.ok === false) {
+                    slot.error = data.reason || data.error || `Error HTTP ${res.status}`;
+                    if (data.hint) slot.hint = data.hint;
+                    slot.result = null;
+                    return;
+                }
+                slot.result = data;
+                slot.error = null;
+            } catch (e) {
+                slot.error = e.message || 'Fallo de red';
+            } finally {
+                slot.loading = false;
+            }
+        },
+
+        /**
+         * Aprueba la corrección IA: persiste pending con origen
+         * ai-context-correct-YYYY-MM-DD. Al éxito, cierra la caja IA del
+         * ejemplo y refresca la lista de pendientes en background.
+         */
+        async approveAiContextCorrect(segmentId) {
+            const slot = this.aiFor(segmentId);
+            if (!slot.result || slot.approving) return;
+            slot.approving = true;
+            try {
+                const url = `/ia/correcciones/${this.contextModal.item.id}/examples/${segmentId}/ai-context-correct-context/approve`;
+                const res = await apiFetch(url, {
+                    method: 'POST',
+                    headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        wrong: slot.result.wrong,
+                        correct: slot.result.correct,
+                    }),
+                });
+                const data = await res.json();
+                if (!res.ok || data.ok === false) {
+                    slot.error = data.reason || data.error || `Error HTTP ${res.status}`;
+                    return;
+                }
+                this.showToast('success', 'Corrección añadida', `Regla #${data.correction_id} pendiente de revisión.`);
+                this.resetAiFor(segmentId);
+                // Refresca la lista de pendientes (la nueva aparecerá filtrable por origen ai-context-correct-*).
+                await this.loadPending().catch(() => {});
+            } catch (e) {
+                slot.error = e.message || 'Fallo de red';
+            } finally {
+                slot.approving = false;
+            }
+        },
+
+        /**
+         * Captura el texto seleccionado dentro del text_raw de un ejemplo.
+         * Estrategia multi-disparo: mouseup/keyup para selección manual,
+         * dblclick para selección palabra por palabra, selectionchange
+         * global para capturar todo cambio de selección del navegador.
+         */
+        captureSelection(segmentId, _event) {
+            const sel = (typeof window !== 'undefined' && window.getSelection)
+                ? window.getSelection()
+                : null;
+            if (!sel || sel.isCollapsed) return;
+            const text = (sel.toString() || '').trim();
+            if (!text) return;
+            const slot = this.aiFor(segmentId);
+            // No pisar si la selección nueva es un fragmento de la anterior
+            // (puede ocurrir en sel.rangeCount > 1).
+            if ((slot.selection || '') === text) return;
+            slot.selection = text;
+        },
+
+        /**
+         * Protege como marca el término del input o la selección del ejemplo.
+         * Si falla validación, muestra el motivo en `slot.protectError`.
+         */
+        async protectSelection(segmentId) {
+            const slot = this.aiFor(segmentId);
+            const term = (slot.selection || '').trim();
+            slot.protectError = null;
+            if (!term) {
+                slot.protectError = 'Escribe o selecciona una palabra para proteger.';
+                return;
+            }
+            if (slot.protecting) return;
+            slot.protecting = true;
+            try {
+                const res = await apiFetch('/ia/correcciones/protected-terms', {
+                    method: 'POST',
+                    headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ term, source: 'modal-context', example_id: segmentId }),
+                });
+                const data = await res.json();
+                if (!res.ok || data.ok === false) {
+                    slot.protectError = data.error || data.reason || `HTTP ${res.status}`;
+                    return;
+                }
+                // Track en sesión: chips "Protegidas ahora"
+                this.recentlyProtectedByExample = this.recentlyProtectedByExample || {};
+                const list = this.recentlyProtectedByExample[segmentId] || [];
+                if (!list.includes(data.term)) {
+                    this.recentlyProtectedByExample[segmentId] = [...list, data.term];
+                }
+                const verb = data.is_new ? 'Marca protegida' : 'Ya estaba protegida';
+                this.showToast('success', verb, `«${data.term}»`);
+                slot.selection = '';
+            } catch (e) {
+                slot.protectError = e.message || 'Fallo de red';
+            } finally {
+                slot.protecting = false;
+            }
+        },
+
+        recentlyProtectedFor(segmentId) {
+            return (this.recentlyProtectedByExample && this.recentlyProtectedByExample[segmentId]) || [];
+        },
+
+        archvingProtectedFor(segmentId, term) {
+            return Array.isArray(this.archivingProtectedFor)
+                && this.archivingProtectedFor.some(t => t.segId === segmentId && t.term === term);
+        },
+
+        /**
+         * Quita una marca protegida recientemente y vuelve a traducir el
+         * segmento sin ella. Útil cuando el admin protegió algo que en
+         * retrospectiva no es marca.
+         */
+        async retryAfterUnprotect(segmentId, term) {
+            this.archivingProtectedFor = this.archivingProtectedFor || [];
+            this.archivingProtectedFor.push({ segId: segmentId, term });
+            try {
+                const csrf = (document.querySelector('meta[name="csrf-token"]')?.content || '');
+                const res = await fetch('/ia/correcciones/protected-terms/unprotect', {
+                    method: 'POST',
+                    headers: {
+                        'Accept': 'application/json',
+                        'Content-Type': 'application/json',
+                        'X-Requested-With': 'XMLHttpRequest',
+                        'X-CSRF-TOKEN': csrf,
+                    },
+                    body: JSON.stringify({ term }),
+                });
+                const data = await res.json();
+                if (!res.ok || data.ok === false) {
+                    this.showToast('error', 'No se pudo quitar la marca', data.error || `HTTP ${res.status}`);
+                    return;
+                }
+                // 1) Quitar chip localmente
+                if (this.recentlyProtectedByExample && this.recentlyProtectedByExample[segmentId]) {
+                    this.recentlyProtectedByExample[segmentId] =
+                        this.recentlyProtectedByExample[segmentId].filter(t => t !== term);
+                }
+                this.showToast('success', 'Marca quitada', `«${term}» archivada; reintentando traducción…`);
+                // 2) Forzar re-traducción con cache miss
+                await this.requestAiContextCorrect(segmentId, true);
+            } catch (e) {
+                this.showToast('error', 'Fallo de red', e.message || 'Intenta de nuevo');
+            } finally {
+                this.archivingProtectedFor = this.archivingProtectedFor.filter(t => !(t.segId === segmentId && t.term === term));
+            }
+        },
+
+        clearAllRecentForExample(segmentId) {
+            if (this.recentlyProtectedByExample && this.recentlyProtectedByExample[segmentId]) {
+                delete this.recentlyProtectedByExample[segmentId];
+            }
+            if (this.checkedBrandsByExample && this.checkedBrandsByExample[segmentId]) {
+                delete this.checkedBrandsByExample[segmentId];
+            }
+        },
+
+        /**
+         * Carga el listado completo de marcas activas desde el backend.
+         * Lo invoca el admin al hacer toggle del panel consolidado.
+         * También se llama desde init() para tener el contador en el header.
+         */
+        async loadProtectedTermsList() {
+            try {
+                const res = await apiFetch('/ia/correcciones/protected-terms/list', {
+                    headers: { 'Accept': 'application/json' },
+                });
+                if (!res.ok) {
+                    return;
+                }
+                const data = await res.json();
+                this.protectedTermsSummary = {
+                    total: data.total ?? (data.items?.length || 0),
+                    list: data.items || [],
+                };
+            } catch (e) {
+                /* no crítico, el contador mostrará 0 */
+            }
+        },
+
+        /**
+         * Quita una marca directamente desde el panel consolidado sin
+         * requerir un Reintentar del LLM (uso batch). Cache service e
+         * cache LLM son responsabilidad del service.
+         */
+        async quickUnprotect(term, segmentIdFallback) {
+            const csrf = (document.querySelector('meta[name="csrf-token"]')?.content || '');
+            try {
+                const res = await fetch('/ia/correcciones/protected-terms/unprotect', {
+                    method: 'POST',
+                    headers: {
+                        'Accept': 'application/json',
+                        'Content-Type': 'application/json',
+                        'X-Requested-With': 'XMLHttpRequest',
+                        'X-CSRF-TOKEN': csrf,
+                    },
+                    body: JSON.stringify({ term }),
+                });
+                const data = await res.json();
+                if (!res.ok || data.ok === false) {
+                    this.showToast('error', 'No se pudo quitar', data.error || `HTTP ${res.status}`);
+                    return;
+                }
+                this.showToast('success', 'Marca archivada', `«${term}».`);
+                // Quita del estado de "Protegidas ahora" si aparece.
+                if (this.recentlyProtectedByExample) {
+                    for (const key of Object.keys(this.recentlyProtectedByExample)) {
+                        if (Array.isArray(this.recentlyProtectedByExample[key])) {
+                            this.recentlyProtectedByExample[key] = this.recentlyProtectedByExample[key].filter(t => t !== term);
+                        }
+                    }
+                }
+                // Refresca el listado para reflejar la baja.
+                await this.loadProtectedTermsList();
+            } catch (e) {
+                this.showToast('error', 'Fallo de red', e.message || 'Intenta de nuevo');
+            }
+        },
+
+        /**
+         * Pide al LLM que sugiera marcas del texto del ejemplo y muestra
+         * checkboxes para que el admin confirme cuáles agregar.
+         */
+        async detectBrandsInExample(segmentId) {
+            const slot = this.aiFor(segmentId);
+            const text = this.exampleTextById(segmentId);
+            if (!text) {
+                slot.error = 'Texto no disponible.';
+                return;
+            }
+            slot.detectingBrands = true;
+            try {
+                const res = await apiFetch('/ia/correcciones/brands/suggest', {
+                    method: 'POST',
+                    headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text }),
+                });
+                const data = await res.json();
+                if (!res.ok || data.ok === false) {
+                    slot.error = data.reason || data.error || `HTTP ${res.status}`;
+                    return;
+                }
+                // data = {ok, candidates: NEW, already_protected: ALREADY, protected_terms_total}
+                // Lo estructuramos para que la UI los muestre separados.
+                const newOnes = (data.candidates || []);
+                const already = (data.already_protected || []);
+                this.brandSuggestionsByExample = this.brandSuggestionsByExample || {};
+                this.brandSuggestionsByExample[segmentId + '_all'] = {
+                    new: newOnes,
+                    already: already,
+                };
+                this.checkedBrandsByExample = this.checkedBrandsByExample || {};
+                this.checkedBrandsByExample[segmentId] = {};
+                // Marcar como checked lo que ya estaba (no aplica), las nuevas opcional.
+                const totalDetected = newOnes.length + already.length;
+                const verb = (newOnes.length + already.length) === 0
+                    ? 'Sin candidatos'
+                    : `${newOnes.length} nuevos, ${already.length} ya protegidos`;
+                this.showToast('success', 'Detección completa', verb);
+                if (totalDetected === 0) {
+                    // Limpia estado porque no hay nada que mostrar.
+                    delete this.brandSuggestionsByExample[segmentId + '_all'];
+                }
+            } catch (e) {
+                slot.error = e.message || 'Fallo de red';
+            } finally {
+                slot.detectingBrands = false;
+            }
+        },
+
+        exampleTextById(segmentId) {
+            const examples = (this.contextModal.data?.examples) || [];
+            const ex = examples.find(e => (e.segment_id || 0) == segmentId || (e.id || 0) == segmentId);
+            return ex ? (ex.text_raw || ex.text || '') : '';
+        },
+
+        async addSelectedBrands(segmentId, candidates) {
+            const checked = this.checkedBrandsByExample?.[segmentId] || {};
+            const picks = Object.keys(checked).filter(k => checked[k]);
+            if (picks.length === 0) return;
+            for (const term of picks) {
+                try {
+                    await apiFetch('/ia/correcciones/protected-terms', {
+                        method: 'POST',
+                        headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ term, source: 'modal-context-detected', example_id: segmentId }),
+                    });
+                } catch (e) {
+                    /* continue with remaining */
+                }
+            }
+            this.showToast('success', 'Marcas añadidas', `${picks.length} protegidas.`);
+            this.clearBrandSuggestions(segmentId);
+        },
+
+        clearBrandSuggestions(segmentId) {
+            if (this.brandSuggestionsByExample) {
+                delete this.brandSuggestionsByExample[segmentId];
+                delete this.brandSuggestionsByExample[segmentId + '_all'];
+            }
+            if (this.checkedBrandsByExample) delete this.checkedBrandsByExample[segmentId];
         },
 
         escapeHtml(value) {

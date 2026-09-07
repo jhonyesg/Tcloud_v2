@@ -310,12 +310,16 @@ Route::middleware(['auth', 'admin'])->prefix('ia')->group(function () {
         [App\Http\Controllers\Ia\CorreccionesAiContextCorrectController::class, 'approve'])
         ->whereNumber('correctionId')->whereNumber('exampleId');
 
-    // Curación de marcas protegidas desde el modal de contexto
-    // (changes/2026-09-05-corrections-ai-context-aware-with-mark-curation).
-    Route::post('/correcciones/protected-terms',
-        [App\Http\Controllers\Ia\ProtectedTermsInlineController::class, 'store']);
-    Route::post('/correcciones/brands/suggest',
-        [App\Http\Controllers\Ia\ProtectedTermsInlineController::class, 'suggestBrands']);
+// Curación de marcas protegidas desde el modal de contexto
+     // (changes/2026-09-05-corrections-ai-context-aware-with-mark-curation).
+     Route::post('/correcciones/protected-terms',
+         [App\Http\Controllers\Ia\ProtectedTermsInlineController::class, 'store']);
+     Route::post('/correcciones/protected-terms/unprotect',
+         [App\Http\Controllers\Ia\ProtectedTermsInlineController::class, 'destroy']);
+     Route::get('/correcciones/protected-terms/list',
+         [App\Http\Controllers\Ia\ProtectedTermsInlineController::class, 'index']);
+     Route::post('/correcciones/brands/suggest',
+         [App\Http\Controllers\Ia\ProtectedTermsInlineController::class, 'suggestBrands']);
 
     // Corrección IA con contexto ampliado (vecinos ±5) — remplaza al flow
     // básico de ai-context-correct-inline una vez adoptada por la UI.

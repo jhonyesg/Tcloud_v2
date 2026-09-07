@@ -28,6 +28,7 @@
             <div><span class="text-slate-500">Keywords:</span> <span class="font-semibold text-slate-800"><span x-text="used"></span> / <span x-text="quota"></span></span></div>
             <div><span class="text-slate-500">Correos:</span> <span class="font-semibold text-slate-800" x-text="emails.length"></span></div>
             <div><span class="text-slate-500">Acceso a transcripciones:</span> <span class="font-semibold text-slate-800"><span x-text="accessCount"></span> / <span x-text="storages.length"></span></span></div>
+            <div><span class="text-slate-500">Cadencia elegida por el cliente:</span> <span class="font-semibold text-slate-800">{{ $user->alertsInteligente?->alert_frequency_minutes ?? 30 }} min</span></div>
         </div>
         <div class="mt-4 px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-600 flex items-center gap-2">
             <i class="fas fa-info-circle text-slate-400"></i>

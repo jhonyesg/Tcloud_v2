@@ -7,7 +7,7 @@ Definir una administración de enlaces compartidos que permita consultar, ordena
 
 ### Requirement: Listado server-side de shares
 
-El sistema SHALL ofrecer un listado paginado de los shares del usuario autenticado. SHALL aceptar filtros combinables por texto de recurso, permiso, estado de expiración, estado de disponibilidad, storage, fecha de creación, fecha de expiración y fecha de último acceso. SHALL aceptar ordenamiento por nombre, fecha de creación, fecha de expiración, accesos o tamaño, con dirección ascendente o descendente.
+El sistema SHALL ofrecer un listado paginado de los shares del usuario autenticado. SHALL aceptar filtros combinables por texto de recurso, permiso, estado de expiración, estado de disponibilidad, storage, fecha de creación, fecha de expiración y fecha de último acceso. SHALL aceptar ordenamiento por nombre, fecha de creación, fecha de expiración, accesos, tamaño, **permiso y estado de expiración**, con dirección ascendente o descendente. **El orden por permiso SHALL agrupar por nivel (Lectura → Escritura/Subida → Completo), no por orden alfabético de la cadena almacenada. El orden por estado de expiración SHALL agrupar por Sin vencimiento, Activo y Expirado, no por valor crudo de `expires_at`.**
 
 #### Scenario: Listado inicial acotado
 - **WHEN** el usuario abre la vista de compartidos sin filtros
@@ -25,13 +25,29 @@ El sistema SHALL ofrecer un listado paginado de los shares del usuario autentica
 - **WHEN** un usuario solicita el listado de compartidos
 - **THEN** nunca recibe shares creados por otro usuario, salvo una operación explícitamente autorizada para administrador
 
+#### Scenario: Orden por nivel de permiso
+- **WHEN** el usuario solicita ordenamiento por `permission` ascendente
+- **THEN** el servidor devuelve primero los shares de Lectura, luego Escritura y Subida (mismo nivel) y al final los de Completo
+
+#### Scenario: Orden por estado de expiración
+- **WHEN** el usuario solicita ordenamiento por `status` ascendente
+- **THEN** el servidor agrupa primero los shares Sin vencimiento, luego los Activos y al final los Expirados
+
 ### Requirement: Controles visuales de búsqueda y ordenamiento
 
-La interfaz de compartidos SHALL mostrar búsqueda, filtros rápidos, rango de fechas, control de limpiar filtros y encabezados clickeables para invertir el orden. SHALL conservar la selección, el estado de carga y los errores de forma coherente cuando cambia de página o filtro.
+La interfaz de compartidos SHALL mostrar búsqueda, filtros rápidos, rango de fechas, control de limpiar filtros y encabezados clickeables para invertir el orden, **incluyendo los encabezados de Permiso y Estado de expiración**. SHALL conservar la selección, el estado de carga y los errores de forma coherente cuando cambia de página o filtro.
 
 #### Scenario: Orden ascendente y descendente
 - **WHEN** el usuario hace click en el mismo encabezado dos veces
 - **THEN** el primer click ordena ascendentemente y el segundo invierte a descendente con un indicador visual
+
+#### Scenario: Orden por Permiso
+- **WHEN** el usuario hace click en el encabezado "Permiso"
+- **THEN** el servidor ordena por nivel de permiso y la columna muestra el indicador visual de orden activo
+
+#### Scenario: Orden por Estado
+- **WHEN** el usuario hace click en el encabezado "Estado"
+- **THEN** el servidor agrupa por Sin vencimiento, Activo y Expirado y la columna muestra el indicador visual de orden activo
 
 #### Scenario: Limpiar filtros
 - **WHEN** el usuario pulsa "Limpiar filtros"
@@ -43,7 +59,7 @@ La interfaz de compartidos SHALL mostrar búsqueda, filtros rápidos, rango de f
 
 ### Requirement: Previsualización de depuración bulk
 
-El sistema SHALL permitir previsualizar una operación bulk usando IDs seleccionados o el conjunto definido por los filtros actuales. La previsualización SHALL devolver la cantidad afectada y un resumen por estado, permiso y disponibilidad sin modificar datos.
+El sistema SHALL permitir previsualizar una operación bulk usando IDs seleccionados o el conjunto definido por los filtros actuales. La previsualización SHALL devolver la cantidad afectada y un resumen por estado, permiso y disponibilidad sin modificar datos. **Cuando el alcance son todos los resultados filtrados, la operación SHALL respetar el orden visible (`sort` + `direction`) del usuario y SHALL poder paginarse usando un cursor estable por id sin perder ni duplicar filas.**
 
 #### Scenario: Previsualización de expirados
 - **WHEN** el usuario solicita previsualizar la eliminación de todos los shares expirados de su listado
@@ -68,3 +84,23 @@ El sistema SHALL ejecutar la eliminación bulk mediante una operación server-si
 #### Scenario: Falla parcial
 - **WHEN** una parte de la operación bulk no puede completarse
 - **THEN** el servidor devuelve un resumen explícito y la interfaz no elimina visualmente los elementos cuya eliminación no fue confirmada
+
+### Requirement: Verificación bulk completa de disponibilidad
+
+El sistema SHALL permitir al usuario verificar la disponibilidad de los archivos asociados a sus shares sobre el conjunto definido por los filtros actuales. SHALL recorrer el conjunto completo en lotes server-side, **garantizando que cada share que cumple los filtros es verificado exactamente una vez**. SHALL devolver un cursor estable (`next_cursor`) y un indicador (`has_more`) que permita al cliente iterar sin heurísticas. **Cuando el usuario ha definido un orden visible (sort + direction), SHALL preservarlo al paginar.**
+
+#### Scenario: Verificación completa sobre filtro con más resultados que un lote
+- **WHEN** el usuario pulsa "Verificar disponibilidad" sobre un conjunto filtrado mayor que el batch size
+- **THEN** el cliente itera hasta que `has_more === false` y la suma de `checked` es igual al total filtrado
+
+#### Scenario: Último lote menor que batch size por efecto del filtro
+- **WHEN** el último lote devuelve menos filas que el batch size porque el filtro acota el resultado (no porque se acabó el dataset)
+- **THEN** el cliente continúa usando `next_cursor` hasta recibir `has_more === false`
+
+#### Scenario: Orden visible preservado durante la verificación
+- **WHEN** el usuario tiene un orden visible definido (por ejemplo `permission asc`) y dispara la verificación bulk
+- **THEN** la query server-side respeta ese orden y los IDs procesados avanzan monotónicamente por id como tiebreaker
+
+#### Scenario: Cancelación implícita por cambio de filtro
+- **WHEN** el usuario aplica un nuevo filtro o limpia los filtros durante un barrido en curso
+- **THEN** el siguiente batch que retorne el cliente pertenece al nuevo conjunto filtrado y la cuenta total reinicia desde cero

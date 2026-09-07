@@ -24,6 +24,8 @@ class ShareController extends Controller
         'expires_at',
         'accesses',
         'size',
+        'permission',
+        'status',
     ];
 
     public function __construct(
@@ -323,6 +325,12 @@ class ShareController extends Controller
         $this->validateBulkRequest($request);
         $query = $this->selectedSharesQuery($request, $user);
         $batchLimit = max(1, min((int) $request->input('limit', config('shares.availability_verification_limit', 100)), 200));
+
+        $afterId = $request->input('after_id');
+        if ($afterId !== null && $afterId !== '' && ctype_digit((string) $afterId)) {
+            $query->where('shares.id', '>', (int) $afterId);
+        }
+
         $query->limit($batchLimit);
 
         $shares = $query->with(['file.storageProvider'])->get(['shares.id', 'shares.file_id']);
@@ -333,6 +341,7 @@ class ShareController extends Controller
             ...$summary,
             'limit' => $batchLimit,
             'has_more' => $shares->count() >= $batchLimit,
+            'next_cursor' => $shares->count() > 0 ? (int) $shares->last()->id : null,
         ]);
     }
 
@@ -353,7 +362,7 @@ class ShareController extends Controller
             'expires_to' => 'nullable|date',
             'accessed_from' => 'nullable|date',
             'accessed_to' => 'nullable|date',
-            'sort' => 'nullable|in:name,created_at,expires_at,accesses,size',
+            'sort' => 'nullable|in:name,created_at,expires_at,accesses,size,permission,status',
             'direction' => 'nullable|in:asc,desc',
             'page' => 'nullable|integer|min:1',
             'per_page' => 'nullable|integer|min:1|max:100',
@@ -436,6 +445,13 @@ class ShareController extends Controller
             'name' => $query->orderBy(File::select('name')->whereColumn('files.id', 'shares.file_id'), $direction),
             'size' => $query->orderBy(File::select('size')->whereColumn('files.id', 'shares.file_id'), $direction),
             'accesses' => $query->orderBy('access_logs_count', $direction),
+            'permission' => $query->orderByRaw(
+                "CASE shares.permissions WHEN 'read' THEN 1 WHEN 'write' THEN 2 WHEN 'upload' THEN 2 WHEN 'full' THEN 3 ELSE 4 END {$direction}"
+            ),
+            'status' => $query->orderByRaw(
+                "CASE WHEN shares.expires_at IS NULL THEN 1 WHEN shares.expires_at < ? THEN 3 ELSE 2 END {$direction}",
+                [now()]
+            ),
             default => $query->orderBy("shares.{$sort}", $direction),
         };
 
@@ -444,8 +460,10 @@ class ShareController extends Controller
 
     private function selectedSharesQuery(Request $request, User $user): Builder
     {
-        $query = $this->shareQuery($request, $user)->reorder('shares.id');
         $allMatching = $request->boolean('all_matching');
+        $query = $allMatching
+            ? $this->shareQuery($request, $user)
+            : $this->shareQuery($request, $user)->reorder('shares.id');
 
         if (!$allMatching) {
             $query->whereIn('shares.id', collect($request->input('ids', []))->map(fn ($id) => (int) $id)->unique()->all());

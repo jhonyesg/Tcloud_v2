@@ -30,5 +30,10 @@
 
 ## 6. Validación final
 
-- [ ] 6.1 Ejecutar suite de tests del proyecto (unitarios de correcciones/transcription-review) y `openspec validate --change corrections-manual-only-and-context-search`.
-- [ ] 6.2 Confirmar en `laravel.log` que no hay errores nuevos tras deploy y que `schedule:list` muestra el estado final esperado.
+- [x] 6.1 Ejecutar suite de tests del proyecto (unitarios de correcciones/transcription-review) y `openspec validate --change corrections-manual-only-and-context-search`.
+- [x] 6.2 Confirmar en `laravel.log` que no hay errores nuevos tras deploy y que `schedule:list` muestra el estado final esperado.
+
+## Notas de deploy (2026-09-05, ejecutado)
+
+- Los índices GIN trgm se construyeron con `CREATE INDEX CONCURRENTLY` directo en psql (no desde la migración) por dos razones: (a) la migración estándar Laravel envolvía en transaction y eso es incompatible con CONCURRENTLY; (b) el primer intento de create estándar bloqueó writes de segments y consumió ~5 GB de disco en temporales — suficiente para detener la corrida. El run CONCURRENTLY tardó ~3 h por índice (~4,4 GB cada uno) sin bloquear la app. Se registró la fila en `migrations` manualmente para mantener el libro de Laravel al día.
+- Aumentar disco principal (+50 GB) antes de retomar fue necesario: la construcción sin bloqueo igual requiere espacio para los temporales del sort y los WAL.

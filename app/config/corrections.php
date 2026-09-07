@@ -89,6 +89,19 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Corrección inline por ejemplo con IA (cambios 2026-09-05)
+    |--------------------------------------------------------------------------
+    | Cache de respuestas del flujo "Corregir esta frase con IA" en el modal
+    | de contexto. TTL por defecto 24h: re-abrir el modal sin re-gastar tokens,
+    | "Reintentar" sí consume. Clave incluye la fecha para invalidar de
+    | manera natural cuando cambia la regla padre.
+    */
+    'ai_context_correct' => [
+        'cache_ttl' => (int) env('CORRECTIONS_AI_CONTEXT_CORRECT_CACHE_TTL', 86400),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Blocklist de términos context-sensitive
     |--------------------------------------------------------------------------
     | Cambios/2026-08-02-corrections-dictionary-atomicity: detecta muletillas

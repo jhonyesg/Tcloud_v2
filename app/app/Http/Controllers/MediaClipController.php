@@ -21,6 +21,50 @@ class MediaClipController extends Controller
         return $userId ? User::find($userId) : null;
     }
 
+    /**
+     * El usuario puede acceder al archivo fuente: admin, propietario o
+     * permiso de lectura en el storage. Misma semántica que
+     * FileController::checkFilePermission — obligatoria antes de cortar,
+     * generar miniaturas o re-generar trabajos (mis-avisos entrega ids de
+     * archivo a clientes que quizá solo tienen transcription_access).
+     */
+    private function canAccessFile(User $user, ?File $file): bool
+    {
+        if (!$file) return false;
+        if ($user->isAdmin()) return true;
+        if ($file->storage_provider_id) {
+            return $user->hasStoragePermission($file->storage_provider_id, 'read');
+        }
+
+        return $file->owner_id === $user->id;
+    }
+
+    private function denyFileAccess(): \Illuminate\Http\JsonResponse
+    {
+        return response()->json(['error' => 'No tienes permiso sobre este archivo'], 403);
+    }
+
+    /**
+     * Normaliza el input `segments` a un array. Acepta:
+     *   - array de segmentos [{start,end}, ...] (uso normal desde Alpine.js)
+     *   - string JSON (clientes HTTP externos que mandan JSON-encoded en form data)
+     *   - string "key=value,key=value" no soportado (devuelve [])
+     * Devuelve [] si no se puede interpretar, para que el llamador responda 422.
+     */
+    private function normalizeSegments($raw): array
+    {
+        if (is_array($raw)) {
+            return $raw;
+        }
+        if (is_string($raw) && $raw !== '') {
+            $decoded = json_decode($raw, true);
+            if (is_array($decoded)) {
+                return $decoded;
+            }
+        }
+        return [];
+    }
+
     public function history(Request $request)
     {
         $user = $this->getUser();
@@ -63,6 +107,18 @@ class MediaClipController extends Controller
     {
         $user = $this->getUser();
         if (!$user) return response()->json(['error' => 'Unauthorized'], 401);
+
+        // Acceso al archivo fuente (y a todos los de la secuencia).
+        $fileIds = [$id];
+        foreach ((array) $request->input('sequence', []) as $item) {
+            $fileIds[] = (int) ($item['fileId'] ?? 0);
+        }
+        foreach (array_unique(array_filter($fileIds)) as $fid) {
+            if (!$this->canAccessFile($user, File::find($fid))) {
+                return $this->denyFileAccess();
+            }
+        }
+
         if (!$user->canUseMediaEditor()) return response()->json(['error' => 'Editor de medios no habilitado para tu cuenta'], 403);
 
         $isPreview = $request->boolean('preview', false);
@@ -85,7 +141,12 @@ class MediaClipController extends Controller
 
     public function serveTemp(string $token)
     {
+        // El token puede venir con o sin extensión de medio (tokens legacy).
         $path = self::CLIP_TMP_DIR . '/clippreview_' . $token;
+        if (!file_exists($path)) {
+            $matches = glob(self::CLIP_TMP_DIR . '/clippreview_' . $token . '.*');
+            $path = $matches[0] ?? $path;
+        }
         if (!file_exists($path)) return response()->json(['error' => 'Preview no encontrado o expirado'], 404);
 
         $ext  = strtolower(pathinfo($path, PATHINFO_EXTENSION));
@@ -256,7 +317,7 @@ class MediaClipController extends Controller
 
             $mimeMap = ['mp4' => 'video/mp4', 'mp3' => 'audio/mpeg', 'm4a' => 'audio/mp4'];
             return response()->json([
-                'preview_url' => '/media/clip-preview/' . $previewToken,
+                'preview_url' => '/media/clip-preview/' . $previewToken . '.' . $ext,
                 'mime'        => $mimeMap[$ext] ?? 'application/octet-stream',
                 'size'        => filesize($tmpOutput),
             ]);
@@ -271,7 +332,7 @@ class MediaClipController extends Controller
         $file = File::find($id);
         if (!$file) return response()->json(['error' => 'File not found'], 404);
 
-        $segments = $request->input('segments', []);
+        $segments = $this->normalizeSegments($request->input('segments', []));
         if (empty($segments)) return response()->json(['error' => 'Segments required'], 422);
 
         $storage = $file->storageProvider;
@@ -304,7 +365,7 @@ class MediaClipController extends Controller
 
             $mimeMap = ['mp4' => 'video/mp4', 'mp3' => 'audio/mpeg', 'm4a' => 'audio/mp4'];
             return response()->json([
-                'preview_url' => '/media/clip-preview/' . $previewToken,
+                'preview_url' => '/media/clip-preview/' . $previewToken . '.' . $ext,
                 'mime'        => $mimeMap[$ext] ?? 'application/octet-stream',
                 'size'        => filesize($tmpOutput),
             ]);
@@ -317,7 +378,9 @@ class MediaClipController extends Controller
 
     private function scheduleCleanup(string $path, int $seconds): void
     {
-        $cmd = sprintf('(sleep %d && rm -f %s) &', $seconds, escapeshellarg($path));
+        // Redirección obligatoria: sin >/dev/null el pipe heredado mantiene a
+        // PHP bloqueado hasta que el sleep termina (preview colgado ~300 s).
+        $cmd = sprintf('(sleep %d && rm -f %s) >/dev/null 2>&1 &', $seconds, escapeshellarg($path));
         exec($cmd);
     }
 
@@ -326,7 +389,7 @@ class MediaClipController extends Controller
         $file = File::find($id);
         if (!$file) return response()->json(['error' => 'File not found'], 404);
 
-        $segments = $request->input('segments', []);
+        $segments = $this->normalizeSegments($request->input('segments', []));
         if (empty($segments) || !is_array($segments)) {
             return response()->json(['error' => 'At least one segment is required'], 422);
         }
@@ -389,6 +452,9 @@ class MediaClipController extends Controller
         if (!$user) return response()->json(['error' => 'Unauthorized'], 401);
 
         $file    = File::find($id);
+        if (!$this->canAccessFile($user, $file)) {
+            return $this->denyFileAccess();
+        }
         $storage = $file?->storageProvider;
         if (!$file || !$storage || $storage->type !== 'local') {
             return response()->json(['error' => 'Archivo no encontrado'], 404);
@@ -436,6 +502,12 @@ class MediaClipController extends Controller
     {
         $user = $this->getUser();
         if (!$user) return response()->json(['error' => 'Unauthorized'], 401);
+
+        // Las miniaturas viven en disco por id de archivo: el id debe seguir
+        // siendo de un archivo accesible para el usuario.
+        if (!$this->canAccessFile($user, File::find($id))) {
+            return $this->denyFileAccess();
+        }
 
         $path = storage_path(sprintf('app/clip-thumbs/%d/thumb_%02d.jpg', $id, $n + 1));
         if (!file_exists($path)) abort(404);

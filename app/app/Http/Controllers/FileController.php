@@ -409,10 +409,21 @@ class FileController extends Controller
         $service = app(\App\Modules\Papelera\Services\PapeleraService::class);
         $service->softTrash($file, (int) Session::get('user_id'));
 
-        // Invalidar la cache de listado del padre (la fila ya no aparece ahi).
-        $service->invalidateSidebarCache((int) $file->owner_id);
-        app(\App\Services\StorageSyncService::class)
-            ->invalidateFolderCache((int) $file->storage_provider_id, $file->getOriginal('parent_id'));
+        // Invalidar la cache de listado del padre (la fila ya no aparece ahi)
+        // y, si el trash movió el archivo a parent_id=NULL (subcarpeta → root),
+        // también la cache del root listing del mismo storage. Sin esta segunda
+        // invalidación, la query whereNull('parent_id') devolvería la fila
+        // trashed durante toda la ventana TTL del root listing (60s).
+        //
+        // NOTA: la invalidación del sidebar cache YA ocurre dentro de
+        // PapeleraService::softTrash(); no se repite aquí (además sería 500:
+        // invalidateSidebarCache es protected).
+        $syncService = app(\App\Services\StorageSyncService::class);
+        $originalParentId = $file->getOriginal('parent_id');
+        $syncService->invalidateFolderCache((int) $file->storage_provider_id, $originalParentId);
+        if ($file->parent_id === null && $originalParentId !== null) {
+            $syncService->invalidateFolderCache((int) $file->storage_provider_id, null);
+        }
 
         return response()->json(['message' => 'Moved to trash', 'trashed_id' => $file->id]);
     }

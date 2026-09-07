@@ -5,25 +5,60 @@
 @section('title', 'Vista Previa - ' . ($fileName ?? 'Tcloud'))
 
 @section('content')
-<div class="p-6" x-data="{
-    file: { mime_type: @json($fileMime), name: @json($fileName) },
-    loading: false,
-    error: null,
-    zoom: 1,
-    rotation: 0,
+<script>
+// La data vive en un script (contexto seguro para JSON): emitir el JSON
+// dentro del atributo x-data="..." rompía el HTML con sus comillas dobles.
+function filePreviewPage(startSeconds) {
+    return {
+        file: { mime_type: @json($fileMime), name: @json($fileName) },
+        startSeconds: startSeconds || 0,
+        loading: false,
+        error: null,
+        zoom: 1,
+        rotation: 0,
 
-    zoomIn() { this.zoom = Math.min(this.zoom + 0.25, 4); },
-    zoomOut() { this.zoom = Math.max(this.zoom - 0.25, 0.25); },
-    resetView() { this.zoom = 1; this.rotation = 0; },
-    rotate() { this.rotation = (this.rotation + 90) % 360; }
-}">
+        // Deep-link de avisos de menciones: posiciona el medio en el segundo
+        // pedido (?t=) apenas la metadata está disponible. Se consume una vez.
+        seekToStart(el) {
+            if (this.startSeconds > 0) {
+                const max = Number.isFinite(el.duration) ? el.duration : this.startSeconds;
+                el.currentTime = Math.min(this.startSeconds, max);
+                this.startSeconds = 0;
+            }
+        },
+
+        zoomIn() { this.zoom = Math.min(this.zoom + 0.25, 4); },
+        zoomOut() { this.zoom = Math.max(this.zoom - 0.25, 0.25); },
+        resetView() { this.zoom = 1; this.rotation = 0; },
+        rotate() { this.rotation = (this.rotation + 90) % 360; },
+
+        // La extensión manda: el mime en BD está invertido en cientos de miles
+        // de filas (.mp3 como video/mp4, .m4a como audio/mp4).
+        kind() {
+            const ext = ((this.file.name || '').split('.').pop() || '').toLowerCase();
+            if (['mp4', 'm4v', 'mov', 'avi', 'mkv', 'webm'].includes(ext)) return 'video';
+            if (['mp3', 'm4a', 'wav', 'ogg', 'aac', 'flac', 'wma'].includes(ext)) return 'audio';
+            if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp'].includes(ext)) return 'image';
+            if (ext === 'pdf') return 'pdf';
+            const mt = this.file.mime_type || '';
+            if (mt.startsWith('image/')) return 'image';
+            if (mt === 'application/pdf') return 'pdf';
+            if (mt.startsWith('video/')) return 'video';
+            if (mt.startsWith('audio/')) return 'audio';
+            return 'other';
+        }
+    };
+}
+</script>
+
+<div class="p-6" x-data="filePreviewPage({{ (int) $startSeconds }})">
 
     <div class="mb-4 flex items-center justify-between">
         <div class="flex items-center gap-4">
             <a href="/files" class="text-blue-600 hover:text-blue-800">← Volver a archivos</a>
             <span class="text-gray-500" x-text="file.name"></span>
         </div>
-        <template x-if="file.mime_type.startsWith('image/')">
+        <template x-if="kind() === 'image'">
             <div class="flex gap-2">
                 <button @click="zoomOut()" class="p-2 bg-gray-200 rounded hover:bg-gray-300" title="Zoom out">−</button>
                 <span x-text="Math.round(zoom * 100) + '%'" class="p-2"></span>
@@ -34,7 +69,7 @@
         </template>
     </div>
 
-    <template x-if="file.mime_type.startsWith('image/')">
+    <template x-if="kind() === 'image'">
         <div class="flex justify-center bg-gray-100 rounded-lg overflow-hidden" style="max-height: 70vh;">
             <img src="/media/{{ $fileId }}/preview"
                  :style="'transform: scale(' + zoom + ') rotate(' + rotation + 'deg)'"
@@ -43,7 +78,7 @@
         </div>
     </template>
 
-    <template x-if="file.mime_type === 'application/pdf'">
+        <template x-if="kind() === 'pdf'">
         <div class="bg-gray-100 rounded-lg" style="height: 80vh;">
             <embed src="/media/{{ $fileId }}/preview"
                    type="application/pdf"
@@ -52,7 +87,7 @@
         </div>
     </template>
 
-    <template x-if="file.mime_type.startsWith('audio/')">
+        <template x-if="kind() === 'audio'">
         <div class="flex flex-col items-center justify-center bg-gray-100 rounded-lg p-8">
             <div class="mb-4">
                 <svg class="w-16 h-16 text-blue-500 mx-auto" fill="currentColor" viewBox="0 0 20 20">
@@ -60,16 +95,16 @@
                 </svg>
             </div>
             <p class="text-lg font-medium mb-4" x-text="file.name"></p>
-            <audio controls preload="metadata" class="w-full max-w-lg">
+            <audio controls preload="metadata" class="w-full max-w-lg" @loadedmetadata="seekToStart($el)">
                 <source src="/media/{{ $fileId }}/preview" :type="file.mime_type">
                 Tu navegador no soporta el elemento de audio.
             </audio>
         </div>
     </template>
 
-    <template x-if="file.mime_type.startsWith('video/')">
+        <template x-if="kind() === 'video'">
         <div class="flex flex-col items-center bg-gray-100 rounded-lg p-4">
-            <video controls preload="metadata" playsinline webkit-playsinline class="w-full max-w-4xl rounded" style="max-height: 70vh;">
+            <video controls preload="metadata" playsinline webkit-playsinline class="w-full max-w-4xl rounded" style="max-height: 70vh;" @loadedmetadata="seekToStart($el)">
                 <source src="/media/{{ $fileId }}/preview" :type="file.mime_type">
                 Tu navegador no soporta el elemento de video.
             </video>
@@ -77,7 +112,7 @@
         </div>
     </template>
 
-    <template x-if="!file.mime_type.startsWith('image/') && file.mime_type !== 'application/pdf' && !file.mime_type.startsWith('audio/') && !file.mime_type.startsWith('video/')">
+    <template x-if="kind() === 'other'">
         <div class="flex flex-col items-center justify-center h-64 bg-gray-100 rounded-lg">
             <svg class="w-16 h-16 text-gray-400 mb-4" fill="currentColor" viewBox="0 0 20 20">
                 <path fill-rule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clip-rule="evenodd"/>

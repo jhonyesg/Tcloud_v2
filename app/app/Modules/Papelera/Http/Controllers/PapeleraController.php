@@ -25,14 +25,34 @@ class PapeleraController extends Controller
     {
     }
 
+    /**
+     * GET /papelera — vista HTML de la papelera (modo navegador).
+     * El mismo endpoint devuelve JSON cuando el cliente manda Accept: application/json
+     * o X-Requested-With: XMLHttpRequest (consumido por Alpine en papelera.index).
+     *
+     * La vista Blade vive en app/resources/views/papelera/index.blade.php
+     * (ubicación estándar del proyecto: debe ser descubrible por view('papelera.index')).
+     */
     public function index(Request $request)
     {
         $userId = (int) Session::get('user_id');
         $user = User::find($userId);
         if (!$user) {
-            return response()->json(['error' => 'unauthenticated'], 401);
+            if ($request->expectsJson() || $request->ajax() || $request->wantsJson()) {
+                return response()->json(['error' => 'unauthenticated'], 401);
+            }
+            return redirect('/login');
         }
 
+        if ($request->expectsJson() || $request->ajax() || $request->wantsJson()) {
+            return $this->indexJson($request, $user);
+        }
+
+        return view('papelera.index');
+    }
+
+    private function indexJson(Request $request, User $user): \Illuminate\Http\JsonResponse
+    {
         $perPage = min(200, max(10, (int) $request->get('per_page', 50)));
         $page = max(1, (int) $request->get('page', 1));
 

@@ -24,6 +24,124 @@
         </div>
     </div>
 
+    {{-- Panel colapsable: cómo funciona la papelera (patrón igual a ia/api-transcriptor) --}}
+    <div class="mb-6 bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+        <button type="button"
+                @click="showHelp = !showHelp"
+                :aria-expanded="showHelp ? 'true' : 'false'"
+                aria-controls="papelera-how-it-works"
+                class="w-full flex items-center justify-between px-5 py-3 text-left hover:bg-slate-50 transition-colors">
+            <span class="flex items-center gap-2 text-sm font-semibold text-slate-700">
+                <i class="fas fa-circle-info text-brand-500"></i>
+                ¿Cómo funciona la papelera?
+            </span>
+            <i class="fas fa-chevron-down text-xs text-slate-400 transition-transform"
+               :class="showHelp ? 'rotate-180' : ''"></i>
+        </button>
+        <div id="papelera-how-it-works"
+             x-show="showHelp"
+             x-transition
+             class="border-t border-slate-100">
+            <div class="px-5 py-5 text-sm text-slate-600 grid grid-cols-1 md:grid-cols-2 gap-6">
+                {{-- Bloque 1: Cuando borras un archivo --}}
+                <div class="space-y-2">
+                    <p class="font-medium text-slate-700">
+                        <i class="fas fa-arrow-right text-brand-400 mr-1"></i>Cuando borras un archivo
+                    </p>
+                    <ul class="list-disc list-inside space-y-1 text-xs text-slate-500">
+                        <li>El archivo <b>no se mueve de disco</b>: sigue en su carpeta original.</li>
+                        <li>Solo se marcan flags en la fila de BD:
+                            <span class="font-mono bg-slate-100 px-1 rounded">is_trashed=true</span>,
+                            <span class="font-mono bg-slate-100 px-1 rounded">deleted_at=fecha</span>,
+                            <span class="font-mono bg-slate-100 px-1 rounded">parent_id=NULL</span>,
+                            <span class="font-mono bg-slate-100 px-1 rounded">original_parent_id</span>.
+                        </li>
+                        <li>Si es carpeta, la marca se aplica recursivamente a todos los hijos.</li>
+                    </ul>
+                    <p class="text-xs text-slate-500 mt-2 bg-slate-50 border border-slate-200 rounded-md p-2">
+                        <i class="fas fa-circle-info text-slate-400 mr-1"></i>
+                        <b>No hay duplicidad en BD.</b> Es la misma fila con un flag. El listado del
+                        explorador y el sync del storage filtran por
+                        <span class="font-mono bg-slate-100 px-1 rounded">is_trashed=false</span>,
+                        así que un archivo en papelera nunca aparece dos veces.
+                    </p>
+                </div>
+
+                {{-- Bloque 2: Cuándo se borra solo --}}
+                <div class="space-y-2">
+                    <p class="font-medium text-slate-700">
+                        <i class="fas fa-clock text-brand-400 mr-1"></i>Cuándo se borra definitivamente
+                    </p>
+                    <ul class="list-disc list-inside space-y-1 text-xs text-slate-500">
+                        <li>El comando
+                            <span class="font-mono bg-slate-100 px-1 rounded">php artisan trash:purge</span>
+                            corre diario (scheduler a las 03:17).
+                        </li>
+                        <li>Borra items con
+                            <span class="font-mono bg-slate-100 px-1 rounded">deleted_at</span>
+                            más viejo que
+                            <span class="font-semibold">{{ (int) config('trash.retention_days', 15) }} días</span>
+                            (configurable).
+                        </li>
+                        <li>Si la cantidad de candidatos supera el 50% del total, la purga
+                            <b>aborta con log</b>
+                            <span class="font-mono bg-slate-100 px-1 rounded">papelera.purge.aborted_mass_delete</span>
+                            — protección anti borrado masivo.
+                        </li>
+                        <li>Si el item tiene transcripciones, shares o jobs de edición activos,
+                            <b>no se borra</b>: queda en papelera hasta que liberes esas dependencias.
+                        </li>
+                    </ul>
+                </div>
+
+                {{-- Bloque 3: Restaurar vs Eliminar definitivamente --}}
+                <div class="space-y-2">
+                    <p class="font-medium text-slate-700">
+                        <i class="fas fa-arrows-rotate text-brand-400 mr-1"></i>Restaurar vs eliminar
+                    </p>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div class="border border-slate-200 rounded-md p-3 bg-slate-50">
+                            <p class="text-xs font-semibold text-brand-700 mb-1">
+                                <i class="fas fa-undo mr-1"></i>Restaurar
+                            </p>
+                            <p class="text-xs text-slate-500">
+                                Vuelve a su carpeta original. Si no existe, va al root.
+                                Si ya hay un archivo con el mismo nombre allí, se le agrega el sufijo
+                                <span class="font-mono bg-white px-1 rounded">-restored-&lt;timestamp&gt;</span>.
+                            </p>
+                        </div>
+                        <div class="border border-slate-200 rounded-md p-3 bg-slate-50">
+                            <p class="text-xs font-semibold text-red-700 mb-1">
+                                <i class="fas fa-trash mr-1"></i>Eliminar definitivamente
+                            </p>
+                            <p class="text-xs text-slate-500">
+                                Borra la fila y el archivo en disco. <b>No se puede</b> si el item
+                                tiene shares, transcripciones o jobs activos — el botón se deshabilita.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
+                {{-- Bloque 4: Espacio y links públicos --}}
+                <div class="space-y-2">
+                    <p class="font-medium text-slate-700">
+                        <i class="fas fa-hard-drive text-brand-400 mr-1"></i>Espacio y links públicos
+                    </p>
+                    <ul class="list-disc list-inside space-y-1 text-xs text-slate-500">
+                        <li>Mientras esté en papelera, el archivo <b>sigue contando en tu cuota</b>
+                            de storage personal. Solo se libera cuando se purga automáticamente o
+                            lo eliminas definitivamente.</li>
+                        <li>Los links públicos (<span class="font-mono bg-slate-100 px-1 rounded">/s/&lt;token&gt;</span>)
+                            de un archivo en papelera devuelven
+                            <span class="font-mono bg-slate-100 px-1 rounded">410 Gone</span>
+                            al visitante: el archivo ya no está disponible aunque el link siga existiendo.
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div x-show="isLoading" class="text-center py-12 text-slate-500">
         <i class="fas fa-spinner fa-spin text-2xl mb-2"></i>
         <p>Cargando papelera...</p>
@@ -120,6 +238,7 @@ function papeleraApp() {
         isExecuting: false,
         confirming: null,
         pendingItem: null,
+        showHelp: false,
         toast: '',
 
         async loadItems() {

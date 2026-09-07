@@ -25,3 +25,8 @@ backup_*.sql
 .*
 !.gitignore
 !.env.example
+
+# Artefactos de tooling/QA en la raiz (Playwright + screenshots). No son codigo
+# del proyecto; los tests reales viven en app/tests/.
+/tests/
+playwright_*.py
