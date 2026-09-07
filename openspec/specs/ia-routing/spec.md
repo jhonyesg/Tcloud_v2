@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Capability `ia-routing`: consolida los requisitos y comportamientos de delete routes validate numeric ids at route level en TCloud. (Purpose derivado automáticamente al normalizar el formato legacy del spec.)
+
+## Requirements
 
 ### Requirement: DELETE routes validate numeric ids at route level
 

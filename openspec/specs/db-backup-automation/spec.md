@@ -1,3 +1,8 @@
+## Purpose
+
+Capability `db-backup-automation`: consolida los requisitos y comportamientos de daily automated database backup en TCloud. (Purpose derivado automáticamente al normalizar el formato legacy del spec.)
+
+## Requirements
 ### Requirement: Daily automated database backup
 The system SHALL execute a PostgreSQL backup of the `tcloudstorage` database daily via a shell script.
 

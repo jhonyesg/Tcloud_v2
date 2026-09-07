@@ -1,9 +1,14 @@
 # Spec — Integridad del texto de los segmentos transcritos
 
+## Purpose
+
+Capability `transcript-segment-integrity`: consolida los requisitos y comportamientos de el límite de longitud por segmento es configurable en TCloud. (Purpose derivado automáticamente al normalizar el formato legacy del spec.)
+
+## Requirements
+
 > El texto transcrito no debe perderse en silencio: es el único contenido buscable del módulo de
 > transcripción.
 
-## ADDED Requirements
 
 ### Requirement: El límite de longitud por segmento es configurable
 
@@ -14,6 +19,9 @@ desplegar. El valor **0** SHALL significar «sin límite».
 - El parser NO SHALL fijar el límite en una constante de clase.
 - El recorte SHALL hacerse por **caracteres** (`mb_substr`), nunca por bytes, para no partir un UTF-8.
 
+#### Scenario: Límite configurable en caliente
+- **WHEN** el admin cambia `transcriptor.srt_max_segment_chars` y se procesa un SRT nuevo
+- **THEN** el recorte usa el valor nuevo sin desplegar, cortando por caracteres mb_substr
 > **Historia.** El límite estuvo fijado en 500 caracteres con el comentario *"trunca segmentos > 500
 > chars para no inflar la BD con basura"*. La premisa era falsa en los dos extremos:
 >
@@ -49,6 +57,9 @@ procesado, con `{segmentos, de_total, chars_perdidos, mas_largo, limite}`.
 > (`prune_refused`, `scan_untrusted`, `mount_detached`), que son alertas tempranas de problemas de
 > montaje. Tras el cambio: 2 avisos.
 
+#### Scenario: Un solo aviso por SRT con recortes
+- **WHEN** un SRT procesado tiene 5 segmentos que superan el límite
+- **THEN** se emite exactamente un `Log::warning` agregado con el resumen, no uno por segmento
 ### Requirement: El texto recortado es recuperable dentro de la ventana de retención
 
 El sistema SHALL ofrecer `transcription:repair-truncated` para recuperar el texto de segmentos
@@ -83,6 +94,9 @@ original. La comprobación fiable es re-descargar el SRT y comparar, no la longi
 > recortados: los medía así el propio SRT. Un barrido de `--dry-run` sobre la ventana recuperable
 > devolvió 0 recuperables, que es lo que lo confirma.
 
+#### Scenario: Segmento con longitud exacta al límite no se marca como recortado
+- **WHEN** el diagnóstico evalúa un segmento cuya longitud coincide con el límite del SRT original
+- **THEN** no se reporta como recorte (la comprobación fiable re-descarga y compara el SRT)
 ---
 
 ## Acceptance Criteria

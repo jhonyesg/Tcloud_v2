@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Capability `php-fpm-tuning`: consolida los requisitos y comportamientos de pool php-fpm limitado a 50 workers máximo en TCloud. (Purpose derivado automáticamente al normalizar el formato legacy del spec.)
+
+## Requirements
 
 ### Requirement: Pool PHP-FPM limitado a 50 workers máximo
 El pool `[www]` de PHP-FPM SHALL tener `pm.max_children = 50`, de modo que el consumo máximo de RAM sea 50 × 256 MB = 12.8 GB, dentro del límite del servidor de 78 GB.

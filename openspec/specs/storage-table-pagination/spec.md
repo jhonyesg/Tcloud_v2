@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Capability `storage-table-pagination`: consolida los requisitos y comportamientos de paginación del lado del cliente en TCloud. (Purpose derivado automáticamente al normalizar el formato legacy del spec.)
+
+## Requirements
 
 ### Requirement: Paginación del lado del cliente
 La tabla de storages SHALL dividir los registros visibles en páginas para limitar el número de filas renderizadas simultáneamente.

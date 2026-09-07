@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Capability `navigation-state-persistence`: consolida los requisitos y comportamientos de estado de navegación persiste entre recargas en TCloud. (Purpose derivado automáticamente al normalizar el formato legacy del spec.)
+
+## Requirements
 
 ### Requirement: Estado de navegación persiste entre recargas
 El sistema SHALL guardar la posición de navegación actual en `localStorage` cada vez que el usuario navega, y restaurarla al cargar la página.

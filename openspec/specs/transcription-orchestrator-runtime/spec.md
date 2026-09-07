@@ -13,12 +13,18 @@ Fuente unica de verdad del comportamiento en ejecucion del modulo de transcripci
 - Each invocation **MUST** complete both phases within `withoutOverlapping(150)` seconds.
 - The tick **MUST** be the only scheduled entry point for transcription work. There is no separate "discovery" or "enqueue" schedule; both phases live inside `TranscriptionTickCommand::handle()`.
 
+#### Scenario: Tick fuera de intervalo no hace nada
+- **WHEN** el tick corre y no han transcurrido `tick_interval_minutes` desde el último tick exitoso
+- **THEN** el comando termina SUCCESS sin descubrir ni despachar, respetando el self-throttle del cache
 ### 2. Phase 1 — Discovery (current-day only)
 
 - The tick **SHALL** invoke `transcription:scan-and-submit --no-dispatch` programmatically in Phase 1.
 - The scanner **MUST** only consider files whose `mtime` falls within `now()->startOfDay()` to `now()`. This is enforced by `--days=0` in `ScanAndSubmitCommand` and verified by reading L24.
 - The discovery phase **MUST NOT** push jobs to the Redis queue `queues:transcription`. Its sole responsibility is to keep the `transcriptions` table populated with `state=pending, job_id=null` rows for newly-discovered media files of the current day.
 
+#### Scenario: Descubrimiento solo del día en curso
+- **WHEN** el scanner Phase 1 corre y encuentra medios con mtime de hoy y de ayer
+- **THEN** solo los de hoy se insertan como transcripciones pending; los de ayer se ignoran
 ### 3. Phase 2 — Regulator dispatch (current-day only)
 
 - After Phase 1, the tick **MUST** compute its dispatch batch via the regulator formula:
@@ -38,17 +44,30 @@ Fuente unica de verdad del comportamiento en ejecucion del modulo de transcripci
   ordered oldest-first within the day for fairness.
 - The dispatch **MUST** use the existing `ConvertAndTranscribeJob::dispatch($fileId, true)` producer; no new job class is introduced.
 
+#### Scenario: Cola en objetivo omite el despacho
+- **WHEN** la longitud de `queues:transcription` alcanza `target_redis_queue`
+- **THEN** el tick registra "queue at target, skip dispatch" y no encola nada
+
+#### Scenario: Despacho oldest-first acotado por el regulador
+- **WHEN** hay 500 pendientes del día y el regulador computa batch=140
+- **THEN** se despachan exactamente 140 ConvertAndTranscribeJob, los más viejos primero
 ### 4. Same-day scope — explicit non-goal
 
 - The tick **SHALL NOT** dispatch files whose `created_at` predates `now()->startOfDay()`.
 - Previous-day pending rows **MUST** remain queryable via `transcriptor:diagnose-pending` and re-dispatchable via the existing `POST /api-transcriptor/jobs/bulk-dispatch` UI endpoint.
 - This scope is encoded as `TRANSCRIPTOR_SCOPE=current_day` in `.env`. Future expansion to `current_day_plus_one` or `unbounded` is permitted by changing that env, but **MUST** be documented in a new OpenSpec change before touching code.
 
+#### Scenario: Pendiente de ayer no se despacha por el tick
+- **WHEN** existe una transcripción pending creada ayer y el tick corre
+- **THEN** no se le genera job; queda disponible para bulk-dispatch manual desde la UI
 ### 5. Polling Phase (independent of the tick)
 
 - The system **SHALL** run `transcription:poll-results` every minute via Laravel Scheduler, independent of the tick cadence.
 - This phase is **NOT** merged into the tick. Polling concerns (re-dispatch stuck rows, fetch SRT) are separate from discovery/dispatch.
 
+#### Scenario: Polling recupera SRT de un job processing
+- **WHEN** un job en estado processing tiene resultado en el transcriptor y el polling corre
+- **THEN** el SRT se descarga, se persiste y la transcripción pasa a done independientemente del tick
 ### 6. Auto-tuner Phase
 
 - The system **SHALL** run `transcription:tune --apply` every 5 minutes via Laravel Scheduler.
@@ -58,6 +77,10 @@ Fuente unica de verdad del comportamiento en ejecucion del modulo de transcripci
   - Compute `workers = clamp(medios_total / worker_ratio, worker_min, worker_max)`, con los tres limites leidos de `TranscriptorSettings` (defaults `6`, `3`, `12` — los antiguos `private const`).
   - Acotar el `worker_max` efectivo al numero de units `tcloud-transcription-batch-*.service` realmente instaladas, y exponer ese tope a la API de settings para que la UI no pueda pedir workers inexistentes.
   - Con `worker_override` distinto de 0, usarlo tal cual en lugar de la formula. Es la palanca directa del operador durante una saturacion.
+
+#### Scenario: Tuner ajusta workers según carga
+- **WHEN** la carga de medios equivalentes crece y el tuner corre
+- **THEN** el número de workers systemd se recalcula con clamp y se aplica idempotentemente
   - `systemctl enable --now` exactly that number of `tcloud-transcription-batch-N.service` units, and `systemctl stop` the rest.
 - The tuner **MUST** be idempotent: a back-to-back run with the same storage count must NOT issue start/stop shell calls for already-correctly-stated services.
 - The tuner **MUST** run `reconcileForbiddenPools()` on every `--apply`: enumerar instancias activas de `tcloud-transcription-worker@*.service`, hacer `systemctl disable --now` de cada una, reportarlas bajo `stopped_orphans[]` y emitir `Log::warning`.
@@ -65,6 +88,10 @@ Fuente unica de verdad del comportamiento en ejecucion del modulo de transcripci
 - The tuner **SHALL** emit a JSON line per run to `storage/logs/transcription-tune.log` containing `{ts, storages_total, medios_total, workers_target, started[], stopped[], stopped_orphans[], worker_min, worker_max, worker_ratio, worker_override, units_installed}`.
 
 ### 7. Worker Pool Contract
+
+#### Scenario: retry_after supera timeout del job
+- **WHEN** un worker muere con un job en ejecución que dura más de `retry_after`
+- **THEN** el job no se re-entrega a otro worker antes de que `retry_after > $timeout` garantice que el original ya no está en ffmpeg
 
 - The system's only worker pool is the set of systemd services `tcloud-transcription-batch-{1..12}.service`, all of which:
   - `ExecStart=/usr/bin/php -d memory_limit=512M artisan queue:work --queue=transcription --tries=3 --timeout=600 --sleep=1`
@@ -78,12 +105,20 @@ Fuente unica de verdad del comportamiento en ejecucion del modulo de transcripci
 
 ### 8. Single OS Cron, No Transcription Entries
 
+#### Scenario: Solo schedule:run en crontab
+- **WHEN** se inspecciona el crontab del sistema
+- **THEN** existe exactamente un `* * * * *` para `schedule:run` y ninguna entrada directa de transcripción
+
 - `/var/spool/cron/crontabs/root` **MUST** contain exactly:
   - One `* * * * *` for `schedule:run` (the Laravel scheduler entry point).
 - **No entry** for `transcription_enqueue_batch.php` (the script is manual-only or absorbed into `transcription:tick`).
 - `/www/server/cron/*` (panel `aaPanel` scripts) **MUST NOT** invoke `transcription_enqueue_batch.php` directly. If any is found, it is a regression and **MUST** be removed.
 
 ### 9. Configuration Surface
+
+#### Scenario: Valor de settings acotado y refrescado en caliente
+- **WHEN** el admin cambia `tick_interval_minutes` fuera de rango o dentro de rango
+- **THEN** el valor se clampa a min/max y los procesos lo leen tras el TTL de 60s sin reinicio
 
 - La configuracion de runtime **SHALL** resolverse en `App\Services\Ia\TranscriptorSettings` con esta precedencia:
   1. Fila en `system_settings` con clave `transcriptor.<key>`
@@ -99,6 +134,10 @@ Fuente unica de verdad del comportamiento en ejecucion del modulo de transcripci
 
 ### 10. Semaforo de concurrencia
 
+#### Scenario: Semaforo acota ffmpeg+POST concurrentes
+- **WHEN** más de `inflight_max` jobs intentan ejecutar ffmpeg simultáneamente
+- **THEN** los excedentes se liberan con `releaseAfter(650)` y reintentan sin fallar permanentemente
+
 - El sistema **SHALL** proveer un job middleware que acote la **ejecucion concurrente de ffmpeg + POST**, independiente del numero de workers, via `Redis::funnel('transcriptor:inflight')->limit(inflight_max)->releaseAfter(650)`.
 - Con `inflight_max <= 0` el middleware **MUST** dejar pasar sin coste (desactivado por defecto).
 - `releaseAfter` **MUST** superar el `$timeout` del job para que un worker muerto libere su cupo en vez de retenerlo.
@@ -106,6 +145,10 @@ Fuente unica de verdad del comportamiento en ejecucion del modulo de transcripci
 - Motivo: el objetivo de cola regula el **ritmo de encolado**, no la **concurrencia real**. La evidencia del 2026-07-24 11:35:32-36 (15 `ffmpeg falló` en 4 segundos, stderr truncado a offsets distintos, cero HTTP 429) es contencion local de CPU/IO, no rechazo de la API.
 
 ### 11. Prevencion de despacho duplicado
+
+#### Scenario: Doble despacho del mismo archivo se deduplica
+- **WHEN** el tick y un envío manual encolan el mismo `file_id` en la ventana de 900s
+- **THEN** solo una instancia del job se procesa (ShouldBeUnique por `file_id`)
 
 - `ConvertAndTranscribeJob` **MUST** implementar `ShouldBeUnique` con `uniqueId() = fileId` y `uniqueFor = 900` (pareado con `retry_after`).
 - El mismo `file_id` llega a `queues:transcription` por cuatro caminos: el tick, `scan-and-submit`, `bulk-dispatch` y el envio manual.
@@ -115,9 +158,16 @@ Fuente unica de verdad del comportamiento en ejecucion del modulo de transcripci
 - `ScanAndSubmitCommand` **MUST NOT** calcular su tope como `scan_batch x numero_de_storages`.
   - Con 31 storages y `scan_batch=100` eso eran 3100 jobs en un bucle apretado sin pasar por el regulador. Es ademas la ruta del boton "Escanear storages" de la UI, asi que tambien inundaba con disparo manual.
 - El tope **MUST** ser `min(scan_max_dispatch_per_cycle, computeDispatchBatch(Redis::llen('queues:transcription')))`.
-- El envio multiple del navegador **MUST** acotar sus peticiones paralelas a `ui_max_parallel_sends`, y `POST /ia/api-transcriptor/transcribe/{fileId}` **MUST** llevar `throttle` como defensa en profundidad. Ese endpoint corre ffmpeg + POST sincronos dentro de php-fpm.
+
+#### Scenario: Escaneo de storages respeta el regulador
+- **WHEN** el admin dispara "Escanear storages" con 31 storages y scan_batch=100
+- **THEN** el despacho manual se acota a `scan_max_dispatch_per_cycle` y el régimen del regulador, no a 3100 jobs- El envio multiple del navegador **MUST** acotar sus peticiones paralelas a `ui_max_parallel_sends`, y `POST /ia/api-transcriptor/transcribe/{fileId}` **MUST** llevar `throttle` como defensa en profundidad. Ese endpoint corre ffmpeg + POST sincronos dentro de php-fpm.
 
 ### 13. Superficie de observacion y control
+
+#### Scenario: Diagnóstico visible del pipeline
+- **WHEN** el admin abre la superficie de observación del módulo
+- **THEN** puede ver estado de jobs, pendientes y re-despachar acotadamente sin acceso al servidor
 
 - El sistema **SHALL** exponer, bajo el grupo de rutas existente `['auth','admin']` + `prefix('ia')`:
   - `GET  /ia/api-transcriptor/settings` — valores efectivos con su origen, mas contexto en vivo (profundidad de cola vs objetivo, workers activos y huerfanos, conteos por estado, y el lote que el regulador calcularia ahora mismo)

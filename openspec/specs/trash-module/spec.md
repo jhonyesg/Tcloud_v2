@@ -24,22 +24,6 @@ The system MUST mark a File as trashed (instead of hard-deleting the row and its
 - **THEN** the trashed item MUST NOT appear in the listing — neither in root listings (`whereNull('parent_id')`) nor in any subfolder listing
 - **AND** the user can find it via the dedicated "Papelera" view
 
-### Requirement: Restore semantics
-
-The system MUST let the original owner (or admin) restore a trashed item. Restoration MUST attempt to place the item back under its `original_parent_id`; if that parent is missing or also trashed, the item MUST be restored to the root of its storage provider. If a name collision exists at the destination, the system MUST suffix the restored name with `-restored-<unix_timestamp>`.
-
-#### Scenario: Restore with original parent still present
-- **WHEN** user restores a trashed file whose `original_parent_id` points to a non-trashed folder
-- **THEN** the file's `parent_id` is set back to `original_parent_id`, `is_trashed=false`, `deleted_at=NULL`, `original_parent_id=NULL`
-
-#### Scenario: Restore with original parent missing
-- **WHEN** user restores a trashed file whose `original_parent_id` no longer resolves to an existing folder
-- **THEN** the file is placed at the root of its storage provider (`parent_id=NULL` but `is_trashed=false`)
-
-#### Scenario: Restore with name collision
-- **WHEN** user restores a file whose destination already has a sibling with the same name
-- **THEN** the restored file is renamed with the suffix `-restored-<unix_timestamp>` before insertion
-
 ### Requirement: Sync MUST NOT modify trashed rows
 
 The system MUST guarantee that the periodic storage sync (`StorageSyncService::doSyncFolder` and any path it triggers) neither updates, recreates, nor prunes rows whose `is_trashed=true`. The sync MUST treat trashed rows as the canonical representation of their on-disk path for the duration of their trash lifetime.

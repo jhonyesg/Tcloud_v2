@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Capability `external-site-viewer`: consolida los requisitos y comportamientos de usuario accede al visor de site externo en TCloud. (Purpose derivado automáticamente al normalizar el formato legacy del spec.)
+
+## Requirements
 
 ### Requirement: Usuario accede al visor de site externo
 El sistema SHALL renderizar el site externo en un iframe fullscreen dentro del layout de Tcloud cuando el usuario navega a `/sites/{site}`.

@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Capability `storage-table-filters`: consolida los requisitos y comportamientos de filtro rápido por tipo de storage en TCloud. (Purpose derivado automáticamente al normalizar el formato legacy del spec.)
+
+## Requirements
 
 ### Requirement: Filtro rápido por tipo de storage
 La tabla SHALL incluir un control de filtro que permita mostrar solo storages de un tipo específico (local, s3) o todos los tipos.

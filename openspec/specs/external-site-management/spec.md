@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Capability `external-site-management`: consolida los requisitos y comportamientos de admin puede crear un site externo en TCloud. (Purpose derivado automáticamente al normalizar el formato legacy del spec.)
+
+## Requirements
 
 ### Requirement: Admin puede crear un site externo
 El sistema SHALL permitir al admin registrar un site externo con nombre, URL (HTTPS), icono FontAwesome y color.

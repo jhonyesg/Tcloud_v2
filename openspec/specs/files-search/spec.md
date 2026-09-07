@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Capability `files-search`: consolida los requisitos y comportamientos de cuadro de búsqueda en el módulo de archivos en TCloud. (Purpose derivado automáticamente al normalizar el formato legacy del spec.)
+
+## Requirements
 
 ### Requirement: Cuadro de búsqueda en el módulo de archivos
 El módulo de archivos SHALL incluir un cuadro de búsqueda visible en la barra de herramientas, dentro del área de contenido, que permita buscar archivos y carpetas por nombre dentro del storage activo.

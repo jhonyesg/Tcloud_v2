@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Capability `transcription-result-polling`: consolida los requisitos y comportamientos de polling retrieves transcription results en TCloud. (Purpose derivado automáticamente al normalizar el formato legacy del spec.)
+
+## Requirements
 
 ### Requirement: Polling retrieves transcription results
 El sistema SHALL consultar periódicamente el estado de las `Transcription` en `state=queued` o `state=processing` que tengan `job_id`, mediante `GET /v1/jobs/{job_id}` al transcriptor externo, sin depender de webhook entrante.
