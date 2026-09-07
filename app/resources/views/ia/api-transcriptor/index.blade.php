@@ -156,9 +156,13 @@
     {{-- TAB: STORAGES --}}
     <div x-show="tab === 'storages'" x-transition:enter.opacity.duration.150ms>
 
-    {{-- Banner de novedades: medios/carpetas sin archivos. Click para expandir y ver, boton Omitir para desactivar storage. --}}
-    <div x-show="emptyFolders && emptyFolders.total_missing_folders > 0"
-         data-tour="storages-empties"
+    {{-- Banner de novedades: medios/carpetas sin archivos. Click para expandir y ver, boton Omitir para desactivar storage.
+         <template x-if> en vez de <div x-show>: con x-show Alpine evalúa los hijos aunque el padre esté oculto,
+         y durante el primer render emptyFolders.total_missing_folders ya es 0, pero las expresiones hijas
+         como emptyFolders.items / emptyFolders.storages_with_empty reventaban en consola. x-if no monta el subárbol
+         hasta que el predicado sea true. Ver change 2026-09-07-api-transcriptor-fix-empty-folders-console-errors. --}}
+    <template x-if="emptyFolders && emptyFolders.total_missing_folders > 0">
+    <div data-tour="storages-empties"
          class="mb-4 bg-amber-50 border border-amber-200 rounded-xl">
         <div class="px-5 py-3 flex items-center gap-3">
             <i class="fas fa-exclamation-triangle text-amber-600 text-lg"></i>
@@ -221,6 +225,7 @@
             </template>
         </div>
     </div>
+    </template>
 
     {{-- Banner de salud dentro del tab (también arriba del todo en el siguiente cambio) --}}
     <div class="mb-6 grid grid-cols-1 md:grid-cols-4 gap-4">
@@ -1795,7 +1800,13 @@ function apiTranscriptor() {
         transcript: { open: false, loading: false, error: null, job: null, view: 'texto', q: '', data: null },
         health: null,
         stats: null,
-        emptyFolders: null,
+        // Shape inicial NO nulo: las expresiones hijas del banner ámbar
+        // (x-text, x-for) se evalúan antes de que loadEmptyFolders() termine,
+        // y aunque el <template x-if> exterior evita que se monten cuando
+        // total_missing_folders === 0, mantener el mismo shape que el catch
+        // de loadEmptyFolders evita asimetrías entre el primer render y el
+        // estado tras error. Ver change 2026-09-07-api-transcriptor-fix-empty-folders-console-errors.
+        emptyFolders: { items: [], storages_with_empty: 0, total_missing_folders: 0 },
         emptyFoldersExpanded: false,
         stateLabels: {
             pending: 'pendientes',
@@ -2850,50 +2861,93 @@ function apiTranscriptor() {
             this.batchRunning = true;
             this.batchResult = null;
             this.batchProgress = null;
-            // Watchdog: si la respuesta HTTP tarda >5s, asumimos que el proceso fue
-            // iniciado y entramos a polling igual. El backend usa proc_open + /dev/null
-            // para no bloquear, pero la red o el browser pueden introducir latencia.
             const startPolling = (runId) => {
                 this.batchRunId = runId;
                 if (this.batchPollTimer) clearInterval(this.batchPollTimer);
                 this.batchPollTimer = setInterval(() => this.pollBatch(), 2000);
                 this.pollBatch();
             };
+            const fetchPromise = apiFetch('/ia/api-transcriptor/process-batch', {
+                method: 'POST', credentials: 'same-origin',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
+                },
+                body: JSON.stringify({ batch: this.batchSize, generate_alerts: this.batchAlerts, include_failed: this.batchIncludeFailed }),
+            });
+
+            // Watchdog blando: si la respuesta HTTP tarda más de `WATCHDOG_MS`
+            // seguimos mostrando "Iniciando proceso en background..." en la UI
+            // (eso ya lo hace `batchRunning = true`), pero NO cortamos el fetch.
+            // El fetch original puede tardar tranquilamente hasta `MAX_FETCH_MS`
+            // antes de considerarlo perdido. Esto reemplaza el `Promise.race`
+            // anterior que rechazaba el fetch a los 5s y creaba un `runId`
+            // sintético, dejando el polling ciego contra cache inexistente.
+            const WATCHDOG_MS = 5000;   // solo cosmetic feedback
+            const MAX_FETCH_MS = 30000; // real network timeout
             try {
-                const fetchPromise = apiFetch('/ia/api-transcriptor/process-batch', {
-                    method: 'POST', credentials: 'same-origin',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Accept': 'application/json',
-                        'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
-                    },
-                    body: JSON.stringify({ batch: this.batchSize, generate_alerts: this.batchAlerts, include_failed: this.batchIncludeFailed }),
-                });
                 const res = await Promise.race([
                     fetchPromise,
-                    new Promise((_, reject) => setTimeout(() => reject(new Error('watchdog-timeout')), 5000))
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('watchdog-timeout')), WATCHDOG_MS))
                 ]);
-const data = await res.json().catch(() => ({}));
-                    if (!res.ok) {
-                        showToast(data.error || 'Error al iniciar el lote', 'error');
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                    showToast(data.error || 'Error al iniciar el lote', 'error');
+                    this.batchRunning = false;
+                    return;
+                }
+                startPolling(data.run_id);
+            } catch (watchdogErr) {
+                // Watchdog "cosmetic": el fetch probablemente está en vuelo (latencia
+                // de red, bootstrap de PHP-FPM). No lo cancelamos; seguimos
+                // mostrando el spinner y esperamos la respuesta REAL.
+                if (watchdogErr?.message === 'watchdog-timeout') {
+                    console.warn('runBatch: watchdog cosmetic disparado a ' + WATCHDOG_MS + 'ms, esperando fetch real...');
+                    try {
+                        const res = await Promise.race([
+                            fetchPromise,
+                            new Promise((_, reject) => setTimeout(() => reject(new Error('fetch-timeout')), MAX_FETCH_MS))
+                        ]);
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) {
+                            showToast(data.error || 'Error al iniciar el lote', 'error');
+                            this.batchRunning = false;
+                            return;
+                        }
+                        if (data?.run_id) {
+                            startPolling(data.run_id);
+                            return;
+                        }
+                        // res.ok pero sin run_id (respuesta inesperada)
+                        this.batchResult = {
+                            processed: 0, errors: 1, total_candidates: 0,
+                            storages: [], files: [], per_storage_errors: [],
+                            message: 'El servidor respondió 200 pero sin run_id. Revisá los logs.',
+                        };
                         this.batchRunning = false;
                         return;
+                    } catch (realErr) {
+                        // Fetch original falló después del watchdog: timeout de red
+                        // total, 5xx no recuperable, error de CSRF, etc.
+                        // NO inventamos un run_id sintético: mostramos error
+                        // accionable y dejamos que el modal cierre limpio.
+                        this.batchResult = {
+                            processed: 0,
+                            errors: 1,
+                            total_candidates: 0,
+                            storages: [],
+                            files: [],
+                            per_storage_errors: [],
+                            message: 'Sin respuesta del servidor después de ' + Math.round(MAX_FETCH_MS/1000) + 's. ' +
+                                     (realErr?.message === 'fetch-timeout'
+                                       ? 'El endpoint no respondió a tiempo (revisá /tmp/kilo_artisan_bg.log, filtro [transcriptor:scan]).'
+                                       : 'Error de conexión: ' + (realErr?.message || 'revisá los logs del servidor.')),
+                        };
+                        this.batchRunning = false;
                     }
-                startPolling(data.run_id);
-            } catch (e) {
-                // Timeout del watchdog: la request probablemente está en vuelo o el
-                // server la está procesando. Asumimos "started" y entramos a polling
-                // usando el runId que el server habrá publicado en cache al iniciar.
-                if (e?.message === 'watchdog-timeout') {
-                    // Esperar un poco a que el server registre el runId y luego iniciar polling.
-                    setTimeout(() => {
-                        // Si el server responde tarde pero con run_id, este startPolling
-                        // se ejecutará. Si nunca respondió, el polling verá cache vacío
-                        // y mostrará error después de varios intentos.
-                        this.batchRunId = this.batchRunId || ('timeout_' + Date.now());
-                        startPolling(this.batchRunId);
-                    }, 1500);
                 } else {
+                    // Error inmediato del fetch (red caída antes del watchdog)
                     this.batchResult = {
                         processed: 0,
                         errors: 1,
@@ -2901,7 +2955,7 @@ const data = await res.json().catch(() => ({}));
                         storages: [],
                         files: [],
                         per_storage_errors: [],
-                        message: 'Error de conexión: ' + (e?.message || 'sin respuesta del servidor. Reintenta o revisa los logs.'),
+                        message: 'Error de conexión: ' + (watchdogErr?.message || 'sin respuesta del servidor. Reintenta o revisa los logs.'),
                     };
                     this.batchRunning = false;
                 }
