@@ -44,6 +44,6 @@
 
 ## 7. Cierre
 
-- [ ] 7.1 Commit con mensaje `feat(corrections): finer time granularity + per-correction filter for apply-retroactive`.
-- [ ] 7.2 Merge + deploy.
-- [ ] 7.3 `openspec archive corrections-apply-retroactive-scope-controls`.
+- [x] 7.1 Commit con mensaje `feat(corrections): finer time granularity + per-correction filter for apply-retroactive`.
+- [x] 7.2 Merge + deploy.
+- [x] 7.3 `openspec archive corrections-apply-retroactive-scope-controls`.

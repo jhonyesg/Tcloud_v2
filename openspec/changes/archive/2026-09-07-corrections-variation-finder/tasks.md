@@ -58,6 +58,6 @@
 
 ## 8. Cierre
 
-- [ ] 8.1 Commit con mensaje `feat(corrections): variation finder tab for targeted variant discovery`.
-- [ ] 8.2 Merge + deploy.
-- [ ] 8.3 `openspec archive corrections-variation-finder`.
+- [x] 8.1 Commit con mensaje `feat(corrections): variation finder tab for targeted variant discovery`.
+- [x] 8.2 Merge + deploy.
+- [x] 8.3 `openspec archive corrections-variation-finder`.
