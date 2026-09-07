@@ -70,19 +70,22 @@ En modo real invoca `CorrectionService::aiSuggestEnEsMix()` y reporta `Mined, In
 - **WHEN** admin corre AI-suggest dos veces en el mismo día
 - **THEN** la segunda corrida skipea los segmentos ya procesados (cache hit) y los candidatos que ya están pending no se duplican.
 
-### Requirement: AI-suggest runs every 4 hours via scheduler
+### Requirement: AI-suggest is manual-only (no scheduled cron)
 
-El sistema SHALL agendar `corrections:ai-suggest` (con defaults) cada 4 horas via `Schedule::command()` en `routes/console.php`. El scheduler usa `withoutOverlapping(120)` para evitar colisión con retroactivo, miner rule-based, y otras corridas AI-suggest solapadas.
+`corrections:ai-suggest` SHALL NOT estar agendado en `routes/console.php` en ninguna cadencia (cambio 2026-09-05: el schedule cada 4 horas fue eliminado definitivamente). La única vía de ejecución es la acción explícita del admin: POST `/ia/correcciones/ai-suggest-now` o `php artisan corrections:ai-suggest`.
 
 #### Scenario: Cron dispara AI-suggest automático
-- **WHEN** pasan 4 horas desde la última corrida exitosa
-- **THEN** el scheduler ejecuta `corrections:ai-suggest` con defaults (days=1, sample=200).
-- **AND** los candidatos se insertan como pending.
+- **WHEN** pasan 4 horas desde la última corrida
+- **THEN** el scheduler NO ejecuta `corrections:ai-suggest`: la entrada fue eliminada de `routes/console.php` y no se consumen tokens de LLM.
 
 #### Scenario: AI-suggest y otro proceso largo corren en paralelo
-- **WHEN** hay un `corrections:apply-run` activo o un `corrections:mine-en-es` activo y se dispara el AI-suggest
-- **THEN** el `withoutOverlapping(120)` previene que ambos corran al mismo tiempo.
-- **THEN** la AI-suggest espera (hasta 120 min) o se skipea si el lock no se libera.
+- **WHEN** hay un `corrections:apply-run` activo o un `corrections:mine-en-es` activo y el admin dispara el AI-suggest manualmente
+- **THEN** la corrida manual no degrada al otro proceso: la idempotencia por caché de segmentos y el filtro de duplicados pending evitan efectos dobles.
+- **THEN** sin cron, no existe colisión de `withoutOverlapping` que gestionar.
+
+#### Scenario: La única vía es manual
+- **WHEN** admin hace click en "AI Suggest 1d" del header de `/ia/correcciones` o corre `php artisan corrections:ai-suggest --days=1`
+- **THEN** el comando corre como corrida única on-demand con el guardrail del master switch (`llm-correction.enabled`).
 
 ### Requirement: Brand and proper-noun exclusion is enforced (defense-in-depth)
 
@@ -120,20 +123,19 @@ Los candidatos descartados se cuentan en `rejected_by_filter` y NO se insertan. 
 
 ### Requirement: LLM correction master switch defaults to OFF
 
-El toggle maestro `llm-correction.enabled` SHALL tener default `false` en el schema (`LlmCorrectionSettings::SCHEMA`). Un fresh-install o un `migrate:fresh` deja el suggester apagado por default — el admin debe prenderlo explícitamente desde `/ia/correcciones` → AI Settings o vía `.env` (`LLM_CORRECTION_ENABLED=true`).
+El toggle maestro `llm-correction.enabled` SHALL tener default `false` en el schema (`LlmCorrectionSettings::SCHEMA`) y SHALL estar persistido con valor `0` en `system_settings` tras este deploy (migración de settings idempotente). Con la fila persistida, el estado OFF deja de depender de la ausencia de variables env: estado real detectado 2026-09-05 — `.env` sin variables LLM y fila ausente hacían que el default env `true` ganara. Ningún proceso automático SHALL cambiar este valor.
 
-Esta política ya está activa en producción desde el incidente del 2026-08-25 05:28 UTC, donde la hemorragia de tokens (~300 requests/6 min al gateway `api.minimax.io/v1` con HTTP 401) fue posible porque el toggle maestro había sido prendido por el deploy del 2026-08-19 sin que nadie lo revisara.
+Esta política está activa en producción desde el incidente del 2026-08-25 05:28 UTC (hemorragia de tokens con HTTP 401 por toggle maestro encendido sin revisión) y se ratifica el 2026-09-05 con la persistencia en BD.
 
 #### Scenario: Fresh install con defaults del código
 - **WHEN** un admin corre `php artisan migrate:fresh --seed`
-- **THEN** `SELECT value FROM system_settings WHERE key='llm-correction.enabled'` retorna `'0'`.
-- **AND** `php artisan corrections:ai-suggest --days=1` sale con `WARNING LLM_CORRECTION_ENABLED=false (o override UI=false). Saliendo sin gastar tokens.` y código SUCCESS.
-- **AND** los queue workers no invocan el suggester.
+- **THEN** `SELECT value FROM system_settings WHERE key='llm-correction.enabled'` retorna `'0'` (la migración de settings de este change persiste la fila).
+- **AND** `php artisan corrections:ai-suggest --days=1` sale con el WARNING del switch apagado y código SUCCESS, sin gastar tokens.
 
 #### Scenario: Admin prende el toggle desde la UI
 - **WHEN** admin abre AI Settings y activa "Switch maestro"
 - **THEN** la fila `llm-correction.enabled` queda en `'1'`.
-- **AND** los workers re-leídos en su próximo reinicio invocan `LlmCorrectionSuggester` para los suggestions manuales o programados.
+- **AND** el suggester queda operativo solo para corridas manuales (no existe cron que lo invoque).
 
 #### Scenario: Admin desactiva desde .env por emergencia
 - **WHEN** admin edita `.env` y pone `LLM_CORRECTION_ENABLED=false`
