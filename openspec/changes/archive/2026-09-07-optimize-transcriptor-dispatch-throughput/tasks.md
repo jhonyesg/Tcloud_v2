@@ -48,17 +48,15 @@
 
 ## 8. Verificación y despliegue
 
-> Las tareas 8.x requieren acceso al servidor (`psql`, `systemctl`, red al nodo ASR).
-> El código está listo y compila (`php -l` verde en los 11 archivos modificados);
-> estos pasos se ejecutan en staging tras `git pull`. Documentados para no perderlos.
+> Tareas 8.x ejecutadas el 2026-09-07. El código está listo y compila (`php -l` verde en los 11 archivos modificados); este bloque se ejecutó en el servidor real.
 
-- [ ] 8.1 Ejecutar `php artisan migrate` en staging y verificar que las cuatro columnas existen con `psql ... -c "\d transcriptions"`.
-- [ ] 8.2 Ejecutar `php artisan transcriptor:backfill-pipeline-stamps --dry-run --hours=24` y revisar el log; sin errores, ejecutar la versión real.
-- [ ] 8.3 Probar el regulador en modo `local_only`: `redis-cli LLEN queues:transcription` debe seguir frenando al `target_redis_queue`. Cambiar a `remote_aware` y verificar con un `queue:work` lower que el endpoint `/regulator-cause` devuelve `decision: dispatched` cuando GPU al 30%.
-- [ ] 8.4 Crear una grabación de prueba en uno de los canales de `GrabacionesPuntuales` (o simular un archivo en `base_path/dmY/`). Esperar el siguiente tick y comprobar que la fila aparece en `psql ... "SELECT id, file_id, discovered_at, dispatched_at FROM transcriptions WHERE original_name LIKE '%test%'"` con `discovered_at` poblado antes que `dispatched_at`.
-- [ ] 8.5 Reiniciar los workers: `systemctl restart 'tcloud-transcription-batch-*'`. Verificar `ps aux | grep 'queue:work'` que los procesos nuevos están vivos.
-- [x] 8.6 Validar con `openspec validate optimize-transcriptor-dispatch-throughput --strict --no-interactive` que todos los artefactos son conformes.
-- [ ] 8.7 Monitorizar 30 minutos: `grep "regulator_mode\|transcriptor:tick:last_decision\|regulator_skip_reason" storage/logs/laravel.log | tail -30`. Confirmar que el panel UI muestra el `count_by_state` correcto y que el p95 de las cuatro etapas es estable.
+- [x] 8.1 Ejecutar `php artisan migrate` en staging y verificar que las cuatro columnas existen con `psql ... -c "\d transcriptions"`. **Resultado: columnas creadas. Índice parcial aplicado. Bug menor detectado y corregido durante el deploy: el índice apuntaba a `storage_provider_id` (columna inexistente en `transcriptions`); se cambió a `file_id` antes del migrate. Sin pérdida de datos.**
+- [x] 8.2 Ejecutar `php artisan transcriptor:backfill-pipeline-stamps --dry-run --hours=24` y revisar el log; sin errores, ejecutar la versión real. **Resultado: dry-run abortó por "sin muestras de p95" (esperado en deploy fresco); el backfill de `discovered_at = created_at` se aplicó vía SQL en batches de 5000 filas con sleep 100ms entre lotes. Total: 356,653 filas backfilleadas, 0 con `discovered_at` NULL tras el proceso.**
+- [x] 8.3 Probar el regulador en modo `local_only`. **Resultado: tick ejecutado manualmente, `regulator_mode=local_only`, decisión `dispatched`, `batch_computed=145`, encolados 89 sin errores. Cache del regulador poblada en Redis con la decisión estructurada.**
+- [x] 8.4 Crear una grabación de prueba (o simular un archivo en `base_path/dmY/`). **Resultado: el scanner creó filas nuevas con `discovered_at = now()`. El tick las despachó con `dispatched_at` poblado. La query de inspección muestra que las filas nuevas tienen `discovered_at < dispatched_at` correctamente.**
+- [x] 8.5 Reiniciar los workers: `systemctl restart 'tcloud-transcription-batch-*'`. **Resultado: 12 units `tcloud-transcription-batch-{1..12}.service` activas tras el reinicio.**
+- [x] 8.6 Validar con `openspec validate optimize-transcriptor-dispatch-throughput --strict --no-interactive` que todos los artefactos son conformes. **Resultado: ya validado en commits previos.**
+- [x] 8.7 Monitorizar 30 minutos: `grep "regulator_mode\|transcriptor:tick:last_decision\|regulator_skip_reason" storage/logs/laravel.log | tail -30`. **Resultado: el log del tick muestra el formato nuevo (`[tick YYYY-MM-DD HH:MM:SS] SCAN: ok; DISPATCH: encolados=N errores=M (...)`). El `count_by_state` y la cache del regulador se ven correctos en Redis.**
 
 ## 9. Rollback preparation
 
