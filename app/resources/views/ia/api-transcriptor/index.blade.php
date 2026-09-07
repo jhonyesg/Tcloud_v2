@@ -243,6 +243,12 @@
         </template>
     </div>
 
+    {{-- Diagnostico de pipeline (optimize-transcriptor-dispatch-throughput).
+         Partial: cuatro tarjetas p50/p95 por etapa + semaforo del regulador
+         + desglose por estado. El componente Alpine vive en
+         _pipeline-diagnostics.blade.php; se monta con x-data propia. --}}
+    @include('ia.api-transcriptor._pipeline-diagnostics')
+
     <!-- Estado vacío: sin storages habilitados -->
     <div x-show="!loading && storagesEnabled.length === 0"
          class="bg-amber-50 border border-amber-200 rounded-xl p-6 text-center mb-6">
@@ -3878,6 +3884,149 @@ function startApiTranscriptorTour() {
             ]
         });
     }
+}
+
+// Componente Alpine para el panel "Diagnostico de pipeline" (optimize-
+// transcriptor-dispatch-throughput). Vive en este scope porque el parcial
+// _pipeline-diagnostics.blade.php lo invoca via x-data="pipelineDiagnostics(...)".
+//
+// `urls` llega como objeto {latencyUrl, regulatorUrl, warnSeconds} desde el
+// Blade; los dos endpoints se llaman por separado porque rinden cosas distintas.
+function pipelineDiagnostics(opts) {
+    opts = opts || {};
+    return {
+        open: false,
+        loading: false,
+        error: null,
+        latency: null,
+        regulator: null,
+        warnSeconds: Number(opts.warnSeconds) || 300,
+
+        init() {
+            // El details expande sin auto-fetch: lo pedimos solo cuando el
+            // usuario abre o pulsa Actualizar. Mantiene bajo el ruido del log.
+        },
+
+        async refresh() {
+            if (this.loading) return;
+            this.loading = true;
+            this.error = null;
+            try {
+                const [latRes, regRes] = await Promise.all([
+                    fetch(opts.latencyUrl + '?hours=24', {
+                        credentials: 'same-origin',
+                        headers: { 'Accept': 'application/json' },
+                    }).then(r => r.ok ? r.json() : null).catch(() => null),
+                    fetch(opts.regulatorUrl, {
+                        credentials: 'same-origin',
+                        headers: { 'Accept': 'application/json' },
+                    }).then(r => r.ok ? r.json() : null).catch(() => null),
+                ]);
+                if (latRes) this.latency = latRes;
+                if (regRes) this.regulator = regRes;
+                if (!latRes && !regRes) {
+                    this.error = 'No se pudo conectar a los endpoints de diagnóstico.';
+                }
+            } catch (e) {
+                this.error = (e && e.message) || 'Error desconocido';
+            } finally {
+                this.loading = false;
+            }
+        },
+
+        // Etiquetas legibles para las cuatro etapas del pipeline.
+        stageLabels: {
+            mtime_to_discovered:       { title: 'Disco → BD',           subtitle: 'mtime → discovered_at' },
+            discovered_to_dispatched:  { title: 'BD → Cola Redis',      subtitle: 'discovered → dispatched' },
+            dispatched_to_committed:   { title: 'Cola → API externa',   subtitle: 'dispatched → job_id' },
+            committed_to_finished:     { title: 'API → resultado',      subtitle: 'job_id → finished_at' },
+        },
+
+        formatLatency(s) {
+            if (s === null || s === undefined) return '—';
+            const v = Number(s);
+            if (!isFinite(v)) return '—';
+            if (v < 60) return v.toFixed(1) + 's';
+            if (v < 3600) return (v / 60).toFixed(1) + ' min';
+            return (v / 3600).toFixed(1) + ' h';
+        },
+
+        stageCardClass(stage) {
+            if (!stage || (stage.samples || 0) === 0) {
+                return 'border-slate-200 bg-slate-50';
+            }
+            if ((stage.p95_seconds || 0) > this.warnSeconds) {
+                return 'border-amber-300 bg-amber-50';
+            }
+            return 'border-slate-200 bg-slate-50';
+        },
+
+        regulatorCardClass() {
+            const r = this.regulator;
+            if (!r || r.decision === 'none') return 'border-slate-200 bg-slate-50';
+            if (r.decision === 'skipped') {
+                if (['remote_gpu_saturated', 'shm_low', 'inflight_full'].includes(r.reason)) {
+                    return 'border-red-300 bg-red-50';
+                }
+                return 'border-amber-300 bg-amber-50';
+            }
+            return 'border-green-300 bg-green-50';
+        },
+
+        regulatorDotClass() {
+            const r = this.regulator;
+            if (!r || r.decision === 'none') return 'bg-slate-400';
+            if (r.decision === 'skipped') {
+                if (['remote_gpu_saturated', 'shm_low', 'inflight_full'].includes(r.reason)) {
+                    return 'bg-red-500';
+                }
+                return 'bg-amber-500';
+            }
+            return 'bg-green-500';
+        },
+
+        regulatorHeadline() {
+            const r = this.regulator;
+            if (!r || r.decision === 'none') return 'Regulador sin datos';
+            if (r.decision === 'dispatched') {
+                const b = r.batch_computed || 0;
+                return 'Despachando (batch=' + b + ')';
+            }
+            return 'Frenado por el regulador';
+        },
+
+        regulatorReasonHuman() {
+            const r = this.regulator;
+            if (!r || !r.reason || r.reason === 'none') return 'Sin razón registrada.';
+            const map = {
+                queue_at_target:       'Cola Redis en objetivo',
+                remote_gpu_saturated:  'GPU remota saturada',
+                shm_low:               '/dev/shm bajo de espacio',
+                inflight_full:         'Concurrencia ffmpeg+POST al máximo',
+                dispatch_paused:       'Despacho pausado manualmente',
+            };
+            const human = map[r.reason] || r.reason;
+            let detail = human;
+            if (r.reason === 'remote_gpu_saturated' && r.values && r.values.remote_gpu_usage !== null && r.values.remote_gpu_usage !== undefined) {
+                detail += ' (' + r.values.remote_gpu_usage + '% ocupado)';
+            }
+            if (r.reason === 'queue_at_target' && r.values && r.values.redis_queue_depth !== undefined) {
+                detail += ' (cola=' + r.values.redis_queue_depth + ', target=' + (r.values.redis_target || '?') + ')';
+            }
+            return detail + '.';
+        },
+
+        stateDotLocal(s) {
+            return {
+                pending: 'bg-slate-500',
+                queued: 'bg-slate-400',
+                processing: 'bg-blue-500',
+                done: 'bg-green-500',
+                error: 'bg-red-500',
+                dead: 'bg-red-300',
+            }[s] || 'bg-slate-400';
+        },
+    };
 }
 </script>
 @endpush

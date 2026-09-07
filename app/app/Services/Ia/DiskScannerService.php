@@ -176,6 +176,7 @@ class DiskScannerService
                         'generate_alerts' => $generateAlerts,
                         'language' => $this->settings->str('language'),
                         'started_at' => now(),
+                        'discovered_at' => now(),
                     ]);
                     $transcriptionsCreated++;
                 }

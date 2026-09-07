@@ -199,4 +199,38 @@ return [
     // propio estado como normal y nadie hacia la pregunta de arriba (¿esta
     // entrando trabajo?).
     'health_alert_email' => env('TRANSCRIPTOR_HEALTH_ALERT_EMAIL', ''),
+
+    // === Regulador configurable (optimize-transcriptor-dispatch-throughput) ===
+    //
+    // `regulator_mode` redefine la senal que usa el tick para frenar.
+    //   - local_only : solo Redis LLEN + shm_free (comportamiento historico +
+    //                  guarda de tmpfs).
+    //   - remote_aware: ademas consulta /api/stats con cache y TTL corto;
+    //                  prioriza la saturacion real de la GPU remota sobre
+    //                  la cola local.
+    //   - hybrid    : cualquiera de redis_queue / remote_gpu / shm / inflight
+    //                  dispara freno; la razon es la primera senal saturada
+    //                  en orden de prioridad.
+    'regulator_mode' => env('TRANSCRIPTOR_REGULATOR_MODE', 'local_only'),
+
+    // TTL de la cache de /api/stats en Redis cuando regulator_mode consulta
+    // la GPU remota. Mantenerlo corto: 15s da margen para no castigar al
+    // nodo ASR sin perder relevancia operativa.
+    'regulator_remote_cache_seconds' => (int) env('TRANSCRIPTOR_REGULATOR_REMOTE_CACHE_SECONDS', 15),
+
+    // Timeout estricto para /api/stats. Si la API no responde en este plazo
+    // el regulador considera la senal como "unknown" y NO dispara freno por
+    // GPU (fail-open conservador). 800ms es compatible con una API bajo carga
+    // pero descarta conexiones colgadas.
+    'regulator_remote_timeout_ms' => (int) env('TRANSCRIPTOR_REGULATOR_REMOTE_TIMEOUT_MS', 800),
+
+    // Umbral (0-100) de ocupacion de la GPU remota a partir del cual el
+    // regulador dispara `reason=remote_gpu_saturated`.
+    'regulator_remote_saturation_pct' => (int) env('TRANSCRIPTOR_REGULATOR_REMOTE_SATURATION_PCT', 80),
+
+    // Umbral (segundos) para que el panel de diagnostico pinte en ambar la
+    // tarjeta de la etapa cuyo p95 lo supere. Default 300s = 5min, alineado
+    // con el SLO operativo "una transcripcion de 15min no debe tardar mas
+    // de 5min en resolverse una vez commitada".
+    'latency_p95_warn_seconds' => (int) env('TRANSCRIPTOR_LATENCY_P95_WARN_SECONDS', 300),
 ];

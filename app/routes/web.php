@@ -212,6 +212,10 @@ Route::middleware(['auth', 'admin'])->prefix('ia')->group(function () {
     Route::get('/api-transcriptor/stats', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'stats']);
     Route::get('/api-transcriptor/empty-folders', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'emptyFolders']);
     Route::get('/api-transcriptor/shm-status', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'shmStatus']);
+    // Diagnostico de pipeline (optimize-transcriptor-dispatch-throughput):
+    // percentiles p50/p95 por etapa + causa del ultimo tick del regulador.
+    Route::get('/api-transcriptor/latency', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'latency']);
+    Route::get('/api-transcriptor/regulator-cause', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'regulatorCause']);
 
     // Configuracion en caliente del pipeline (pestaña "Configuracion").
     Route::get('/api-transcriptor/settings', [App\Http\Controllers\Ia\TranscriptorSettingsController::class, 'index']);
@@ -287,6 +291,7 @@ Route::middleware(['auth', 'admin'])->prefix('ia')->group(function () {
     // Variation Finder (cambia corrections-variation-finder) — discovery de
     // variantes literales por palabra + scope. 100% SQL, sin IA.
     Route::post('/correcciones/variations/find', [App\Http\Controllers\Ia\CorreccionesController::class, 'findVariations']);
+    Route::post('/correcciones/variations/ai-suggest', [App\Http\Controllers\Ia\CorreccionesController::class, 'variationsAiSuggest']);
     Route::post('/correcciones/variations/bulk-create', [App\Http\Controllers\Ia\CorreccionesController::class, 'bulkCreateFromVariations']);
     Route::get('/correcciones/apply-retroactive-active', [App\Http\Controllers\Ia\CorreccionesController::class, 'activeApplyRun']);
     // Bulk moderation + undo (2026-07-30-corrections-bulk-moderation)

@@ -128,3 +128,28 @@ redis-cli -a 'Clouding2026!Redis' -n 2 --scan --pattern 'tcloud_tcloud_cache_*' 
   `openspec/changes/fix-storage-sync-missing-db-facade-import/` (caso
   `StorageSyncService::isFileLinked()` con `DB`). Harness de regresión:
   `tests/harness_storage_sync_is_file_linked.php`.
+
+## Rollback del change `optimize-transcriptor-dispatch-throughput`
+
+Tres pasos para volver al estado anterior si la feature rompe en producción:
+
+```bash
+# 1. Revertir la migración (las cuatro columnas son nullable, drop limpio).
+cd /www/wwwroot/cloud.mediaserver.com.co/Tcloud_v2/app
+php artisan migrate:rollback --step=1
+
+# 2. Revertir el merge (mantiene la migracion revertida en sync con el codigo).
+cd /www/wwwroot/cloud.mediaserver.com.co/Tcloud_v2
+git revert <commit-hash-de-la-feature>
+
+# 3. Reiniciar los workers para que vuelvan a la clase anterior de
+#    TranscriptionTickCommand (cachean la definicion en memoria).
+systemctl restart 'tcloud-transcription-batch-*'
+```
+
+**Freno de emergencia alternativo** (sin deploy): `dispatch_paused=true` en
+`system_settings` o `TRANSCRIPTOR_DISPATCH_PAUSED=true` en `.env` deja el
+descubrimiento corriendo pero corta el envio. El siguiente tick NO encola,
+los endpoints de envio devuelven HTTP 423, y el resto del sistema sigue
+funcionando. Es el interruptor de seguridad antes de decidirse por el
+rollback completo.

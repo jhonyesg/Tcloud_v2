@@ -95,6 +95,37 @@ class TranscriptorSettings
             'label' => 'Alcance del dispatcher',
             'help' => 'current_day: la tarea solo encola archivos de hoy. unbounded: recuperacion manual desde la UI.',
         ],
+        'regulator_mode' => [
+            'type' => 'str', 'group' => 'ritmo', 'default' => 'local_only',
+            'options' => ['local_only', 'remote_aware', 'hybrid'],
+            'env_key' => 'TRANSCRIPTOR_REGULATOR_MODE',
+            'label' => 'Modo del regulador',
+            'help' => 'Senal que usa el tick para frenar. local_only: cola Redis + shm (comportamiento historico). remote_aware: prioriza la saturacion real de la GPU remota (la cola Redis deja de frenar si la GPU esta ociosa). hybrid: cualquiera de las cuatro senales dispara freno.',
+        ],
+        'regulator_remote_cache_seconds' => [
+            'type' => 'int', 'group' => 'ritmo', 'default' => 15, 'min' => 1, 'max' => 300,
+            'env_key' => 'TRANSCRIPTOR_REGULATOR_REMOTE_CACHE_SECONDS',
+            'label' => 'Cache de /api/stats (s)',
+            'help' => 'TTL en Redis de la lectura de /api/stats. Bajo para no castigar al nodo ASR; alto para menos latencia.',
+        ],
+        'regulator_remote_timeout_ms' => [
+            'type' => 'int', 'group' => 'ritmo', 'default' => 800, 'min' => 100, 'max' => 5000,
+            'env_key' => 'TRANSCRIPTOR_REGULATOR_REMOTE_TIMEOUT_MS',
+            'label' => 'Timeout /api/stats (ms)',
+            'help' => 'Si la API no responde en este plazo la senal se considera unknown (fail-open, no dispara freno por GPU).',
+        ],
+        'regulator_remote_saturation_pct' => [
+            'type' => 'int', 'group' => 'ritmo', 'default' => 80, 'min' => 10, 'max' => 100,
+            'env_key' => 'TRANSCRIPTOR_REGULATOR_REMOTE_SATURATION_PCT',
+            'label' => 'Saturacion remota (%)',
+            'help' => 'Ocupacion de la GPU remota por encima de la cual el regulador dispara remote_gpu_saturated.',
+        ],
+        'latency_p95_warn_seconds' => [
+            'type' => 'int', 'group' => 'ritmo', 'default' => 300, 'min' => 30, 'max' => 3600,
+            'env_key' => 'TRANSCRIPTOR_LATENCY_P95_WARN_SECONDS',
+            'label' => 'Umbral p95 de alerta (s)',
+            'help' => 'El panel de diagnostico pinta en ambar la tarjeta de la etapa cuyo p95 supere este umbral.',
+        ],
         'inflight_max' => [
             'type' => 'int', 'group' => 'ritmo', 'default' => 0, 'min' => 0, 'max' => 48,
             'env_key' => 'TRANSCRIPTOR_INFLIGHT_MAX',

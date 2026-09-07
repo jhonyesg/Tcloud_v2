@@ -136,6 +136,12 @@ class TranscriptionSubmitService
                 // fila recien reenviada se cerraria como caducada al instante.
                 'started_at' => now(),
                 'last_polled_at' => null,
+                // Momento exacto en que la API externa acuso recibo del job.
+                // Es la frontera entre "nuestro trabajo" (cola, ffmpeg, POST)
+                // y "trabajo de la GPU remota" (latencia del transcriptor).
+                // El panel de diagnostico la usa para calcular la etapa
+                // `dispatched_to_committed` y `committed_to_finished`.
+                'submission_committed_at' => now(),
             ]);
 
             return ['ok' => true, 'job_id' => $transcription->job_id, 'state' => $transcription->state];

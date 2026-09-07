@@ -308,6 +308,77 @@ class TranscriptorApiClient
         }
     }
 
+    /**
+     * Lectura normalizada de ocupacion de la GPU remota para el regulador.
+     *
+     * Devuelve {processing: int, capacity: int} o null si la respuesta no
+     * encaja con la forma esperada. Timeout estricto configurable por
+     * `regulator_remote_timeout_ms`; el caller debe usar Cache::remember()
+     * para no castigar al nodo ASR (TTL sugerido: regulator_remote_cache_seconds).
+     *
+     * Fail-open: cualquier excepcion o respuesta no parseable devuelve null,
+     * que el regulador trata como "senial desconocida" (no dispara freno por
+     * GPU). Asi un corte de red no escala a un falso skip global.
+     */
+    public function getRemoteStats(): ?array
+    {
+        $timeoutSeconds = max(0.05, $this->settings->int('regulator_remote_timeout_ms') / 1000.0);
+
+        try {
+            $response = Http::withHeaders($this->authHeaders())
+                ->timeout($timeoutSeconds)
+                ->get($this->baseUrl() . '/api/stats');
+
+            if (!$response->successful()) {
+                return null;
+            }
+
+            $data = $response->json();
+            if (!is_array($data)) {
+                return null;
+            }
+
+            $payload = $data['data'] ?? $data;
+
+            // Candidatos a "processing" (jobs vivos en GPU remota).
+            $processing = $payload['processing']
+                ?? $payload['processing_jobs']
+                ?? $payload['jobs_processing']
+                ?? $payload['active']
+                ?? null;
+
+            // Candidatos a "capacity" (total de workers/cupos del nodo GPU).
+            $capacity = $payload['capacity']
+                ?? $payload['total_capacity']
+                ?? $payload['workers']
+                ?? $payload['max_concurrent']
+                ?? null;
+
+            if (!is_numeric($processing) || !is_numeric($capacity)) {
+                return null;
+            }
+
+            $processing = max(0, (int) $processing);
+            $capacity = max(0, (int) $capacity);
+
+            if ($capacity === 0) {
+                return null;
+            }
+
+            return [
+                'processing' => $processing,
+                'capacity' => $capacity,
+                'usage_pct' => (int) round(($processing / $capacity) * 100),
+            ];
+        } catch (\Throwable $e) {
+            Log::warning('TranscriptorApiClient::getRemoteStats fallo', [
+                'error' => $e->getMessage(),
+                'timeout_ms' => $this->settings->int('regulator_remote_timeout_ms'),
+            ]);
+            return null;
+        }
+    }
+
     public function getBaseUrl(): string
     {
         return $this->baseUrl();

@@ -1745,4 +1745,125 @@ class ApiTranscriptorController extends Controller
         }
         return $count;
     }
+
+    /**
+     * GET /ia/api-transcriptor/latency
+     *
+     * Percentiles p50/p95 en segundos de las cuatro etapas del pipeline,
+     * opcionalmente filtrados por storage y por ventana (en horas).
+     *
+     * Etapas:
+     *   mtime_to_discovered       = discovered_at - files.file_modified_at
+     *   discovered_to_dispatched  = dispatched_at - discovered_at
+     *   dispatched_to_committed   = submission_committed_at - dispatched_at
+     *   committed_to_finished     = finished_at - submission_committed_at
+     *
+     * Devuelve tambien `count_by_state` para el panel.
+     */
+    public function latency(Request $request)
+    {
+        $hours = max(1, min(168, (int) $request->input('hours', 24)));
+        $storageId = $request->input('storage_id');
+
+        $cutoff = now()->subHours($hours);
+        $params = [$cutoff];
+        $storageFilter = '';
+
+        if ($storageId !== null && $storageId !== '') {
+            $storageFilter = 'AND f.storage_provider_id = ?';
+            $params[] = (int) $storageId;
+        }
+
+        $stages = [
+            'mtime_to_discovered' => "EXTRACT(EPOCH FROM (t.discovered_at - f.file_modified_at))",
+            'discovered_to_dispatched' => "EXTRACT(EPOCH FROM (t.dispatched_at - t.discovered_at))",
+            'dispatched_to_committed' => "EXTRACT(EPOCH FROM (t.submission_committed_at - t.dispatched_at))",
+            'committed_to_finished' => "EXTRACT(EPOCH FROM (t.finished_at - t.submission_committed_at))",
+        ];
+
+        $percentiles = [];
+        foreach ($stages as $label => $expr) {
+            $sql = "
+                SELECT
+                    percentile_cont(0.5) WITHIN GROUP (ORDER BY {$expr}) AS p50,
+                    percentile_cont(0.95) WITHIN GROUP (ORDER BY {$expr}) AS p95,
+                    COUNT(*) FILTER (WHERE {$expr} IS NOT NULL) AS samples
+                FROM transcriptions t
+                JOIN files f ON f.id = t.file_id
+                WHERE t.created_at >= ?
+                  AND t.state = 'done'
+                  {$storageFilter}
+            ";
+            try {
+                $row = DB::selectOne($sql, $params);
+            } catch (\Throwable $e) {
+                Log::warning('ApiTranscriptorController::latency SQL fallo', [
+                    'stage' => $label, 'error' => $e->getMessage(),
+                ]);
+                $row = null;
+            }
+            $percentiles[$label] = [
+                'p50_seconds' => $row && $row->p50 !== null ? round((float) $row->p50, 2) : null,
+                'p95_seconds' => $row && $row->p95 !== null ? round((float) $row->p95, 2) : null,
+                'samples' => $row ? (int) $row->samples : 0,
+            ];
+        }
+
+        $countParams = [$cutoff];
+        $countFilter = '';
+        if ($storageId !== null && $storageId !== '') {
+            $countFilter = 'AND t.id IN (SELECT t2.id FROM transcriptions t2 JOIN files f2 ON f2.id = t2.file_id WHERE f2.storage_provider_id = ? AND t2.created_at >= ?)';
+            $countParams[] = (int) $storageId;
+            $countParams[] = $cutoff;
+        }
+        $rows = DB::select("
+            SELECT t.state, COUNT(*) AS n
+            FROM transcriptions t
+            WHERE t.created_at >= ?
+            {$countFilter}
+            GROUP BY t.state
+        ", $countParams);
+
+        $countByState = [
+            'pending' => 0, 'queued' => 0, 'processing' => 0,
+            'done' => 0, 'error' => 0, 'dead' => 0,
+        ];
+        foreach ($rows as $r) {
+            $countByState[$r->state] = (int) $r->n;
+        }
+
+        return response()->json([
+            'window_hours' => $hours,
+            'storage_id' => $storageId !== null && $storageId !== '' ? (int) $storageId : null,
+            'stages' => $percentiles,
+            'count_by_state' => $countByState,
+            'generated_at' => now()->toIso8601String(),
+        ]);
+    }
+
+    /**
+     * GET /ia/api-transcriptor/regulator-cause
+     *
+     * Devuelve la decision del ultimo tick del regulador cacheada en Redis.
+     * Si no hay cache (sistema frio), devuelve {fired_at: null, decision: 'none'}.
+     */
+    public function regulatorCause(Request $request)
+    {
+        $cached = Cache::get('transcriptor:tick:last_decision');
+
+        if (!is_array($cached)) {
+            return response()->json([
+                'fired_at' => null,
+                'regulator_mode' => null,
+                'decision' => 'none',
+                'reason' => 'none',
+                'signals_evaluated' => [],
+                'values' => [],
+                'batch_computed' => 0,
+                'message' => 'Sin datos del regulador: ningun tick ha corrido todavia.',
+            ]);
+        }
+
+        return response()->json($cached);
+    }
 }

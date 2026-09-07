@@ -9,10 +9,33 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Transcription extends Model
 {
+    /**
+     * `generate_alerts` (bool): bandera global del modulo de avisos.
+     *
+     * Si true, la transcripcion entra al matching de keywords
+     * (`KeywordMatcher` via `avisos:scan`). NO controla directamente el
+     * envio de correos: el filtrado por cliente ocurre aguas abajo en
+     * `avisos:deliver-alerts` (union de `user_keyword` con la keyword
+     * coincidente + `user_alerts_inteligentes.enabled=true`).
+     *
+     * Invariante: toda transcripcion nueva DEBE crearse con
+     * `generate_alerts=true` salvo opt-out EXPLICITO del operador (UI
+     * checkbox en `transcription:scan-and-submit` = false, o flag
+     * `--alerts=0`). Excluir en este punto es irreversible dentro del flujo
+     * automatico: la keyword del cliente nunca sera evaluada contra esa
+     * transcripcion, sin que el cliente ni el admin tengan senal del fallo.
+     *
+     * Callers responsables de respetar el invariante:
+     *  - `TranscriptionTickCommand` (cron, cada 2 min): pasa `--alerts`.
+     *  - `ScanAndSubmitCommand` (sub-comando): default-true en `--alerts`.
+     *  - `ApiTranscriptorController` (UI manual): respeta el checkbox del
+     *    operador; default del request es true.
+     */
     protected $fillable = [
         'file_id', 'original_name', 'job_id', 'node_url', 'node_id', 'state', 'corrected', 'generate_alerts', 'language',
         'srt_content', 'duration_seconds', 'word_count',
         'started_at', 'finished_at', 'requeue_after_at', 'last_polled_at', 'error_message', 'retries',
+        'discovered_at', 'dispatched_at', 'submission_committed_at', 'regulator_skip_reason',
     ];
 
     protected $casts = [
@@ -20,6 +43,9 @@ class Transcription extends Model
         'finished_at' => 'datetime',
         'requeue_after_at' => 'datetime',
         'last_polled_at' => 'datetime',
+        'discovered_at' => 'datetime',
+        'dispatched_at' => 'datetime',
+        'submission_committed_at' => 'datetime',
         'duration_seconds' => 'integer',
         'word_count' => 'integer',
         'retries' => 'integer',
