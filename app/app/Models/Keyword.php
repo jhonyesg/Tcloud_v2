@@ -18,6 +18,11 @@ class Keyword extends Model
             ->withTimestamps();
     }
 
+    public function userKeywordEntries(): \Illuminate\Database\Eloquent\Relations\HasMany
+    {
+        return $this->hasMany(UserKeyword::class, 'keyword_id');
+    }
+
     public function getNormalizedAttribute(): string
     {
         return $this->attributes['normalized']
