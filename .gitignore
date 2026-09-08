@@ -30,3 +30,4 @@ backup_*.sql
 # del proyecto; los tests reales viven en app/tests/.
 /tests/
 playwright_*.py
+app/tmp/
