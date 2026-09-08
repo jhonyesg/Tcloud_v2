@@ -95,6 +95,9 @@ Route::middleware(['auth', 'admin'])->group(function () {
     Route::get('/correo', [App\Http\Controllers\CorreoAdminController::class, 'index']);
 });
 
+// mis-avisos-admin-preview: lista de usuarios impersonables por el admin.
+Route::middleware(['auth', 'admin'])->get('/admin/preview/impersonatable-users', [App\Http\Controllers\Admin\AdminPreviewController::class, 'impersonatableUsers']);
+
 Route::middleware('auth')->group(function () {
     // User self-service sessions
     Route::get('/user/sessions', [App\Http\Controllers\UserSessionController::class, 'index']);
@@ -245,6 +248,12 @@ Route::middleware(['auth', 'admin'])->prefix('ia')->group(function () {
         ->where('email', '.+');
     Route::post('/avisos-inteligentes/{userId}/keywords', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'storeKeyword']);
     Route::delete('/avisos-inteligentes/{userId}/keywords/{keywordId}', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'destroyKeyword'])->whereNumber('userId')->whereNumber('keywordId');
+    // Gestión admin del set base (add-keyword-categories).
+    Route::get('/avisos-inteligentes/admin/categories', [App\Http\Controllers\Ia\AvisosCategoriesAdminController::class, 'index']);
+    Route::get('/avisos-inteligentes/admin/categories/page', [App\Http\Controllers\Ia\AvisosCategoriesAdminController::class, 'showPage']);
+    Route::post('/avisos-inteligentes/admin/categories', [App\Http\Controllers\Ia\AvisosCategoriesAdminController::class, 'store']);
+    Route::patch('/avisos-inteligentes/admin/categories/{id}', [App\Http\Controllers\Ia\AvisosCategoriesAdminController::class, 'update'])->whereNumber('id');
+    Route::delete('/avisos-inteligentes/admin/categories/{id}', [App\Http\Controllers\Ia\AvisosCategoriesAdminController::class, 'destroy'])->whereNumber('id');
     Route::post('/avisos-inteligentes/{userId}/emails/{email}/test', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'testEmail'])
         ->where('email', '.+');
     Route::get('/avisos-inteligentes/{userId}/matches', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'matches']);
@@ -357,10 +366,17 @@ Route::middleware(['auth', 'admin'])->prefix('ia')->group(function () {
 });
 
 // Modulo IA — cliente (M3): Mis Avisos + propuestas de corrección
-Route::middleware(['auth', 'misavisos'])->group(function () {
+Route::middleware(['auth', 'misavisos', App\Http\Middleware\AdminPreviewSwap::class])->group(function () {
     Route::get('/mis-avisos', [App\Http\Controllers\MisAvisosController::class, 'index']);
     Route::post('/mis-avisos/keywords', [App\Http\Controllers\MisAvisosController::class, 'storeKeyword']);
     Route::delete('/mis-avisos/keywords/{keywordId}', [App\Http\Controllers\MisAvisosController::class, 'destroyKeyword'])->whereNumber('keywordId');
+    // Categorías (add-keyword-categories): set base admin ∪ categorías propias del cliente.
+    Route::get('/mis-avisos/categories', [App\Http\Controllers\MisAvisosController::class, 'indexCategories']);
+    Route::post('/mis-avisos/categories', [App\Http\Controllers\MisAvisosController::class, 'storeCategory']);
+    Route::patch('/mis-avisos/categories/{categoryId}', [App\Http\Controllers\MisAvisosController::class, 'updateCategory'])->whereNumber('categoryId');
+    Route::delete('/mis-avisos/categories/{categoryId}', [App\Http\Controllers\MisAvisosController::class, 'destroyCategory'])->whereNumber('categoryId');
+    // Asignar / cambiar categoría de una keyword propia.
+    Route::patch('/mis-avisos/keywords/{keywordId}', [App\Http\Controllers\MisAvisosController::class, 'updateKeyword'])->whereNumber('keywordId');
     Route::get('/mis-avisos/corrections/mine', [App\Http\Controllers\CorreccionPropuestaController::class, 'mine']);
     Route::post('/mis-avisos/corrections', [App\Http\Controllers\CorreccionPropuestaController::class, 'store']);
 

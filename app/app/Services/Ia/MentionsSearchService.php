@@ -339,7 +339,7 @@ class MentionsSearchService
 
     // ── Internos: columnas, mapeo y capabilities ────────────────────────
 
-    private function hitSelect(): array
+    public function hitSelect(): array
     {
         return [
             'h.id',
@@ -355,6 +355,7 @@ class MentionsSearchService
             'f.owner_id',
             'f.storage_provider_id',
             'f.parent_id',
+            'f.mime_type',
             'sp.name as storage_name',
             'sp.type as storage_type',
             'us.permissions as file_permissions',
@@ -406,6 +407,23 @@ class MentionsSearchService
             });
         }
 
+        // change mis-avisos-media-kind-indicator (G2): filtro por tipo de medio.
+        // Si el cliente seleccionó "TV" o "Radio" en el filtro rápido de Mis Avisos,
+        // el query agrega `WHERE t.transcription_id IN (...with file mime_type like ...)`.
+        // "all" o valor ausente → sin restricción.
+        $mediaType = isset($filters['media_type']) ? (string) $filters['media_type'] : 'all';
+        if ($mediaType === 'tv' || $mediaType === 'radio') {
+            $mimePrefix = $mediaType === 'tv' ? 'video/%' : 'audio/%';
+            // Sub-select sobre el join existente — usa el índice si existe.
+            $q->whereExists(function ($sub) use ($mimePrefix, $q) {
+                $sub->select(DB::raw(1))
+                    ->from('files as f2')
+                    ->join('transcriptions as t2', 't2.file_id', '=', 'f2.id')
+                    ->whereColumn('t2.id', '=', 't.id')
+                    ->where('f2.mime_type', 'like', $mimePrefix);
+            });
+        }
+
         // Filtro por keyword registrada (respeta su alcance natural).
         if (!empty($filters['keyword_id'])) {
             $q->where('h.keyword_id', (int) $filters['keyword_id']);
@@ -447,7 +465,31 @@ class MentionsSearchService
             'end_seconds' => (float) $r->end_seconds,
             'can_view_file' => $this->canViewFile($r->owner_id, $r->file_permissions, $user),
             'can_clip' => $this->canClip($r->owner_id, $r->file_permissions, $r->storage_type, $user),
+            // change mis-avisos-media-kind-indicator: tipo de medio derivado
+            // para que la UI muestre el ícono TV/Radio al inicio del filename.
+            'mime_type' => (string) ($r->mime_type ?? ''),
+            'media_kind' => self::classifyMediaKind($r->mime_type ?? null),
         ];
+    }
+
+    /**
+     * Clasifica un mime_type en TV / Radio / Other para el UI de Mis Avisos.
+     * change mis-avisos-media-kind-indicator (G1): regla simple, basada en el
+     * prefijo del mime — el cliente quiere distinguir mp4 (TV) de mp3/m4a (Radio)
+     * sin adivinar por la extensión del filename.
+     */
+    public static function classifyMediaKind(?string $mimeType): string
+    {
+        if (!$mimeType) {
+            return 'other';
+        }
+        if (str_starts_with($mimeType, 'video/')) {
+            return 'tv';
+        }
+        if (str_starts_with($mimeType, 'audio/')) {
+            return 'radio';
+        }
+        return 'other';
     }
 
     private function canViewFile($ownerId, $permissions, User $user): bool

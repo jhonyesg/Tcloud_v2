@@ -5,9 +5,14 @@
 @section('content')
 <div class="p-6" x-data="avisosInteligentes()" x-init="init()">
 
-    <div class="mb-6">
-        <h1 class="text-2xl font-bold text-slate-800">Avisos Inteligentes</h1>
-        <p class="text-slate-500 mt-0.5">Asigna el módulo a usuarios y gestiona cupo, correos y keywords</p>
+    <div class="mb-6 flex items-start justify-between flex-wrap gap-3">
+        <div>
+            <h1 class="text-2xl font-bold text-slate-800">Avisos Inteligentes</h1>
+            <p class="text-slate-500 mt-0.5">Asigna el módulo a usuarios y gestiona cupo, correos y keywords</p>
+        </div>
+        <a href="/ia/avisos-inteligentes/admin/categories/page" class="text-sm text-brand-600 hover:underline self-center">
+            <i class="fas fa-tags mr-1.5"></i>Gestionar categorías base
+        </a>
     </div>
 
     <!-- Tabs: Clientes | Escaneo -->

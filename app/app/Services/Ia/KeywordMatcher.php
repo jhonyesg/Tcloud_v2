@@ -33,13 +33,19 @@ class KeywordMatcher
      */
     public function run(Transcription $transcription): int
     {
-        // Idempotencia: si ya hay hits para esta transcripción, no reprocesar.
-        $already = DB::table('segment_keyword_hits')
+        // change admin-matches-and-backfill (Fase 2): idempotencia PER-(transcription,
+        // keyword), no per-transcription. Antes, si la transcripción ya tenía hits
+        // de cualquier keyword, se saltaba el escaneo completo — esto impedía
+        // que nuevas keywords vieran hits retroactivos de esa transcripción.
+        //
+        // Ahora: cargamos las keywords candidatas y leemos qué pares
+        // (transcription_id, keyword_id) YA tienen hits. Sólo saltamos los
+        // pares ya indexados; los nuevos los procesamos normalmente.
+        $alreadyIndexedKwIds = DB::table('segment_keyword_hits')
             ->where('transcription_id', $transcription->id)
-            ->exists();
-        if ($already) {
-            return 0;
-        }
+            ->pluck('keyword_id')
+            ->all();
+        $alreadyIndexedKwIds = array_flip(array_map('intval', $alreadyIndexedKwIds));
 
         // Fail-safe: sin file/storage no hay de quién inferir acceso.
         $storageId = $transcription->file?->storage_provider_id;
@@ -62,7 +68,14 @@ class KeywordMatcher
             return 0;
         }
 
-        $keywordIdByNorm = $keywords
+        // Filtrar las keywords que YA tienen hits en esta transcripción
+        // (no re-procesamos redundante). Las nuevas sí.
+        $keywordsToScan = $keywords->filter(fn ($k) => !isset($alreadyIndexedKwIds[(int) $k->id]));
+        if ($keywordsToScan->isEmpty()) {
+            return 0;
+        }
+
+        $keywordIdByNorm = $keywordsToScan
             ->mapWithKeys(fn ($k) => [$k->normalized => $k->id]);
 
         $now = now();
@@ -103,7 +116,7 @@ class KeywordMatcher
         // Reparto relacional: una fila de alert_deliveries por (usuario que
         // califica, hit), respetando intersección de acceso + scope, con
         // due_at según la cadencia del usuario. Todo en SQL de conjunto.
-        $delivered = $this->fanOut($transcription->id, (int) $storageId);
+        $delivered = $this->fanOut($transcription->id, (int) $storageId, $keywordIdByNorm->values()->all());
 
         Log::info('mentions.scan_completed', [
             'transcription_id' => $transcription->id,
@@ -151,13 +164,28 @@ class KeywordMatcher
     }
 
     /**
-     * Deriva alert_deliveries para los hits de una transcripción: por cada
-     * hit, todos los usuarios calificados (módulo activo + acceso al storage
-     * + keyword suya + scope de la keyword incluye este storage), con due_at
-     * según la cadencia del usuario. Un solo INSERT...SELECT de conjunto.
+     * Deriva alert_deliveries para los hits recién insertados de una
+     * transcripción: por cada hit, todos los usuarios calificados (módulo
+     * activo + acceso al storage + keyword suya + scope de la keyword incluye
+     * este storage), con due_at según la cadencia del usuario. Un solo
+     * INSERT...SELECT de conjunto.
+     *
+     * Sólo procesa los hits cuyo keyword_id esté en $scannedKeywordIds —
+     * permite acotar al subset que realmente se acaba de escanear (para no
+     * re-encolar deliveries de hits pre-existentes con cada pasada).
      */
-    private function fanOut(int $transcriptionId, int $storageId): int
+    private function fanOut(int $transcriptionId, int $storageId, array $scannedKeywordIds = []): int
     {
+        // Si no se pasa filtro, se procesan todos (compatibilidad inversa).
+        $params = [$storageId, $transcriptionId, $storageId];
+
+        $keywordFilterSql = '';
+        if (!empty($scannedKeywordIds)) {
+            $placeholders = implode(',', array_fill(0, count($scannedKeywordIds), '?'));
+            $keywordFilterSql = " AND h.keyword_id IN ({$placeholders})";
+            $params = array_merge($params, array_map('intval', $scannedKeywordIds));
+        }
+
         return DB::affectingStatement("
             INSERT INTO alert_deliveries (user_id, hit_id, due_at, created_at, updated_at)
             SELECT uk.user_id,
@@ -178,8 +206,9 @@ class KeywordMatcher
                  ON uks.user_id = uk.user_id AND uks.keyword_id = k.id
             WHERE h.transcription_id = ?
               AND (uks.user_id IS NULL OR uks.storage_provider_id = ?)
+              {$keywordFilterSql}
             ON CONFLICT DO NOTHING
-        ", [$storageId, $transcriptionId, $storageId]);
+        ", $params);
     }
 
     /**

@@ -9,6 +9,8 @@ use App\Models\User;
 use App\Models\UserAlertsInteligente;
 use App\Services\Ia\AlertDispatcher;
 use App\Services\Ia\AvisosScanService;
+use App\Services\Ia\MentionBackfillService;
+use App\Services\Ia\MentionsSearchService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -61,13 +63,29 @@ class AvisosInteligentesController extends Controller
         return view('ia.avisos-inteligentes.index');
     }
 
-    public function show(int $userId)
+    public function show(int $userId, MentionsSearchService $search)
     {
         $user = User::with(['userKeywords', 'alertsInteligente'])->findOrFail($userId);
-        $matches = $user->keywordMatches()
-            ->with(['transcription.file', 'keyword'])
-            ->orderByDesc('matched_at')
-            ->paginate(25);
+
+        // change admin-matches-and-backfill (Fase 1): los matches ahora vienen
+        // de la tabla phase-1 `segment_keyword_hits` con las mismas reglas de
+        // accesibilidad que el Histórico del cliente, y se agrupan server-side
+        // por (transcripción, keyword) para mantener consistencia con la vista
+        // del cliente.
+        $perPage = in_array((int) request('per_page', 25), [25, 50, 100], true) ? (int) request('per_page', 25) : 25;
+        $hitsPage = $search->visibleHitsQuery($user)
+            ->select($search->hitSelect())
+            ->orderByDesc('h.matched_at')
+            ->paginate($perPage);
+
+        $matches = $hitsPage; // paginator crudo para paginación server-side
+        $matchGroups = MentionBackfillService::groupHits(
+            $hitsPage->getCollection()->map(function ($r) {
+                $r = (array) $r;
+                $r['file_url'] = '/files/' . (int) ($r['id'] ? ($r['file_id'] ?? 0) : 0) . '/view?t=' . (int) ($r['start_seconds'] ?? 0);
+                return $r;
+            })
+        );
 
         // Canales asignados al cliente. Aquí se concede acceso a los resultados
         // que api-transcriptor produce (transcripción_access); no se decide qué
@@ -92,6 +110,7 @@ class AvisosInteligentesController extends Controller
         return view('ia.avisos-inteligentes.user-detail', [
             'user' => $user,
             'matches' => $matches,
+            'matchGroups' => $matchGroups,
             'storages' => $storages,
             'globalStorages' => $globalStorages,
             'globalTranscribing' => $globalTranscribing,
@@ -228,15 +247,33 @@ class AvisosInteligentesController extends Controller
         return response()->json($result, $result['success'] ?? false ? 200 : 422);
     }
 
-    public function matches(int $userId)
+    public function matches(int $userId, Request $request, MentionsSearchService $search)
     {
-        $matches = User::findOrFail($userId)
-            ->keywordMatches()
-            ->with(['transcription.file', 'keyword'])
-            ->orderByDesc('matched_at')
-            ->paginate(25);
+        // change admin-matches-and-backfill: ahora devolvemos hits de
+        // segment_keyword_hits (phase-1) agrupados por (transcripción, keyword),
+        // con el mismo shape {groups: [...], total: N, current_page: ...} que la
+        // vista admin server-side.
+        $user = User::findOrFail($userId);
+        $perPage = in_array((int) $request->input('per_page', 25), [25, 50, 100], true)
+            ? (int) $request->input('per_page', 25)
+            : 25;
 
-        return response()->json($matches);
+        $hitsPage = $search->visibleHitsQuery($user)
+            ->select($search->hitSelect())
+            ->orderByDesc('h.matched_at')
+            ->paginate($perPage);
+
+        $groups = MentionBackfillService::groupHits(
+            $hitsPage->getCollection()->map(fn ($r) => (array) $r)
+        )->values();
+
+        return response()->json([
+            'groups' => $groups,
+            'total' => $hitsPage->total(),
+            'current_page' => $hitsPage->currentPage(),
+            'last_page' => $hitsPage->lastPage(),
+            'per_page' => $hitsPage->perPage(),
+        ]);
     }
 
     // ─── Escaneo de menciones (avisos-scan-configuration) ─────────────────

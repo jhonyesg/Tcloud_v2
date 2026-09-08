@@ -3,7 +3,113 @@
 @section('title', 'Mis Avisos - Tcloud')
 
 @section('content')
+@php
+    $adminPreviewingId = (int) (session('admin_previewing_id') ?? 0);
+    $adminPreviewingUser = $adminPreviewingId > 0 ? App\Models\User::find($adminPreviewingId) : null;
+    // El proyecto guarda la sesión con claves planas (user_role), no con `user`.
+    $isSessionAdmin = session('user_role') === 'admin';
+@endphp
+
+{{-- Impulsado por el middleware AdminPreviewSwap: cuando hay impersonación
+     activa, expone el id al JS para que apiFetch() lo propague en las
+     sub-llamadas (ver change mis-avisos-admin-preview). --}}
+<script>
+    window.__adminPreviewUserId = {{ $adminPreviewingId ?: 'null' }};
+    // Patch transparente: si hay preview activo y la URL es de mis-avisos,
+    // añadí ?as_user=X para que el middleware vuelva a impersonar en
+    // cada sub-request JSON. Esto evita tocar los 21 call sites de apiFetch().
+    (function () {
+        if (!window.__adminPreviewUserId) return;
+        if (window.__adminPreviewWired) return;
+        window.__adminPreviewWired = true;
+        var origApiFetch = window.apiFetch;
+        if (typeof origApiFetch !== 'function') return;
+        window.apiFetch = function (url, options) {
+            options = options || {};
+            var sid = window.__adminPreviewUserId;
+            if (sid && typeof url === 'string' && url.indexOf('/mis-avisos') === 0 && url.indexOf('as_user=') === -1) {
+                var sep = url.indexOf('?') >= 0 ? '&' : '?';
+                url = url + sep + 'as_user=' + encodeURIComponent(sid);
+            }
+            return origApiFetch(url, options);
+        };
+    })();
+</script>
+
 <div class="p-6" x-data="misAvisosPage()">
+
+    {{-- Banner: solo cuando hay impersonación activa. Pegado al inicio del
+         `<div x-data>` para que ocupe la parte superior de la página.
+         El dropdown se hidrata con fetch() al montar el componente. --}}
+    @if ($adminPreviewingId > 0 && $adminPreviewingUser)
+        <div class="mb-4 px-4 py-3 bg-amber-50 border border-amber-300 rounded-xl text-sm flex flex-wrap items-center gap-3"
+             data-tour="admin-preview-banner">
+            <span class="inline-flex items-center gap-2 font-medium text-amber-900">
+                <i class="fas fa-eye text-amber-600"></i>
+                Viendo como
+                <strong x-text="impersonatingName" class="text-amber-900">{{ $adminPreviewingUser->username }}</strong>
+            </span>
+            <span class="text-amber-700 text-xs italic">Estás accediendo al módulo como si fueras este cliente.</span>
+            <form action="/mis-avisos" method="GET" class="flex items-center gap-2 ml-auto">
+                <label class="text-xs text-amber-800">Cambiar:</label>
+                <select name="as_user" @change="$event.target.form.submit()" x-model="selectedAsUser"
+                        class="border border-amber-300 bg-white rounded px-2 py-1 text-xs focus:ring-2 focus:ring-amber-500 outline-none min-w-[10rem]">
+                    <option value="{{ $adminPreviewingId }}" selected>{{ $adminPreviewingUser->username }}</option>
+                    <template x-for="u in impersonatableUsers" :key="'banner-' + u.id">
+                        <option :value="u.id" x-text="u.username"></option>
+                    </template>
+                </select>
+                <noscript>
+                    <button type="submit" class="text-xs px-2 py-1 bg-amber-200 text-amber-900 rounded">Cambiar</button>
+                </noscript>
+            </form>
+            <a href="/mis-avisos" class="text-xs px-3 py-1.5 bg-amber-200 hover:bg-amber-300 text-amber-900 rounded font-medium">
+                Volver a mi cuenta
+            </a>
+        </div>
+    @elseif ($isSessionAdmin)
+        {{-- Banner discreto: admin logueado pero sin impersonación activa,
+             ofrece un acceso rápido al selector. --}}
+        <details class="mb-4 border border-slate-200 rounded-xl bg-white" data-tour="admin-preview-trigger">
+            <summary class="px-4 py-2.5 text-sm text-slate-600 cursor-pointer flex items-center gap-2 hover:bg-slate-50">
+                <i class="fas fa-eye text-slate-400"></i>
+                <span>Viendo tu propia cuenta (admin). ¿Ver como un cliente?</span>
+                <i class="fas fa-chevron-down text-xs ml-auto text-slate-400"></i>
+            </summary>
+            <div class="px-4 py-3 border-t border-slate-200">
+                <form action="/mis-avisos" method="GET" class="flex items-center gap-2 flex-wrap">
+                    <select name="as_user" x-model="selectedAsUser"
+                            class="border border-slate-300 rounded px-2 py-1.5 text-sm focus:ring-2 focus:ring-brand-500 outline-none min-w-[12rem]">
+                        <option value="">Selecciona un cliente…</option>
+                        <template x-for="u in impersonatableUsers" :key="'disc-' + u.id">
+                            <option :value="u.id" x-text="u.username"></option>
+                        </template>
+                    </select>
+                    <button type="submit" class="text-xs px-3 py-1.5 bg-brand-600 hover:bg-brand-700 text-white rounded font-medium">
+                        Ver como cliente
+                    </button>
+                </form>
+            </div>
+        </details>
+    @endif
+
+    {{-- Toasts: feedback no-destructivo para todas las acciones (reemplaza alert()) --}}
+    <div class="fixed top-4 right-4 z-50 flex flex-col gap-2 pointer-events-none" aria-live="polite">
+        <template x-for="t in toasts" :key="t.id">
+            <div :class="t.kind === 'error' ? 'bg-red-50 border-red-200 text-red-700' : t.kind === 'success' ? 'bg-green-50 border-green-200 text-green-700' : 'bg-slate-800 text-white border-slate-700'"
+                 class="pointer-events-auto px-4 py-2.5 rounded-lg border shadow-md text-sm flex items-start gap-2 max-w-sm transition-opacity"
+                 x-transition:enter="transition ease-out duration-200"
+                 x-transition:enter-start="opacity-0 translate-y-1"
+                 x-transition:enter-end="opacity-100 translate-y-0"
+                 x-transition:leave="transition ease-in duration-150"
+                 x-transition:leave-start="opacity-100"
+                 x-transition:leave-end="opacity-0">
+                <i class="fas mt-0.5" :class="t.kind === 'error' ? 'fa-circle-xmark text-red-500' : t.kind === 'success' ? 'fa-circle-check text-green-500' : 'fa-circle-info text-slate-400'"></i>
+                <span x-text="t.text"></span>
+                <button @click="dismissToast(t.id)" class="ml-2 opacity-60 hover:opacity-100" title="Cerrar"><i class="fas fa-xmark"></i></button>
+            </div>
+        </template>
+    </div>
 
     <div class="mb-6 flex items-center justify-between">
         <div>
@@ -44,32 +150,137 @@
                     <h2 class="text-sm font-semibold text-slate-700"><i class="fas fa-key mr-1.5 text-brand-500"></i>Mis palabras clave</h2>
                     <span class="text-sm font-medium text-slate-600"><span x-text="used" x-cloak></span> / <span x-text="quota" x-cloak></span></span>
                 </div>
-                <div class="flex gap-2 mb-4">
+                <div class="flex gap-2 mb-3">
                     <input type="text" x-model="newKeyword" placeholder="palabra o frase" @keydown.enter="addKeyword()"
                            :disabled="used >= quota || quota === 0"
                            class="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand-500 outline-none disabled:opacity-50"
                            :title="used >= quota ? 'Cupo alcanzado' : ''">
+                    <select x-model="newKeywordCategoryId" :disabled="used >= quota || quota === 0"
+                            title="Categoría opcional al crear"
+                            class="border border-slate-300 rounded-lg px-2 py-2 text-sm focus:ring-2 focus:ring-brand-500 outline-none disabled:opacity-50">
+                        <option value="">Sin categoría</option>
+                        <template x-for="cat in categories" :key="'new-' + cat.id">
+                            <option :value="cat.id" x-text="cat.is_admin ? cat.name + ' (admin)' : cat.name"></option>
+                        </template>
+                    </select>
                     <button @click="addKeyword()" :disabled="used >= quota || quota === 0"
                             class="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-lg text-sm font-medium disabled:opacity-50">Agregar</button>
                 </div>
-                <div x-show="keywords.length === 0" class="text-sm text-slate-400 py-4 text-center">Sin palabras clave. Agrega la primera para empezar a rastrear.</div>
+
+                {{-- Filtro por categoría (add-keyword-categories) --}}
+                <div class="flex items-center gap-2 mb-3 flex-wrap">
+                    <button @click="selectCategory('all')"
+                            :class="activeCategory === 'all' ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'"
+                            class="text-xs px-3 py-1.5 rounded-full border">Todas <span class="ml-1 opacity-70" x-text="keywords.length"></span></button>
+                    <button @click="selectCategory('none')"
+                            :class="activeCategory === 'none' ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'"
+                            class="text-xs px-3 py-1.5 rounded-full border">Sin categoría <span class="ml-1 opacity-70" x-text="uncategorizedCount()"></span></button>
+                    <template x-for="cat in categories" :key="'pill-' + cat.id">
+                        <div class="inline-flex items-center rounded-full border overflow-hidden"
+                             :style="'border-color:' + cat.color_hex + ';background:' + (activeCategory === cat.id ? cat.color_hex : '#fff')">
+                            <button @click="selectCategory(cat.id)"
+                                    :style="'color:' + (activeCategory === cat.id ? '#fff' : cat.color_hex)"
+                                    class="text-xs px-3 py-1.5 font-medium"
+                                    :title="cat.is_admin ? cat.name + ' (administrada)' : cat.name">
+                                <span x-text="cat.name"></span>
+                                <span class="ml-1 opacity-70" x-text="cat.keywords_count"></span>
+                            </button>
+                            <template x-if="!cat.is_admin">
+                                <div class="flex items-stretch border-l"
+                                     :style="'border-color:' + cat.color_hex">
+                                    <button @click.stop="openEditCategory(cat)" :title="'Editar ' + cat.name"
+                                            :style="'color:' + (activeCategory === cat.id ? '#fff' : cat.color_hex)"
+                                            class="px-1.5 py-1.5 hover:bg-black/5 text-xs">
+                                        <i class="fas fa-pen"></i>
+                                    </button>
+                                    <button x-show="pendingDeleteCatId !== cat.id" @click.stop="askDeleteCategory(cat)" :title="'Eliminar ' + cat.name"
+                                            :style="'color:' + (activeCategory === cat.id ? '#fff' : cat.color_hex)"
+                                            class="px-1.5 py-1.5 hover:bg-red-100 text-xs">
+                                        <i class="fas fa-trash"></i>
+                                    </button>
+                                    <button x-show="pendingDeleteCatId === cat.id" @click.stop="confirmDeleteCategory(cat)" :title="'Confirmar eliminación'"
+                                            class="px-2 py-1.5 bg-red-600 text-white text-xs font-medium">
+                                        Borrar
+                                    </button>
+                                </div>
+                            </template>
+                        </div>
+                    </template>
+                    <button @click="showNewCategoryForm = !showNewCategoryForm"
+                            class="text-xs px-3 py-1.5 rounded-full border border-dashed border-slate-400 text-slate-600 hover:bg-slate-50">
+                        <i class="fas fa-plus mr-1"></i>Nueva
+                    </button>
+                    <button @click="openCategoriesManager()"
+                            class="text-xs px-3 py-1.5 rounded-full border border-slate-300 text-slate-700 hover:bg-slate-50 bg-white"
+                            :data-tour="'categories-manager'"
+                            :title="ownCategoriesCount() > 0 ? 'Tienes ' + ownCategoriesCount() + ' categoría(s) propia(s). Editar o eliminar.' : 'Crear, renombrar y eliminar categorías (incluyendo las administradas)'">
+                        <i class="fas fa-tags mr-1"></i>
+                        Organizar categorías
+                        <span x-show="ownCategoriesCount() > 0" class="ml-1 px-1.5 py-0.5 rounded-full bg-brand-100 text-brand-700 text-[10px] font-medium" x-text="ownCategoriesCount()"></span>
+                    </button>
+                </div>
+
+                <div x-show="pendingDeleteCatId !== null" x-cloak class="mb-3 px-3 py-2 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700 flex items-center justify-between gap-3">
+                    <span>
+                        <i class="fas fa-triangle-exclamation mr-1"></i>
+                        Si borrás <strong x-text="(categories.find(c => c.id === pendingDeleteCatId) || {}).name"></strong>,
+                        las <span x-text="pendingDeleteCatKeywordsCount" x-cloak></span> keyword(s) asignadas vuelven a <em>Sin categoría</em>.
+                    </span>
+                    <div class="flex gap-2">
+                        <button @click="cancelDeleteCategory()" class="text-xs px-2 py-1 hover:bg-red-100 rounded">Cancelar</button>
+                        <button @click="confirmDeleteCategory(categories.find(c => c.id === pendingDeleteCatId))" class="text-xs px-2 py-1 bg-red-600 text-white rounded">Sí, borrar</button>
+                    </div>
+                </div>
+
+                <div x-show="showNewCategoryForm" x-cloak class="mb-3 p-3 border border-slate-200 rounded-lg bg-slate-50">
+                    <div class="flex gap-2 items-center">
+                        <input type="text" x-model="newCategoryName" placeholder="Nombre de tu categoría" maxlength="80"
+                               class="flex-1 border border-slate-300 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-brand-500 outline-none">
+                        <input type="color" x-model="newCategoryColor" class="h-9 w-12 border border-slate-300 rounded cursor-pointer" title="Color">
+                        <button @click="addCategory()" :disabled="!newCategoryName.trim() || addingCategory" class="px-3 py-1.5 bg-brand-600 hover:bg-brand-700 text-white rounded-lg text-sm font-medium disabled:opacity-50">Crear</button>
+                        <button @click="showNewCategoryForm = false; newCategoryName = ''" class="px-3 py-1.5 text-slate-600 hover:bg-slate-200 rounded-lg text-sm">Cancelar</button>
+                    </div>
+                    <div class="text-xs text-slate-500 mt-2">
+                        <i class="fas fa-info-circle mr-1"></i>Las categorías que crees son privadas. El matching del transcriptor sigue trabajando por texto igual que antes; la categoría solo te sirve para filtrar y organizar esta lista.
+                    </div>
+                </div>
+
+                <div x-show="filteredKeywords.length === 0" class="text-sm text-slate-400 py-4 text-center">
+                    <span x-show="keywords.length === 0">Sin palabras clave. Agrega la primera para empezar a rastrear.</span>
+                    <span x-show="keywords.length > 0 && filteredKeywords.length === 0">Ninguna palabra en este filtro.</span>
+                </div>
                 <div class="space-y-2 max-h-96 overflow-y-auto">
-                    <template x-for="kw in keywords" :key="kw.id">
+                    <template x-for="kw in filteredKeywords" :key="kw.id">
                         <div @click="selectKeyword(kw)"
                              class="p-3 border rounded-lg cursor-pointer transition-colors"
                              :class="selectedKeywordId === kw.id ? 'border-brand-600 bg-brand-50/60' : 'border-slate-200 hover:bg-slate-50'">
-                            <div class="flex items-center justify-between">
-                                <div class="min-w-0">
+                            <div class="flex items-center justify-between gap-2">
+                                <div class="min-w-0 flex-1">
                                     <span class="text-sm text-slate-700 font-medium" x-text="kw.text"></span>
                                     <div class="text-xs text-slate-400 mt-0.5" x-text="scopeLabel(kw)"></div>
                                 </div>
-                                <div class="flex items-center gap-2 shrink-0 ml-2">
+                                <div class="flex items-center gap-2 shrink-0">
                                     <span class="w-2.5 h-2.5 rounded-full" :class="scopeBadgeClass(kw)" :title="scopeBadgeTitle(kw)"></span>
+                                    <select @click.stop @change="updateKeywordCategory(kw, $event.target.value); $event.target.blur()"
+                                            :disabled="savingCategoryIds.has(kw.id)"
+                                            class="text-xs border border-slate-300 rounded px-2 py-1 focus:ring-2 focus:ring-brand-500 outline-none max-w-[150px] disabled:opacity-60"
+                                            title="Categoría">
+                                        <option value="" :selected="kw.category_id == null">Sin categoría</option>
+                                        <template x-for="cat in categories" :key="'kwsel-' + kw.id + '-' + cat.id">
+                                            <option :value="cat.id" :selected="Number(kw.category_id) === Number(cat.id)" x-text="cat.is_admin ? cat.name + ' (admin)' : cat.name"></option>
+                                        </template>
+                                    </select>
+                                    <span x-show="savingCategoryIds.has(kw.id)" class="text-xs text-slate-400" title="Guardando">
+                                        <i class="fas fa-spinner fa-spin"></i>
+                                    </span>
                                     <button @click.stop="removeKeyword(kw.id)" class="text-xs px-2 py-1 bg-red-50 hover:bg-red-100 text-red-600 rounded">Eliminar</button>
                                 </div>
                             </div>
                         </div>
                     </template>
+                </div>
+                <div class="mt-2 text-xs text-slate-500" x-show="keywords.length > 0">
+                    <span x-text="classifiedCount()"></span> clasificadas de <span x-text="keywords.length"></span>.
                 </div>
             </div>
 
@@ -139,11 +350,35 @@
 
             {{-- Filtros del feed en vivo (mismos filtros que el histórico) --}}
             <div class="px-4 py-3 border-b border-slate-100 flex flex-wrap items-end gap-2 bg-slate-50/60">
-                <div class="flex-1 min-w-[180px]">
+                <div class="w-full sm:w-80 shrink-0">
+                    <label class="text-xs text-slate-500 block mb-1">Buscar (mín. 3 caracteres)</label>
                     <input type="text" x-model="liveFilters.q" @keydown.enter="applyLiveFilters()"
-                           placeholder="Filtrar por texto (mín. 3 caracteres)…"
+                           placeholder="término libre en las transcripciones..."
                            class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand-500 outline-none">
                 </div>
+
+                {{-- change mis-avisos-media-kind-indicator (G4): filtro rápido TV/Radio.
+                     Ubicado al inicio del filter row (justo después del input de búsqueda)
+                     para quedar en la IZQUIERDA SUPERIOR en ambos tabs. Mismo orden
+                     relativo que en Histórico. --}}
+                <div class="inline-flex border border-slate-300 rounded-lg overflow-hidden text-sm">
+                    <button type="button" @click="setMediaFilter('liveFilters', 'all')"
+                            :class="liveFilters.media_type === 'all' ? 'bg-slate-800 text-white' : 'bg-white text-slate-700 hover:bg-slate-50'"
+                            class="px-3 py-2 font-medium transition-colors">
+                        Todas
+                    </button>
+                    <button type="button" @click="setMediaFilter('liveFilters', 'tv')"
+                            :class="liveFilters.media_type === 'tv' ? 'bg-gradient-to-r from-violet-500 to-indigo-600 text-white shadow-sm' : 'bg-white text-violet-700 hover:bg-violet-50'"
+                            class="px-3 py-2 font-medium border-l border-slate-300 flex items-center gap-1.5 transition-colors">
+                        <i class="fas fa-tv text-xs"></i> TV
+                    </button>
+                    <button type="button" @click="setMediaFilter('liveFilters', 'radio')"
+                            :class="liveFilters.media_type === 'radio' ? 'bg-gradient-to-r from-amber-500 to-orange-500 text-white shadow-sm' : 'bg-white text-amber-700 hover:bg-amber-50'"
+                            class="px-3 py-2 font-medium border-l border-slate-300 flex items-center gap-1.5 transition-colors">
+                        <i class="fas fa-radio text-xs"></i> Radio
+                    </button>
+                </div>
+
                 @include('mis-avisos._filter-storages', ['scope' => 'liveFilters'])
                 <select x-model.number="liveFilters.keyword_id" @change="applyLiveFilters()"
                         class="border border-slate-300 rounded-lg px-3 py-2 text-sm text-slate-600 bg-white outline-none">
@@ -171,12 +406,36 @@
     <div x-show="activeTab === 'history'" x-cloak>
         <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
             <div class="flex flex-wrap items-end gap-3 mb-4">
-                <div class="flex-1 min-w-[220px]">
+                <div class="w-full sm:w-80 shrink-0">
                     <label class="text-xs text-slate-500 block mb-1">Buscar (mín. 3 caracteres)</label>
                     <input type="text" x-model="historyFilters.q" @keydown.enter="searchHistory(1)"
                            placeholder="término libre en las transcripciones..."
                            class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand-500 outline-none">
                 </div>
+
+                {{-- change mis-avisos-media-kind-indicator (G4): filtro rápido TV/Radio.
+                     Misma posición que en En vivo: justo después del input de búsqueda
+                     para quedar al inicio de la primera línea del filter row (o al
+                     inicio de la segunda línea cuando el row wrappea por tener más
+                     elementos). --}}
+                <div class="inline-flex border border-slate-300 rounded-lg overflow-hidden text-sm">
+                    <button type="button" @click="setMediaFilter('historyFilters', 'all')"
+                            :class="historyFilters.media_type === 'all' ? 'bg-slate-800 text-white' : 'bg-white text-slate-700 hover:bg-slate-50'"
+                            class="px-3 py-2 font-medium transition-colors">
+                        Todas
+                    </button>
+                    <button type="button" @click="setMediaFilter('historyFilters', 'tv')"
+                            :class="historyFilters.media_type === 'tv' ? 'bg-gradient-to-r from-violet-500 to-indigo-600 text-white shadow-sm' : 'bg-white text-violet-700 hover:bg-violet-50'"
+                            class="px-3 py-2 font-medium border-l border-slate-300 flex items-center gap-1.5 transition-colors">
+                        <i class="fas fa-tv text-xs"></i> TV
+                    </button>
+                    <button type="button" @click="setMediaFilter('historyFilters', 'radio')"
+                            :class="historyFilters.media_type === 'radio' ? 'bg-gradient-to-r from-amber-500 to-orange-500 text-white shadow-sm' : 'bg-white text-amber-700 hover:bg-amber-50'"
+                            class="px-3 py-2 font-medium border-l border-slate-300 flex items-center gap-1.5 transition-colors">
+                        <i class="fas fa-radio text-xs"></i> Radio
+                    </button>
+                </div>
+
                 <div>
                     <label class="text-xs text-slate-500 block mb-1">Desde</label>
                     <input type="date" x-model="historyFilters.from" @input="activeDateShortcut = null" class="border border-slate-300 rounded-lg px-3 py-2 text-sm">
@@ -264,6 +523,116 @@
 
     @include('mis-avisos._correction-modal')
     @include('mis-avisos._transcript-modal')
+
+    {{-- Modal: editar categoría propia --}}
+    <div x-show="editingCategory !== null" x-cloak
+         class="fixed inset-0 bg-slate-900/50 z-50 flex items-center justify-center p-4"
+         @keydown.escape.window="editingCategory = null">
+        <div class="bg-white rounded-xl shadow-xl max-w-md w-full p-6" @click.outside="editingCategory = null">
+            <h3 class="text-lg font-semibold text-slate-800 mb-1">Editar categoría</h3>
+            <p class="text-xs text-slate-500 mb-4">Cambia el nombre o el color. Solo vos podés modificar tus categorías.</p>
+            <div class="space-y-3">
+                <div>
+                    <label class="block text-xs font-semibold text-slate-600 mb-1">Nombre</label>
+                    <input type="text" x-model="editCategoryForm.name" maxlength="80"
+                           class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand-500 outline-none">
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold text-slate-600 mb-1">Color</label>
+                    <div class="flex items-center gap-2">
+                        <input type="color" x-model="editCategoryForm.color_hex"
+                               class="h-10 w-16 border border-slate-300 rounded cursor-pointer">
+                        <input type="text" x-model="editCategoryForm.color_hex" maxlength="7"
+                               pattern="^#[0-9A-Fa-f]{6}$"
+                               class="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-brand-500 outline-none">
+                    </div>
+                </div>
+                <div x-show="editCategoryError" x-cloak
+                     class="px-3 py-2 bg-red-50 border border-red-200 rounded text-sm text-red-700"
+                     x-text="editCategoryError"></div>
+            </div>
+            <div class="flex justify-end gap-2 mt-5">
+                <button @click="editingCategory = null" class="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg text-sm">Cancelar</button>
+                <button @click="saveEditedCategory()" :disabled="savingEditCategory || !editCategoryForm.name.trim()"
+                        class="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-lg text-sm font-medium disabled:opacity-50">
+                    Guardar cambios
+                </button>
+            </div>
+        </div>
+    </div>
+
+    {{-- Modal: Organizar categorías (panel dedicado de gestión, descubrible) --}}
+    <div x-show="showCategoriesManager" x-cloak
+         class="fixed inset-0 bg-slate-900/50 z-40 flex items-center justify-center p-4"
+         @keydown.escape.window="showCategoriesManager = false">
+        <div class="bg-white rounded-xl shadow-xl max-w-2xl w-full" @click.outside="showCategoriesManager = false">
+            <div class="px-6 py-4 border-b border-slate-200 flex items-center justify-between gap-4">
+                <div>
+                    <h3 class="text-lg font-semibold text-slate-800">Mis categorías</h3>
+                    <p class="text-xs text-slate-500 mt-0.5">
+                        Las categorías con badge <span class="px-1.5 py-0.5 bg-slate-100 text-slate-600 rounded text-[10px] font-medium">admin</span> fueron creadas por el administrador; no podés renombrarlas ni borrarlas. Sí podés <em>usarlas</em> para clasificar tus palabras clave.
+                    </p>
+                </div>
+                <button @click="showCategoriesManager = false" class="text-slate-400 hover:text-slate-600" title="Cerrar"><i class="fas fa-xmark text-lg"></i></button>
+            </div>
+
+            <div class="px-6 py-3 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
+                <div class="text-xs text-slate-600">
+                    <span class="font-medium" x-text="categories.length"></span> categorías visibles para vos
+                    (<span x-text="ownCategoriesCount()"></span> propias · <span x-text="categories.length - ownCategoriesCount()"></span> administradas)
+                </div>
+                <button @click="showCategoriesManager = false; showNewCategoryForm = true"
+                        class="text-xs px-3 py-1.5 border border-dashed border-brand-300 text-brand-700 hover:bg-brand-50 rounded-lg">
+                    <i class="fas fa-plus mr-1"></i>Nueva categoría
+                </button>
+            </div>
+
+            <div class="max-h-[60vh] overflow-y-auto">
+                <template x-for="cat in categories" :key="'mgmt-' + cat.id">
+                    <div class="px-6 py-3 border-b border-slate-100 flex items-center gap-3 hover:bg-slate-50">
+                        <span class="inline-block w-6 h-6 rounded-md border border-slate-200 shadow-inner" :style="'background:' + cat.color_hex"></span>
+                        <div class="flex-1 min-w-0">
+                            <div class="flex items-center gap-2">
+                                <span class="text-sm font-medium text-slate-800 truncate" x-text="cat.name"></span>
+                                <span x-show="cat.is_admin" class="px-1.5 py-0.5 bg-slate-100 text-slate-600 rounded text-[10px] font-medium">admin</span>
+                            </div>
+                            <div class="text-xs text-slate-400 mt-0.5">
+                                <span x-text="cat.keywords_count"></span> keyword(s) clasificada(s)
+                            </div>
+                        </div>
+                        <div class="flex items-center gap-1.5 shrink-0">
+                            <template x-if="!cat.is_admin">
+                                <div class="flex items-center gap-1.5">
+                                    <button @click="openEditCategory(cat); showCategoriesManager = false"
+                                            class="text-xs px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded font-medium">
+                                        <i class="fas fa-pen mr-1"></i>Editar
+                                    </button>
+                                    <button @click="askDeleteCategory(cat); showCategoriesManager = false"
+                                            :disabled="cat.keywords_count > 0 && cat.keywords_count < 50"
+                                            class="text-xs px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 rounded font-medium disabled:opacity-30 disabled:cursor-not-allowed">
+                                        <i class="fas fa-trash mr-1"></i>Eliminar
+                                    </button>
+                                </div>
+                            </template>
+                            <template x-if="cat.is_admin">
+                                <span class="text-xs text-slate-400 italic">Solo usable</span>
+                            </template>
+                        </div>
+                    </div>
+                </template>
+
+                <div x-show="categories.length === 0" class="p-8 text-center text-sm text-slate-400">
+                    <i class="fas fa-folder-open text-2xl mb-2 block text-slate-300"></i>
+                    Aún no hay categorías visibles para vos.
+                </div>
+            </div>
+
+            <div class="px-6 py-3 border-t border-slate-200 bg-slate-50 rounded-b-xl text-xs text-slate-500">
+                <i class="fas fa-info-circle mr-1"></i>
+                Las keywords que tengan una categoría que borres vuelven automáticamente a <strong>Sin categoría</strong>. Eso NO afecta el matching del transcriptor, que sigue siendo por texto.
+            </div>
+        </div>
+    </div>
 </div>
 
 @push('scripts')
@@ -271,22 +640,72 @@
 function misAvisosPage() {
     return {
         activeTab: 'live',
+        // mis-avisos-admin-preview: estado del banner.
+        isSessionAdmin: {{ $isSessionAdmin ? 'true' : 'false' }},
+        adminPreviewingId: {{ $adminPreviewingId ?: 'null' }},
+        impersonatingName: @json($adminPreviewingUser?->username ?? ''),
+        impersonatableUsers: [],
+        selectedAsUser: '{{ (string) $adminPreviewingId }}',
         tabLabels: { keywords: 'Palabras clave', live: 'En vivo', history: 'Histórico', prefs: 'Preferencias' },
         tabIcons: { keywords: 'fa-key', live: 'fa-tower-broadcast', history: 'fa-clock-rotate-left', prefs: 'fa-sliders' },
         // Keywords (carga inicial server-side; el JS la re-hidrata con scope)
         used: {{ $used }}, quota: {{ $quota }},
-        keywords: @json($user->userKeywords->map(fn($k) => ['id' => $k->id, 'text' => $k->text, 'storage_ids' => []])->values()),
+        keywords: <?php
+            $keywordsPayload = $user->userKeywords->map(function ($k) use ($keywordCategories) {
+                return [
+                    'id' => $k->id,
+                    'text' => $k->text,
+                    'storage_ids' => [],
+                    'category_id' => isset($keywordCategories[$k->id]) ? (int) $keywordCategories[$k->id] : null,
+                ];
+            })->values();
+            echo json_encode($keywordsPayload);
+        ?>,
+        // Categorías (add-keyword-categories): admin base ∪ propias.
+        categories: @json($categories),
+        activeCategory: 'all',
+        showNewCategoryForm: false,
+        newCategoryName: '',
+        newCategoryColor: '#4654a8',
+        newKeywordCategoryId: '',
+        addingCategory: false,
+        // Edición de categoría propia.
+        editingCategory: null, // {id, name, color_hex, owner_scope, owner_id, keywords_count, ...} cuando se está editando
+        editCategoryForm: { name: '', color_hex: '#4654a8' },
+        editCategoryError: '',
+        savingEditCategory: false,
+        // Borrado de categoría propia: pedir confirmación inline antes de enviar.
+        pendingDeleteCatId: null,
+        pendingDeleteCatKeywordsCount: 0,
+        deletingCategory: false,
+        // Panel dedicado "Organizar categorías" — descubrible aunque no tengas propias.
+        showCategoriesManager: false,
+        // Toasts no-destructivos (reemplazan alert()).
+        toasts: [], toastSeq: 0,
+        // Palabras guardando su categoría en este momento (mostramos feedback).
+        savingCategoryIds: new Set(),
         storages: @json($accessibleStorages),
         newKeyword: '',
         selectedKeywordId: null, draftScope: [],
         // En vivo (tabla con filtros + paginación server-side)
         liveRows: [], livePage: 1, liveLastPage: 1, liveTotal: 0, livePerPage: 25,
-        liveFilters: { q: '', storage_ids: [], keyword_id: 0 },
+        liveFilters: { q: '', storage_ids: [], keyword_id: 0, media_type: 'all' },
+        // change mis-avisos-media-kind-indicator (Fase UI extra): ordenamiento
+        // client-side por columna. Cada tab tiene su propio sort state (no
+        // compartido). Click alterna asc/desc dentro de la misma columna.
+        liveSort: { column: 'matched_at', direction: 'desc' },
         newLiveCount: 0, liveTimer: null, livePolling: false,
         // Histórico
-        historyFilters: { q: '', from: '', to: '', storage_ids: [], keyword_id: 0 },
+        historyFilters: { q: '', from: '', to: '', storage_ids: [], keyword_id: 0, media_type: 'all' },
+        historySort: { column: 'matched_at', direction: 'desc' },
         historyRows: [], historyPage: 1, historyLastPage: 1, historyTotal: 0, historyPerPage: 25,
         historySearched: false, historyError: '',
+        // Agrupado por (archivo, keyword) con accordion. Cada grupo expone
+        // `hits: [row, ...]` con todas las menciones reales que el backend
+        // devolvió en la página actual. La fila resumen muestra keyword +
+        // conteo total + primera mención; el expand revela cada mención por
+        // separado (cada una con su minuto + snippet y los botones Ver/Editor).
+        expandedGroups: new Set(),
         // Visor de transcripción (mentions-viewer)
         transcriptModal: {
             open: false, loading: false, error: '',
@@ -320,9 +739,43 @@ function misAvisosPage() {
             this.loadPreferences();
             this.startLive();
             this.$watch('activeTab', (t) => { if (t === 'live') this.startLive(); else this.stopLive(); });
+            // Banner de previsualización admin: hidratar lista impersonable solo si hay sesión admin.
+            this.loadImpersonatableUsers();
+        },
+        async loadImpersonatableUsers() {
+            if (!this.isSessionAdmin) return;
+            try {
+                const res = await fetch('/admin/preview/impersonatable-users', {
+                    credentials: 'same-origin',
+                    headers: { 'Accept': 'application/json' },
+                });
+                if (res.ok) {
+                    const d = await res.json();
+                    this.impersonatableUsers = (d.users || []).map(u => ({
+                        id: Number(u.id), username: u.username, name: u.name,
+                    }));
+                    // Si hay un impersonating activo, deja su name visible.
+                    if (this.adminPreviewingId && this.impersonatableUsers.length > 0) {
+                        const match = this.impersonatableUsers.find(u => u.id === this.adminPreviewingId);
+                        if (match) this.impersonatingName = match.username;
+                    }
+                }
+            } catch (e) { /* silent — banner es opcional */ }
         },
 
         csrf() { return document.querySelector('meta[name=csrf-token]').content; },
+        // Toasts: feedback no-destructivo (reemplazo de alert()). Por defecto auto-dismiss a 2.6s.
+        pushToast(text, kind = 'success', ttlMs = 2600) {
+            const id = ++this.toastSeq;
+            this.toasts.push({ id, text, kind });
+            if (ttlMs > 0) {
+                setTimeout(() => this.dismissToast(id), ttlMs);
+            }
+            return id;
+        },
+        dismissToast(id) {
+            this.toasts = this.toasts.filter(t => t.id !== id);
+        },
         headers(json = true) {
             const h = { 'Accept': 'application/json', 'X-CSRF-TOKEN': this.csrf() };
             if (json) h['Content-Type'] = 'application/json';
@@ -331,10 +784,183 @@ function misAvisosPage() {
 
         switchTab(t) { this.activeTab = t; if (t === 'history' && !this.historySearched) this.searchHistory(1); },
 
+        // ── Categorías (add-keyword-categories) ──
+        get filteredKeywords() {
+            if (this.activeCategory === 'all') return this.keywords;
+            if (this.activeCategory === 'none') return this.keywords.filter(k => !k.category_id);
+            const targetId = Number(this.activeCategory);
+            return this.keywords.filter(k => Number(k.category_id) === targetId);
+        },
+        uncategorizedCount() {
+            return this.keywords.filter(k => !k.category_id).length;
+        },
+        classifiedCount() {
+            return this.keywords.filter(k => k.category_id).length;
+        },
+        selectCategory(idOrAll) {
+            this.activeCategory = idOrAll;
+        },
+        async refreshCategories() {
+            try {
+                const res = await apiFetch('/mis-avisos/categories', {
+                    credentials: 'same-origin',
+                    headers: this.headers(false),
+                });
+                if (res.ok) {
+                    const d = await res.json();
+                    this.categories = (d.categories || []).map(c => ({
+                        ...c,
+                        id: Number(c.id),
+                        keywords_count: Number(c.keywords_count || 0),
+                    }));
+                }
+            } catch (e) { /* silent */ }
+        },
+        async addCategory() {
+            const name = (this.newCategoryName || '').trim();
+            if (!name) return;
+            this.addingCategory = true;
+            try {
+                const res = await apiFetch('/mis-avisos/categories', {
+                    method: 'POST', credentials: 'same-origin', headers: this.headers(),
+                    body: JSON.stringify({ name, color_hex: this.newCategoryColor }),
+                });
+                const d = await res.json().catch(() => ({}));
+                if (res.ok) {
+                    this.categories.push({ ...d.category, id: Number(d.category.id), keywords_count: 0 });
+                    this.newCategoryName = '';
+                    this.newCategoryColor = '#4654a8';
+                    this.showNewCategoryForm = false;
+                    this.pushToast('Categoría creada', 'success', 1800);
+                } else {
+                    let msg = 'No se pudo crear la categoría';
+                    try { const d = await res.json(); msg = d.error || msg; } catch (_) {}
+                    this.pushToast(msg, 'error', 4000);
+                }
+            } finally {
+                this.addingCategory = false;
+            }
+        },
+        async updateKeywordCategory(kw, value) {
+            const newId = value === '' ? null : Number(value);
+            const previous = kw.category_id ?? null;
+            kw.category_id = newId;
+            this.savingCategoryIds.add(kw.id);
+            try {
+                const res = await apiFetch('/mis-avisos/keywords/' + kw.id, {
+                    method: 'PATCH', credentials: 'same-origin', headers: this.headers(),
+                    body: JSON.stringify({ category_id: newId }),
+                });
+                if (!res.ok) {
+                    kw.category_id = previous;
+                    let msg = 'No se pudo cambiar la categoría';
+                    try { const d = await res.json(); msg = d.error || msg; } catch (_) {}
+                    this.pushToast(msg, 'error', 4000);
+                } else {
+                    await this.refreshCategories();
+                    // El guardado real fue silencioso: feedback efímero y discreto.
+                    this.pushToast('Categoría guardada', 'success', 1600);
+                }
+            } catch (e) {
+                kw.category_id = previous;
+                this.pushToast('Error de red al guardar la categoría', 'error', 4000);
+            } finally {
+                this.savingCategoryIds.delete(kw.id);
+            }
+        },
+
+        // ── Editar y borrar categorías del cliente ──
+        openCategoriesManager() {
+            this.showCategoriesManager = true;
+        },
+        ownCategoriesCount() {
+            return this.categories.filter(c => !c.is_admin).length;
+        },
+        openEditCategory(cat) {
+            // El cliente solo puede editar las suyas (no las administradas). Es
+            // una salvaguarda UX: si por carrera asincrónica la categoría ya
+            // no aparece, simplemente no abrimos el modal.
+            if (!cat || cat.is_admin) return;
+            this.editingCategory = cat;
+            this.editCategoryForm = { name: cat.name, color_hex: cat.color_hex };
+            this.editCategoryError = '';
+        },
+        async saveEditedCategory() {
+            if (!this.editingCategory) return;
+            this.savingEditCategory = true;
+            this.editCategoryError = '';
+            try {
+                const res = await apiFetch('/mis-avisos/categories/' + this.editingCategory.id, {
+                    method: 'PATCH', credentials: 'same-origin', headers: this.headers(),
+                    body: JSON.stringify({ name: this.editCategoryForm.name, color_hex: this.editCategoryForm.color_hex }),
+                });
+                if (res.ok) {
+                    this.editingCategory = null;
+                    await this.refreshCategories();
+                    this.pushToast('Categoría actualizada', 'success', 1800);
+                } else {
+                    let msg = 'No se pudo guardar la categoría';
+                    try { const d = await res.json(); msg = d.error || msg; } catch (_) {}
+                    this.editCategoryError = msg;
+                }
+            } catch (e) {
+                this.editCategoryError = 'Error de red';
+            } finally {
+                this.savingEditCategory = false;
+            }
+        },
+        async askDeleteCategory(cat) {
+            if (!cat || cat.is_admin) return;
+            this.pendingDeleteCatId = cat.id;
+            // Calculamos el conteo de keywords que van a quedar sin categoría
+            // en el momento de pedir confirmación (estado actual del cliente).
+            try {
+                this.pendingDeleteCatKeywordsCount = this.keywords.filter(k => Number(k.category_id) === Number(cat.id)).length;
+            } catch (e) {
+                this.pendingDeleteCatKeywordsCount = cat.keywords_count ?? 0;
+            }
+        },
+        cancelDeleteCategory() {
+            this.pendingDeleteCatId = null;
+            this.pendingDeleteCatKeywordsCount = 0;
+        },
+        async confirmDeleteCategory(cat) {
+            if (!cat || this.deletingCategory) return;
+            this.deletingCategory = true;
+            try {
+                const res = await apiFetch('/mis-avisos/categories/' + cat.id, {
+                    method: 'DELETE', credentials: 'same-origin', headers: this.headers(false),
+                });
+                if (res.ok) {
+                    // Limpia las keywords locales que la tenían apuntada.
+                    for (const kw of this.keywords) {
+                        if (Number(kw.category_id) === Number(cat.id)) kw.category_id = null;
+                    }
+                    this.pendingDeleteCatId = null;
+                    this.pendingDeleteCatKeywordsCount = 0;
+                    await this.refreshCategories();
+                    this.pushToast('Categoría eliminada', 'success', 1800);
+                } else {
+                    let msg = 'No se pudo eliminar la categoría';
+                    try { const d = await res.json(); msg = d.error || msg; } catch (_) {}
+                    this.pushToast(msg, 'error', 4000);
+                }
+            } catch (e) {
+                this.pushToast('Error de red', 'error', 4000);
+            } finally {
+                this.deletingCategory = false;
+            }
+        },
+
         // ── Split-screen de alcance ──
         selectedKeyword() { return this.keywords.find(k => k.id === this.selectedKeywordId) || null; },
         selectKeyword(kw) {
-            if (this.scopeDirty() && this.selectedKeywordId !== kw.id && !confirm('Hay cambios sin guardar en el alcance anterior. ¿Descartarlos?')) return;
+            // Bloque defensivo contra confirm() espurio: si todavía no hay
+            // selección previa (carga inicial o auto-select de loadKeywords),
+            // nunca se trata de cambios "sin guardar".
+            const isFirstSelection = this.selectedKeywordId === null || this.selectedKeywordId === undefined;
+            const switchingToDifferent = !isFirstSelection && this.selectedKeywordId !== kw.id;
+            if (switchingToDifferent && this.scopeDirty() && !confirm('Hay cambios sin guardar en el alcance anterior. ¿Descartarlos?')) return;
             this.selectedKeywordId = kw.id;
             // Sin filas de scope = "todos mis medios": el editor muestra todos marcados.
             this.draftScope = (kw.storage_ids && kw.storage_ids.length > 0)
@@ -349,9 +975,30 @@ function misAvisosPage() {
         scopeDirty() {
             const kw = this.selectedKeyword();
             if (!kw) return false;
-            const a = [...this.draftScope].sort().join(',');
-            const b = [...(kw.storage_ids || [])].sort().join(',');
-            return a !== b;
+            // Normalización semántica: kw.storage_ids=[] es equivalente a
+            // draftScope cubriendo todos los storages actuales (y al revés).
+            // Si las dos representaciones describen "todos mis medios" el
+            // estado es limpio aunque textualmente difieran.
+            const totalIds = this.storages.map(s => Number(s.id));
+            const totalSet = new Set(totalIds);
+            const draftSet = new Set(this.draftScope.map(Number));
+            const savedSet = new Set((kw.storage_ids || []).map(Number));
+
+            // Caso A: saved vacío Y draft = total → equivalente a "todos".
+            if (savedSet.size === 0 && this.sameSet(draftSet, totalSet)) return false;
+            // Caso B: saved = total Y draft = total (incluye el caso B' donde
+            // saved tiene exactamente todos los storages aunque esté poblado).
+            if (this.sameSet(savedSet, totalSet) && this.sameSet(draftSet, totalSet)) return false;
+
+            // Resto: comparar sets sin importar orden.
+            if (savedSet.size !== draftSet.size) return true;
+            for (const v of savedSet) if (!draftSet.has(v)) return true;
+            return false;
+        },
+        sameSet(a, b) {
+            if (a.size !== b.size) return false;
+            for (const v of a) if (!b.has(v)) return false;
+            return true;
         },
         revertScope() {
             const kw = this.selectedKeyword();
@@ -402,14 +1049,90 @@ function misAvisosPage() {
         // ── Feed en vivo con filtros + paginación ──
         liveHasFilters() {
             const f = this.liveFilters;
-            return !!(f.q.trim() || f.keyword_id || f.storage_ids.length > 0);
+            return !!(f.q.trim() || f.keyword_id || f.storage_ids.length > 0 || f.media_type !== 'all');
         },
         applyLiveFilters() {
             this.livePage = 1; this.liveTotal = 0; this.newLiveCount = 0;
             this.pollLive();
         },
+        // change mis-avisos-media-kind-indicator (G4): toggle del filtro TV/Radio.
+        setMediaFilter(scope, value) {
+            this[scope].media_type = value;
+            if (scope === 'liveFilters') this.applyLiveFilters();
+            else this.searchHistory(1);
+        },
+        // change mis-avisos-media-kind-indicator (extra): ordenamiento de tabla
+        // por columna. State independiente por tab (liveSort vs historySort).
+        // Click: si es la misma columna, alterna asc/desc; si es otra, parte en asc.
+        setSort(scope, column) {
+            const key = scope === 'historyFilters' ? 'historySort' : 'liveSort';
+            const cur = this[key];
+            if (cur.column === column) {
+                cur.direction = cur.direction === 'asc' ? 'desc' : 'asc';
+            } else {
+                cur.column = column;
+                cur.direction = 'asc';
+            }
+            // Forzar invalidación del getter: en Alpine 3 la mutación in-place de
+            // un objeto no siempre dispara la recálculo del computed. Asignar la
+            // propiedad (Proxy.set) es lo que garantiza la reactividad.
+            this[key] = { ...cur };
+        },
+        // Aplica el sort actual sobre el array de groups.
+        _sortedGroups(groups, sort) {
+            if (!Array.isArray(groups) || groups.length === 0) return groups;
+            const dir = sort.direction === 'asc' ? 1 : -1;
+            const col = sort.column;
+            return [...groups].sort((a, b) => {
+                const av = this.groupSortValue(a, col);
+                const bv = this.groupSortValue(b, col);
+                if (av === bv) return 0;
+                if (av < bv) return -1 * dir;
+                return 1 * dir;
+            });
+        },
+        groupSortValue(g, col) {
+            switch (col) {
+                case 'storage':    return (g.storage || '').toString().toLowerCase();
+                case 'filename':   return (g.filename || '').toString().toLowerCase();
+                case 'keyword':    return (g.keyword || '').toString().toLowerCase();
+                case 'occurrences': return Number(g.occurrences_in_media || 0);
+                case 'snippet':    return (g.first_snippet || '').toString().toLowerCase();
+                case 'matched_at':
+                default:           return g.first_matched_at || '';
+            }
+        },
+        // Icono de sort: 'fa-sort' (inactivo), 'fa-arrow-up' (asc), 'fa-arrow-down' (desc).
+        sortIcon(scope, col) {
+            const sort = scope === 'historyFilters' ? this.historySort : this.liveSort;
+            if (sort.column !== col) return 'fa-sort';
+            return sort.direction === 'asc' ? 'fa-arrow-up' : 'fa-arrow-down';
+        },
+        // Color de la flecha: gris-300 inactivo, brand-600 activo.
+        sortIconClass(scope, col) {
+            const sort = scope === 'historyFilters' ? this.historySort : this.liveSort;
+            return sort.column === col
+                ? (sort.direction === 'asc' ? 'text-violet-600' : 'text-amber-600')
+                : 'text-slate-300';
+        },
+        // Color del header: slate-700 cuando activo, slate-500 normal.
+        sortHeaderClass(scope, col) {
+            const sort = scope === 'historyFilters' ? this.historySort : this.liveSort;
+            return sort.column === col
+                ? 'text-slate-800 font-semibold'
+                : 'text-slate-500 hover:text-slate-800';
+        },
+        historyHasFilters() {
+            const f = this.historyFilters;
+            return !!(f.q.trim() || f.from || f.to || f.keyword_id || f.storage_ids.length > 0 || f.media_type !== 'all');
+        },
+        clearHistoryFilters() {
+            this.historyFilters = { q: '', from: '', to: '', storage_ids: [], keyword_id: 0, media_type: 'all' };
+            this.activeDateShortcut = null;
+            this.searchHistory(1);
+        },
         clearLiveFilters() {
-            this.liveFilters = { q: '', storage_ids: [], keyword_id: 0 };
+            this.liveFilters = { q: '', storage_ids: [], keyword_id: 0, media_type: 'all' };
             this.applyLiveFilters();
         },
         toggleFilterStorage(scope, id, checked) {
@@ -447,6 +1170,102 @@ function misAvisosPage() {
             this.livePolling = false;
             if (this.liveTimer) clearInterval(this.liveTimer);
         },
+
+        // ── Agrupación por (archivo, keyword) para Histórico/En vivo ──
+        // Reduce las filas planas del backend en una sola entrada por grupo.
+        // La fila resumen muestra el total agregado; al expandir se ven las
+        // menciones reales individualmente. Esto mejora mucho la densidad
+        // visual cuando el cliente busca palabras mencionadas muchas veces.
+        // El `mode` se antepone a la key para que el expand/collapse no se
+        // filtre entre las dos tablas (live vs history).
+        get displayHistoryRows() {
+            // Destructuramos explícitamente para que Alpine detecte cada prop
+            // como dependencia y re-evalúe al cambiar la sort.
+            const sortCol = this.historySort.column;
+            const sortDir = this.historySort.direction;
+            return this._sortedGroups(
+                this._groupRows(this.historyRows, 'history'),
+                { column: sortCol, direction: sortDir }
+            );
+        },
+        get displayLiveRows() {
+            const sortCol = this.liveSort.column;
+            const sortDir = this.liveSort.direction;
+            return this._sortedGroups(
+                this._groupRows(this.liveRows, 'live'),
+                { column: sortCol, direction: sortDir }
+            );
+        },
+        _groupRows(rows, mode = '') {
+            const byKey = new Map();
+            for (const r of (rows || [])) {
+                // file_id puede ser null; usamos 0 para agrupar los "sin
+                // archivo" en un solo bloque al fondo.
+                const fid = r.file_id ?? 0;
+                const kw = (r.keyword || '').toString();
+                const baseKey = fid + '::' + kw;
+                const key = mode ? mode + ':' + baseKey : baseKey;
+                if (!byKey.has(key)) {
+                    byKey.set(key, {
+                        key: key,
+                        file_id: r.file_id,
+                        filename: r.filename,
+                        file_url: r.file_url,
+                        storage: r.storage,
+                        storage_id: r.storage_id,
+                        parent_id: r.parent_id,
+                        transcription_id: r.transcription_id,
+                        keyword: r.keyword,
+                        // occurrences_in_media ya viene consistente por fila
+                        // (mismo valor para el mismo file_id+keyword). Si el
+                        // backend lo omite en una fila, usar el máximo.
+                        occurrences_in_media: r.occurrences_in_media || 1,
+                        can_view_file: r.can_view_file,
+                        can_clip: r.can_clip,
+                        // Para el resumen en la fila padre usamos los campos
+                        // de la PRIMERA mención que entró (típicamente la
+                        // más reciente, dado el orderByDesc del backend).
+                        first_id: r.id,
+                        first_matched_at: r.matched_at,
+                        first_minute_label: r.minute_label,
+                        first_start_seconds: r.start_seconds,
+                        first_segment_id: r.segment_id,
+                        first_snippet: r.snippet,
+                        // change mis-avisos-media-kind-indicator: tipo de medio de
+                        // la primera mención (todas comparten mime_type porque
+                        // comparten archivo).
+                        first_media_kind: r.media_kind || 'other',
+                        hits: [],
+                    });
+                }
+                const g = byKey.get(key);
+                g.hits.push({
+                    id: r.id,
+                    matched_at: r.matched_at,
+                    minute_label: r.minute_label,
+                    start_seconds: r.start_seconds,
+                    segment_id: r.segment_id,
+                    snippet: r.snippet,
+                    occurrences: r.occurrences,
+                    // change mis-avisos-media-kind-indicator: media_kind por hit
+                    // para que el sub-panel expandido pueda mostrar su ícono.
+                    media_kind: r.media_kind || 'other',
+                    filename: r.filename,
+                });
+            }
+            // Ordenar por la mención más reciente del grupo DESC.
+            return Array.from(byKey.values()).sort((a, b) => {
+                const ta = String(a.first_matched_at || ''),
+                    tb = String(b.first_matched_at || '');
+                return tb.localeCompare(ta);
+            });
+        },
+        isGroupExpanded(key) { return this.expandedGroups && this.expandedGroups.has(key); },
+        toggleGroupExpansion(key) {
+            if (!this.expandedGroups) this.expandedGroups = new Set();
+            if (this.expandedGroups.has(key)) this.expandedGroups.delete(key);
+            else this.expandedGroups.add(key);
+        },
         async pollLive() {
             try {
                 const f = this.liveFilters;
@@ -456,6 +1275,8 @@ function misAvisosPage() {
                 if (f.q.trim()) params.set('q', f.q.trim());
                 if (f.keyword_id) params.set('keyword_id', f.keyword_id);
                 f.storage_ids.forEach(id => params.append('storage_ids[]', id));
+                // change mis-avisos-media-kind-indicator (G4): propaga media_type al feed.
+                if (f.media_type && f.media_type !== 'all') params.set('media_type', f.media_type);
                 const res = await apiFetch('/mis-avisos/feed?' + params.toString(), { method: 'GET', credentials: 'same-origin', headers: this.headers(false) });
                 if (res.ok) {
                     const d = await res.json();
@@ -518,6 +1339,8 @@ function misAvisosPage() {
             if (f.to) params.set('to', f.to);
             if (f.keyword_id) params.set('keyword_id', f.keyword_id);
             f.storage_ids.forEach(id => params.append('storage_ids[]', id));
+            // change mis-avisos-media-kind-indicator (G4): propaga media_type al histórico.
+            if (f.media_type && f.media_type !== 'all') params.set('media_type', f.media_type);
             this.syncHistoryUrl(params);
             const res = await apiFetch('/mis-avisos/history?' + params.toString(), { method: 'GET', credentials: 'same-origin', headers: this.headers(false) });
             if (res.ok) {
@@ -911,18 +1734,40 @@ function misAvisosPage() {
         // Métodos heredados (keywords + correcciones)
         async addKeyword() {
             if (!this.newKeyword || this.used >= this.quota) return;
+            const payload = { text: this.newKeyword };
+            if (this.newKeywordCategoryId !== '') payload.category_id = Number(this.newKeywordCategoryId);
             const res = await apiFetch('/mis-avisos/keywords', {
                 method: 'POST', credentials: 'same-origin', headers: this.headers(),
-                body: JSON.stringify({ text: this.newKeyword }),
+                body: JSON.stringify(payload),
             });
-            if (res.ok) { const d = await res.json(); this.keywords.push({ id: d.keyword.id, text: d.keyword.text, storage_ids: [] }); this.used = d.used; this.newKeyword = ''; }
-            else { const d = await res.json(); alert(d.error || 'Error'); }
+            if (res.ok) {
+                const d = await res.json();
+                this.keywords.push({
+                    id: d.keyword.id,
+                    text: d.keyword.text,
+                    storage_ids: [],
+                    category_id: d.category_id ?? null,
+                });
+                this.used = d.used;
+                this.newKeyword = '';
+                this.newKeywordCategoryId = '';
+                await this.refreshCategories();
+                this.pushToast('Palabra agregada', 'success', 1600);
+            } else {
+                let msg = 'No se pudo agregar la palabra';
+                try { const d = await res.json(); msg = d.error || msg; } catch (_) {}
+                this.pushToast(msg, 'error', 4000);
+            }
         },
         async removeKeyword(id) {
             const res = await apiFetch('/mis-avisos/keywords/' + id, {
                 method: 'DELETE', credentials: 'same-origin', headers: this.headers(false),
             });
-            if (res.ok) { this.keywords = this.keywords.filter(k => k.id !== id); this.used = Math.max(0, this.used - 1); }
+            if (res.ok) {
+                this.keywords = this.keywords.filter(k => k.id !== id);
+                this.used = Math.max(0, this.used - 1);
+                await this.refreshCategories();
+            }
         },
         showModal: false,
         form: { wrong_text: '', correct_text: '', segment_id: null },
