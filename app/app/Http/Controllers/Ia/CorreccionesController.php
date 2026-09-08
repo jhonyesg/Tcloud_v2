@@ -1001,23 +1001,28 @@ class CorreccionesController extends Controller
             $pos = mb_strpos($textLower, $wordLower);
             if ($pos === false) continue;
 
-            // Ventana ±contextWindow alrededor del primer match.
-            $start = max(0, $pos - $contextWindow);
-            $variantRaw = mb_substr($row->text, $start, mb_strlen($word) + ($pos - $start) + $contextWindow);
-            // Si nos quedamos cortos por el final del string, completamos
-            $variantEnd = $pos + mb_strlen($word) + $contextWindow;
-            if ($variantEnd > mb_strlen($row->text)) {
-                $variantEnd = mb_strlen($row->text);
-            }
-            $variantRaw = mb_substr($row->text, max(0, $pos - $contextWindow), $variantEnd - max(0, $pos - $contextWindow));
+            // Variante = ventana corta (0 palabras antes, 3 después, recortada a
+            // word boundaries) alrededor del match. Esto captura el "wrong_text"
+            // candidato que matcheará exactamente `corrections.wrong_normalized`.
+            // Si el usuario busca "abelardo" y el segmento contiene
+            // "Abelardo de la Espriella", la variante corta será
+            // "Abelardo de la Espriella" → matchea rule 10497.
+            $variantRaw = $this->extractVariant($row->text, $pos, mb_strlen($word), 0, 3);
+
+            // example_text = ventana más grande (±contextWindow) para dar
+            // contexto al admin sin que afecte el matching.
+            $exampleStart = max(0, $pos - $contextWindow);
+            $exampleEnd = min(mb_strlen($row->text), $pos + mb_strlen($word) + $contextWindow);
+            $exampleText = mb_substr($row->text, $exampleStart, $exampleEnd - $exampleStart);
 
             $key = $this->normalizeVariant($variantRaw);
+            if ($key === '') continue; // variants sin letras no son útiles
             if (!isset($grouped[$key])) {
                 $grouped[$key] = [
                     'variant' => $variantRaw,
                     'count' => 0,
                     'example_segment_id' => $row->id,
-                    'example_text' => $row->text,
+                    'example_text' => $exampleText,
                 ];
             }
             $grouped[$key]['count']++;
@@ -1026,13 +1031,34 @@ class CorreccionesController extends Controller
             }
         }
 
-        // Cross-reference con rules existentes en una sola query.
-        $existingByNorm = Correction::whereIn('wrong_normalized', array_keys($grouped))
-            ->get(['id', 'wrong_normalized', 'status'])
-            ->keyBy('wrong_normalized');
+        // Cross-reference con rules existentes.
+        // Estrategia: cargar TODAS las reglas approved/pending (son ~2500) y
+        // hacer el matching en PHP. Es ~100ms pero garantiza cobertura correcta
+        // sin importar la dirección de substring. Iterar en SQL con LIKE '%x%'
+        // al inicio no usa índice, sería full-scan y peor performance.
+        $allRules = Correction::query()
+            ->whereIn('status', ['approved', 'pending'])
+            ->get(['id', 'wrong_normalized', 'status']);
+        // Indexar por normalized para lookup.
+        $rulesByNorm = [];
+        foreach ($allRules as $rule) {
+            $norm = mb_strtolower(trim((string) $rule->wrong_normalized));
+            if ($norm !== '') $rulesByNorm[$norm] = $rule;
+        }
 
         foreach ($grouped as $key => &$row) {
-            $rule = $existingByNorm[$key] ?? null;
+            $rule = $rulesByNorm[$key] ?? null;
+            // Fallback: la regla es substring de la variante o viceversa.
+            // Sólo reglas con ≥4 chars (evita falsos positivos con "a", "de").
+            if (!$rule && mb_strlen($key) >= 4) {
+                foreach ($rulesByNorm as $norm => $r) {
+                    if (mb_strlen($norm) < 4) continue;
+                    if (mb_strpos($key, $norm) !== false || mb_strpos($norm, $key) !== false) {
+                        $rule = $r;
+                        break;
+                    }
+                }
+            }
             $row['is_approved_rule'] = $rule && $rule->status === 'approved';
             $row['is_pending_rule'] = $rule && $rule->status === 'pending';
             $row['existing_rule_id'] = $rule?->id;
@@ -1077,7 +1103,9 @@ class CorreccionesController extends Controller
 
         $variants = $request->input('variants');
         $correct = trim((string) $request->input('correct'));
-        $adminId = $this->adminUser();
+        // adminUser() devuelve el modelo User completo; necesitamos sólo el id (bigint)
+        // para la columna proposed_by, sino Eloquent intenta serializar a JSON.
+        $adminId = (int) $this->adminUser()->id;
 
         // Pre-normalizar todas y chequear duplicados contra BD y entre sí.
         $seen = [];
@@ -1145,9 +1173,158 @@ class CorreccionesController extends Controller
         return trim((string) $v);
     }
 
+    /**
+     * Extrae la variante "corta" alrededor del match de la palabra buscada.
+     * Default: 0 palabras antes + 3 después, así la variante ES el `wrong_text`
+     * candidato (ej: "Abelardo de la Esprella") sin contexto lejano. Esto
+     * matchea exactamente `corrections.wrong_normalized` y agrupa correctamente
+     * todas las apariciones del mismo typo sin importar el contexto donde
+     * aparecen.
+     *
+     * Ejemplo: "El presidente Abelardo de la Esprella hizo el anuncio" → "Abelardo de la Esprella"
+     * Ejemplo: "Diego... entre el gobierno del presidente Abelardo de la Esprella" → "Abelardo de la Esprella"
+     * Ambos se agrupan en UNA sola fila con el mismo `wrong_text`.
+     *
+     * @param string $text Texto completo del segmento.
+     * @param int $matchPos Posición (en chars) donde inicia el match.
+     * @param int $matchLen Largo del match en chars.
+     * @param int $wordsBefore Max palabras antes del match a incluir (default 0).
+     * @param int $wordsAfter Max palabras después del match a incluir (default 3).
+     * @return string Variante extraída, trimmed, sin puntuación colgante.
+     */
+    private function extractVariant(string $text, int $matchPos, int $matchLen, int $wordsBefore = 0, int $wordsAfter = 3): string
+    {
+        $len = mb_strlen($text);
+        $matchPos = max(0, min($matchPos, $len - 1));
+        $matchLen = max(1, min($matchLen, $len - $matchPos));
+        $matchedText = mb_substr($text, $matchPos, $matchLen);
+
+        $before = mb_substr($text, 0, $matchPos);
+        $beforeTrimmed = rtrim($before);
+        $beforeWords = preg_split('/\s+/u', $beforeTrimmed);
+        // NB: array_slice($arr, -0) en PHP === array_slice($arr, 0) === full array.
+        // Hay que chequear $wordsBefore > 0 antes de slice, sino conservar el array completo.
+        if ($wordsBefore > 0 && count($beforeWords) > $wordsBefore) {
+            $beforeWords = array_slice($beforeWords, -$wordsBefore);
+        } elseif ($wordsBefore === 0) {
+            $beforeWords = [];
+        }
+        $beforeText = trim(implode(' ', $beforeWords));
+
+        $after = mb_substr($text, $matchPos + $matchLen);
+        $afterWords = preg_split('/\s+/u', trim($after));
+        if ($wordsAfter > 0 && count($afterWords) > $wordsAfter) {
+            $afterWords = array_slice($afterWords, 0, $wordsAfter);
+        } elseif ($wordsAfter === 0) {
+            $afterWords = [];
+        }
+        $afterText = trim(implode(' ', $afterWords));
+
+        $variant = trim("$beforeText $matchedText $afterText");
+        // Trim de puntuación y palabras conectoras comunes al final (y, a, de, el, la).
+        $variant = trim($variant, " \t\n\r\0\x0B.,;:!?\"'()[]{}");
+        $variant = preg_replace('/\s+(y|a|de|en|con|para|por|el|la|los|las|del|al|un|una|unos|unas)$/iu', '', $variant);
+        $variant = trim($variant, " \t\n\r\0\x0B.,;:!?\"'()[]{}");
+        return $variant;
+    }
+
     private function escapeLike(string $s): string
     {
         return str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], $s);
+    }
+
+    /**
+     * AI Suggest en Variation Finder: agrupa las variantes "Sin regla"
+     * devueltas por findVariations y propone una canonical_correct por
+     * grupo vía LLM. NO crea reglas — sólo sugiere.
+     *
+     * Path: POST /ia/correcciones/variations/ai-suggest
+     * Body: { word: string, since: ISO8601|null, limit?: int, provider?: string, confirm_cost?: bool }
+     *
+     * Si `confirm_cost=true` retorna sólo `{ estimate: { variants_count, estimated_input_tokens, estimated_cost_usd } }`
+     * sin llamar al LLM. Si `confirm_cost=false` (o ausente) llama al LLM.
+     *
+     * Ver openspec/changes/corrections-variation-finder-ai-suggest/.
+     */
+    public function variationsAiSuggest(Request $request)
+    {
+        try {
+            $request->validate([
+                'word' => 'required|string|min:1|max:200',
+                'since' => 'nullable|date',
+                'limit' => 'nullable|integer|min:1|max:500',
+                'provider' => 'nullable|string|max:32',
+                'confirm_cost' => 'nullable|boolean',
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json(['error' => collect($e->errors())->flatten()->first() ?? 'validation'], 422);
+        }
+
+        $word = trim((string) $request->input('word'));
+        if ($word === '') {
+            return response()->json(['error' => 'word no puede estar vacío'], 422);
+        }
+        $since = $request->input('since') ? Carbon::parse($request->input('since')) : null;
+        $limit = (int) ($request->input('limit') ?? 100);
+        $provider = (string) ($request->input('provider') ?? 'primary');
+        $confirmCost = (bool) $request->input('confirm_cost', false);
+
+        // Reusar findVariations para traer las variantes "Sin regla" — el
+        // admin ya hizo la búsqueda, esto garantiza el mismo scope.
+        $findRequest = Request::create('/internal/find-variations', 'POST', [
+            'word' => $word,
+            'since' => $since?->toIso8601String(),
+            'limit' => $limit,
+        ]);
+        $findResponse = $this->findVariations($findRequest);
+        if ($findResponse->getStatusCode() !== 200) {
+            return $findResponse; // propaga errores 422/etc
+        }
+        $findPayload = $findResponse->getData(true);
+        $uncoveredVariants = [];
+        foreach (($findPayload['matches'] ?? []) as $m) {
+            if (!$m['is_approved_rule'] && !$m['is_pending_rule']) {
+                $uncoveredVariants[] = [
+                    'wrong' => $m['variant'],
+                    'count' => (int) $m['count'],
+                ];
+            }
+        }
+
+        if (empty($uncoveredVariants)) {
+            return response()->json([
+                'ok' => true,
+                'groups' => [],
+                'message' => 'No hay variantes "Sin regla" para sugerir. Todas están cubiertas.',
+                'tokens_used' => 0,
+                'latency_ms' => 0,
+            ]);
+        }
+
+        /** @var \App\Services\Ia\AiVariationGrouperService $grouper */
+        $grouper = app(\App\Services\Ia\AiVariationGrouperService::class);
+
+        if ($confirmCost) {
+            $tokens = $grouper->estimateTokens($uncoveredVariants);
+            return response()->json([
+                'estimate' => [
+                    'variants_count' => count($uncoveredVariants),
+                    'estimated_input_tokens' => $tokens,
+                    'estimated_cost_usd' => $grouper->estimateCostUsd($tokens, $provider),
+                    'provider' => $provider,
+                ],
+            ]);
+        }
+
+        $result = $grouper->groupVariants($word, $uncoveredVariants, $since?->toIso8601String(), $limit, $provider);
+
+        if (!$result['ok']) {
+            $status = in_array($result['reason'] ?? '', ['switch_off', 'no_api_key', 'timeout_or_network', 'parse_failed'], true)
+                ? 503 : 422;
+            return response()->json($result, $status);
+        }
+
+        return response()->json($result);
     }
 
     /**

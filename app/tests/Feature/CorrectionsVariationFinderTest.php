@@ -76,6 +76,50 @@ class CorrectionsVariationFinderTest extends LaravelTestCase
         $this->assertSame('', $this->callPrivate('normalizeVariant', ['!!!']));
     }
 
+    // ───────────────────────── extractVariant ───────────────────────────────
+
+    public function test_extract_variant_captures_word_plus_neighbors(): void
+    {
+        $text = 'Viden los comerciantes de Quibdó al presidente Abelardo de las Pellas y a los empresarios.';
+        $pos = mb_strpos(mb_strtolower($text), 'abelardo');
+        $variant = $this->callPrivate('extractVariant', [$text, $pos, 8, 0, 3]);
+        // 0 antes + 3 después, recortada de "y" trailing → variante = wrong_text puro.
+        $this->assertSame('Abelardo de las Pellas', $variant);
+    }
+
+    public function test_extract_variant_handles_text_start(): void
+    {
+        $text = 'Abelardo de la Esprella hizo el anuncio.';
+        $pos = 0;
+        $variant = $this->callPrivate('extractVariant', [$text, $pos, 8, 15]);
+        $this->assertSame('Abelardo de la Esprella', $variant);
+    }
+
+    public function test_extract_variant_handles_text_end(): void
+    {
+        $text = 'Se refirieron al presidente Abelardo de las Pellas';
+        $pos = mb_strpos(mb_strtolower($text), 'abelardo');
+        $variant = $this->callPrivate('extractVariant', [$text, $pos, 8, 15]);
+        $this->assertStringContainsString('Abelardo de las Pellas', $variant);
+    }
+
+    public function test_extract_variant_strips_trailing_punctuation(): void
+    {
+        $text = 'Es un error, Abelardo de las Pellas, dijo el ministro.';
+        $pos = mb_strpos(mb_strtolower($text), 'abelardo');
+        $variant = $this->callPrivate('extractVariant', [$text, $pos, 8, 15]);
+        // No debe terminar en coma.
+        $this->assertStringNotContainsString(',', mb_substr($variant, -1));
+    }
+
+    public function test_extract_variant_short_text_returns_whole_text(): void
+    {
+        $text = 'Abelardo Pellas';
+        $pos = 0;
+        $variant = $this->callPrivate('extractVariant', [$text, $pos, 8, 15]);
+        $this->assertSame('Abelardo Pellas', $variant);
+    }
+
     // ───────────────────────── findVariations validation ───────────────────
 
     /**

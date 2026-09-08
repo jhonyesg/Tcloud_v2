@@ -683,6 +683,19 @@
             </div>
         </div>
 
+        <div x-show="variationResults" class="px-4 pb-3 flex items-center gap-3 border-b border-slate-200">
+            <button @click="runVariationAiSuggest()" :disabled="variationAiLoading || (variationResults?.matches ?? []).filter(m => !m.is_approved_rule && !m.is_pending_rule).length === 0"
+                    class="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-sm font-medium disabled:opacity-50"
+                    :title="variationAiHint">
+                <i class="fas" :class="variationAiLoading ? 'fa-spinner fa-spin' : 'fa-magic'"></i>
+                <span x-text="variationAiLoading ? 'Agrupando con IA…' : 'Sugerir correcciones con IA'"></span>
+            </button>
+            <span class="text-xs text-slate-500">
+                <span x-text="(variationResults?.matches ?? []).filter(m => !m.is_approved_rule && !m.is_pending_rule).length"></span>
+                variantes sin regla serán propuestas para agrupación
+            </span>
+        </div>
+
         <div x-show="variationResults" class="p-4">
             <div class="text-xs text-slate-500 mb-3">
                 <span x-text="variationResults?.matches?.length ?? 0"></span> únicas de
@@ -2479,6 +2492,93 @@
         </div>
     </div>
 
+    {{-- AI Suggest en Variation Finder: modal con grupos propuestos por la IA.
+         Cambia corrections-variation-finder-ai-suggest. --}}
+    <div x-show="variationAiModal.open" x-cloak class="fixed inset-0 z-40 bg-black/40 flex items-center justify-center px-4" @click.self="variationAiModal.open = false">
+        <div class="bg-white rounded-2xl shadow-xl w-full max-w-3xl p-6 max-h-[90vh] overflow-y-auto">
+            <h3 class="text-lg font-semibold text-slate-800 mb-3">
+                <i class="fas fa-magic text-purple-600 mr-2"></i>AI Suggest — <span x-text="variationAiModal.groups.length"></span> grupos propuestos
+            </h3>
+            <p class="text-xs text-slate-500 mb-4">
+                La IA agrupó las variantes "Sin regla" según typos del mismo nombre. Editá el <code class="bg-slate-100 px-1 rounded">correct</code> de cada grupo si querés ajustar la normalización. Las variants con confianza ≥ 0.8 vienen pre-marcadas.
+            </p>
+
+            <!-- Cost preview (visible sólo antes del click) -->
+            <div x-show="variationAiModal.estimate && !variationAiModal.groups.length" class="px-4 py-3 bg-purple-50 border border-purple-200 rounded-lg mb-4 text-sm text-slate-700">
+                <p class="mb-2">
+                    <i class="fas fa-coins text-purple-600 mr-1"></i>
+                    Se procesarán <strong x-text="variationAiModal.estimate?.variants_count"></strong> variantes con el modelo
+                    <strong x-text="variationAiModal.estimate?.provider"></strong>.
+                    Estimado: <strong x-text="variationAiModal.estimate?.estimated_input_tokens"></strong> tokens,
+                    costo aprox. <strong>$<span x-text="variationAiModal.estimate?.estimated_cost_usd"></span></strong>.
+                </p>
+                <div class="flex gap-2">
+                    <button @click="variationAiModal.open = false" class="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded text-xs">Cancelar</button>
+                    <button @click="runVariationAiSuggest(false)" class="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded text-xs font-medium">Confirmar y llamar a la IA</button>
+                </div>
+            </div>
+
+            <!-- Error -->
+            <div x-show="variationAiModal.error" class="px-4 py-3 bg-red-50 border border-red-200 rounded-lg mb-4 text-sm text-red-800">
+                <p><strong>Error:</strong> <span x-text="variationAiModal.error"></span></p>
+                <p x-show="variationAiModal.errorHint" class="text-xs mt-1" x-text="variationAiModal.errorHint"></p>
+                <p x-show="variationAiModal.rawExcerpt" class="text-[10px] mt-1 font-mono opacity-60" x-text="'(raw: ' + variationAiModal.rawExcerpt + ')'"></p>
+            </div>
+
+            <!-- Groups -->
+            <div x-show="variationAiModal.groups.length" class="space-y-4 mb-4">
+                <template x-for="(group, gIdx) in variationAiModal.groups" :key="gIdx">
+                    <div class="border border-purple-200 rounded-lg p-3 bg-purple-50/40">
+                        <div class="flex items-center gap-2 mb-2">
+                            <label class="text-xs font-medium text-slate-600">canonical_correct:</label>
+                            <input type="text" x-model="group.canonical_correct"
+                                   class="flex-1 px-2 py-1 border border-slate-300 rounded text-sm font-mono">
+                            <button @click="applyGroup(group)"
+                                    :disabled="group.applying || group.variants.filter(v => v.checked).length === 0"
+                                    class="px-3 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-xs font-medium disabled:opacity-50">
+                                <i class="fas" :class="group.applying ? 'fa-spinner fa-spin' : 'fa-plus'"></i>
+                                <span x-text="group.applying ? '...' : 'Crear ' + group.variants.filter(v => v.checked).length"></span>
+                            </button>
+                        </div>
+                        <p x-show="group.reason" class="text-xs text-slate-500 mb-2" x-text="'Razon: ' + group.reason"></p>
+                        <ul class="text-xs space-y-1">
+                            <template x-for="(v, vIdx) in group.variants" :key="vIdx">
+                                <li class="flex items-center gap-2 px-2 py-1 rounded" :class="v.checked ? 'bg-emerald-50' : 'bg-white'">
+                                    <input type="checkbox" x-model="v.checked">
+                                    <span class="font-mono flex-1" x-text="v.wrong"></span>
+                                    <span class="text-slate-400">(<span x-text="v.count"></span>)</span>
+                                    <span class="px-1.5 py-0.5 rounded-full text-[10px] font-semibold"
+                                          :class="v.confidence >= 0.8 ? 'bg-emerald-100 text-emerald-800' : (v.confidence >= 0.5 ? 'bg-amber-100 text-amber-800' : 'bg-rose-100 text-rose-800')">
+                                        <span x-text="'conf ' + Math.round(v.confidence * 100) + '%'"></span>
+                                    </span>
+                                </li>
+                            </template>
+                        </ul>
+                        <p x-show="group.applyResult" class="text-xs mt-2" :class="group.applyError ? 'text-red-700' : 'text-emerald-700'" x-text="group.applyResult"></p>
+                    </div>
+                </template>
+            </div>
+
+            <!-- Footer: tokens info + global apply -->
+            <div class="flex items-center justify-between gap-3 pt-3 border-t border-slate-200">
+                <div class="text-xs text-slate-500">
+                    <span x-show="variationAiModal.tokensUsed !== null">
+                        Tokens: <strong x-text="variationAiModal.tokensUsed"></strong> · Latency:
+                        <strong x-text="variationAiModal.latencyMs + ' ms'"></strong> · Modelo:
+                        <strong x-text="variationAiModal.model"></strong>
+                    </span>
+                </div>
+                <div class="flex gap-2">
+                    <button @click="variationAiModal.open = false" class="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-sm">Cerrar</button>
+                    <button x-show="variationAiModal.groups.length" @click="applyAllGroups()"
+                            class="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-sm font-medium">
+                        <i class="fas fa-layer-plus mr-1"></i> Crear todas las marcadas
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     {{-- Triage pendientes: confirmación inicial + progreso + reporte.
          Cambios 2026-08-18. Dos modales: `triage.modal` (confirmación) y
          `triage.progress` (reporte en vivo). --}}
@@ -2764,6 +2864,11 @@ aiContextCorrect: {},
             report: null,        // resultado final al cerrar el modal de progreso
             error: null,
             pollTimer: null,
+            layers: [],          // copia para mostrar en UI sin tocar `report`
+            survivorsForReview: 0,
+            autoApproveCandidates: 0,
+            bulkActionId: null,
+            undoExpiresAt: null,
         },
 
         // Variation Finder (cambia corrections-variation-finder) — discovery
@@ -2776,12 +2881,21 @@ aiContextCorrect: {},
         variationSelected: new Set(),
         variationCreateModal: { open: false, wrong: '', correct: '', error: '', saving: false },
         variationBulkCreateModal: { open: false, correct: '', error: '', saving: false },
-            layers: [],          // copia para mostrar en UI sin tocar `report`
-            survivorsForReview: 0,
-            autoApproveCandidates: 0,
-            bulkActionId: null,
-            undoExpiresAt: null,
+        variationAiModal: {
+            open: false,
+            loading: false,
+            groups: [],
+            estimate: null,
+            error: '',
+            errorHint: '',
+            rawExcerpt: '',
+            tokensUsed: null,
+            latencyMs: 0,
+            model: '',
         },
+        variationAiLoading: false,
+        variationAiHint: 'Agrupar las variantes "Sin regla" con IA y proponer correcciones (~30s, gasta tokens).',
+
         // AI settings tab state (2026-08-01 UI settings)
         aiSettings: {
             list: {},
@@ -5510,6 +5624,119 @@ aiContextCorrect: {},
                 this.variationBulkCreateModal.error = 'Error de red al crear las correcciones.';
             } finally {
                 this.variationBulkCreateModal.saving = false;
+            }
+        },
+
+        // ===== AI Suggest en Variation Finder (cambia corrections-variation-finder-ai-suggest) =====
+        // Flujo: 1) confirmCost=true → pedir estimate sin gastar tokens.
+        //        2) confirmCost=false → llamar LLM, mostrar grupos con checkboxes
+        //           pre-marcados según confidence.
+        //        3) applyGroup/applyAllGroups → bulk-create por grupo (reusa endpoint).
+        async runVariationAiSuggest(confirmCost = true) {
+            const word = (this.variationWord || '').trim();
+            if (!word) return;
+            this.variationAiLoading = true;
+            this.variationAiModal.error = '';
+            this.variationAiModal.errorHint = '';
+            this.variationAiModal.rawExcerpt = '';
+            this.variationAiModal.open = true;
+            if (!confirmCost) {
+                this.variationAiModal.estimate = null; // ya vamos a gastar
+            }
+            try {
+                const res = await apiFetch('/ia/correcciones/variations/ai-suggest', {
+                    method: 'POST', credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content },
+                    body: JSON.stringify({
+                        word: word,
+                        since: this.variationScopeToSince(),
+                        limit: 100,
+                        confirm_cost: confirmCost,
+                    }),
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                    this.variationAiModal.error = data.error || data.reason || `Error HTTP ${res.status}`;
+                    this.variationAiModal.errorHint = data.hint || '';
+                    this.variationAiModal.rawExcerpt = data.raw_excerpt || '';
+                    return;
+                }
+                if (confirmCost) {
+                    // Mostrar preview de costo, esperar confirmación del usuario.
+                    this.variationAiModal.estimate = data.estimate;
+                    this.variationAiModal.groups = [];
+                } else {
+                    // Resultado real del LLM.
+                    this.variationAiModal.groups = (data.groups || []).map(g => ({
+                        ...g,
+                        // Marcar pre-check según confidence.
+                        variants: g.variants.map(v => ({
+                            ...v,
+                            checked: v.confidence >= 0.8,
+                        })),
+                        applying: false,
+                        applyResult: '',
+                    }));
+                    this.variationAiModal.tokensUsed = data.tokens_used;
+                    this.variationAiModal.latencyMs = data.latency_ms;
+                    this.variationAiModal.model = data.model;
+                }
+            } catch (e) {
+                this.variationAiModal.error = 'Error de red al consultar la IA.';
+            } finally {
+                this.variationAiLoading = false;
+            }
+        },
+        async applyGroup(group) {
+            const checked = group.variants.filter(v => v.checked);
+            if (checked.length === 0) {
+                group.applyResult = 'Marcá al menos 1 variante.';
+                return;
+            }
+            group.applying = true;
+            group.applyResult = '';
+            try {
+                const res = await apiFetch('/ia/correcciones/variations/bulk-create', {
+                    method: 'POST', credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content },
+                    body: JSON.stringify({
+                        variants: checked.map(v => v.wrong),
+                        correct: group.canonical_correct,
+                    }),
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                    group.applyError = true;
+                    group.applyResult = data.error || `Error HTTP ${res.status}`;
+                    return;
+                }
+                group.applyResult = `✓ Creadas ${data.created} como pendientes.`;
+                group.applyError = false;
+                // Marcar las filas como pending en el panel principal.
+                const idMap = new Map();
+                (data.correction_ids || []).forEach((id, i) => idMap.set(checked[i].wrong, id));
+                if (this.variationResults?.matches) {
+                    for (const m of this.variationResults.matches) {
+                        if (idMap.has(m.variant)) {
+                            m.is_pending_rule = true;
+                            m.existing_rule_id = idMap.get(m.variant);
+                        }
+                    }
+                }
+                this.pendingCount = (this.pendingCount || 0) + data.created;
+            } catch (e) {
+                group.applyError = true;
+                group.applyResult = 'Error de red al crear.';
+            } finally {
+                group.applying = false;
+            }
+        },
+        async applyAllGroups() {
+            // Secuencial para que un fallo en grupo 2 no afecte grupos ya aplicados.
+            for (const g of this.variationAiModal.groups) {
+                const anyChecked = g.variants.some(v => v.checked);
+                if (!anyChecked) continue;
+                await this.applyGroup(g);
             }
         },
     };
