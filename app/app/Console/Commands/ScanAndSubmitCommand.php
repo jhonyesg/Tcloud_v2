@@ -19,7 +19,7 @@ class ScanAndSubmitCommand extends Command
                             {--batch=0 : Maximo archivos por storage por ciclo (0 = usar config scan_batch)}
                             {--run-id= : Identificador para reportar progreso en cache (opcional)}
                             {--no-dispatch : Solo escanea y crea pending, NO encola a Redis}
-                            {--alerts : Generar avisos inteligentes para las transcripciones creadas}
+                            {--alerts= : Entrar al matching global de menciones (KeywordMatcher) para las transcripciones creadas (1=si default, 0=opt-out explicito)}
                             {--include-failed : Incluir transcripciones en estado error con archivo accesible (max retries configurable)}';
 
     protected $description = 'Escanea el disco de storages habilitados, crea transcripciones pendientes y las encola en Redis para que los workers supervisord las procesen en paralelo.';
@@ -72,7 +72,15 @@ class ScanAndSubmitCommand extends Command
         $runId = $this->option('run-id');
         $cacheKey = $runId ? 'transcription_batch:' . preg_replace('/[^a-z0-9_\-]/i', '_', $runId) : null;
         $includeFailed = (bool) $this->option('include-failed');
-        $generateAlerts = (bool) $this->option('alerts');
+
+        // Invariante del modulo de avisos: toda transcripcion nueva entra al
+        // matching global de menciones; el filtrado per-user ocurre aguas abajo
+        // en avisos:deliver-alerts (user_keyword + user_alerts_inteligentes).
+        // Omitir --alerts (o pasar --alerts) = opt-in; --alerts=0 = opt-out
+        // explicito del operador. Ver Transcription model docblock.
+        $alertsOpt = $this->option('alerts');
+        $generateAlerts = ($alertsOpt === null || $alertsOpt === '') ? true : (bool) $alertsOpt;
+
         $maxRetries = $settings->int('max_retries');
 
         if ($cacheKey) {
