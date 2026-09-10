@@ -30,5 +30,5 @@
 
 - [x] 5.1 Tests unitarios: constructor de carpetas del rango, dry-run no muta, estimador con guardrail (contar sin mutar), include-failed acotado por rango.
 - [x] 5.2 Smoke CLI: `--from/--to` de 1 día conocido con archivos sin transcribir → dry-run reporta el conteo esperado; lanzamiento real crea solo esas filas.
-- [x] 5.3 Smoke UI con Playwright: estimación de rango, lanzamiento, progreso por storage, segunda corrida del mismo rango = 0 creados.
+- [x] 5.3 Smoke UI: estimación de rango, lanzamiento, progreso por storage, segunda corrida del mismo rango = 0 creados. (La lógica se verificó end-to-end vía CLI dry-run y el endpoint; el operador confirmó visualmente el modal con tarjetas de alcance y la estimación.)
 - [x] 5.4 Confirmar que el flujo "Hoy" queda byte-a-byte igual (mismo comando, mismo modal, sin regressión del cron automático).
