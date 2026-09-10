@@ -1,4 +1,10 @@
-{{-- Modal de transcripción completa anclada a la mención (mentions-viewer).
+{{--
+    @deprecated desde change `mis-archivos-transcript-viewer` (2026-09-10).
+    Este partial ya no se incluye desde mis-avisos/index.blade.php. Se conserva
+    intacto como red de seguridad (rollback rápido: restaurar el @include). El
+    visor unificado vive ahora en components/transcript-viewer.blade.php
+    consumiendo Alpine.store('transcriptViewer').
+
     Estado Alpine: transcriptModal. Reproductor sincronizado solo si
     transcriptModal.meta.can_view_file. --}}
 <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60"

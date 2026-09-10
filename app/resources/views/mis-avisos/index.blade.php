@@ -522,7 +522,7 @@
     </div>
 
     @include('mis-avisos._correction-modal')
-    @include('mis-avisos._transcript-modal')
+    @include('components.transcript-viewer')
 
     {{-- Modal: editar categoría propia --}}
     <div x-show="editingCategory !== null" x-cloak
@@ -706,16 +706,6 @@ function misAvisosPage() {
         // conteo total + primera mención; el expand revela cada mención por
         // separado (cada una con su minuto + snippet y los botones Ver/Editor).
         expandedGroups: new Set(),
-        // Visor de transcripción (mentions-viewer)
-        transcriptModal: {
-            open: false, loading: false, error: '',
-            meta: null, hitKeyword: '',
-            anchorSegmentId: null, anchorStart: null,
-            segments: [], firstIndex: null, lastIndex: null, totalSegments: 0,
-            loadingBefore: false, loadingAfter: false, activeIndex: null, pendingSeek: null, search: '',
-        },
-        // Corte: NO hay estado local. El editor vive unificado en /files;
-        // openClipFromAnchor/openClipFromRow redirigen con deep-link.
         // Export
         activeExport: null, exportBusy: false, exportPoll: null,
         // Preferencias
@@ -1458,6 +1448,10 @@ function misAvisosPage() {
         },
 
         // ── Visor de transcripción (mentions-viewer) ──
+        // Toda la lógica (estado + métodos + render de segmentos) vive en
+        // Alpine.store('transcriptViewer'), registrado en layouts/app.blade.php.
+        // Aquí solo quedan los redireccionamientos al editor de corte desde una
+        // fila de la tabla o desde el modal (openClipFromRow / openClipFromAnchor).
         filesDeepLink(row) {
             if (!row.file_id) return '/files';
             const p = new URLSearchParams();
@@ -1465,237 +1459,6 @@ function misAvisosPage() {
             if (row.parent_id) p.set('folder', row.parent_id);
             p.set('highlight_file', row.file_id);
             return '/files?' + p.toString();
-        },
-        openFilesTab() {
-            const m = this.transcriptModal.meta;
-            if (!m?.file_id) return;
-            const p = new URLSearchParams();
-            if (m.storage_id) p.set('storage_id', m.storage_id);
-            if (m.parent_id) p.set('folder', m.parent_id);
-            p.set('highlight_file', m.file_id);
-            window.open('/files?' + p.toString(), '_blank');
-        },
-        norm(s) {
-            return String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-        },
-        // La extensión manda (el mime de la BD está cargado al revés en cientos
-        // de miles de filas: .mp3 como video/mp4, .m4a como audio/mp4).
-        mediaKind() {
-            const m = this.transcriptModal.meta;
-            if (!m) return 'none';
-            const ext = ((m.file_name || '').split('.').pop() || '').toLowerCase();
-            if (['mp4', 'm4v', 'mov', 'avi', 'mkv', 'webm'].includes(ext)) return 'video';
-            if (['mp3', 'm4a', 'wav', 'ogg', 'aac', 'flac', 'wma'].includes(ext)) return 'audio';
-            if ((m.mime_type || '').startsWith('video/')) return 'video';
-            if ((m.mime_type || '').startsWith('audio/')) return 'audio';
-            return 'none';
-        },
-        visibleSegments() {
-            const tm = this.transcriptModal;
-            const q = this.norm(tm.search).trim();
-            if (!q) return tm.segments;
-            return tm.segments.filter(s => this.norm(s.text).includes(q));
-        },
-        hmsLabel(s) {
-            const t = Math.max(0, Math.floor(Number(s) || 0));
-            return [Math.floor(t / 3600), Math.floor((t % 3600) / 60), t % 60]
-                .map(x => String(x).padStart(2, '0')).join(':');
-        },
-        // Atajo rápido: el chip de la mención activa/quita el filtro por
-        // keyword dentro del modal (mismo filtro que la búsqueda, pero a un
-        // clic). La búsqueda manual sigue funcionando encima.
-        isKeywordFilterActive() {
-            const tm = this.transcriptModal;
-            return !!tm.search && this.norm(tm.search) === this.norm(tm.hitKeyword || '');
-        },
-        toggleKeywordFilter() {
-            const tm = this.transcriptModal;
-            tm.search = this.isKeywordFilterActive() ? '' : (tm.hitKeyword || '');
-        },
-        accentAware(s) {
-            // Regex que iguala con o sin tilde: Álvaro ≍ alvaro.
-            const map = { a: '[aáàäâã]', e: '[eéèëê]', i: '[iíìïî]', o: '[oóòöôõ]', u: '[uúùüû]', n: '[nñ]', c: '[cç]' };
-            return String(s).split('').map(ch => {
-                const low = ch.toLowerCase();
-                if (map[low]) return map[low];
-                return ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            }).join('');
-        },
-        // Resaltado por aparición: cada ocurrencia de la keyword (y de la
-        // búsqueda) es un <mark> con su offset en el texto plano; el click
-        // interpola el tiempo dentro del segmento (mention-occurrence-detail).
-        // avisos-keyword-word-boundary: la keyword del hit se resalta SOLO
-        // con frontera de palabra (coincide con occurrences del motor); la
-        // búsqueda manual libre conserva su comportamiento por subcadena.
-        highlightKeyword(seg) {
-            const plain = String(seg?.text || '');
-            const tm = this.transcriptModal;
-            const esc = (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-            const wordChar = (s, i) => {
-                if (i < 0 || i >= s.length) return false;
-                return /[a-z0-9áéíóúüñ]/i.test(s[i]);
-            };
-            const matches = [];
-            const collect = (needle, cls, wholeWord) => {
-                if (!needle || !needle.trim()) return;
-                const hay = this.norm(plain);
-                const nd = this.norm(needle);
-                if (!nd) return;
-                let i = hay.indexOf(nd), guard = 0;
-                while (i !== -1 && guard < 500) {
-                    const ok = !wholeWord
-                        || (!wordChar(hay, i - 1) && !wordChar(hay, i + nd.length));
-                    if (ok) matches.push({ start: i, end: i + nd.length, cls });
-                    i = hay.indexOf(nd, i + nd.length);
-                    guard++;
-                }
-            };
-            collect(tm.hitKeyword, 'kw', true);
-            collect(tm.search, 'search', false);
-            matches.sort((a, b) => a.start - b.start || b.end - a.end);
-            const merged = [];
-            for (const m of matches) {
-                const last = merged[merged.length - 1];
-                if (last && m.start < last.end) continue; // solape: gana el primero (más largo)
-                merged.push(m);
-            }
-            if (!merged.length) return esc(plain);
-
-            let out = ''; let pos = 0;
-            for (const m of merged) {
-                out += esc(plain.slice(pos, m.start));
-                const cls = m.cls === 'kw' ? 'bg-amber-200/70' : 'bg-yellow-300/80';
-                out += `<mark class="${cls} rounded px-0.5 cursor-pointer hover:ring-2 hover:ring-violet-400" data-pos="${m.start}" data-len="${plain.length}">${esc(plain.slice(m.start, m.end))}</mark>`;
-                pos = m.end;
-            }
-            out += esc(plain.slice(pos));
-            return out;
-        },
-        // Click sobre una aparición resaltada: tiempo interpolado por la
-        // posición relativa del match dentro del texto del segmento.
-        onSegmentClick(e, seg) {
-            const mark = e.target.closest('mark');
-            if (mark && mark.dataset.pos !== undefined && typeof seg.start_seconds === 'number') {
-                const pos = parseFloat(mark.dataset.pos);
-                const len = parseFloat(mark.dataset.len || plain0(seg)) || 1;
-                const time = seg.start_seconds + (pos / len) * (seg.end_seconds - seg.start_seconds);
-                this.seekToTime(time);
-                return;
-            }
-            this.seekToSegment(seg);
-        },
-        seekToTime(time) {
-            const p = this.$refs.player;
-            if (p && typeof p.currentTime === 'number') {
-                p.currentTime = Math.max(0, time);
-                p.play();
-            }
-        },
-        plain0(seg) { return String(seg?.text || ''); },
-        async openTranscript(row, opts = {}) {
-            const tm = this.transcriptModal;
-            tm.open = true; tm.loading = true; tm.error = ''; tm.meta = null;
-            tm.segments = []; tm.activeIndex = null;
-            tm.hitKeyword = row.keyword || '';
-            tm.anchorSegmentId = row.segment_id || null;
-            tm.anchorStart = row.start_seconds ?? null;
-            // "Ver": el reproductor arranca en el minuto de la mención.
-            tm.pendingSeek = (opts.autoplay && tm.anchorStart !== null) ? tm.anchorStart : null;
-            tm.firstIndex = tm.lastIndex = tm.totalSegments = 0;
-            tm.loadingBefore = tm.loadingAfter = false;
-            tm.search = '';
-            try {
-                const params = new URLSearchParams();
-                if (row.segment_id) params.set('anchor_segment_id', row.segment_id);
-                const res = await apiFetch('/mis-avisos/transcriptions/' + row.transcription_id + '?' + params.toString(),
-                    { method: 'GET', credentials: 'same-origin', headers: this.headers(false) });
-                if (res.ok) {
-                    const d = await res.json();
-                    tm.meta = d.transcription;
-                    tm.segments = d.segments;
-                    tm.firstIndex = d.first_index; tm.lastIndex = d.last_index; tm.totalSegments = d.total_segments;
-                    this.$nextTick(() => {
-                        const el = row.segment_id && document.getElementById('seg-' + row.segment_id);
-                        el && el.scrollIntoView({ block: 'center' });
-                    });
-                } else {
-                    const d = await res.json().catch(() => ({}));
-                    tm.error = d.error || 'No se pudo cargar la transcripción';
-                }
-            } catch (e) { tm.error = 'Error de red: ' + e.message; }
-            tm.loading = false;
-        },
-        onPlayerLoaded(e) {
-            const tm = this.transcriptModal;
-            const p = e.target;
-            if (tm.pendingSeek !== null && typeof p.currentTime === 'number') {
-                const max = Number.isFinite(p.duration) ? p.duration : tm.pendingSeek;
-                p.currentTime = Math.min(tm.pendingSeek, max);
-                p.play();
-                tm.pendingSeek = null;
-            }
-        },
-        closeTranscript() {
-            const p = this.$refs.player;
-            if (p) { try { p.pause(); } catch (e) {} }
-            this.transcriptModal.open = false;
-        },
-        seekToSegment(seg) {
-            const p = this.$refs.player;
-            if (p && typeof p.currentTime === 'number') {
-                p.currentTime = seg.start_seconds;
-                p.play();
-            }
-            this.transcriptModal.activeIndex = seg.segment_index;
-        },
-        onPlayerTime(e) {
-            const t = e.target.currentTime;
-            const segs = this.transcriptModal.segments;
-            if (!segs.length) return;
-            let i = segs.findIndex(s => s.segment_index === this.transcriptModal.activeIndex);
-            if (i < 0) i = 0;
-            while (i > 0 && segs[i].start_seconds > t) i--;
-            while (i < segs.length - 1 && segs[i + 1].start_seconds <= t) i++;
-            const cur = segs[i];
-            this.transcriptModal.activeIndex = (t >= cur.start_seconds && t < cur.end_seconds) ? cur.segment_index : null;
-        },
-        onSegmentsScroll(e) {
-            const el = e.target;
-            const tm = this.transcriptModal;
-            const remaining = el.scrollHeight - el.scrollTop - el.clientHeight;
-            if (!tm.loadingBefore && el.scrollTop < 400 && tm.firstIndex > 0) this.loadBefore();
-            if (!tm.loadingAfter && remaining < 600 && tm.lastIndex < tm.totalSegments - 1) this.loadAfter();
-        },
-        async loadAfter() {
-            const tm = this.transcriptModal;
-            tm.loadingAfter = true;
-            try {
-                const res = await apiFetch('/mis-avisos/transcriptions/' + tm.meta.id + '/segments?after_index=' + tm.lastIndex,
-                    { method: 'GET', credentials: 'same-origin', headers: this.headers(false) });
-                if (res.ok) {
-                    const d = await res.json();
-                    tm.segments.push(...d.segments);
-                    tm.lastIndex = d.last_index;
-                }
-            } catch (e) { /* reintenta en el próximo scroll */ }
-            tm.loadingAfter = false;
-        },
-        async loadBefore() {
-            const tm = this.transcriptModal;
-            const el = this.$refs.segList;
-            tm.loadingBefore = true;
-            const prevHeight = el ? el.scrollHeight : 0;
-            try {
-                const res = await apiFetch('/mis-avisos/transcriptions/' + tm.meta.id + '/segments?before_index=' + tm.firstIndex,
-                    { method: 'GET', credentials: 'same-origin', headers: this.headers(false) });
-                if (res.ok) {
-                    const d = await res.json();
-                    tm.segments.unshift(...d.segments);
-                    tm.firstIndex = d.first_index;
-                    this.$nextTick(() => { if (el) el.scrollTop += el.scrollHeight - prevHeight; });
-                }
-            } catch (e) { /* reintenta en el próximo scroll */ }
-            tm.loadingBefore = false;
         },
 
         // ── Corte: redirige al editor unificado en /files ──
@@ -1725,19 +1488,13 @@ function misAvisosPage() {
             if (url) window.location.href = url;
         },
         openClipFromAnchor() {
-            const tm = this.transcriptModal;
-            if (!tm.meta?.can_clip || !tm.meta?.file_id || !tm.meta?.storage_id) return;
-            const anchor = tm.segments.find(s => s.id === tm.anchorSegmentId)
-                || tm.segments.find(s => s.segment_index === tm.activeIndex)
-                || tm.segments[0];
-            if (!anchor) return;
-            const url = this.buildClipDeepLink(
-                tm.meta.file_id,
-                tm.meta.storage_id,
-                anchor.start_seconds,
-                anchor.end_seconds
-            );
-            if (url) window.location.href = url;
+            // El estado vive ahora en Alpine.store('transcriptViewer'): usamos
+            // su helper openClipFromAnchor que ya arma el deep-link con los
+            // segmentos visibles y navega al editor unificado de /files.
+            const tv = window.Alpine && window.Alpine.store('transcriptViewer');
+            if (tv && typeof tv.openClipFromAnchor === 'function') {
+                tv.openClipFromAnchor();
+            }
         },
 
         // Métodos heredados (keywords + correcciones)

@@ -4,7 +4,7 @@
      sucede en el getter displayHistoryRows / displayLiveRows del componente padre.
      Estado default: colapsado (1 fila resumen por archivo+keyword); el chevron
      abre la lista de menciones reales con su minuto + snippet + botones de acción. --}}
-@include('mis-avisos._pagination', ['mode' => $mode, 'position' => 'top'])
+@include('mis-avisos._pagination', ['scope' => $mode, 'position' => 'top'])
 
 <div class="overflow-x-auto">
     <table class="w-full text-sm">
@@ -79,7 +79,7 @@
                              `shrink-0` en el badge evita que se aplaste. --}}
                         <span class="text-slate-600 flex items-start gap-1.5"
                               :class="g.can_view_file && g.file_id ? 'cursor-pointer hover:text-brand-700' : ''"
-                              @click="g.can_view_file && g.file_id ? openTranscript({ ...g, id: g.first_id, start_seconds: g.first_start_seconds, segment_id: g.first_segment_id }, { autoplay: true }) : null">
+                              @click="g.can_view_file && g.file_id ? Alpine.store('transcriptViewer').openRow({ ...g, id: g.first_id, start_seconds: g.first_start_seconds, segment_id: g.first_segment_id }, { autoplay: true }) : null">
                             <template x-if="g.first_media_kind === 'tv'">
                                 <span class="shrink-0 inline-flex items-center justify-center w-5 h-5 rounded-md bg-gradient-to-br from-violet-500 to-indigo-600 text-white text-[10px] shadow-sm shadow-violet-500/20 transition-transform hover:scale-110 hover:shadow-violet-500/40 hover:shadow-md"
                                       title="Video / TV">
@@ -112,7 +112,7 @@
                     </td>
                     <td x-show="!isGroupExpanded(g.key)" class="py-3 whitespace-nowrap text-right align-top">
                         <div class="inline-flex items-center gap-1.5">
-                            <button @click="openTranscript({ ...g, id: g.first_id, start_seconds: g.first_start_seconds, segment_id: g.first_segment_id }, { autoplay: true })"
+                            <button @click="Alpine.store('transcriptViewer').openRow({ ...g, id: g.first_id, start_seconds: g.first_start_seconds, segment_id: g.first_segment_id }, { autoplay: true })"
                                     class="px-2.5 py-1.5 text-xs bg-brand-600 hover:bg-brand-700 text-white rounded-lg font-medium"
                                     :title="'Ver la primera mención (minuto ' + g.first_minute_label + ')'">
                                 <i class="fas fa-play mr-1"></i>Ver
@@ -190,7 +190,7 @@
                                             ×<span x-text="hit.occurrences"></span> en este segmento
                                         </span>
                                         <span class="flex-1 min-w-[200px] text-slate-700" x-text="hit.snippet"></span>
-                                        <button @click="openTranscript({ ...g, id: hit.id, start_seconds: hit.start_seconds, segment_id: hit.segment_id }, { autoplay: true })"
+                                        <button @click="Alpine.store('transcriptViewer').openRow({ ...g, id: hit.id, start_seconds: hit.start_seconds, segment_id: hit.segment_id }, { autoplay: true })"
                                                 class="px-2.5 py-1 text-[11px] bg-brand-600 hover:bg-brand-700 text-white rounded font-medium"
                                                 :title="'Ver el minuto ' + hit.minute_label">
                                             <i class="fas fa-play mr-1"></i>Ver
@@ -199,7 +199,7 @@
                                 </template>
                             </ul>
                             <div class="px-3 py-2 bg-slate-50 border-t border-slate-100 flex items-center justify-end gap-2">
-                                <button @click="openTranscript({ ...g, id: g.first_id, start_seconds: g.first_start_seconds, segment_id: g.first_segment_id }, { autoplay: true })"
+                                <button @click="Alpine.store('transcriptViewer').openRow({ ...g, id: g.first_id, start_seconds: g.first_start_seconds, segment_id: g.first_segment_id }, { autoplay: true })"
                                         class="px-2.5 py-1.5 text-xs bg-brand-600 hover:bg-brand-700 text-white rounded-lg font-medium">
                                     <i class="fas fa-play mr-1"></i>Reproducir primera mención
                                 </button>
@@ -227,4 +227,4 @@
     </div>
 </div>
 
-@include('mis-avisos._pagination', ['mode' => $mode, 'position' => 'bottom'])
+@include('mis-avisos._pagination', ['scope' => $mode, 'position' => 'bottom'])

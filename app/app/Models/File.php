@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class File extends Model
 {
@@ -69,5 +70,10 @@ class File extends Model
     public function shares(): HasMany
     {
         return $this->hasMany(Share::class);
+    }
+
+    public function transcription(): HasOne
+    {
+        return $this->hasOne(Transcription::class, 'file_id');
     }
 }

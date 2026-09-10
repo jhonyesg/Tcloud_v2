@@ -25,6 +25,7 @@ document.addEventListener('alpine:init', () => {
     currentStorageName: null,
     currentStoragePermission: 'read',
     currentStorageCanShare: false,
+    currentStorageTranscriptionAccess: false,
     storageAccessible: true,
     storageKind: 'local',
     storageBannerMessage: '',
@@ -235,6 +236,14 @@ deleteConfirmFile: null,
         return this.currentStoragePermission === 'full';
     },
 
+    // change mis-archivos-transcript-viewer: feature flag operacional. Default ON.
+    // Si está apagado (env: FEATURE_MIS_ARCHIVOS_TRANSCRIPT_VIEWER=false), el botón
+    // "Ver transcripción" en Mis Archivos se oculta aunque haya transcripción.
+    // El visor en Mis Avisos NO se ve afectado — sigue funcionando siempre.
+    transcriptViewerFeatureEnabled() {
+        return (typeof window !== 'undefined' && window.tcloudFeatures && window.tcloudFeatures.mis_archivos_transcript_viewer_enabled === false) ? false : true;
+    },
+
     isSelected(file) {
         return this.selectedFiles.some(f => f.id === file.id);
     },
@@ -302,6 +311,7 @@ deleteConfirmFile: null,
             const storage = this.availableStorages.find(s => s.id === state.storageId);
             this.currentStoragePermission = storage ? storage.permissions : 'read';
             this.currentStorageCanShare = storage ? !!storage.can_create_shares : false;
+            this.currentStorageTranscriptionAccess = storage ? !!storage.transcription_access : false;
             this.currentFolder = state.folderId || null;
             this.currentFolderName = state.folderName || null;
             this.breadcrumbs = state.breadcrumbs || [];
@@ -381,6 +391,7 @@ deleteConfirmFile: null,
         const storage = this.availableStorages.find(s => s.id === storageId);
         this.currentStoragePermission = storage ? storage.permissions : 'read';
         this.currentStorageCanShare = storage ? !!storage.can_create_shares : false;
+        this.currentStorageTranscriptionAccess = storage ? !!storage.transcription_access : false;
         this.currentFolder = null;
         this.currentFolderName = null;
         this.breadcrumbs = [];
@@ -2955,6 +2966,18 @@ deleteConfirmFile: null,
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z"/>
                                                 </svg>
                                             </button>
+                                            {{-- Botón "Ver transcripción" (change mis-archivos-transcript-viewer):
+                                                 aparece solo si el cliente tiene acceso a la transcripción
+                                                 del storage activo, el archivo es video/audio y existe una
+                                                 transcripción done. --}}
+                                            <button x-show="transcriptViewerFeatureEnabled() && !file.is_folder && (isVideo(file.mime_type) || isAudio(file.mime_type)) && file.transcription_id && currentStorageTranscriptionAccess"
+                                                    @click.stop="Alpine.store('transcriptViewer').openFor({ file_id: file.id, transcription_id: file.transcription_id })"
+                                                    class="p-1.5 sm:p-2 bg-amber-100 hover:bg-amber-200 text-amber-700 rounded-lg transition-colors"
+                                                    title="Ver transcripción">
+                                                <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2zM12 8v4m0 0v4m0-4h4m-4 0H8"/>
+                                                </svg>
+                                            </button>
                                             <button x-show="isClippable(file)" @click.stop="openClipEditor(file)" class="p-1.5 sm:p-2 bg-violet-100 hover:bg-violet-200 text-violet-600 rounded-lg transition-colors" title="Editor de corte">
                                                 <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.121 14.121L19 19m-7-7l7-7m-7 7l-2.879 2.879M12 12L9.121 9.121m0 5.758a3 3 0 10-4.243 4.243 3 3 0 004.243-4.243zm0-5.758a3 3 0 10-4.243-4.243 3 3 0 004.243 4.243z"/>
@@ -5126,4 +5149,8 @@ function startFilesTour() {
     });
 }
 </script>
+
+{{-- Visor de transcripción compartido (change mis-archivos-transcript-viewer).
+     Alpine.store('transcriptViewer') se registra una sola vez en el layout. --}}
+@include('components.transcript-viewer')
 @endsection

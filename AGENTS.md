@@ -271,6 +271,22 @@ los endpoints de envio devuelven HTTP 423, y el resto del sistema sigue
 funcionando. Es el interruptor de seguridad antes de decidirse por el
 rollback completo.
 
+## Freno de emergencia del botón "Ver transcripción" en Mis Archivos
+
+**Change:** `mis-archivos-transcript-viewer` (2026-09-10). El botón nuevo en
+la columna Acciones de Mis Archivos puede ocultarse globalmente sin deploy
+poniendo `FEATURE_MIS_ARCHIVOS_TRANSCRIPT_VIEWER=false` en `.env` (y luego
+`php artisan config:cache`). El visor en sí (Mis Avisos y Mis Archivos)
+sigue funcionando: solo se oculta el botón que lo abre desde Mis Archivos.
+El visor compartido (`Alpine.store('transcriptViewer')` en
+`layouts/app.blade.php`) lee el flag desde `window.tcloudFeatures` en cada
+render del botón, así que basta con refrescar la página para que aplique.
+Comportamiento equivalente al rollback completo: el cliente ve sus archivos
+como antes del change.
+
+Para volver al estado normal: quitar la línea del `.env` y correr
+`php artisan config:cache`.
+
 ## Rollback del change `fix-transcriptor-batch-bg-launcher`
 
 Tres pasos para volver al estado anterior si el botón "Escanear storages"

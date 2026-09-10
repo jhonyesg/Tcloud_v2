@@ -267,6 +267,11 @@
                         <span x-show="sidebarOpen" x-transition class="font-medium text-sm">Editor de Medios</span>
                     </a>
 
+                    <a href="/ia/avisos-inteligentes?activeTab=dashboard" data-nav-path="/ia/avisos-inteligentes?activeTab=dashboard"                       class="nav-link flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg transition-colors text-brand-200 hover:bg-brand-800 hover:text-white">
+                        <i class="nav-icon fas fa-radar w-5 text-center text-brand-300"></i>
+                        <span x-show="sidebarOpen" x-transition class="font-medium text-sm">Avisos Inteligentes</span>
+                    </a>
+
                     <a href="/grabaciones-puntuales/grabadores" data-nav-path="/grabaciones-puntuales/grabadores"                       class="nav-link flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg transition-colors text-brand-200 hover:bg-brand-800 hover:text-white">
                         <i class="nav-icon fas fa-satellite-dish w-5 text-center text-brand-300"></i>
                         <span x-show="sidebarOpen" x-transition class="font-medium text-sm">Grabadores</span>
@@ -758,6 +763,323 @@
         document.removeEventListener('keydown', _instrEscHandler);
     }
     function _instrEscHandler(e) { if (e.key === 'Escape') closeInstructivo(); }
+    </script>
+
+    {{-- Indicador global de jobs en background (add-bg-job-indicator-widget) --}}
+    @include('components.bg-job-indicator')
+
+    {{-- Flags operacionales inyectados al frontend para que el blade los pueda
+         chequear (e.g. show/hide del botón "Ver transcripción" en Mis Archivos). --}}
+    <script>
+    window.tcloudFeatures = window.tcloudFeatures || {};
+    window.tcloudFeatures.mis_archivos_transcript_viewer_enabled =
+        {!! json_encode((bool) env('FEATURE_MIS_ARCHIVOS_TRANSCRIPT_VIEWER', true)) !!};
+    </script>
+
+    {{-- Store Alpine compartido para el visor de transcripción (change
+         `mis-archivos-transcript-viewer`). Reusado por Mis Avisos y por
+         Mis Archivos. El partial `components.transcript-viewer` lo consume
+         directamente: x-show, x-text, @click, etc. --}}
+    <script>
+    document.addEventListener('alpine:init', () => {
+        const TV_KEYWORD_FILTER_DEFAULT = { active: false, term: '' };
+        Alpine.store('transcriptViewer', {
+            open: false,
+            loading: false,
+            error: '',
+            meta: null,
+            segments: [],
+            firstIndex: 0,
+            lastIndex: 0,
+            totalSegments: 0,
+            loadingBefore: false,
+            loadingAfter: false,
+            search: '',
+            activeIndex: null,
+            anchorSegmentId: null,
+            hitKeyword: null,
+            pendingSeek: null,
+            keywordFilter: { ...TV_KEYWORD_FILTER_DEFAULT },
+
+            async openFor(target) {
+                // IMPORTANTE: este método se llama `openFor` (no `open`) para no
+                // chocar con la propiedad booleana `open: false` del store. Si se
+                // llamara `open`, JS sobrescribe la propiedad con la función y el
+                // modal aparece siempre (bug fixed 2026-09-10).
+                // Acepta tanto un `file` (Mis Archivos) como un `row` (Mis Avisos).
+                const t = this;
+                t.open = true;
+                t.loading = true;
+                t.error = '';
+                t.meta = null;
+                t.segments = [];
+                t.activeIndex = null;
+                t.hitKeyword = target.keyword || null;
+                t.anchorSegmentId = target.segment_id || null;
+                t.anchorStart = target.start_seconds ?? null;
+                t.pendingSeek = (target.start_seconds !== undefined && target.start_seconds !== null) ? target.start_seconds : null;
+                t.firstIndex = t.lastIndex = t.totalSegments = 0;
+                t.loadingBefore = t.loadingAfter = false;
+                t.search = '';
+                t.keywordFilter = { ...TV_KEYWORD_FILTER_DEFAULT };
+
+                // Mis Archivos: target = file con transcription_id.
+                // Mis Avisos:    target = row de hit con transcription_id.
+                const transcriptionId = target.transcription_id;
+                if (!transcriptionId) {
+                    t.error = 'Este archivo no tiene transcripción asociada';
+                    t.loading = false;
+                    return;
+                }
+
+                try {
+                    const url = '/files/' + (target.file_id || target.id) + '/transcription'
+                        + (target.segment_id ? '?anchor_segment_id=' + target.segment_id : '');
+                    const res = await apiFetch(url, { method: 'GET', credentials: 'same-origin' });
+                    if (res.ok) {
+                        const d = await res.json();
+                        t.meta = d.transcription;
+                        t.segments = d.segments;
+                        t.firstIndex = d.first_index;
+                        t.lastIndex = d.last_index;
+                        t.totalSegments = d.total_segments;
+                        // Mis Avisos: scroll a la mención anclada. Mis Archivos: scroll al inicio.
+                        // Usamos setTimeout(0) en vez de this.$nextTick porque `this`
+                        // dentro de esta arrow no apunta al store (sería undefined).
+                        // El setTimeout asegura que Alpine haya renderizado los nuevos
+                        // segmentos antes de hacer scrollIntoView.
+                        setTimeout(() => {
+                            const segId = t.anchorSegmentId;
+                            const el = segId && document.getElementById('transcript-seg-' + segId);
+                            el && el.scrollIntoView({ block: 'center' });
+                        }, 0);
+                    } else {
+                        const d = await res.json().catch(() => ({}));
+                        t.error = d.error || 'No se pudo cargar la transcripción';
+                    }
+                } catch (e) { t.error = 'Error de red: ' + e.message; }
+                t.loading = false;
+            },
+
+            async openRow(row, opts = {}) {
+                // Compatibilidad con Mis Avisos: `opts.autoplay` activa el seek.
+                const t = this;
+                await t.openFor({
+                    ...row,
+                    file_id: row.file_id,
+                    transcription_id: row.transcription_id,
+                    segment_id: row.segment_id,
+                    start_seconds: opts.autoplay ? row.start_seconds : null,
+                    keyword: row.keyword,
+                });
+            },
+
+            close() {
+                const p = document.querySelector('[x-ref="transcriptPlayer"]');
+                if (p) { try { p.pause(); } catch (e) {} }
+                this.open = false;
+            },
+
+            visibleSegments() {
+                const term = (this.search || '').trim().toLowerCase();
+                const norm = (s) => (s || '').toString().toLowerCase()
+                    .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+                const t = term ? norm(term) : '';
+                const filterActive = this.keywordFilter.active && this.keywordFilter.term;
+                const kw = filterActive ? norm(this.keywordFilter.term) : '';
+                return this.segments.filter((seg) => {
+                    if (t) {
+                        const txt = norm(seg.text);
+                        if (txt.indexOf(t) === -1) return false;
+                    }
+                    if (kw) {
+                        const txt = norm(seg.text);
+                        if (txt.indexOf(kw) === -1) return false;
+                    }
+                    return true;
+                });
+            },
+
+            mediaKind() {
+                if (!this.meta) return 'none';
+                const name = (this.meta.file_name || '').toLowerCase();
+                const mime = (this.meta.mime_type || '').toLowerCase();
+                const ext = name.split('.').pop() || '';
+                if (['mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'webm'].includes(ext)) return 'video';
+                if (['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a'].includes(ext)) return 'audio';
+                if (mime.startsWith('video/')) return 'video';
+                if (mime.startsWith('audio/')) return 'audio';
+                return 'none';
+            },
+
+            hmsLabel(seconds) {
+                const total = Math.max(0, Math.floor(Number(seconds) || 0));
+                const h = Math.floor(total / 3600);
+                const m = Math.floor((total % 3600) / 60);
+                const s = total % 60;
+                const pad = (n) => String(n).padStart(2, '0');
+                return pad(h) + ':' + pad(m) + ':' + pad(s);
+            },
+
+            plain0(seg) { return String(seg?.text || ''); },
+
+            highlightKeyword(seg) {
+                const text = String(seg?.text || '');
+                const esc = (s) => s.replace(/[&<>"']/g, (c) => ({
+                    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+                }[c]));
+                const norm = (s) => (s || '').toString().toLowerCase()
+                    .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+                const plain = norm(text);
+                const filterActive = this.keywordFilter.active && this.keywordFilter.term;
+                const kwRaw = filterActive ? this.keywordFilter.term : this.hitKeyword;
+                if (!kwRaw) return esc(text);
+                const kw = norm(kwRaw);
+                if (!kw) return esc(text);
+                let out = '';
+                let i = 0;
+                while (i < text.length) {
+                    const idx = plain.indexOf(kw, i);
+                    if (idx === -1) { out += esc(text.slice(i)); break; }
+                    out += esc(text.slice(i, idx));
+                    out += '<mark class="bg-amber-200 text-amber-900 rounded px-0.5">' + esc(text.slice(idx, idx + kw.length)) + '</mark>';
+                    i = idx + kw.length;
+                }
+                return out;
+            },
+
+            onSegmentClick(event, seg) {
+                // Soporta clicks sobre el texto (con posición) o sobre la fila entera.
+                if (event.target && event.target.tagName === 'MARK') {
+                    const mark = event.target;
+                    const segEl = mark.closest('[data-seg]');
+                    const len = parseFloat(mark.dataset.len || this.plain0(seg).length) || 1;
+                    const pos = parseFloat(mark.dataset.pos || 0);
+                    const time = seg.start_seconds + (pos / len) * (seg.end_seconds - seg.start_seconds);
+                    this.seekToTime(time);
+                    return;
+                }
+                this.seekToSegment(seg);
+            },
+
+            seekToTime(time) {
+                const p = document.querySelector('[x-ref="transcriptPlayer"]');
+                if (p && typeof p.currentTime === 'number') {
+                    p.currentTime = Math.max(0, time);
+                    p.play();
+                }
+            },
+
+            seekToSegment(seg) {
+                const p = document.querySelector('[x-ref="transcriptPlayer"]');
+                if (p && typeof p.currentTime === 'number') {
+                    p.currentTime = seg.start_seconds;
+                    p.play();
+                }
+                this.activeIndex = seg.segment_index;
+            },
+
+            onPlayerTime(event) {
+                const t = event.target.currentTime;
+                const segs = this.segments;
+                if (!segs.length) return;
+                let i = segs.findIndex((s) => s.segment_index === this.activeIndex);
+                if (i < 0) i = 0;
+                while (i > 0 && segs[i].start_seconds > t) i--;
+                while (i < segs.length - 1 && segs[i + 1].start_seconds <= t) i++;
+                const cur = segs[i];
+                this.activeIndex = (t >= cur.start_seconds && t < cur.end_seconds) ? cur.segment_index : null;
+            },
+
+            onPlayerLoaded(event) {
+                const p = event.target;
+                if (this.pendingSeek !== null && typeof p.currentTime === 'number') {
+                    const max = Number.isFinite(p.duration) ? p.duration : this.pendingSeek;
+                    p.currentTime = Math.min(this.pendingSeek, max);
+                    p.play();
+                    this.pendingSeek = null;
+                }
+            },
+
+            onSegmentsScroll(event) {
+                const el = event.target;
+                const remaining = el.scrollHeight - el.scrollTop - el.clientHeight;
+                if (!this.loadingBefore && el.scrollTop < 400 && this.firstIndex > 0) this.loadBefore();
+                if (!this.loadingAfter && remaining < 600 && this.lastIndex < this.totalSegments - 1) this.loadAfter();
+            },
+
+            async loadBefore() {
+                const t = this;
+                if (t.firstIndex === null || t.firstIndex <= 0) return;
+                t.loadingBefore = true;
+                try {
+                    const res = await apiFetch('/files/' + t.meta.file_id + '/transcription?before_index=' + t.firstIndex,
+                        { method: 'GET', credentials: 'same-origin' });
+                    if (res.ok) {
+                        const d = await res.json();
+                        if (Array.isArray(d.segments)) t.segments = d.segments.concat(t.segments);
+                        if (d.first_index !== null) t.firstIndex = d.first_index;
+                    }
+                } catch (_) {}
+                t.loadingBefore = false;
+            },
+
+            async loadAfter() {
+                const t = this;
+                if (t.lastIndex === null || t.lastIndex >= t.totalSegments - 1) return;
+                t.loadingAfter = true;
+                try {
+                    const res = await apiFetch('/files/' + t.meta.file_id + '/transcription?after_index=' + t.lastIndex,
+                        { method: 'GET', credentials: 'same-origin' });
+                    if (res.ok) {
+                        const d = await res.json();
+                        if (Array.isArray(d.segments)) t.segments = t.segments.concat(d.segments);
+                        if (d.last_index !== null) t.lastIndex = d.last_index;
+                    }
+                } catch (_) {}
+                t.loadingAfter = false;
+            },
+
+            toggleKeywordFilter() {
+                if (!this.hitKeyword) return;
+                if (this.keywordFilter.active) {
+                    this.keywordFilter = { ...TV_KEYWORD_FILTER_DEFAULT };
+                } else {
+                    this.keywordFilter = { active: true, term: this.hitKeyword };
+                }
+            },
+
+            isKeywordFilterActive() {
+                return this.keywordFilter.active && !!this.keywordFilter.term;
+            },
+
+            openFilesTab() {
+                if (!this.meta || !this.meta.file_id) return;
+                const params = new URLSearchParams();
+                params.set('storage_id', this.meta.storage_id || '');
+                params.set('folder', this.meta.parent_id || '');
+                params.set('folder_name', '');
+                params.set('highlight_file', this.meta.file_id);
+                window.location = '/files?' + params.toString();
+            },
+
+            openClipFromAnchor() {
+                if (!this.meta || !this.meta.can_clip) return;
+                // Reusar el flujo de Mis Archivos: navegar con deep-link de clip.
+                const start = this.anchorStart ?? 0;
+                const seg = this.segments.find((s) => s.segment_index === this.activeIndex)
+                    || this.segments.find((s) => s.id === this.anchorSegmentId);
+                const end = seg ? seg.end_seconds : start + 5;
+                const params = new URLSearchParams();
+                params.set('storage_id', this.meta.storage_id || '');
+                if (this.meta.parent_id) params.set('folder', this.meta.parent_id);
+                params.set('clip_file', this.meta.file_id);
+                params.set('clip_start', start.toFixed(2));
+                params.set('clip_end', end.toFixed(2));
+                window.location = '/files?' + params.toString();
+            },
+        });
+    });
     </script>
 </body>
 </html>

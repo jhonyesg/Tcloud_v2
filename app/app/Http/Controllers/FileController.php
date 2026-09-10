@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\File;
 use App\Models\User;
 use App\Models\StorageProvider;
+use App\Services\Ia\MentionsSearchService;
 use App\Services\StorageSyncService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -81,7 +82,15 @@ class FileController extends Controller
                     });
                 }
 
-                $files = $query->orderBy('is_folder', 'desc')->orderBy('created_at', 'desc')->limit(500)->get();
+                $files = $query
+                    ->addSelect([
+                        'transcription_id' => DB::table('transcriptions')
+                            ->select('id')
+                            ->whereColumn('file_id', 'files.id')
+                            ->where('state', 'done')
+                            ->limit(1),
+                    ])
+                    ->orderBy('is_folder', 'desc')->orderBy('created_at', 'desc')->limit(500)->get();
 
                 $payload = ['files' => $files];
 
@@ -142,6 +151,26 @@ class FileController extends Controller
                     $report = $syncService->syncFolderWithReport($storage, $parentId, $user->id, $forcePrune);
                     $files = $report['files'];
                     $syncService->invalidateFolderCache($storageId, $parentId);
+
+                    // Enriquecer los archivos sincronizados con transcription_id para
+                    // que el botón "Ver transcripción" de Mis Archivos tenga el dato.
+                    // (change `mis-archivos-transcript-viewer`)
+                    if (count($files) > 0) {
+                        $fileIds = collect($files)->pluck('id')->all();
+                        $trMap = DB::table('transcriptions')
+                            ->select('file_id', 'id as transcription_id')
+                            ->whereIn('file_id', $fileIds)
+                            ->where('state', 'done')
+                            ->get()
+                            ->keyBy('file_id');
+                        foreach ($files as &$f) {
+                            $f['transcription_id'] = isset($trMap[$f['id']])
+                                ? (int) $trMap[$f['id']]->transcription_id
+                                : null;
+                        }
+                        unset($f);
+                    }
+
                     $pagination = ['page' => 1, 'per_page' => count($files), 'total' => count($files), 'has_more' => false];
 
                     $payload = ['files' => $files, 'breadcrumbs' => $breadcrumbs, 'pagination' => $pagination];
@@ -191,7 +220,15 @@ class FileController extends Controller
                 });
             }
 
-            $paginator = $query->orderBy('is_folder', 'desc')->orderBy('created_at', 'desc')->paginate($perPage, ['*'], 'page', $page);
+            $paginator = $query
+                ->addSelect([
+                    'transcription_id' => DB::table('transcriptions')
+                        ->select('id')
+                        ->whereColumn('file_id', 'files.id')
+                        ->where('state', 'done')
+                        ->limit(1),
+                ])
+                ->orderBy('is_folder', 'desc')->orderBy('created_at', 'desc')->paginate($perPage, ['*'], 'page', $page);
 
             // Estado del storage activo para que el frontend muestre el banner
             // "Disco no disponible" cuando el storage está caído. kind indica
@@ -976,6 +1013,7 @@ class FileController extends Controller
                 'type' => $us->storageProvider->type,
                 'permissions' => $us->permissions,
                 'can_create_shares' => (bool) $us->can_create_shares,
+                'transcription_access' => (bool) $us->transcription_access,
                 'accessible' => $us->storageProvider->is_accessible,
                 'last_checked' => $us->storageProvider->last_checked_at?->format('d M, H:i'),
                 'is_personal' => (bool) $us->storageProvider->is_personal,
@@ -983,6 +1021,64 @@ class FileController extends Controller
         });
 
         return response()->json(['storages' => $storages]);
+    }
+
+    /**
+     * Transcripción completa de un archivo, anclada al inicio (sin mención).
+     *
+     * Mismo shape que `GET /mis-avisos/transcriptions/{id}` para que el visor
+     * unificado funcione desde Mis Archivos. Lookup por `file_id` (índice
+     * UNIQUE) y luego reuso `MentionsSearchService::visibleTranscription` para
+     * garantizar que la intersección de acceso (`transcription_access` ∩
+     * `transcription_enabled`) y las capabilities (`can_view_file`,
+     * `can_clip`) se calculan idénticamente.
+     *
+     * Responde 404 opaco si el archivo no tiene transcripción done o si el
+     * usuario no tiene acceso: no revela existencia.
+     */
+    public function transcription(Request $request, File $file, MentionsSearchService $search)
+    {
+        $user = $this->getUser();
+        if (!$user) {
+            return response()->json(['error' => 'Unauthorized'], 401);
+        }
+
+        $transcriptionId = DB::table('transcriptions')
+            ->where('file_id', $file->id)
+            ->where('state', 'done')
+            ->value('id');
+
+        if (!$transcriptionId) {
+            return response()->json(['error' => 'No encontrada'], 404);
+        }
+
+        $meta = $search->visibleTranscription($user, (int) $transcriptionId);
+        if ($meta === null) {
+            return response()->json(['error' => 'No encontrada'], 404);
+        }
+
+        $anchor = $request->input('anchor_segment_id');
+        $after = $request->input('after_index');
+        $before = $request->input('before_index');
+
+        $window = $search->pageVisibleSegments(
+            $user,
+            (int) $transcriptionId,
+            $anchor !== null ? (int) $anchor : null,
+            $after !== null ? (int) $after : null,
+            $before !== null ? (int) $before : null,
+        );
+        if ($window === null) {
+            return response()->json(['error' => 'No encontrada'], 404);
+        }
+
+        return response()->json([
+            'transcription' => $meta,
+            'segments' => $window['segments'],
+            'first_index' => $window['first_index'],
+            'last_index' => $window['last_index'],
+            'total_segments' => $window['total_segments'],
+        ]);
     }
 
     private function generatePath(?int $parentId, string $name, StorageProvider $storage): string
