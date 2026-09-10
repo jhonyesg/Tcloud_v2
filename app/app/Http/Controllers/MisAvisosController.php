@@ -446,6 +446,9 @@ class MisAvisosController extends Controller
             'storage_ids' => (array) $request->input('storage_ids', []),
             'keyword_id' => $request->input('keyword_id'),
             'media_type' => $mediaType,
+            // change 2026-09-10-mis-avisos-program-date-filter: el feed en vivo
+            // también respeta el toggle (default 'program').
+            'date_field' => $request->input('date_field'),
         ], $perPage);
 
         return response()->json([
@@ -454,6 +457,7 @@ class MisAvisosController extends Controller
             'last_page' => $page->lastPage(),
             'total' => $page->total(),
             'server_time' => now()->toIso8601String(),
+            'date_field' => $search->resolveDateField($request->input('date_field')),
         ]);
     }
 
@@ -530,6 +534,11 @@ class MisAvisosController extends Controller
         $config = DB::table('user_alerts_inteligentes')->where('user_id', $userId)->first();
 
         // Proyección: matches reales de los últimos 7 días → correos/semana.
+// change 2026-09-10-mis-avisos-program-date-filter (D5): esta proyección es
+// de DETECCIONES (cuántas menciones se encontraron esta semana), no del
+// programa. Por eso usamos `matched_at` directamente, no pasando por el
+// service (que por default es `program`). Si en el futuro esta proyección
+// debe cambiar a fecha del programa, se mueve al service con `date_field`.
         $hitsLastWeek = DB::table('segment_keyword_hits as h')
             ->where('h.matched_at', '>=', now()->subDays(7))
             ->whereExists(function ($q) use ($userId) {
@@ -597,6 +606,10 @@ class MisAvisosController extends Controller
             'storage_ids' => $request->input('storage_ids', []),
             'keyword_id' => $request->input('keyword_id'),
             'media_type' => $mediaType,
+            // change 2026-09-10-mis-avisos-program-date-filter: el cliente
+            // elige por qué fecha filtra. Default 'program' (fecha del programa).
+            // Service aplica whitelist y cae al default si el valor es inválido.
+            'date_field' => $request->input('date_field'),
         ], $perPage);
 
         return response()->json([
@@ -604,6 +617,7 @@ class MisAvisosController extends Controller
             'current_page' => $page->currentPage(),
             'last_page' => $page->lastPage(),
             'total' => $page->total(),
+            'date_field' => $search->resolveDateField($request->input('date_field')),
         ]);
     }
 
@@ -711,6 +725,10 @@ class MisAvisosController extends Controller
                 'to' => $request->input('to'),
                 'storage_ids' => (array) $request->input('storage_ids', []),
                 'keyword_id' => $request->input('keyword_id'),
+                // change 2026-09-10-mis-avisos-program-date-filter: persistir
+                // el toggle elegido para que el CSV refleje exactamente lo que
+                // el cliente vio en pantalla.
+                'date_field' => $search->resolveDateField($request->input('date_field')),
             ]),
             'created_at' => now(),
             'updated_at' => now(),
@@ -722,6 +740,7 @@ class MisAvisosController extends Controller
             'to' => $request->input('to'),
             'storage_ids' => (array) $request->input('storage_ids', []),
             'keyword_id' => $request->input('keyword_id'),
+            'date_field' => $search->resolveDateField($request->input('date_field')),
         ])->onQueue('default');
 
         return response()->json(['export_id' => $exportId, 'status' => 'queued'], 201);

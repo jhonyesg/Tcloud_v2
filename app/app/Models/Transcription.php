@@ -34,13 +34,18 @@ class Transcription extends Model
     protected $fillable = [
         'file_id', 'original_name', 'job_id', 'node_url', 'node_id', 'state', 'corrected', 'generate_alerts', 'language',
         'srt_content', 'duration_seconds', 'word_count',
-        'started_at', 'finished_at', 'requeue_after_at', 'last_polled_at', 'error_message', 'retries',
+        'started_at', 'finished_at', 'recorded_at', 'requeue_after_at', 'last_polled_at', 'error_message', 'retries',
         'discovered_at', 'dispatched_at', 'submission_committed_at', 'regulator_skip_reason',
     ];
 
     protected $casts = [
         'started_at' => 'datetime',
         'finished_at' => 'datetime',
+        // change 2026-09-10-mis-avisos-program-date-filter: fecha real del
+        // programa (cuándo se emitió el audio), distinta de finished_at
+        // (cuándo se procesó). Seteada por TranscriptionObserver en `creating`,
+        // inmutable después.
+        'recorded_at' => 'datetime',
         'requeue_after_at' => 'datetime',
         'last_polled_at' => 'datetime',
         'discovered_at' => 'datetime',

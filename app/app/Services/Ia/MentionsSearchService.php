@@ -27,6 +27,14 @@ class MentionsSearchService
     private const PERMISSION_LEVELS = ['read' => 1, 'write' => 2, 'upload' => 2, 'full' => 3];
 
     /**
+     * Whitelist del parámetro `date_field` (cambio 2026-09-10-mis-avisos-program-date-filter).
+     *   - 'program': filtra por `t.recorded_at` (fecha del programa — default).
+     *   - 'detected': filtra por `h.matched_at` (fecha de detección, comportamiento legacy).
+     */
+    private const DATE_FIELDS = ['program', 'detected'];
+    private const DEFAULT_DATE_FIELD = 'program';
+
+    /**
      * IDs de storages con acceso del usuario.
      *
      * SIN cache: si el admin revoca transcription_access, el efecto debe ser
@@ -98,15 +106,25 @@ class MentionsSearchService
     /**
      * Coincidencias del DÍA ACTUAL para el feed en vivo, con filtros
      * (q, storage_ids, keyword_id) y paginación server-side.
+     *
+     * `$filters['date_field']`:
+     *   'program' (default) — filtra por `transcriptions.recorded_at`.
+     *   'detected'           — filtra por `segment_keyword_hits.matched_at` (legacy).
      */
     public function todayHits(User $user, array $filters = [], int $perPage = 25): LengthAwarePaginator
     {
-        $q = $this->visibleHitsQuery($user)
-            ->whereDate('h.matched_at', today());
+        $dateField = $this->resolveDateField($filters['date_field'] ?? null);
+
+        $q = $this->visibleHitsQuery($user);
+        if ($dateField === 'program') {
+            $q->whereDate('t.recorded_at', today());
+        } else {
+            $q->whereDate('h.matched_at', today());
+        }
 
         $this->applyHitFilters($q, $user, $filters);
 
-        $page = $q->orderByDesc('h.matched_at')
+        $page = $q->orderByDesc($dateField === 'program' ? 't.recorded_at' : 'h.matched_at')
             ->select($this->hitSelect())
             ->paginate($perPage);
 
@@ -157,10 +175,15 @@ class MentionsSearchService
     /**
      * Búsqueda histórica (≤60 días) con filtros. Respeta la misma base de
      * acceso. Aplica mínimo de caracteres y rango máximo.
+     *
+     * `$filters['date_field']`:
+     *   'program' (default) — filtra por `transcriptions.recorded_at`.
+     *   'detected'           — filtra por `segment_keyword_hits.matched_at` (legacy).
      */
     public function searchHistory(User $user, array $filters = [], int $perPage = 25): LengthAwarePaginator
     {
         $maxDays = (int) config('avisos.exports.history_days', 60);
+        $dateField = $this->resolveDateField($filters['date_field'] ?? null);
 
         $q = $this->visibleHitsQuery($user);
 
@@ -172,11 +195,14 @@ class MentionsSearchService
         if ($from->diffInDays($to, true) > $maxDays) {
             $from = $to->copy()->subDays($maxDays)->startOfDay();
         }
-        $q->whereBetween('h.matched_at', [$from, $to]);
+
+        // Selección del campo de fecha según `date_field`.
+        $dateColumn = $dateField === 'program' ? 't.recorded_at' : 'h.matched_at';
+        $q->whereBetween($dateColumn, [$from, $to]);
 
         $this->applyHitFilters($q, $user, $filters);
 
-        $page = $q->orderByDesc('h.matched_at')
+        $page = $q->orderByDesc($dateColumn)
             ->select($this->hitSelect())
             ->paginate(max(1, $perPage));
 
@@ -185,6 +211,19 @@ class MentionsSearchService
         return $page->through(function ($r) use ($user, $totals) {
             return $this->hitRow($r, $user, $totals);
         });
+    }
+
+    /**
+     * Resuelve el date_field contra la whitelist; default a 'program'.
+     * Centralizado para que cualquier consumidor del service tenga el mismo
+     * contrato (controller, jobs, callers de consola).
+     */
+    public function resolveDateField(?string $input): string
+    {
+        if ($input !== null && in_array($input, self::DATE_FIELDS, true)) {
+            return $input;
+        }
+        return self::DEFAULT_DATE_FIELD;
     }
 
     /**
@@ -345,6 +384,7 @@ class MentionsSearchService
             'h.id',
             'h.snippet',
             'h.matched_at',
+            't.recorded_at as recorded_at',   // change 2026-09-10-mis-avisos-program-date-filter
             'h.transcription_id',
             'h.segment_id',
             'h.keyword_id',
@@ -448,6 +488,8 @@ class MentionsSearchService
             'keyword' => (string) $r->keyword,
             'snippet' => (string) $r->snippet,
             'matched_at' => $r->matched_at,
+            // change 2026-09-10-mis-avisos-program-date-filter: fecha real del programa.
+            'recorded_at' => $r->recorded_at ?? null,
             'filename' => (string) $r->filename,
             'file_id' => $fileId,
             // Reproductor real (página view) posicionado en el minuto exacto.

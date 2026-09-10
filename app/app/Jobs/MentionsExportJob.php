@@ -55,15 +55,25 @@ class MentionsExportJob implements ShouldQueue
             $fh = fopen($fullPath, 'w');
             // BOM UTF-8: Excel respeta acentos/ñ al abrir el CSV directo.
             fwrite($fh, "\xEF\xBB\xBF");
+            // change 2026-09-10-mis-avisos-program-date-filter: el CSV declara
+            // explícitamente qué campo de fecha se usó para filtrar (auditoría).
+            $dateFieldUsed = $search->resolveDateField($this->filters['date_field'] ?? null);
+            $dateFieldLabel = $dateFieldUsed === 'program'
+                ? 'programa (t.recorded_at)'
+                : 'deteccion (h.matched_at)';
             fputcsv($fh, ['fecha', 'medio', 'canal', 'minuto', 'keyword', 'fragmento'], ';');
+            fwrite($fh, "# Filtrado por: {$dateFieldLabel}\n");
 
             $count = 0;
             // Chunk por ID descendente: no paginar offset sobre sets grandes.
+            // change 2026-09-10-mis-avisos-program-date-filter: el filtro de
+            // rango usa el campo correspondiente al toggle (default 'program').
+            $dateColumn = $dateFieldUsed === 'program' ? 't.recorded_at' : 'h.matched_at';
             $lastId = PHP_INT_MAX;
             while (true) {
                 $rows = $search->visibleHitsQuery($user)
-                    ->when(!empty($this->filters['from']), fn ($q) => $q->where('h.matched_at', '>=', \Carbon\Carbon::parse($this->filters['from'])->startOfDay()))
-                    ->when(!empty($this->filters['to']), fn ($q) => $q->where('h.matched_at', '<=', \Carbon\Carbon::parse($this->filters['to'])->endOfDay()))
+                    ->when(!empty($this->filters['from']), fn ($q) => $q->where($dateColumn, '>=', \Carbon\Carbon::parse($this->filters['from'])->startOfDay()))
+                    ->when(!empty($this->filters['to']), fn ($q) => $q->where($dateColumn, '<=', \Carbon\Carbon::parse($this->filters['to'])->endOfDay()))
                     ->when(!empty($this->filters['storage_ids']), function ($q) use ($user, $search) {
                         $allowed = array_intersect((array) $this->filters['storage_ids'], $search->accessibleStorageIds($user));
                         $allowed ? $q->whereIn('f.storage_provider_id', $allowed) : $q->whereRaw('1=0');
@@ -81,6 +91,7 @@ class MentionsExportJob implements ShouldQueue
                     ->limit(1000)
                     ->get([
                         'h.id', 'h.snippet', 'h.matched_at',
+                        't.recorded_at as recorded_at',
                         'k.text as keyword',
                         'f.name as filename',
                         'sp.name as storage_name',
@@ -96,8 +107,15 @@ class MentionsExportJob implements ShouldQueue
                         $t = (int) floor($s);
                         return sprintf('%02d:%02d:%02d', intdiv($t, 3600), intdiv($t % 3600, 60), $t % 60);
                     })((float) $r->start_seconds);
+                    // change 2026-09-10-mis-avisos-program-date-filter: la
+                    // columna 'fecha' del CSV muestra el campo que el cliente
+                    // eligió (programa o detección) — coherente con el filtro
+                    // aplicado, no un campo "fijo".
+                    $fechaCell = $dateFieldUsed === 'program'
+                        ? ($r->recorded_at ?? $r->matched_at)
+                        : $r->matched_at;
                     fputcsv($fh, [
-                        $r->matched_at,
+                        $fechaCell,
                         (string) $r->filename,
                         (string) ($r->storage_name ?? ''),
                         $minute,

@@ -3,7 +3,11 @@
      El backend sigue devolviendo un row por cada match real — la agrupación
      sucede en el getter displayHistoryRows / displayLiveRows del componente padre.
      Estado default: colapsado (1 fila resumen por archivo+keyword); el chevron
-     abre la lista de menciones reales con su minuto + snippet + botones de acción. --}}
+     abre la lista de menciones reales con su minuto + snippet + botones de acción.
+
+     change 2026-09-10-mis-avisos-program-date-filter: la columna "Fecha" histórica
+     (basada en matched_at) pasa a llamarse "Detectado" y se le agrega una columna
+     "Programa" (recorded_at) como primaria. colspan dinámico sube de 8 a 9. --}}
 @include('mis-avisos._pagination', ['scope' => $mode, 'position' => 'top'])
 
 <div class="overflow-x-auto">
@@ -12,8 +16,14 @@
         <tr class="text-left text-xs text-slate-500 border-b border-slate-200">
             <th class="py-2.5 pr-3 font-medium whitespace-nowrap" style="width: 2.2rem"></th>
             <th class="py-2.5 pr-3 font-medium whitespace-nowrap">
-                <button type="button" @click="setSort('{{ $mode }}Filters', 'matched_at')" :class="sortHeaderClass('{{ $mode }}Filters', 'matched_at') + ' inline-flex items-center gap-1.5 transition-colors'" title="Ordenar por fecha">
-                    Fecha
+                <button type="button" @click="setSort('{{ $mode }}Filters', 'recorded_at')" :class="sortHeaderClass('{{ $mode }}Filters', 'recorded_at') + ' inline-flex items-center gap-1.5 transition-colors'" title="Ordenar por fecha del programa">
+                    Programa
+                    <i class="fas text-[10px]" :class="sortIcon('{{ $mode }}Filters', 'recorded_at') + ' ' + sortIconClass('{{ $mode }}Filters', 'recorded_at')"></i>
+                </button>
+            </th>
+            <th class="py-2.5 pr-3 font-medium whitespace-nowrap text-slate-400">
+                <button type="button" @click="setSort('{{ $mode }}Filters', 'matched_at')" :class="sortHeaderClass('{{ $mode }}Filters', 'matched_at') + ' inline-flex items-center gap-1.5 transition-colors'" title="Ordenar por fecha de detección">
+                    Detectado
                     <i class="fas text-[10px]" :class="sortIcon('{{ $mode }}Filters', 'matched_at') + ' ' + sortIconClass('{{ $mode }}Filters', 'matched_at')"></i>
                 </button>
             </th>
@@ -58,7 +68,7 @@
             <template x-for="g in (activeTab === 'live' ? displayLiveRows : displayHistoryRows)" :key="'g-' + g.key">
                 <tr class="align-top"
                     :class="isGroupExpanded(g.key) ? 'bg-amber-50/30' : 'hover:bg-slate-50/60'">
-                    <td :colspan="isGroupExpanded(g.key) ? 8 : 1" class="py-3 pr-2 whitespace-nowrap align-top">
+                    <td :colspan="isGroupExpanded(g.key) ? 9 : 1" class="py-3 pr-2 whitespace-nowrap align-top">
                         <button x-show="!isGroupExpanded(g.key)"
                                 @click="toggleGroupExpansion(g.key)"
                                 :title="'Ver las ' + g.hits.length + ' menciones'"
@@ -66,8 +76,13 @@
                             <i class="fas fa-chevron-right text-xs"></i>
                         </button>
                     </td>
-                    <td x-show="!isGroupExpanded(g.key)" class="py-3 pr-3 whitespace-nowrap text-xs text-slate-500 align-top"
-                        x-text="(g.first_matched_at || '').replace('T',' ').slice(0, 16)"></td>
+                    {{-- change 2026-09-10-mis-avisos-program-date-filter: ahora
+                         se muestran DOS fechas: "Programa" (recorded_at, principal)
+                         y "Detectado" (matched_at, secundario, estilo atenuado). --}}
+                    <td x-show="!isGroupExpanded(g.key)" class="py-3 pr-3 whitespace-nowrap align-top"
+                        x-text="(g.first_recorded_at || '').replace('T',' ').slice(0, 16) || '—'"></td>
+                    <td x-show="!isGroupExpanded(g.key)" class="py-3 pr-3 whitespace-nowrap text-[10px] text-slate-400 align-top"
+                        x-text="(g.first_matched_at || '').replace('T',' ').slice(0, 16) || '—'"></td>
                     <td x-show="!isGroupExpanded(g.key)" class="py-3 pr-3 whitespace-nowrap text-xs text-slate-600 align-top"
                         x-text="g.storage || '—'"></td>
                     <td x-show="!isGroupExpanded(g.key)" class="py-3 pr-3 max-w-[420px] align-top">
@@ -135,10 +150,10 @@
                     {{-- Vista expandida dentro de la MISMA fila (colspan=8). Solo se
                          renderiza cuando isGroupExpanded(g.key)===true. La fila
                          "crece" en altura para mostrar las menciones reales. --}}
-                    <td x-show="isGroupExpanded(g.key)" colspan="8" class="px-4 py-3 align-top">
+<td x-show="isGroupExpanded(g.key)" colspan="9" class="px-4 py-3 align-top">
                         <div class="mb-2 flex items-center justify-between">
                             <div class="text-xs text-slate-600 inline-flex items-center gap-1">
-                                {{-- change mis-avisos-media-kind-indicator: ícono TV/Radio en el header del panel expandido --}}
+                                {{-- change 2026-09-10-mis-avisos-program-date-filter: ícono TV/Radio en el header del panel expandido --}}
                                 <template x-if="g.first_media_kind === 'tv'">
                                     <span class="inline-flex items-center justify-center w-5 h-5 rounded-md bg-gradient-to-br from-violet-500 to-indigo-600 text-white text-[10px] shadow-sm shadow-violet-500/20 shrink-0" title="Video / TV">
                                         <i class="fas fa-tv"></i>
@@ -156,7 +171,8 @@
                                 <span class="inline-flex items-center justify-center min-w-[2.4rem] px-2 py-1 rounded-lg text-sm font-bold"
                                       :class="g.occurrences_in_media > 1 ? 'bg-violet-100 text-violet-700' : 'bg-slate-100 text-slate-500'"
                                       x-text="'×' + g.occurrences_in_media"></span>
-                                <span class="ml-2 text-slate-400 font-mono" x-text="(g.first_matched_at || '').replace('T',' ').slice(0, 16)"></span>
+                                <span class="ml-2 text-slate-600 font-mono" x-text="'Programa: ' + ((g.first_recorded_at || '').replace('T',' ').slice(0, 16) || '—')"></span>
+                                <span class="ml-2 text-slate-400 font-mono text-[10px]" x-text="'Detectado: ' + ((g.first_matched_at || '').replace('T',' ').slice(0, 16) || '—')"></span>
                             </div>
                             <button @click="toggleGroupExpansion(g.key)"
                                     class="text-xs px-2 py-1 text-slate-500 hover:bg-amber-100 hover:text-amber-700 rounded">

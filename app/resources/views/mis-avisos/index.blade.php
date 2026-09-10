@@ -444,6 +444,35 @@
                     <label class="text-xs text-slate-500 block mb-1">Hasta</label>
                     <input type="date" x-model="historyFilters.to" class="border border-slate-300 rounded-lg px-3 py-2 text-sm">
                 </div>
+                {{-- change 2026-09-10-mis-avisos-program-date-filter: el cliente
+                     elige por qué fecha filtra. Default 'program' (fecha del
+                     programa). El tooltip explica la diferencia con un ejemplo
+                     concreto del caso Monitoreoalpunto / Omar Perez. --}}
+                <div class="pb-0.5">
+                    <label class="text-xs text-slate-500 block mb-1">Filtrar por</label>
+                    <div class="inline-flex rounded-lg border border-slate-300 overflow-hidden" role="group" aria-label="Campo de fecha">
+                        <button type="button"
+                                @click="historyFilters.date_field = 'program'; searchHistory(1)"
+                                :class="historyFilters.date_field === 'program'
+                                    ? 'bg-brand-600 text-white'
+                                    : 'bg-white text-slate-600 hover:bg-slate-50'"
+                                class="px-3 py-2 text-xs font-medium transition-colors"
+                                title="Fecha del programa: cuándo se emitió el medio (p. ej. WinSport del 7 sep a las 14:30). Recomendado."
+                                aria-pressed="true">
+                            <i class="fas fa-tv mr-1"></i>Programa
+                        </button>
+                        <button type="button"
+                                @click="historyFilters.date_field = 'detected'; searchHistory(1)"
+                                :class="historyFilters.date_field === 'detected'
+                                    ? 'bg-brand-600 text-white'
+                                    : 'bg-white text-slate-600 hover:bg-slate-50'"
+                                class="px-3 py-2 text-xs font-medium transition-colors border-l border-slate-300"
+                                title="Fecha de detección: cuándo el sistema encontró la keyword (puede ser horas o días después). Útil para auditoría interna."
+                                aria-pressed="false">
+                            <i class="fas fa-search mr-1"></i>Detección
+                        </button>
+                    </div>
+                </div>
                 {{-- Atajos de fecha: un clic llena Desde/Hasta y busca --}}
                 <div class="flex items-center gap-1 pb-0.5">
                     <template x-for="shortcut in dateShortcuts" :key="shortcut.label">
@@ -696,8 +725,11 @@ function misAvisosPage() {
         liveSort: { column: 'matched_at', direction: 'desc' },
         newLiveCount: 0, liveTimer: null, livePolling: false,
         // Histórico
-        historyFilters: { q: '', from: '', to: '', storage_ids: [], keyword_id: 0, media_type: 'all' },
-        historySort: { column: 'matched_at', direction: 'desc' },
+        // change 2026-09-10-mis-avisos-program-date-filter: el cliente elige
+        // por qué fecha filtra. Default 'program' (fecha del programa). Si el
+        // backend recibe un valor inválido, él mismo cae al default.
+        historyFilters: { q: '', from: '', to: '', storage_ids: [], keyword_id: 0, media_type: 'all', date_field: 'program' },
+        historySort: { column: 'recorded_at', direction: 'desc' },
         historyRows: [], historyPage: 1, historyLastPage: 1, historyTotal: 0, historyPerPage: 25,
         historySearched: false, historyError: '',
         // Agrupado por (archivo, keyword) con accordion. Cada grupo expone
@@ -1088,6 +1120,7 @@ function misAvisosPage() {
                 case 'keyword':    return (g.keyword || '').toString().toLowerCase();
                 case 'occurrences': return Number(g.occurrences_in_media || 0);
                 case 'snippet':    return (g.first_snippet || '').toString().toLowerCase();
+                case 'recorded_at': return g.first_recorded_at || '';
                 case 'matched_at':
                 default:           return g.first_matched_at || '';
             }
@@ -1117,7 +1150,9 @@ function misAvisosPage() {
             return !!(f.q.trim() || f.from || f.to || f.keyword_id || f.storage_ids.length > 0 || f.media_type !== 'all');
         },
         clearHistoryFilters() {
-            this.historyFilters = { q: '', from: '', to: '', storage_ids: [], keyword_id: 0, media_type: 'all' };
+            // change 2026-09-10-mis-avisos-program-date-filter: reset
+            // preserva el toggle en default 'program' (no lo borra).
+            this.historyFilters = { q: '', from: '', to: '', storage_ids: [], keyword_id: 0, media_type: 'all', date_field: 'program' };
             this.activeDateShortcut = null;
             this.searchHistory(1);
         },
@@ -1217,6 +1252,9 @@ function misAvisosPage() {
                         // más reciente, dado el orderByDesc del backend).
                         first_id: r.id,
                         first_matched_at: r.matched_at,
+                        // change 2026-09-10-mis-avisos-program-date-filter:
+                        // fecha del programa (recorded_at) por grupo.
+                        first_recorded_at: r.recorded_at,
                         first_minute_label: r.minute_label,
                         first_start_seconds: r.start_seconds,
                         first_segment_id: r.segment_id,
@@ -1331,6 +1369,8 @@ function misAvisosPage() {
             f.storage_ids.forEach(id => params.append('storage_ids[]', id));
             // change mis-avisos-media-kind-indicator (G4): propaga media_type al histórico.
             if (f.media_type && f.media_type !== 'all') params.set('media_type', f.media_type);
+            // change 2026-09-10-mis-avisos-program-date-filter: propaga date_field.
+            if (f.date_field) params.set('date_field', f.date_field);
             this.syncHistoryUrl(params);
             const res = await apiFetch('/mis-avisos/history?' + params.toString(), { method: 'GET', credentials: 'same-origin', headers: this.headers(false) });
             if (res.ok) {
@@ -1359,6 +1399,11 @@ function misAvisosPage() {
             f.to = sp.get('to') || '';
             f.keyword_id = parseInt(sp.get('keyword_id') || '0', 10) || 0;
             f.storage_ids = sp.getAll('storage_ids[]').map(Number).filter(Boolean);
+            // change 2026-09-10-mis-avisos-program-date-filter: persistir el
+            // toggle en la URL para deep-linking. Validar contra whitelist;
+            // cualquier valor fuera de la lista cae al default 'program'.
+            const df = sp.get('date_field');
+            f.date_field = (df === 'program' || df === 'detected') ? df : 'program';
             this.activeTab = 'history';
             this.$nextTick(() => this.searchHistory(1));
             return true;

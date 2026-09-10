@@ -2,6 +2,7 @@
 
 namespace App\Providers;
 
+use App\Models\Transcription;
 use App\Models\User;
 use App\Models\ExternalSite;
 use App\Models\Correction;
@@ -16,6 +17,7 @@ use App\Services\Ia\TranscriptorApiClient;
 use App\Services\Ia\TranscriptorSettings;
 use App\Modules\Correo\Services\EmailValidationService;
 use App\Modules\Papelera\Services\PapeleraService;
+use App\Observers\TranscriptionObserver;
 use App\Observers\UserObserver;
 use App\Services\Auth\PasswordTokenService;
 use Illuminate\Support\Facades\Session;
@@ -56,6 +58,9 @@ class AppServiceProvider extends ServiceProvider
     public function boot(): void
     {
         User::observe(UserObserver::class);
+        // change 2026-09-10-mis-avisos-program-date-filter: calcula recorded_at
+        // automáticamente al crear y la hace inmutable después.
+        Transcription::observe(TranscriptionObserver::class);
 
         view()->composer('layouts.app', function ($view) {
             $userId = Session::get('user_id');
