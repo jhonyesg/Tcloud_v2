@@ -1597,27 +1597,52 @@
 
                 {{-- Configuración del lote --}}
                 <div x-show="!batchRunning && !batchResult" class="space-y-4">
-                    {{-- transcriptor-scan-scope-selector: alcance del escaneo --}}
-                    <div class="p-3 bg-brand-50 border border-brand-100 rounded-lg">
+                    {{-- transcriptor-scan-scope-selector: alcance del escaneo (tarjetas seleccionables) --}}
+                    <div>
                         <label class="block text-sm font-medium text-slate-700 mb-2">Alcance del escaneo</label>
-                        <div class="flex items-center gap-2 mb-2">
-                            <input type="radio" id="scope-today" value="today" x-model="batchScope" @change="refreshBatchEstimate()" class="w-4 h-4 accent-brand-600">
-                            <label for="scope-today" class="text-sm text-slate-700 cursor-pointer">Hoy (carpeta del día)</label>
+                        <div class="grid grid-cols-3 gap-2">
+                            <button type="button" @click="batchScope = 'today'; refreshBatchEstimate()"
+                                    :class="batchScope === 'today' ? 'border-brand-500 bg-brand-50 ring-1 ring-brand-500' : 'border-slate-200 bg-white hover:border-slate-300'"
+                                    class="p-3 rounded-xl border text-left transition-all">
+                                <i class="fas fa-sun text-xs" :class="batchScope === 'today' ? 'text-brand-600' : 'text-slate-400'"></i>
+                                <p class="text-sm font-semibold text-slate-800 mt-1">Hoy</p>
+                                <p class="text-[10px] text-slate-400 leading-tight mt-0.5">Solo la carpeta del día</p>
+                            </button>
+                            <button type="button" @click="batchScope = 'range'; refreshBatchEstimate()"
+                                    :class="batchScope === 'range' ? 'border-brand-500 bg-brand-50 ring-1 ring-brand-500' : 'border-slate-200 bg-white hover:border-slate-300'"
+                                    class="p-3 rounded-xl border text-left transition-all">
+                                <i class="fas fa-calendar-alt text-xs" :class="batchScope === 'range' ? 'text-brand-600' : 'text-slate-400'"></i>
+                                <p class="text-sm font-semibold text-slate-800 mt-1">Rango</p>
+                                <p class="text-[10px] text-slate-400 leading-tight mt-0.5">Fechas específicas</p>
+                            </button>
+                            <button type="button" @click="batchScope = 'all'; refreshBatchEstimate()"
+                                    :class="batchScope === 'all' ? 'border-brand-500 bg-brand-50 ring-1 ring-brand-500' : 'border-slate-200 bg-white hover:border-slate-300'"
+                                    class="p-3 rounded-xl border text-left transition-all">
+                                <i class="fas fa-infinity text-xs" :class="batchScope === 'all' ? 'text-brand-600' : 'text-slate-400'"></i>
+                                <p class="text-sm font-semibold text-slate-800 mt-1">Histórico</p>
+                                <p class="text-[10px] text-slate-400 leading-tight mt-0.5">Todas las carpetas</p>
+                            </button>
                         </div>
-                        <div class="flex items-center gap-2 flex-wrap">
-                            <input type="radio" id="scope-range" value="range" x-model="batchScope" @change="refreshBatchEstimate()" class="w-4 h-4 accent-brand-600">
-                            <label for="scope-range" class="text-sm text-slate-700 cursor-pointer">Rango:</label>
-                            <input type="date" x-model="batchScopeFrom" @change="refreshBatchEstimate()"
-                                   :max="new Date().toISOString().slice(0,10)"
-                                   class="text-xs border border-slate-300 rounded px-2 py-1">
-                            <span class="text-xs text-slate-400">→</span>
-                            <input type="date" x-model="batchScopeTo" @change="refreshBatchEstimate()"
-                                   :max="new Date().toISOString().slice(0,10)"
-                                   class="text-xs border border-slate-300 rounded px-2 py-1">
-                        </div>
-                        <div class="flex items-center gap-2 mt-2">
-                            <input type="radio" id="scope-all" value="all" x-model="batchScope" @change="refreshBatchEstimate()" class="w-4 h-4 accent-brand-600">
-                            <label for="scope-all" class="text-sm text-slate-700 cursor-pointer">Todo el histórico (todas las carpetas de cada storage)</label>
+                        {{-- Inputs de fecha con icono, visibles solo en modo rango --}}
+                        <div x-show="batchScope === 'range'" x-transition class="mt-3 p-3 bg-slate-50 border border-slate-200 rounded-xl">
+                            <div class="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
+                                <label class="relative block">
+                                    <i class="fas fa-calendar-day absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-xs pointer-events-none"></i>
+                                    <input type="date" x-model="batchScopeFrom" @change="refreshBatchEstimate()"
+                                           :max="new Date().toISOString().slice(0,10)"
+                                           class="w-full text-sm border border-slate-300 rounded-lg pl-8 pr-2 py-2 bg-white focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none transition-shadow">
+                                </label>
+                                <div class="flex flex-col items-center text-slate-300 leading-none">
+                                    <i class="fas fa-arrow-right text-[10px]"></i>
+                                </div>
+                                <label class="relative block">
+                                    <i class="fas fa-calendar-day absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-xs pointer-events-none"></i>
+                                    <input type="date" x-model="batchScopeTo" @change="refreshBatchEstimate()"
+                                           :max="new Date().toISOString().slice(0,10)"
+                                           class="w-full text-sm border border-slate-300 rounded-lg pl-8 pr-2 py-2 bg-white focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none transition-shadow">
+                                </label>
+                            </div>
+                            <p class="text-[10px] text-slate-400 mt-2"><i class="fas fa-info-circle mr-1"></i>Se escanean las carpetas diarias dentro del rango (formato de carpetas DDMMYYYY).</p>
                         </div>
                     </div>
 
@@ -1648,9 +1673,11 @@
                         </div>
                         <div class="flex gap-2 mt-2">
                             <button @click="batchSize = 50" class="px-2 py-1 text-xs bg-slate-100 hover:bg-slate-200 rounded">50</button>
-                            <button @click="batchSize = 100" class="px-2 py-1 text-xs bg-brand-100 text-brand-700 hover:bg-brand-200 rounded font-medium">100</button>
-                            <button @click="batchSize = 200" class="px-2 py-1 text-xs bg-slate-100 hover:bg-slate-200 rounded">200</button>
-                            <button @click="batchSize = uiBatchMax" class="px-2 py-1 text-xs bg-slate-100 hover:bg-slate-200 rounded" x-text="uiBatchMax"></button>
+                            <button @click="batchSize = 100" class="px-2 py-1 text-xs bg-slate-100 hover:bg-slate-200 rounded">100</button>
+                            <button @click="batchSize = 150" x-show="uiBatchMax > 150" class="px-2 py-1 text-xs bg-slate-100 hover:bg-slate-200 rounded">150</button>
+                            {{-- El preset dinámico solo se muestra cuando NO duplica los fijos --}}
+                            <button @click="batchSize = uiBatchMax" x-show="uiBatchMax !== 50 && uiBatchMax !== 100 && uiBatchMax !== 150"
+                                    class="px-2 py-1 text-xs bg-brand-100 text-brand-700 hover:bg-brand-200 rounded font-medium" x-text="uiBatchMax + ' (máx)'"></button>
                         </div>
                         <p class="text-xs text-slate-400 mt-2"><i class="fas fa-info-circle mr-1"></i>Cupo por storage. Con 100, cada storage envía hasta 100 archivos por ciclo. Los más recientes primero.</p>
                     </div>
