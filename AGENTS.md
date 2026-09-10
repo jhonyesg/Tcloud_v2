@@ -117,6 +117,19 @@ redis-cli -a 'Clouding2026!Redis' -n 2 --scan --pattern 'tcloud_tcloud_cache_*' 
   `tests/harness_*.php` que ejecuta contra PostgreSQL y Redis reales.
 - **Migrations**: prefijo de fecha, ej. `2026_05_13_100002_add_session_fields_to_users_table.php`.
 - **OpenSpec**: specs en `openspec/specs/`, cambios activos en `openspec/changes/`.
+- **Acceso a `$validated`/`$request` para claves opcionales**: SIEMPRE
+  extraer a variable local con `?? null` antes de usarla, o usar `data_get(...)`.
+  PHP 8.4 lanza `Undefined array key` como `ErrorException` para claves
+  faltantes, lo que produce un 500 opaco `{"message":"Server Error"}` para
+  el operador. Referencia: regresión del 2026-09-09 documentada en
+  `openspec/changes/archive/2026-09-09-fix-avisos-scanlaunch-from-undefined-key/`
+  (línea 416 de `AvisosInteligentesController`). Patrón seguro:
+  ```php
+  $preset = $validated['preset'] ?? null;
+  $from   = $validated['from']   ?? null;
+  $to     = $validated['to']     ?? null;
+  'window_label' => $preset ?: (($from || $to) ? 'custom' : 'global'),
+  ```
 - **Auth**: SIEMPRE `session('user_id')`, NUNCA `auth()->user()`.
 - **Servidor**: NO Vercel ni Supabase. nginx + PHP-FPM sobre cloud.mediaserver.com.co.
 - **Facades**: todo facade (`DB`, `Cache`, `Log`, `Storage`, `Mail`, etc.)
@@ -128,6 +141,110 @@ redis-cli -a 'Clouding2026!Redis' -n 2 --scan --pattern 'tcloud_tcloud_cache_*' 
   `openspec/changes/fix-storage-sync-missing-db-facade-import/` (caso
   `StorageSyncService::isFileLinked()` con `DB`). Harness de regresión:
   `tests/harness_storage_sync_is_file_linked.php`.
+**Watermarks del escaneo de avisos** (change `avisos-keyword-storage-watermark` +
+  `avisos-scan-coverage-reconciler-and-partition` +
+  `avisos-scan-coverage-observability-and-ux`):
+  `(keyword_id, storage_provider_id)` en la tabla `keyword_scan_watermarks`
+  con PK compuesta y avance monotónico vía UPSERT `GREATEST`. El cursor global
+  `SystemSetting('avisos_scan_cursor')` está RETIRADO.
+
+  Cualquier mutación sobre `keyword_scan_watermarks` DEBE pasar por el servicio
+  `App\Services\Ia\WatermarkReconciler` (`ensureForUser`, `ensureForKeyword`,
+  `ensureForStorage`, `rewindPair`). NUNCA SQL inline en modelos.
+
+  Toda mutación queda registrada en `watermark_audit_log` (append-only):
+  `actor_user_id` (NULL para hooks automáticos), `action` (enum:
+  `rewind_pair`, `full_scan`, `hook_auto`, `reconcile`), `keyword_id`,
+  `storage_id`, `before_value`, `after_value`, `metadata` (JSONB).
+
+  Endpoints sensibles (`POST /scan/rewind`, `POST /scan/full`) usan el
+  middleware `audit.admin.action` para inyectar el actor y registrar la
+  traza automáticamente.
+
+  **Cache epoch (invalidación inmediata)**: `system_settings.coverage_cache_epoch`
+  se incrementa vía `CacheEpoch::bump()` en cada mutación del Reconciler. La
+  cache key de `coveragePaginated` lo incluye, así el rewind se ve en la UI
+  sin esperar al TTL.
+
+  **Retención de audit log**: `avisos:archive-audit-log --days=90 --dry-run`
+  cuenta; sin `--dry-run` mueve filas de `watermark_audit_log` a
+  `watermark_audit_log_archive` en chunks de 1000 (sin pérdida de auditoría).
+
+  **Full scan en background**: `POST /scan/full-bg` retorna runId + 202.
+  El worker `avisos:full-scan-run` actualiza la cache key cada iteración.
+  La UI hace polling cada 2s al endpoint de status.
+
+  Runbook operativo:
+  - `php artisan avisos:reconcile-watermarks [--dry-run] [--user=ID]`:
+    detecta drift en cobertura y repara pares faltantes.
+  - `php artisan avisos:reset-watermark-counters`: reinicia los contadores.
+  - `php artisan avisos:ensure-month-partition --month=YYYY-MM`:
+    scaffolding para particionamiento de `segment_keyword_hits` (NO activa
+    la partición hoy; ver `Change 'partition-segment-keyword-hits'` cuando
+    se supere el trigger de 10M filas).
+  - `php artisan avisos:archive-audit-log --days=90`: archiva log viejo.
+  - `php artisan avisos:rescan-keyword {keyword|id} [--dry-run] [--user=ID]`:
+    re-indexa una keyword con la regla de matching vigente (borra sus hits
+    en chunks, rebobina watermarks vía `WatermarkReconciler::rewindPair`
+    con auditoría, re-escanea por pares). Usado por el change
+    `avisos-keyword-word-boundary-matching` para limpiar los falsos
+    positivos de "petro" (petróleo/Petromil/...). Siempre correr `--dry-run`
+    primero.
+
+## Regla de matching de menciones: frontera de palabra
+
+El matching de keywords (motor universal `KeywordMatcher`, backfill
+`MentionBackfillService`, fallback `LegacyKeywordMatcher` y el resaltado JS
+del visor) exige FRONTERA DE PALABRA: una keyword solo matchea cuando el
+carácter adyacente a ambos lados del match no es letra ni dígito Unicode.
+La verificación es por CARÁCTER UTF-8 completo (no por byte) — mismo enfoque
+que `CorrectionService::isWordCharAt`. Helper central:
+`App\Services\Ia\KeywordBoundaryMatcher` (`countOccurrences`,
+`firstPosition`, `matchesWord`). El `str_contains`/LIKE por subcadena se
+conserva SOLO como pre-filtro rápido (es superset de la frontera).
+Regresión: `tests/Unit/KeywordBoundaryMatcherTest.php`.
+
+Guardrail anti-abuso en creación de keywords (cliente y admin): la forma
+normalizada debe medir >= 3 caracteres (`MisAvisosController::passesMinLength`).
+No invalida keywords cortas preexistentes.
+
+  Referencia: `app/app/Services/Ia/WatermarkReconciler.php`,
+  `app/app/Services/Ia/AuditLogArchiver.php`,
+  `app/app/Services/Ia/CacheEpoch.php`,
+  `app/app/Services/Ia/AvisosScanService.php` (métodos `selectCandidates`,
+  `bumpWatermarks`, `runFullScan`, `coveragePaginated`).
+
+## Caveats del módulo de cobertura de watermarks
+
+Tres situaciones conocidas con comportamiento aceptable-no-óptimo, documentadas
+para futuros mantenedores:
+
+### (a) Mutaciones directas en BD bypassan la cache
+
+Si un admin o script hace `INSERT` / `UPDATE` / `DELETE` directo en `keyword_scan_watermarks`
+sin pasar por `WatermarkReconciler`, el contador `CacheEpoch` NO se incrementa y la UI
+sigue mostrando el estado cacheado hasta que el TTL de 60s expire o se ejecute
+`avisos:reset-cache-coverage`.
+
+**Workaround**: ejecutar `php artisan avisos:reset-cache-coverage` después de mutaciones directas.
+
+### (b) Race condition teórica aceptada entre CacheEpoch y lecturas concurrentes
+
+`CacheEpoch::bump()` ejecuta `UPDATE system_settings SET value = value + 1` que es atómico
+en PG, pero DOS mutaciones concurrentes generan DOS bumps distintos. Una lectura
+concurrentada puede ver el primer bump sin el segundo, lo que daría un cache miss
+"temprano" pero no incorrecto (siempre refleja un epoch ya committed).
+
+**Severidad**: baja. El peor caso es una lectura extra a BD, nunca datos stale.
+
+### (c) `AvisosScanService::coverage()` deprecado pero existente
+
+El método legacy (no paginado) sigue existiendo por compatibilidad. Emite
+`E_USER_DEPRECATED` solo en `APP_DEBUG=true`. En producción es silencioso.
+Un caller externo que use el método seguirá funcionando idénticamente al
+comportamiento pre-deprecation.
+
+**Workaround**: si necesitas paginación, usa `coveragePaginated()` directamente.
 
 ## Rollback del change `optimize-transcriptor-dispatch-throughput`
 
@@ -211,3 +328,109 @@ cd /www/wwwroot/cloud.mediaserver.com.co/Tcloud_v2/app
 El cron `TranscriptionTickCommand` también corre el mismo comando
 in-process (no vía `execBackground`), por lo que el escaneo
 automático sigue funcionando aunque el botón manual esté roto.
+
+## Cómo agregar un nuevo job al indicador global (`bg-job-indicator-widget`)
+
+El widget flotante global (`app/resources/views/components/bg-job-indicator.blade.php`,
+incluido desde el layout) muestra cards con los jobs en background activos en
+cualquier módulo. Cada módulo expone su job a través de un "scanner".
+
+Para agregar un módulo nuevo:
+
+1. Crear `app/app/Services/BgJobs/XxxJobScanner.php` con un método estático
+   `scan(): array` que devuelva `[]` si no hay jobs activos, o un array de
+   jobs normalizados al shape:
+   ```php
+   [
+       'kind' => 'kebab-case-id',
+       'runId' => '<identificador único de la corrida>',
+       'module' => '<nombre legible>',
+       'label' => '<etiqueta humana>',
+       'startedAt' => '<ISO8601>',
+       'progress' => [ ... ],   // campos arbitrarios; el widget los renderiza
+       'url' => '/path?focus=bg-{kind}-{runId}',
+   ]
+   ```
+2. Si el job se lanza en background (vía `RunsBackgroundCommands::execBackground`
+   o similar), asegurarse de que el módulo registre su runId en una cache key
+   que el scanner pueda consultar (ej: `transcription_batch:active_runs` para
+   el transcriptor). Al terminar el job, remover el runId de esa lista.
+3. Registrar el scanner en `app/app/Services/BgJobRegistry.php`:
+   ```php
+   private array $scanners = [
+       'kebab-case-id' => [App\Services\BgJobs\XxxJobScanner::class, 'scan'],
+   ];
+   ```
+4. Si el módulo tiene una página con modal que se beneficia del deep-link
+   `?focus=bg-{kind}-{runId}` desde el widget, leer el parámetro en su `init()`
+   de Alpine y abrir el modal manualmente. Sin ese focus, NO auto-abrir nada
+   (dejar que el operador decida cuándo).
+
+Convención de deep-link: `?focus=bg-{kind}-{runId}`. El módulo debe
+parsearlo y abrir su modal solo si coincide con un runId activo.
+
+## Cambios de UX documentados
+
+- **Módulo de Avisos Inteligentes**: recargar la página con un escaneo activo
+  ya NO fuerza el cambio a la pestaña "Escaneo" ni abre el modal de progreso
+  automáticamente. El operador ve el widget global en la esquina inferior
+  derecha y decide cuándo abrir el detalle haciendo click en "Ver detalles".
+  Esto era un bug reportado el 2026-09-09.
+- **Módulo del API Transcriptor**: mismo principio. El modal del batch solo
+  se abre con click explícito en "Escanear storages" o vía deep-link
+  `?focus=bg-transcriptor-batch-{runId}` desde el widget.
+
+## Modo mensual del escaneo de avisos (fix-avisos-scan-by-months-no-saturation)
+
+Cuando el operador elige **"Histórico completo"** + **"Forzar re-escaneo"**
+en `/ia/avisos-inteligentes`, el worker itera por meses en vez de hacer un
+scan monolítico. La unidad de trabajo acotada evita saturar las conexiones
+de PostgreSQL (cada mes es una query barata por índice).
+
+**Reglas operativas:**
+- Se activa solo con la combinación `noWindow=true && force=true && !from && !to && !preset`.
+- El planning usa `min/max(finished_at) WHERE state='done'` (query barata).
+- Cada mes usa rango semi-abierto `[inicio_del_mes, inicio_del_mes_siguiente)`.
+- Entre meses el worker hace `DB::disconnect()` + `sleep(1)` para liberar
+  conexiones de BD y darle espacio a PHP-FPM.
+- El plan persiste en `avisos_scan_bg:{runId}.month_plan` con el mismo
+  TTL (2h). Si el worker crashea, retoma desde el último mes `pending`.
+- Los `runId` que llegan con `scan_cutoff_at` viejo siguen funcionando
+  porque el plan es un snapshot.
+
+**Endpoints:**
+- `POST /ia/avisos-inteligentes/scan/run-bg` — devuelve `{runId, mode: 'monthly'|'classic', month_count, first_month, last_month}` cuando es mensual.
+- `POST /ia/avisos-inteligentes/scan/run-bg/preview` — solo planning, no muta nada. Usado para mostrar el `# de meses` al operador antes del launch.
+
+**Cache shape (modo mensual):**
+```php
+'avisos_scan_bg:{runId}' => [
+    'mode' => 'monthly',
+    'month_plan' => [['2024-03', 'done'], ['2024-04', 'running'], ...],
+    'months_total' => 30,
+    'months_done' => 1,
+    'current_month' => '2024-04',
+    'scan_cutoff_at' => '2026-09-09T14:25:42-05:00',
+    // ... campos legacy (scanned, hits_new, etc.) se mantienen
+]
+```
+
+**Migración opcional:**
+- `transcriptions_state_finished_at_idx` — `CREATE INDEX CONCURRENTLY`
+  sobre `(state, finished_at) WHERE state='done'`. Acelera el query por mes.
+  Si no se aplica, el plan mensual sigue acotando el trabajo aunque las
+  queries tarden más.
+
+**Deduplicación del bulk INSERT de watermarks (fix-avisos-watermarks-cardinality-violation):**
+cuando el scan procesa varias transcripciones del mismo storage que
+comparten keywords activas, el bulk INSERT a `keyword_scan_watermarks`
+podía disparar `SQLSTATE[21000]: Cardinality violation` (filas
+duplicadas dentro del mismo batch). El service expone
+`AvisosScanService::dedupeBumpSet()` que consolida por
+`(keyword_id, storage_provider_id)` antes del INSERT: MAX de
+`scanned_until`, SUM de `candidates_total`, SUM de `hits_total`. Helper
+estático testeable en `tests/Unit/AvisosScanServiceBumpDedupeTest.php`.
+Se invoca automáticamente al inicio de `bumpWatermarks()`.
+
+Reproducido y resuelto el 2026-09-10: el modo mensual procesó 3/3 meses
+con `failed: 0` (150 transcripciones escaneadas, sin el error).

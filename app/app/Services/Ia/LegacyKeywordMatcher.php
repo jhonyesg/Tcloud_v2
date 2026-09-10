@@ -71,7 +71,10 @@ class LegacyKeywordMatcher
             foreach ($segments as $segment) {
                 $segmentText = Keyword::asciiLower((string) $segment->text);
                 foreach ($keywords as $keywordNorm) {
-                    if ($keywordNorm !== '' && str_contains($segmentText, $keywordNorm)) {
+                    // avisos-keyword-word-boundary: también el fallback legacy
+                    // matchea por palabra completa (si el operador hace
+                    // rollback, el bug del substring no resucita).
+                    if ($keywordNorm !== '' && KeywordBoundaryMatcher::matchesWord($segmentText, $keywordNorm)) {
                         $snippet = $this->buildSnippet($segment->text, $keywordNorm);
                         $minuteLabel = $this->secondsToHms((float) $segment->start_seconds);
 
@@ -111,10 +114,11 @@ class LegacyKeywordMatcher
             return $text;
         }
 
-        $pos = mb_stripos($text, $keyword);
-        if ($pos === false) {
+        $posNorm = KeywordBoundaryMatcher::firstPosition(Keyword::asciiLower($text), Keyword::asciiLower($keyword));
+        if ($posNorm === null) {
             return mb_substr($text, 0, 200);
         }
+        $pos = (int) $posNorm;
 
         $start = max(0, $pos - 80);
         $snippet = mb_substr($text, $start, 200);

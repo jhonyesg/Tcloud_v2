@@ -199,12 +199,19 @@ class MentionBackfillService
                 foreach ($rows as $row) {
                     $transcriptionsScanned[$row->transcription_id] = true;
                     $text = \App\Models\Keyword::asciiLower((string) $row->text);
-                    if ($text === '' || !str_contains($text, $keywordNorm)) {
+                    if ($text === '') {
+                        continue;
+                    }
+
+                    // avisos-keyword-word-boundary: aceptación final con
+                    // frontera de palabra (el LIKE SQL previo es solo
+                    // pre-filtro, subcadena es superset de la frontera).
+                    $occurrences = KeywordBoundaryMatcher::countOccurrences($text, $keywordNorm);
+                    if ($occurrences === 0) {
                         continue;
                     }
 
                     $snippet = $this->buildSnippet((string) $row->text, $keyword->text);
-                    $occurrences = max(1, substr_count($text, $keywordNorm));
 
                     $chunk[] = [
                         'transcription_id' => $row->transcription_id,
@@ -265,14 +272,21 @@ class MentionBackfillService
 
     private function buildSnippet(string $text, string $keyword): string
     {
-        // Posición case-insensitive
-        $pos = mb_stripos($text, $keyword);
+        // Posición de la primera aparición CON frontera de palabra
+        // (avisos-keyword-word-boundary). La posición del helper es en bytes
+        // sobre el texto normalizado ASCII; coincide 1:1 con los bytes del
+        // texto original.
+        $posNorm = KeywordBoundaryMatcher::firstPosition(
+            \App\Models\Keyword::asciiLower($text),
+            \App\Models\Keyword::asciiLower($keyword),
+        );
         $length = mb_strlen($text);
         $kwLength = mb_strlen($keyword);
 
-        if ($pos === false) {
+        if ($posNorm === null) {
             return mb_substr($text, 0, min(120, $length));
         }
+        $pos = (int) $posNorm;
 
         $from = max(0, $pos - 60);
         $to = min($length, $pos + $kwLength + 60);

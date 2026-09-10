@@ -80,10 +80,11 @@ class MisAvisosController extends Controller
     public function storeKeyword(Request $request)
     {
         $userId = (int) Session::get('user_id');
-        $request->validate([
+        $validated = $request->validate([
             'text' => 'required|string|max:200',
             'category_id' => 'nullable|integer|min:1',
         ]);
+        $text = $validated['text'] ?? null;
 
         $config = \App\Models\UserAlertsInteligente::where('user_id', $userId)->firstOrFail();
         $used = DB::table('user_keyword')->where('user_id', $userId)->count();
@@ -94,10 +95,20 @@ class MisAvisosController extends Controller
             ], 422);
         }
 
-        $normalized = Keyword::normalize($request->text);
+        // avisos-keyword-word-boundary: guardrail anti-abuso. Una keyword
+        // demasiado corta ("el", "a") matchearía casi todo el corpus y
+        // inflaría el coste computacional del scan compartido. El mínimo es
+        // sobre la forma NORMALIZADA (sin espacios ni tildes).
+        $normalized = Keyword::normalize((string) $text);
+        if (mb_strlen($normalized) < 3) {
+            return response()->json([
+                'error' => 'La keyword debe tener al menos 3 caracteres (sin contar espacios)',
+            ], 422);
+        }
+
         $keyword = Keyword::firstOrCreate(
             ['normalized' => $normalized],
-            ['text' => trim($request->text)]
+            ['text' => trim((string) $text)]
         );
 
         $categoryId = $this->resolveCategoryForCurrentUser(
@@ -149,6 +160,16 @@ class MisAvisosController extends Controller
             ->delete();
 
         return response()->json(['message' => 'Eliminada']);
+    }
+
+    /**
+     * avisos-keyword-word-boundary: guardrail centralizado de creación de
+     * keywords. Reutilizable por ambos controllers (cliente y admin).
+     * Retorna true si la forma normalizada tiene al menos 3 caracteres.
+     */
+    public static function passesMinLength(string $text): bool
+    {
+        return mb_strlen(Keyword::normalize($text)) >= 3;
     }
 
     /**

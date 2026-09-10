@@ -1524,25 +1524,34 @@ function misAvisosPage() {
         // Resaltado por aparición: cada ocurrencia de la keyword (y de la
         // búsqueda) es un <mark> con su offset en el texto plano; el click
         // interpola el tiempo dentro del segmento (mention-occurrence-detail).
+        // avisos-keyword-word-boundary: la keyword del hit se resalta SOLO
+        // con frontera de palabra (coincide con occurrences del motor); la
+        // búsqueda manual libre conserva su comportamiento por subcadena.
         highlightKeyword(seg) {
             const plain = String(seg?.text || '');
             const tm = this.transcriptModal;
             const esc = (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+            const wordChar = (s, i) => {
+                if (i < 0 || i >= s.length) return false;
+                return /[a-z0-9áéíóúüñ]/i.test(s[i]);
+            };
             const matches = [];
-            const collect = (needle, cls) => {
+            const collect = (needle, cls, wholeWord) => {
                 if (!needle || !needle.trim()) return;
                 const hay = this.norm(plain);
                 const nd = this.norm(needle);
                 if (!nd) return;
                 let i = hay.indexOf(nd), guard = 0;
                 while (i !== -1 && guard < 500) {
-                    matches.push({ start: i, end: i + nd.length, cls });
+                    const ok = !wholeWord
+                        || (!wordChar(hay, i - 1) && !wordChar(hay, i + nd.length));
+                    if (ok) matches.push({ start: i, end: i + nd.length, cls });
                     i = hay.indexOf(nd, i + nd.length);
                     guard++;
                 }
             };
-            collect(tm.hitKeyword, 'kw');
-            collect(tm.search, 'search');
+            collect(tm.hitKeyword, 'kw', true);
+            collect(tm.search, 'search', false);
             matches.sort((a, b) => a.start - b.start || b.end - a.end);
             const merged = [];
             for (const m of matches) {

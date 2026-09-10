@@ -30,8 +30,13 @@ class KeywordMatcher
     /**
      * Ejecuta el scan para una Transcription. Devuelve el número de hits
      * nuevos persistidos.
+     *
+     * $scopedKeywordIds (opcional): si viene, acota el conjunto de keywords
+     * candidatas a esa lista (modo "estos son los pares pendientes, escanéalos
+     * solo a ellos"). Usado por AvisosScanService cuando viene del barrido por
+     * pares (transc, keyword).
      */
-    public function run(Transcription $transcription): int
+    public function run(Transcription $transcription, ?array $scopedKeywordIds = null): int
     {
         // change admin-matches-and-backfill (Fase 2): idempotencia PER-(transcription,
         // keyword), no per-transcription. Antes, si la transcripción ya tenía hits
@@ -64,6 +69,9 @@ class KeywordMatcher
         // transcription_access a ESTE storage, acotado por el alcance
         // keyword→store (user_keyword_storage: sin filas = todos).
         $keywords = $this->candidateKeywords((int) $storageId);
+        if ($scopedKeywordIds !== null) {
+            $keywords = $keywords->whereIn('id', array_map('intval', $scopedKeywordIds));
+        }
         if ($keywords->isEmpty()) {
             return 0;
         }
@@ -88,15 +96,19 @@ class KeywordMatcher
             }
 
             foreach ($keywordIdByNorm as $keywordNorm => $keywordId) {
-                if ($keywordNorm !== '' && str_contains($segmentText, $keywordNorm)) {
+                // avisos-keyword-word-boundary: matching por palabra completa.
+                // El str_contains solo es pre-filtro rápido; la aceptación
+                // exige frontera de palabra (descarta "petro" ∈ "petróleo").
+                $occurrences = KeywordBoundaryMatcher::countOccurrences($segmentText, $keywordNorm);
+                if ($keywordNorm !== '' && $occurrences > 0) {
                     $hits[] = [
                         'transcription_id' => $transcription->id,
                         'segment_id' => $segment->id,
                         'keyword_id' => $keywordId,
                         'snippet' => $this->buildSnippet((string) $segment->text, $keywordNorm),
-                        // Cuántas veces la keyword aparece en el segmento
-                        // (misma normalización del motor). mention-occurrence-detail.
-                        'occurrences' => max(1, substr_count($segmentText, $keywordNorm)),
+                        // Apariciones CON frontera de palabra del segmento
+                        // (mention-occurrence-detail + avisos-keyword-word-boundary).
+                        'occurrences' => $occurrences,
                         'matched_at' => $now,
                     ];
                 }
@@ -212,7 +224,8 @@ class KeywordMatcher
     }
 
     /**
-     * Construye un snippet de ~200 chars alrededor del match.
+     * Construye un snippet de ~200 chars alrededor del match (primera
+     * aparición CON frontera de palabra; avisos-keyword-word-boundary).
      */
     private function buildSnippet(string $text, string $keyword): string
     {
@@ -222,10 +235,13 @@ class KeywordMatcher
             return $text;
         }
 
-        $pos = mb_stripos($text, $keyword);
-        if ($pos === false) {
+        $posNorm = KeywordBoundaryMatcher::firstPosition(Keyword::asciiLower($text), Keyword::asciiLower($keyword));
+        if ($posNorm === null) {
             return mb_substr($text, 0, 200);
         }
+        // La posición es en bytes sobre el texto normalizado (ASCII), lo que
+        // coincide 1:1 con la posición en bytes del texto original.
+        $pos = (int) $posNorm;
 
         $start = max(0, $pos - 80);
         $snippet = mb_substr($text, $start, 200);
