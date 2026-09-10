@@ -38,15 +38,24 @@ Cuando `DiskScannerService::collectFailedCandidates()` (modo `--include-failed`)
 - **THEN** el sistema no reporta candidatos para ese storage y continúa con el siguiente
 
 ### Requirement: Scanner supports backlog recovery
-El sistema SHALL soportar un parámetro `--days=N` para escanear también las carpetas de los N días anteriores al actual, y `--all` para escanear todas las carpetas existentes bajo `base_path`.
+
+El sistema SHALL soportar un parámetro `--days=N` para escanear también las carpetas de los N días anteriores al actual, `--from=DDMMYYYY --to=DDMMYYYY` para escanear las carpetas `dmY` explícitas de un rango, y `--all` para escanear todas las carpetas existentes bajo `base_path`. El alcance SHALL controlar únicamente el descubrimiento: la fase de envío SHALL seguir respetando el regulador de cola (`scan_max_dispatch_per_cycle`) sin importar el alcance.
 
 #### Scenario: Recover yesterday recordings
 - **WHEN** se ejecuta el scanner con `--days=1`
 - **THEN** el sistema escanea la carpeta de hoy y la de ayer, procesando los `.mp4` sin transcripción de ambas
 
+#### Scenario: Recover date range explicitly
+- **WHEN** se ejecuta el scanner con `--from=01092026 --to=05092026`
+- **THEN** el sistema escanea únicamente las carpetas `01092026`, `02092026`, `03092026`, `04092026`, `05092026` (hoy no incluida salvo que esté en el rango)
+
 #### Scenario: Recover all historical backlog
 - **WHEN** se ejecuta el scanner con `--all`
 - **THEN** el sistema escanea recursivamente todas las carpetas bajo `base_path` que contengan `.mp4` sin transcripción, respetando `scan_batch` por ciclo
+
+#### Scenario: El alcance no bypassa el regulador
+- **WHEN** el escaneo con `--all` descubre 5,000 archivos nuevos en una corrida
+- **THEN** el envío a cola de esa corrida sigue limitado por `scan_max_dispatch_per_cycle` y los `pending` restantes quedan para el regulador del cron
 
 ### Requirement: Scanner submits pending transcriptions
 El sistema SHALL, para cada `Transcription` en `state=pending` sin `job_id`, ejecutar la conversión a Opus (`ffmpeg`) y el envío al transcriptor externo vía `POST /v1/transcribe`.
@@ -271,3 +280,18 @@ El frontend del modal "Escanear storages" SHALL garantizar que el polling de `/b
 - **THEN** el frontend NO inventa un `run_id` sintético para pollear contra cache inexistente
 - **AND** muestra un mensaje accionable de "sin respuesta del servidor" en el panel de resultados del modal
 - **AND** el cache no queda "huérfano" con un `run_id` que no corresponde a un proceso real
+
+### Requirement: Recarga con batch activo no fuerza la apertura del modal del escaneo de storages
+
+Cuando el operador recarga `/ia/api-transcriptor` mientras hay un batch del transcriptor activo (cache key `transcription_batch:{runId}` con `status: starting|running|queued`), el módulo SHALL NO auto-abrir el modal de "Escanear storages". El polling del batch activo SHALL vivir en el indicador global del layout. El modal SHALL abrirse solo cuando el operador (a) hace click explícito en "Escanear storages" en el header del módulo, configurando un batch nuevo, o (b) navega a la URL `/ia/api-transcriptor?focus=bg-transcriptor-batch-{runId}` desde el indicador global.
+
+#### Scenario: Recarga con batch activo no fuerza el modal
+- **WHEN** el operador recarga `/ia/api-transcriptor` mientras hay un batch activo
+- **THEN** la página carga en el estado normal con el modal cerrado
+- **AND** el indicador global del layout muestra el batch en curso
+- **AND** el operador puede seguir interactuando con la página (cambiar de pestaña Storages/Trabajos/Configuración) sin nada le bloquee
+
+#### Scenario: Click en el indicador global del batch abre el modal con el progreso
+- **WHEN** el operador hace click en "Ver detalles" de una card del widget que corresponde a un batch del transcriptor
+- **THEN** la URL resultante es `/ia/api-transcriptor?focus=bg-transcriptor-batch-{runId}`
+- **AND** el modal de "Escanear storages" se abre mostrando el progreso del batch activo
