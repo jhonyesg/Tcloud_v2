@@ -1,9 +1,6 @@
-# mention-occurrence-detail Specification
+# Delta — mention-occurrence-detail
 
-## Purpose
-TBD - created by archiving change 2026-09-07-mention-occurrence-counting. Update Purpose after archive.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Cada hit registra cuántas veces la keyword aparece en su segmento
 
@@ -32,23 +29,3 @@ El modal de transcripción SHALL resaltar cada aparición de la keyword dentro d
 #### Scenario: Conteo y resaltados coinciden
 - **WHEN** el modal abre con el ancla de un hit con `occurrences = 1` sobre un segmento con "petro, petrolero y Petromil"
 - **THEN** el segmento ancla muestra exactamente 1 resaltado navegable de la keyword (el de frontera válida) y "petróleo"/"Petromil" quedan sin resaltar
-
-### Requirement: Atajo de filtro por keyword desde el chip de la mencion
-
-El chip "mencion: <keyword>" del header del modal SHALL ser un boton que activa el filtro de la transcripcion por esa keyword con un clic (mismo filtro que la busqueda manual, con el conteo visible), y SHALL desactivarlo con un segundo clic. La busqueda manual dentro del modal sigue funcionando de forma independiente.
-
-#### Scenario: Un clic filtra por la keyword de la mencion
-- **WHEN** el cliente pulsa el chip "mencion: alvaro uribe"
-- **THEN** la lista de segmentos queda filtrada a los que contienen la keyword, con el chip resaltado como activo y el conteo visible
-
-#### Scenario: Segundo clic quita el filtro
-- **WHEN** el filtro por keyword esta activo y el cliente vuelve a pulsar el chip
-- **THEN** el filtro se retira y la lista vuelve a mostrar la ventana completa
-
-### Requirement: La tabla muestra el total de apariciones de la keyword en toda la grabación
-
-Las filas de feed e historico SHALL incluir el total de apariciones de la keyword en TODA la grabacion (suma de ocurrencias de todos sus hits para esa keyword), calculado en el servidor en una consulta agrupada por pagina. La tabla SHALL presentarlo como columna propia ("Apariciones"), y cuando un punto concreto tenga varias apariciones en su segmento SHALL indicarlo como detalle secundario ("xN aqui").
-
-#### Scenario: Varias apariciones distribuidas en la grabacion
-- **WHEN** una grabacion tiene la keyword 3 veces en 2 segmentos distintos
-- **THEN** cada fila de esa grabacion muestra la columna "Apariciones" con x3, y la fila cuyo segmento contiene 2 de ellas anade "x2 aqui"
