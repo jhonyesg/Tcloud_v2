@@ -148,16 +148,22 @@ class ScanAndSubmitCommand extends Command
             return Command::SUCCESS;
         }
 
+        $storageIndex = 0;
         foreach ($storages as $storage) {
+            $storageIndex++;
             try {
                 $stats = $scanner->scanStorage($storage, $days, $all, $batchOverride, $generateAlerts, $scope);
                 $totalFilesCreated += $stats['files_created'];
                 $totalPendingCreated += $stats['transcriptions_created'];
                 $this->info("Storage {$storage->name}: scanned={$stats['scanned']} candidates={$stats['candidates']} files_created={$stats['files_created']} tx_created={$stats['transcriptions_created']}");
 
-                // transcriptor-scan-scope-selector: progreso por storage en el
-                // cache del runId (el modal lo renderiza por fila).
-                if ($cacheKey && $scope !== null) {
+                // bg-job-indicator-widget: progreso por storage para que el
+                // widget flotante (esquina inferior derecha) muestre avance
+                // real en vez del eterno "0/0 archivos". Antes solo se
+                // acumulaban storages en el cache; nunca se escribían
+                // processed/total_to_process durante el loop, así que el
+                // scanner los dejaba en 0 hasta el final.
+                if ($cacheKey) {
                     $cache = \Illuminate\Support\Facades\Cache::get($cacheKey, []);
                     $storagesList = $cache['storages'] ?? [];
                     $storagesList[] = [
@@ -169,6 +175,8 @@ class ScanAndSubmitCommand extends Command
                     ];
                     $cache['storages'] = $storagesList;
                     $cache['scan_scope'] = $scope['mode'] ?? 'today';
+                    $cache['processed'] = $storageIndex;
+                    $cache['total_to_process'] = $storages->count();
                     $cache['updated_at'] = now()->toIso8601String();
                     \Illuminate\Support\Facades\Cache::put($cacheKey, $cache, now()->addHours(2));
                 }
@@ -182,6 +190,16 @@ class ScanAndSubmitCommand extends Command
                     'storage_name' => $storage->name,
                     'message' => $e->getMessage(),
                 ];
+                // bg-job-indicator-widget: actualizar contador igual aunque
+                // el storage haya fallado (sigue contando como "procesado"
+                // para la barra de progreso; los errores van aparte).
+                if ($cacheKey) {
+                    $cache = \Illuminate\Support\Facades\Cache::get($cacheKey, []);
+                    $cache['processed'] = $storageIndex;
+                    $cache['total_to_process'] = $storages->count();
+                    $cache['updated_at'] = now()->toIso8601String();
+                    \Illuminate\Support\Facades\Cache::put($cacheKey, $cache, now()->addHours(2));
+                }
             }
         }
 
@@ -245,10 +263,12 @@ class ScanAndSubmitCommand extends Command
                 \Illuminate\Support\Facades\Cache::put($cacheKey, [
                     'status' => $status,
                     'batch' => 0,
-                    'processed' => 0,
+                    'processed' => $storages->count(),
                     'errors' => $failedStorages,
-                    'total_to_process' => 0,
+                    'total_to_process' => $storages->count(),
                     'total_candidates' => $totalPendingCreated + $failedStats['reset_to_pending'],
+                    'pending_created' => $totalPendingCreated,
+                    'dispatched' => 0,
                     'per_storage_errors' => $perStorageErrors,
                     'failed_recovered' => $failedStats['reset_to_pending'],
                     'failed_promoted_to_dead' => $failedStats['promoted_to_dead'],
@@ -318,35 +338,53 @@ class ScanAndSubmitCommand extends Command
                 }
             }
 
+            $finishedAtIso = now()->toIso8601String();
+
+            // Preservar el started_at que el comando escribió al arrancar
+            // (línea 109); si por algun motivo no esta, usar finished_at
+            // como fallback (el widget solo muestra "hace X" relativo).
+            $existingCache = \Illuminate\Support\Facades\Cache::get($cacheKey, []);
+            $startedAtIso = $existingCache['started_at'] ?? $finishedAtIso;
+
+            // bg-job-indicator-widget (fix-A): NO borramos el runId de
+            // active_runs al terminar. Lo dejamos con finishedAt para que el
+            // scanner lo muestre en estado terminal durante 5 min y el
+            // usuario vea el resultado final (X pendientes, Y encolados) en
+            // el widget flotante. Pasado ese tiempo, el scanner lo descarta.
+            $activeKey = 'transcription_batch:active_runs';
+            $activeList = \Illuminate\Support\Facades\Cache::get($activeKey, []);
+            $alreadyListed = false;
+            foreach ($activeList as $i => $entry) {
+                $eRunId = is_array($entry) ? ($entry['runId'] ?? null) : $entry;
+                if ($eRunId === $runId) { $alreadyListed = true; break; }
+            }
+            if (!$alreadyListed) {
+                $activeList[] = ['runId' => $runId, 'finishedAt' => $finishedAtIso];
+                \Illuminate\Support\Facades\Cache::put($activeKey, $activeList, now()->addHours(2));
+            }
+
+            // bg-job-indicator-widget (fix-B): processed refleja el trabajo
+            // real hecho, no 0. processed = storages escaneados (cubre los
+            // que fallaron tambien, ya se contaron arriba). La barra llega a
+            // 100% y el widget muestra el resumen final.
             \Illuminate\Support\Facades\Cache::put($cacheKey, [
                 'status' => $status,
                 'batch' => 0,
-                'processed' => 0,
+                'processed' => $storages->count(),
                 'errors' => $errors + $failedStorages,
-                'total_to_process' => $dispatched,
+                'total_to_process' => $storages->count(),
                 'total_candidates' => $totalPendingCreated + $failedStats['reset_to_pending'],
+                'pending_created' => $totalPendingCreated,
+                'dispatched' => $dispatched,
                 'per_storage_errors' => $perStorageErrors,
                 'failed_recovered' => $failedStats['reset_to_pending'],
                 'failed_promoted_to_dead' => $failedStats['promoted_to_dead'],
                 'failed_skipped_max_retries' => $failedStats['skipped_max_retries'],
                 'message' => $message,
-                'started_at' => now()->toIso8601String(),
-                'finished_at' => now()->toIso8601String(),
-                'updated_at' => now()->toIso8601String(),
+                'started_at' => $startedAtIso,
+                'finished_at' => $finishedAtIso,
+                'updated_at' => $finishedAtIso,
             ], now()->addHours(2));
-
-            // Remover runId de la lista de batches activos (add-bg-job-indicator-widget).
-            // La próxima vez que el widget pollee, este run ya no aparecerá.
-            $activeKey = 'transcription_batch:active_runs';
-            $activeList = \Illuminate\Support\Facades\Cache::get($activeKey, []);
-            if (in_array($runId, $activeList, true)) {
-                $activeList = array_values(array_filter($activeList, fn($r) => $r !== $runId));
-                if (empty($activeList)) {
-                    \Illuminate\Support\Facades\Cache::forget($activeKey);
-                } else {
-                    \Illuminate\Support\Facades\Cache::put($activeKey, $activeList, now()->addHours(2));
-                }
-            }
         }
 
         return Command::SUCCESS;

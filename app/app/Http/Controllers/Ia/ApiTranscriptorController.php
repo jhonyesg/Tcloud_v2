@@ -74,6 +74,44 @@ class ApiTranscriptorController extends Controller
         ], 423);
     }
 
+    /**
+     * Anti-corruption layer: acepta la fecha en formato flexible (ISO
+     * YYYY-MM-DD del <input type="date"> del frontend, o DDMMYYYY del CLI
+     * transcription:scan-and-submit) y la devuelve en el formato canónico
+     * DDMMYYYY que consume DiskScannerService::foldersInRange().
+     *
+     * El service se mantiene estricto a propósito: el test
+     * tests/Unit/ScanFoldersInRangeTest::testFormatoIncorrectoSeRechaza
+     * garantiza que las carpetas en disco solo se nombran en dmY. Toda la
+     * flexibilidad se concentra aquí para no contaminar ese contrato.
+     *
+     * Devuelve null si la entrada no encaja en ninguno de los dos formatos
+     * conocidos o si la fecha no es real (rechaza 2026-02-31, etc.).
+     */
+    private static function parseFlexibleDate(string $input): ?string
+    {
+        $s = trim($input);
+        if ($s === '') return null;
+
+        // ISO YYYY-MM-DD (lo que produce <input type="date"> y toIso8601String()).
+        if (preg_match('/^(\d{4})-(\d{2})-(\d{2})$/', $s, $m)) {
+            $d = \DateTimeImmutable::createFromFormat('Y-m-d', $s);
+            if ($d && $d->format('Y-m-d') === $s) {
+                return $m[3] . $m[2] . $m[1];
+            }
+            return null;
+        }
+        // DDMMYYYY canónico.
+        if (preg_match('/^(\d{2})(\d{2})(\d{4})$/', $s, $m)) {
+            $iso = $m[3] . '-' . $m[2] . '-' . $m[1];
+            $d = \DateTimeImmutable::createFromFormat('Y-m-d', $iso);
+            if ($d && $d->format('Y-m-d') === $iso) {
+                return $s;
+            }
+        }
+        return null;
+    }
+
     public function index(Request $request)
     {
         if ($request->wantsJson()) {
@@ -1151,8 +1189,15 @@ class ApiTranscriptorController extends Controller
 
         $folderNames = [];
         if ($mode === 'range') {
+            $fromDmY = self::parseFlexibleDate($from);
+            $toDmY = self::parseFlexibleDate($to);
+            if ($fromDmY === null || $toDmY === null) {
+                return response()->json([
+                    'error' => "Formato de fecha inválido: se espera DDMMYYYY o YYYY-MM-DD (recibido from={$from}, to={$to})",
+                ], 422);
+            }
             try {
-                $folderNames = \App\Services\Ia\DiskScannerService::foldersInRange($from, $to);
+                $folderNames = \App\Services\Ia\DiskScannerService::foldersInRange($fromDmY, $toDmY);
             } catch (\InvalidArgumentException $e) {
                 return response()->json(['error' => $e->getMessage()], 422);
             }
@@ -1298,8 +1343,15 @@ class ApiTranscriptorController extends Controller
         $scope = $request->input('scope');
         $scopeMode = is_array($scope) ? (string) ($scope['mode'] ?? '') : '';
         if ($scopeMode === 'range') {
-            $fromDmY = (string) ($scope['from'] ?? '');
-            $toDmY = (string) ($scope['to'] ?? '');
+            $fromRaw = (string) ($scope['from'] ?? '');
+            $toRaw = (string) ($scope['to'] ?? '');
+            $fromDmY = self::parseFlexibleDate($fromRaw);
+            $toDmY = self::parseFlexibleDate($toRaw);
+            if ($fromDmY === null || $toDmY === null) {
+                return response()->json([
+                    'error' => "Formato de fecha inválido: se espera DDMMYYYY o YYYY-MM-DD (recibido from={$fromRaw}, to={$toRaw})",
+                ], 422);
+            }
             try {
                 // Validar ANTES de lanzar: from/to en formato dmY, from<=to, to<=hoy.
                 $folders = \App\Services\Ia\DiskScannerService::foldersInRange($fromDmY, $toDmY);
@@ -1344,6 +1396,49 @@ class ApiTranscriptorController extends Controller
             // mostrarlo en vez de quedarse mudo en "starting".
             return response()->json([
                 'error' => 'Lanzador produjo bash inválido, revisá /tmp/kilo_artisan_bg.log (filtro [transcriptor:scan]).',
+                'run_id' => $runId,
+            ], 500);
+        }
+
+        // Liveness ping: tras dispatchar esperamos 2s y verificamos que el
+        // worker haya transicionado starting → running. Si no lo hizo, el
+        // binario del artisan no arrancó (mismo patrón que
+        // CorreccionesController::applyRetroactive y
+        // AvisosInteligentesController::scan). Marcamos el run como error
+        // y devolvemos 500 con la ruta al log.
+        //
+        // Beneficio secundario: bajo carga (workers queue:work saturados
+        // transcribiendo el batch anterior) PHP-FPM puede tardar >30s en
+        // procesar CUALQUIER request — sin este chequeo, el modal del
+        // frontend mostraba "Sin respuesta del servidor después de 30s"
+        // aunque el proceso artisan real sí hubiera arrancado via setsid.
+        // Acotando a 2s de espera activa, liberamos el worker FPM rápido
+        // y dejamos que el widget global muestre el progreso real.
+        usleep(2_000_000);
+        $postState = \Illuminate\Support\Facades\Cache::get($cacheKey);
+        $postStatus = is_array($postState) ? ($postState['status'] ?? null) : null;
+        if ($postStatus === null || $postStatus === 'starting') {
+            if (is_array($postState)) {
+                $postState['status'] = 'error';
+                $postState['error_message'] = 'El worker no arrancó — revisá /tmp/kilo_artisan_bg.log (filtro: [transcriptor:scan])';
+                $postState['finished_at'] = now()->toIso8601String();
+                \Illuminate\Support\Facades\Cache::put($cacheKey, $postState, now()->addHours(2));
+            }
+            // Liberar el runId del widget global para no dejarlo colgado.
+            $activeKey = 'transcription_batch:active_runs';
+            $activeList = \Illuminate\Support\Facades\Cache::get($activeKey, []);
+            if (in_array($runId, $activeList, true)) {
+                $activeList = array_values(array_diff($activeList, [$runId]));
+                \Illuminate\Support\Facades\Cache::put($activeKey, $activeList, now()->addHours(2));
+            }
+            \Illuminate\Support\Facades\Log::warning('ApiTranscriptorController: worker de scan-and-submit no pasó a running', [
+                'run_id' => $runId,
+                'observed_status' => $postStatus,
+                'cache_key' => $cacheKey,
+            ]);
+            return response()->json([
+                'error' => 'El worker no arrancó. Revisá el log en /tmp/kilo_artisan_bg.log (filtrá por [transcriptor:scan]).',
+                'log' => '/tmp/kilo_artisan_bg.log',
                 'run_id' => $runId,
             ], 500);
         }

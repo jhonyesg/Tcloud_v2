@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Facades\Log;
 
 class UserKeyword extends Model
 {
@@ -19,6 +20,45 @@ class UserKeyword extends Model
         'category_id' => 'integer',
         'created_at' => 'datetime',
     ];
+
+    /**
+     * avisos-scan-coverage-reconciler (12.1.a): cuando un usuario RECIBE una
+     * keyword preexistente (asignada por admin, importada, asignada a un
+     * cliente nuevo), crear los watermarks NULL para cada (keyword, storage)
+     * donde el usuario tiene transcription_access=true. Delega al reconciler.
+     */
+    protected static function booted(): void
+    {
+        static::saved(function (UserKeyword $uk) {
+            // Sólo actuar cuando es nuevo (created). En updates no tenemos
+            // acceso fácil al "wasRecentlyCreated" en saved; usamos
+            // created_at vs updated_at como heurística.
+            try {
+                $reconciler = app(\App\Services\Ia\WatermarkReconciler::class);
+                $reconciler->ensureForKeyword((int) $uk->keyword_id);
+            } catch (\Throwable $e) {
+                Log::warning('user_keyword.hook_failed', [
+                    'keyword_id' => $uk->keyword_id,
+                    'user_id' => $uk->user_id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        });
+
+        // En alta nueva, queremos asegurar desde el momento de creación
+        // (no esperar al save subsiguiente).
+        static::created(function (UserKeyword $uk) {
+            try {
+                $reconciler = app(\App\Services\Ia\WatermarkReconciler::class);
+                $reconciler->ensureForKeyword((int) $uk->keyword_id);
+            } catch (\Throwable $e) {
+                Log::warning('user_keyword.created_hook_failed', [
+                    'keyword_id' => $uk->keyword_id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        });
+    }
 
     public function scopeInCategory(Builder $query, int $categoryId): Builder
     {

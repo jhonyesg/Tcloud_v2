@@ -3403,7 +3403,7 @@ function apiTranscriptor(config = {}) {
                     generate_alerts: this.batchAlerts,
                     include_failed: this.batchIncludeFailed,
                     scope: this.batchScope === 'range'
-                        ? { mode: 'range', from: this.batchScopeFrom.replace(/-/g, ''), to: this.batchScopeTo.replace(/-/g, '') }
+                        ? { mode: 'range', from: this.batchScopeFrom, to: this.batchScopeTo }
                         : (this.batchScope === 'all' ? { mode: 'all' } : undefined),
                 }),
             });

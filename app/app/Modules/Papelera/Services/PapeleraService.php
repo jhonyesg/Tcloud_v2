@@ -457,7 +457,7 @@ class PapeleraService
         if ($storage && $storage->type === 'local' && $folder->path) {
             $dirPath = rtrim($storage->base_path, '/') . '/' . $folder->path;
             if (is_dir($dirPath)) {
-                if (!rmdir($dirPath)) {
+                if (!@rmdir($dirPath)) {
                     Log::error('papelera.rmdir_failed', [
                         'file_id' => $folder->id,
                         'path' => $dirPath,
