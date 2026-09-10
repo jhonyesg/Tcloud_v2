@@ -22,6 +22,75 @@ class DiskScannerService
     public const LAYOUT_FLAT = 'flat';
     public const LAYOUT_GROUPED = 'grouped_by_subfolder';
 
+    /**
+     * transcriptor-scan-scope-selector: alcance del descubrimiento.
+     * shape: {mode: 'today'|'range'|'all', folders?: string[]}
+     *  - today: solo la carpeta dmY de hoy (comportamiento vigente)
+     *  - range: carpetas dmY explícitas del rango (folders ya calculadas como
+     *           nombres 'dmY'; el service las resuelve por layout)
+     *  - all: recursivo completo (ya existía vía --all)
+     */
+    public static function scopeToday(): array
+    {
+        return ['mode' => 'today', 'folders' => []];
+    }
+
+    public static function scopeRange(string $fromDmY, string $toDmY): array
+    {
+        return ['mode' => 'range', 'folders' => self::foldersInRange($fromDmY, $toDmY)];
+    }
+
+    public static function scopeAll(): array
+    {
+        return ['mode' => 'all', 'folders' => []];
+    }
+
+    /**
+     * Nombres de carpeta 'dmY' para CADA día del rango [from, to] inclusive.
+     * from/to con formato DDMMYYYY. Lanza InvalidArgumentException si el rango
+     * es inválido (from > to, formato incorrecto o fecha inexistente tipo 3102).
+     *
+     * @return string[] nombres 'dmY' (NO rutas absolutas)
+     */
+    public static function foldersInRange(string $fromDmY, string $toDmY): array
+    {
+        $parse = function (string $v): ?\DateTimeImmutable {
+            $m = [];
+            if (!preg_match('/^(\d{2})(\d{2})(\d{4})$/', trim($v), $m)) {
+                return null;
+            }
+            $iso = $m[3] . '-' . $m[2] . '-' . $m[1];
+            $d = \DateTimeImmutable::createFromFormat('Y-m-d', $iso);
+            // Compara con el ISO reconstruido: descarta fechas tipo 31022026
+            // que DateTime malnormaliza silenciosamente.
+            if (!$d || $d->format('Y-m-d') !== $iso) {
+                return null;
+            }
+            return $d;
+        };
+
+        $dateFrom = $parse($fromDmY);
+        $dateTo = $parse($toDmY);
+        if ($dateFrom === null || $dateTo === null) {
+            throw new \InvalidArgumentException("Formato de fecha inválido: se espera DDMMYYYY (recibido from={$fromDmY}, to={$toDmY})");
+        }
+        if ($dateFrom > $dateTo) {
+            throw new \InvalidArgumentException("Rango inválido: desde ({$fromDmY}) es posterior a hasta ({$toDmY})");
+        }
+
+        $names = [];
+        $cur = $dateFrom;
+        // Cota de seguridad: 366 días cubre un año completo de backlog.
+        $guard = 0;
+        while ($cur <= $dateTo && $guard < 366) {
+            $names[] = $cur->format('dmY');
+            $cur = $cur->modify('+1 day');
+            $guard++;
+        }
+
+        return $names;
+    }
+
     public function __construct(
         private TranscriptorSettings $settings,
         private \App\Services\FileRegistry $registry,
@@ -30,13 +99,19 @@ class DiskScannerService
     /**
      * Escanea un storage y devuelve estadisticas de lo que encontro/creó.
      *
+     * transcriptor-scan-scope-selector: $daysBack/$all se mantienen para
+     * compatibilidad con callers existentes, pero $scope (nuevo, opcional)
+     * manda cuando viene. Scope shape:
+     *   {mode: 'today'|'range'|'all', folders?: string[]}
+     *
      * @param  StorageProvider $storage
      * @param  int  $daysBack  Cuantos dias hacia atras escanear (0 = solo hoy)
      * @param  bool $all       Escanear recursivamente todas las carpetas
      * @param  bool $generateAlerts  Marcar las transcripciones creadas para generar avisos
+     * @param  array|null $scope  Alcance del descubrimiento (manda sobre daysBack/all)
      * @return array{candidates:int, files_created:int, transcriptions_created:int, scanned:int}
      */
-    public function scanStorage(StorageProvider $storage, int $daysBack = 0, bool $all = false, ?int $batchOverride = null, bool $generateAlerts = true): array
+    public function scanStorage(StorageProvider $storage, int $daysBack = 0, bool $all = false, ?int $batchOverride = null, bool $generateAlerts = true, ?array $scope = null): array
     {
         $basePath = rtrim((string) $storage->base_path, '/');
         if (!is_dir($basePath) || !is_readable($basePath)) {
@@ -60,12 +135,24 @@ class DiskScannerService
             ? []
             : $this->computeExcludedSubpaths($storage);
 
-        // Paso 2: descubrir carpetas de día según layout.
+        // Paso 2: descubrir carpetas de día según layout y alcance.
+        // transcriptor-scan-scope-selector: el scope 'range' inyecta la lista
+        // explícita de nombres dmY; 'all' y 'today' conservan el camino previo.
+        $scopeMode = $scope['mode'] ?? null;
+        $rangeFolders = null;
+        if ($scopeMode === 'range') {
+            $rangeFolders = array_values(array_filter((array) ($scope['folders'] ?? [])));
+        }
+
         $folderPaths = match ($layout) {
-            self::LAYOUT_GROUPED => $this->dayFoldersGrouped($basePath, $daysBack, $all),
-            default              => $all
-                ? $this->allFoldersRecursive($basePath)
-                : $this->dayFolders($basePath, $daysBack),
+            self::LAYOUT_GROUPED => $rangeFolders !== null
+                ? $this->dayFoldersGrouped($basePath, $daysBack, false, $rangeFolders)
+                : $this->dayFoldersGrouped($basePath, $daysBack, $all),
+            default => $rangeFolders !== null
+                ? $this->dayFoldersExplicit($basePath, $rangeFolders)
+                : ($all
+                    ? $this->allFoldersRecursive($basePath)
+                    : $this->dayFolders($basePath, $daysBack)),
         };
 
         // Paso 3: iterar carpetas, excluyendo las que caen bajo un hijo.
@@ -204,11 +291,17 @@ class DiskScannerService
      * NO toca transcripciones en estado 'dead' (decisión de diseño: requieren
      * acción manual del operador).
      *
+     * transcriptor-scan-scope-selector: con $fromIso/$toIso (YYYY-MM-DD) el
+     * reintento se acota a transcripciones creadas dentro del rango; sin
+     * rango, comportamiento previo (todos).
+     *
      * @param  StorageProvider $storage
      * @param  int $maxRetries Max reintentos automáticos antes de promover a dead
+     * @param  string|null $fromIso YYYY-MM-DD (inclusive)
+     * @param  string|null $toIso YYYY-MM-DD (inclusive)
      * @return array{candidates:int, reset_to_pending:int, promoted_to_dead:int, skipped_max_retries:int}
      */
-    public function collectFailedCandidates(StorageProvider $storage, int $maxRetries = 3): array
+    public function collectFailedCandidates(StorageProvider $storage, int $maxRetries = 3, ?string $fromIso = null, ?string $toIso = null): array
     {
         $stats = [
             'candidates' => 0,
@@ -222,6 +315,8 @@ class DiskScannerService
             ->whereHas('file', function ($q) use ($storage) {
                 $q->where('storage_provider_id', $storage->id);
             })
+            ->when($fromIso !== null, fn ($q) => $q->where('created_at', '>=', $fromIso))
+            ->when($toIso !== null, fn ($q) => $q->where('created_at', '<=', $toIso . ' 23:59:59'))
             ->with('file.storageProvider')
             ->get();
 
@@ -289,6 +384,25 @@ class DiskScannerService
     }
 
     /**
+     * transcriptor-scan-scope-selector: rutas absolutas para la lista EXPLÍCITA
+     * de nombres dmY del rango elegido (layout flat).
+     *
+     * @param string[] $folderNames nombres 'dmY'
+     * @return string[] rutas absolutas
+     */
+    private function dayFoldersExplicit(string $basePath, array $folderNames): array
+    {
+        $folders = [];
+        foreach ($folderNames as $name) {
+            if (!is_string($name) || !preg_match('/^\d{8}$/', $name)) {
+                continue; // defensa: solo nombres dmY
+            }
+            $folders[] = $basePath . '/' . $name;
+        }
+        return $folders;
+    }
+
+    /**
      * Para layout 'grouped_by_subfolder': devuelve TODAS las rutas absolutas
      * de carpetas <dmY>/ bajo basePath a cualquier profundidad.
      *
@@ -297,13 +411,21 @@ class DiskScannerService
      *   - 2 niveles: base/<region>/<emisora>/dmY/  (ej. storage 49 Emisoras Regiones)
      *   - N niveles: cualquier anidamiento donde la carpeta final sea dmY
      */
-    private function dayFoldersGrouped(string $basePath, int $daysBack, bool $all): array
+    private function dayFoldersGrouped(string $basePath, int $daysBack, bool $all, ?array $explicitDayNames = null): array
     {
         $folders = [];
         $dayNames = [];
-        $daysBack = max(0, $daysBack);
-        for ($i = 0; $i <= $daysBack; $i++) {
-            $dayNames[] = now()->subDays($i)->format('dmY');
+        if ($explicitDayNames !== null) {
+            // transcriptor-scan-scope-selector: lista inyectada del rango elegido.
+            $dayNames = array_values(array_filter($explicitDayNames, fn ($n) => is_string($n) && preg_match('/^\d{8}$/', $n)));
+        } else {
+            $daysBack = max(0, $daysBack);
+            for ($i = 0; $i <= $daysBack; $i++) {
+                $dayNames[] = now()->subDays($i)->format('dmY');
+            }
+        }
+        if (empty($dayNames)) {
+            return [];
         }
         $daySet = array_flip($dayNames);
 

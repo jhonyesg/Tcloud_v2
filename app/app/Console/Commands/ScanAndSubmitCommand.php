@@ -16,6 +16,9 @@ class ScanAndSubmitCommand extends Command
     protected $signature = 'transcription:scan-and-submit
                             {--days=-1 : Dias hacia atras ademas de hoy (-1 = usar scan_days_back)}
                             {--all : Escanear recursivamente todas las carpetas}
+                            {--from= : Inicio del rango DDMMYYYY (transcriptor-scan-scope-selector)}
+                            {--to= : Fin del rango DDMMYYYY (transcriptor-scan-scope-selector)}
+                            {--dry-run : Contar candidatos SIN crear filas ni encolar}
                             {--batch=0 : Maximo archivos por storage por ciclo (0 = usar config scan_batch)}
                             {--run-id= : Identificador para reportar progreso en cache (opcional)}
                             {--no-dispatch : Solo escanea y crea pending, NO encola a Redis}
@@ -72,6 +75,25 @@ class ScanAndSubmitCommand extends Command
         $runId = $this->option('run-id');
         $cacheKey = $runId ? 'transcription_batch:' . preg_replace('/[^a-z0-9_\-]/i', '_', $runId) : null;
         $includeFailed = (bool) $this->option('include-failed');
+        $dryRun = (bool) $this->option('dry-run');
+
+        // transcriptor-scan-scope-selector: construir el alcance. --from/--to
+        // manda sobre --days/--all (un rango explícito es más específico).
+        $fromOpt = $this->option('from');
+        $toOpt = $this->option('to');
+        $scope = null;
+        if ($fromOpt || $toOpt) {
+            try {
+                $scope = DiskScannerService::scopeRange((string) $fromOpt, (string) $toOpt);
+            } catch (\InvalidArgumentException $e) {
+                $this->error($e->getMessage());
+                return Command::FAILURE;
+            }
+            $folders = $scope['folders'];
+            $this->info("Alcance: rango {$fromOpt}..{$toOpt} (" . count($folders) . " carpetas: {$folders[0]}.." . end($folders) . ')');
+        } elseif ($all) {
+            $scope = DiskScannerService::scopeAll();
+        }
 
         // Invariante del modulo de avisos: toda transcripcion nueva entra al
         // matching global de menciones; el filtrado per-user ocurre aguas abajo
@@ -109,13 +131,47 @@ class ScanAndSubmitCommand extends Command
             'skipped_max_retries' => 0,
         ];
 
-        // Fase 1: escanear disco y crear pendientes.
+        // Fase 1: escanear disco y crear pendientes (o solo contar con --dry-run).
+        if ($dryRun) {
+            $this->line('[DRY-RUN] Contando candidatos por storage (nada se crea):');
+            $totalMissing = 0;
+            foreach ($storages as $storage) {
+                try {
+                    $stats = $scanner->scanStorage($storage, $days, $all, $batchOverride, $generateAlerts, $scope);
+                    $this->line("  {$storage->name} (id={$storage->id}): candidates={$stats['candidates']} files_created=0 tx_created=0");
+                    $totalMissing += $stats['candidates'];
+                } catch (\Throwable $e) {
+                    $this->error("  {$storage->name} (id={$storage->id}): {$e->getMessage()}");
+                }
+            }
+            $this->info("[DRY-RUN] Total candidatos (cupo batch {$batch} por storage aplicado): {$totalMissing}");
+            return Command::SUCCESS;
+        }
+
         foreach ($storages as $storage) {
             try {
-                $stats = $scanner->scanStorage($storage, $days, $all, $batchOverride, $generateAlerts);
+                $stats = $scanner->scanStorage($storage, $days, $all, $batchOverride, $generateAlerts, $scope);
                 $totalFilesCreated += $stats['files_created'];
                 $totalPendingCreated += $stats['transcriptions_created'];
                 $this->info("Storage {$storage->name}: scanned={$stats['scanned']} candidates={$stats['candidates']} files_created={$stats['files_created']} tx_created={$stats['transcriptions_created']}");
+
+                // transcriptor-scan-scope-selector: progreso por storage en el
+                // cache del runId (el modal lo renderiza por fila).
+                if ($cacheKey && $scope !== null) {
+                    $cache = \Illuminate\Support\Facades\Cache::get($cacheKey, []);
+                    $storagesList = $cache['storages'] ?? [];
+                    $storagesList[] = [
+                        'id' => $storage->id,
+                        'name' => $storage->name,
+                        'scanned' => $stats['scanned'],
+                        'files_created' => $stats['files_created'],
+                        'tx_created' => $stats['transcriptions_created'],
+                    ];
+                    $cache['storages'] = $storagesList;
+                    $cache['scan_scope'] = $scope['mode'] ?? 'today';
+                    $cache['updated_at'] = now()->toIso8601String();
+                    \Illuminate\Support\Facades\Cache::put($cacheKey, $cache, now()->addHours(2));
+                }
             } catch (\Throwable $e) {
                 $failedStorages++;
                 $msg = "Storage {$storage->name} (id={$storage->id}): {$e->getMessage()}";
@@ -130,10 +186,25 @@ class ScanAndSubmitCommand extends Command
         }
 
         // Fase 1.5: reintentar transcripciones en estado error (solo si --include-failed).
+        // transcriptor-scan-scope-selector: con rango elegido, el reintento se
+        // acota a transcripciones creadas dentro de ese rango.
+        $retryFromIso = null;
+        $retryToIso = null;
+        if ($scope !== null && ($scope['mode'] ?? '') === 'range') {
+            $parseIso = function (string $dmY): ?string {
+                if (!preg_match('/^(\d{2})(\d{2})(\d{4})$/', trim($dmY), $m)) {
+                    return null;
+                }
+                return $m[3] . '-' . $m[2] . '-' . $m[1];
+            };
+            $retryFromIso = $parseIso((string) $fromOpt);
+            $retryToIso = $parseIso((string) $toOpt);
+        }
+
         if ($includeFailed) {
             foreach ($storages as $storage) {
                 try {
-                    $stats = $scanner->collectFailedCandidates($storage, $maxRetries);
+                    $stats = $scanner->collectFailedCandidates($storage, $maxRetries, $retryFromIso, $retryToIso);
                     foreach ($stats as $k => $v) {
                         $failedStats[$k] = ($failedStats[$k] ?? 0) + $v;
                     }
@@ -263,6 +334,19 @@ class ScanAndSubmitCommand extends Command
                 'finished_at' => now()->toIso8601String(),
                 'updated_at' => now()->toIso8601String(),
             ], now()->addHours(2));
+
+            // Remover runId de la lista de batches activos (add-bg-job-indicator-widget).
+            // La próxima vez que el widget pollee, este run ya no aparecerá.
+            $activeKey = 'transcription_batch:active_runs';
+            $activeList = \Illuminate\Support\Facades\Cache::get($activeKey, []);
+            if (in_array($runId, $activeList, true)) {
+                $activeList = array_values(array_filter($activeList, fn($r) => $r !== $runId));
+                if (empty($activeList)) {
+                    \Illuminate\Support\Facades\Cache::forget($activeKey);
+                } else {
+                    \Illuminate\Support\Facades\Cache::put($activeKey, $activeList, now()->addHours(2));
+                }
+            }
         }
 
         return Command::SUCCESS;

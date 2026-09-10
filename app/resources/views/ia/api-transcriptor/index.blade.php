@@ -3,7 +3,10 @@
 @section('title', 'API Transcriptor - Tcloud')
 
 @section('content')
-<div class="p-6" x-data="apiTranscriptor()" x-init="init()">
+<div class="p-6" x-data="apiTranscriptor({
+    userId: {{ (int) session('user_id') }},
+    pendingAlertThreshold: {{ (int) ($pending_alert_threshold ?? 5) }},
+})" x-init="init()">
 
     {{-- Contenedor global de toasts (esquina superior derecha) --}}
     <div x-data class="fixed top-4 right-4 z-50 space-y-2 w-96 max-w-[calc(100vw-2rem)] pointer-events-none">
@@ -262,30 +265,189 @@
         <p class="text-sm text-amber-700 mt-1">Activa un storage abajo para empezar a transcribir grabaciones.</p>
     </div>
 
+    <!-- Tarjetas resumen del modulo storages -->
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
+        <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+            <div class="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Cantidad Total</div>
+            <div class="text-2xl font-bold text-slate-800 mt-1 tabular-nums" x-text="cantidadTotal()"></div>
+            <div class="text-[11px] text-slate-400 mt-1">Suma de medios en todos los storages (con duplicados).</div>
+        </div>
+        <div class="bg-white rounded-xl shadow-sm border border-brand-200 bg-brand-50/40 p-4">
+            <div class="text-[11px] font-semibold text-brand-700 uppercase tracking-wider">Cantidad Real (ponderado)</div>
+            <div class="text-2xl font-bold text-brand-800 mt-1 tabular-nums" x-text="cantidadPonderada()"></div>
+            <div class="text-[11px] text-slate-500 mt-1">Suma solo de storages hoja (sin duplicar padres que agregan hijos).</div>
+        </div>
+        <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+            <div class="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Pendientes hoy</div>
+            <div class="text-2xl font-bold text-slate-800 mt-1 tabular-nums" x-text="pendientesTotal()"></div>
+            <div class="text-[11px] text-slate-400 mt-1">Transcripciones creadas hoy que aun no terminan.</div>
+        </div>
+        <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+            <div class="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Listos hoy</div>
+            <div class="text-2xl font-bold text-slate-800 mt-1 tabular-nums" x-text="listosTotal()"></div>
+            <div class="text-[11px] text-slate-400 mt-1">Transcripciones que terminaron OK hoy.</div>
+        </div>
+    </div>
+
     <!-- Tabla de storages -->
     <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden mb-6">
-        <div class="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
+        <div class="px-4 py-3 border-b border-slate-200 flex items-center justify-between gap-3 flex-wrap">
             <h2 class="text-sm font-semibold text-slate-700">Storages</h2>
-            <span class="text-xs text-slate-400" x-text="storagesEnabled.length + ' habilitado(s) de ' + storages.length"></span>
+            <div class="flex items-center gap-2">
+                <div class="relative">
+                    <input type="text" x-model="storagesSearch" @input.debounce.200ms="storagesPage = 1"
+                           placeholder="Buscar storage..."
+                           class="pl-7 pr-2 py-1 text-xs border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none w-48">
+                    <i class="fas fa-search absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 text-[10px]"></i>
+                </div>
+                <span class="text-xs text-slate-400 whitespace-nowrap" x-text="storagesEnabled.length + ' habilitado(s) de ' + storages.length"></span>
+            </div>
         </div>
         <div x-show="storages.length === 0" class="text-center py-12 text-slate-400">
             <i class="fas fa-database text-3xl mb-2 block text-slate-200"></i>
             <p>No hay storages registrados.</p>
         </div>
-        <table x-show="storages.length > 0" class="w-full">
+        <div x-show="!loading && storages.length > 0" class="px-4 py-3 border-b border-slate-100 flex items-center justify-between gap-2 flex-wrap">
+            <span class="text-xs text-slate-500"
+                  x-text="'Página ' + storagesPage + ' de ' + storagesTotalPages() + ' · ' + filteredStorages().length.toLocaleString() + ' storage(s)'"></span>
+            <div class="flex items-center gap-1.5">
+                <button @click="storagesPage = Math.max(1, storagesPage - 1)"
+                        :disabled="storagesPage <= 1"
+                        class="inline-flex items-center justify-center w-9 py-1.5 rounded-lg text-sm font-medium transition-all border border-slate-300 text-slate-600 hover:bg-brand-50 hover:text-brand-700 disabled:opacity-30 disabled:pointer-events-none"
+                        title="Página anterior">
+                    <i class="fas fa-chevron-left text-[10px]"></i>
+                </button>
+                <template x-for="p in storagesPageList(storagesPage, storagesTotalPages())" :key="'ppt-' + p">
+                    <button x-show="p !== '…'" @click="storagesPage = p"
+                            class="min-w-[2.2rem] px-2 py-1.5 rounded-lg text-sm font-medium transition-all border"
+                            :class="p === storagesPage
+                                ? 'bg-brand-600 text-white border-brand-600 shadow'
+                                : 'border-slate-200 text-slate-600 hover:bg-brand-50 hover:border-brand-300'"
+                            x-text="p"></button>
+                </template>
+                <button @click="storagesPage = Math.min(storagesTotalPages(), storagesPage + 1)"
+                        :disabled="storagesPage >= storagesTotalPages()"
+                        class="inline-flex items-center justify-center w-9 py-1.5 rounded-lg text-sm font-medium transition-all border border-slate-300 text-slate-600 hover:bg-brand-50 hover:text-brand-700 disabled:opacity-30 disabled:pointer-events-none"
+                        title="Página siguiente">
+                    <i class="fas fa-chevron-right text-[10px]"></i>
+                </button>
+                <select @change="storagesPerPage = [25, 50, 100, 500].includes(+$event.target.value) ? +$event.target.value : 25; storagesPage = 1;"
+                        class="border border-slate-300 rounded-lg px-2.5 py-1.5 text-sm outline-none hover:border-brand-300 transition-colors"
+                        title="Storages por página">
+                    <template x-for="n in [25, 50, 100, 500]" :key="'sppt-' + n">
+                        <option :value="n" x-text="n + ' / pág.'" :selected="storagesPerPage === n"></option>
+                    </template>
+                </select>
+            </div>
+        </div>
+        <table x-show="storages.length > 0" class="w-full text-sm">
             <thead class="bg-slate-50 border-b border-slate-200">
-                <tr>
-                    <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Storage</th>
-                    <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Tipo</th>
-                    <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Transcripción</th>
-                    <th class="px-4 py-3 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">Acciones</th>
+                <tr class="text-left text-xs text-slate-500">
+                    <th class="py-2.5 pr-3 font-medium whitespace-nowrap">
+                        <button type="button" @click="setStoragesSort('name')"
+                                :class="storagesSortHeaderClass('name') + ' inline-flex items-center gap-1.5 transition-colors'"
+                                title="Ordenar por storage">
+                            Storage
+                            <i class="fas text-[10px]" :class="storagesSortIcon('name') + ' ' + storagesSortIconClass('name')"></i>
+                        </button>
+                    </th>
+                    <th class="py-2.5 pr-3 font-medium whitespace-nowrap text-center">
+                        <button type="button" @click="setStoragesSort('cantidad')"
+                                :class="storagesSortHeaderClass('cantidad') + ' inline-flex items-center gap-1.5 transition-colors'"
+                                title="Ordenar por cantidad">
+                            Cantidad
+                            <i class="fas text-[10px]" :class="storagesSortIcon('cantidad') + ' ' + storagesSortIconClass('cantidad')"></i>
+                        </button>
+                    </th>
+                    <th class="py-2.5 pr-3 font-medium whitespace-nowrap">
+                        <button type="button" @click="setStoragesSort('tipo')"
+                                :class="storagesSortHeaderClass('tipo') + ' inline-flex items-center gap-1.5 transition-colors'"
+                                title="Ordenar por tipo">
+                            Tipo
+                            <i class="fas text-[10px]" :class="storagesSortIcon('tipo') + ' ' + storagesSortIconClass('tipo')"></i>
+                        </button>
+                    </th>
+                    <th class="py-2.5 pr-3 font-medium whitespace-nowrap text-right">
+                        <button type="button" @click="setStoragesSort('pending')"
+                                :class="storagesSortHeaderClass('pending') + ' inline-flex items-center gap-1.5 transition-colors ml-auto'"
+                                title="Ordenar por pendientes hoy">
+                            Pendientes (hoy)
+                            <i class="fas text-[10px]" :class="storagesSortIcon('pending') + ' ' + storagesSortIconClass('pending')"></i>
+                        </button>
+                    </th>
+                    <th class="py-2.5 pr-3 font-medium whitespace-nowrap text-right">
+                        <button type="button" @click="setStoragesSort('done')"
+                                :class="storagesSortHeaderClass('done') + ' inline-flex items-center gap-1.5 transition-colors ml-auto'"
+                                title="Ordenar por listos hoy">
+                            Listos (hoy)
+                            <i class="fas text-[10px]" :class="storagesSortIcon('done') + ' ' + storagesSortIconClass('done')"></i>
+                        </button>
+                    </th>
+                    <th class="py-2.5 pr-3 font-medium whitespace-nowrap text-center">
+                        <button type="button" @click="setStoragesSort('priority')"
+                                :class="storagesSortHeaderClass('priority') + ' inline-flex items-center gap-1.5 transition-colors'"
+                                title="Ordenar por prioridad">
+                            Prioridad
+                            <i class="fas text-[10px]" :class="storagesSortIcon('priority') + ' ' + storagesSortIconClass('priority')"></i>
+                        </button>
+                    </th>
+                    <th class="py-2.5 pr-3 font-medium whitespace-nowrap">
+                        <button type="button" @click="setStoragesSort('enabled')"
+                                :class="storagesSortHeaderClass('enabled') + ' inline-flex items-center gap-1.5 transition-colors'"
+                                title="Ordenar por estado de transcripcion">
+                            Transcripción
+                            <i class="fas text-[10px]" :class="storagesSortIcon('enabled') + ' ' + storagesSortIconClass('enabled')"></i>
+                        </button>
+                    </th>
+                    <th class="py-2.5 font-medium whitespace-nowrap text-right">Acciones</th>
                 </tr>
             </thead>
             <tbody class="divide-y divide-slate-100">
-                <template x-for="s in storages" :key="s.id">
-                    <tr class="hover:bg-slate-50" :class="s.transcription_enabled ? '' : 'opacity-70'">
-                        <td class="px-4 py-3 text-sm font-medium text-slate-700" x-text="s.name"></td>
-                        <td class="px-4 py-3 text-xs text-slate-500" x-text="s.type"></td>
+                <template x-for="s in pagedStorages()" :key="s.id">
+                    <tr class="hover:bg-slate-50/60 align-top" :class="s.transcription_enabled ? '' : 'opacity-70'">
+                        <td class="py-3 pr-3 text-sm font-medium text-slate-700">
+                            <div class="flex items-center gap-2">
+                                <template x-if="s.descendant_count > 0">
+                                    <button type="button" @click.stop="toggleStorageExpansion(s.parent_scope_id)"
+                                            class="text-slate-400 hover:text-slate-700 transition-transform"
+                                            :class="expandedScopes.has(s.parent_scope_id) ? 'rotate-90' : ''"
+                                            :title="expandedScopes.has(s.parent_scope_id) ? 'Colapsar hijos' : 'Expandir hijos'">
+                                        <i class="fas fa-chevron-right text-[10px]"></i>
+                                    </button>
+                                </template>
+                                <template x-if="!s.descendant_count || s.descendant_count === 0">
+                                    <span class="w-3 inline-block"></span>
+                                </template>
+                                <span x-text="s.name"></span>
+                                <template x-if="s.overlap_warning">
+                                    <span class="text-[10px] px-1.5 py-0.5 bg-amber-100 text-amber-700 rounded-full font-semibold"
+                                          title="Este storage tiene allow_parent_overlap=true y descendientes habilitados. Los conteos pueden sumar de más si ambos escanean los mismos archivos.">⚠ solapamiento</span>
+                                </template>
+                                <template x-if="s.descendant_count > 0">
+                                    <span class="text-[10px] px-1.5 py-0.5 bg-slate-100 text-slate-500 rounded-full"
+                                          :title="'Descendientes: ' + (s.descendant_names || []).join(', ')"
+                                          x-text="s.descendant_count + ' hijo(s)'"></span>
+                                </template>
+                            </div>
+                        </td>
+                        <td class="py-3 pr-3 text-center">
+                            <span class="px-2 py-0.5 rounded bg-brand-50 text-brand-700 text-xs font-semibold tabular-nums"
+                                  :title="'Cantidad de medios en el scope: ' + s.cantidad"
+                                  x-text="s.cantidad ?? 1"></span>
+                        </td>
+                        <td class="py-3 pr-3 text-xs text-slate-500" x-text="s.type"></td>
+                        <td class="py-3 pr-3 text-sm text-slate-700 text-right tabular-nums">
+                            <span x-text="s.funnel?.pending ?? 0"></span>
+                            <template x-if="shouldWarnPending(s)">
+                                <span class="ml-1 text-amber-600 cursor-help"
+                                      :title="pendingWarningTitle(s)"
+                                      @click.stop>⚠</span>
+                            </template>
+                        </td>
+                        <td class="py-3 pr-3 text-sm text-slate-700 text-right tabular-nums" x-text="s.funnel?.done ?? 0"></td>
+                        <td class="py-3 pr-3 text-center">
+                            <span class="px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-xs tabular-nums" x-text="s.transcription_priority ?? 0"></span>
+                        </td>
                         {{-- Interruptor real: escribe storage_providers.transcription_enabled,
                              que es lo que lee el scanner. Decisión operativa de este
                              módulo; Avisos y Correcciones solo consumen lo que produce. --}}
@@ -301,11 +463,11 @@
                                 <span x-text="s.transcription_enabled ? 'Transcribe' : 'Inactivo'"></span>
                             </button>
                         </td>
-                        <td class="px-4 py-3 text-right">
+                        <td class="py-3 text-right">
                             <div class="flex items-center justify-end gap-1.5">
                                 <button @click="openFiles(s)"
                                         data-tour="storage-files"
-                                        class="flex items-center gap-1 px-2.5 py-1 bg-slate-100 hover:bg-brand-50 text-slate-600 hover:text-brand-700 text-xs rounded-lg transition-colors"
+                                        class="flex items-center gap-1 px-2.5 py-1.5 bg-slate-100 hover:bg-brand-50 text-slate-600 hover:text-brand-700 text-xs rounded-lg transition-colors"
                                         :class="!s.transcription_enabled && 'opacity-50'">
                                     <i class="fas fa-file-audio text-[10px]"></i> Ver archivos
                                 </button>
@@ -317,6 +479,40 @@
                 </template>
             </tbody>
         </table>
+        {{-- Paginacion (mismo patron que Mis Avisos: prev/next + numeros + selector por pagina) --}}
+        <div x-show="!loading && storages.length > 0" class="px-4 py-3 border-t border-slate-200 flex items-center justify-between gap-2 flex-wrap">
+            <span class="text-xs text-slate-500"
+                  x-text="'Página ' + storagesPage + ' de ' + storagesTotalPages() + ' · ' + filteredStorages().length.toLocaleString() + ' storage(s)'"></span>
+            <div class="flex items-center gap-1.5">
+                <button @click="storagesPage = Math.max(1, storagesPage - 1)"
+                        :disabled="storagesPage <= 1"
+                        class="inline-flex items-center justify-center w-9 py-1.5 rounded-lg text-sm font-medium transition-all border border-slate-300 text-slate-600 hover:bg-brand-50 hover:text-brand-700 disabled:opacity-30 disabled:pointer-events-none"
+                        title="Página anterior">
+                    <i class="fas fa-chevron-left text-[10px]"></i>
+                </button>
+                <template x-for="p in storagesPageList(storagesPage, storagesTotalPages())" :key="'pp-' + p">
+                    <button x-show="p !== '…'" @click="storagesPage = p"
+                            class="min-w-[2.2rem] px-2 py-1.5 rounded-lg text-sm font-medium transition-all border"
+                            :class="p === storagesPage
+                                ? 'bg-brand-600 text-white border-brand-600 shadow'
+                                : 'border-slate-200 text-slate-600 hover:bg-brand-50 hover:border-brand-300'"
+                            x-text="p"></button>
+                </template>
+                <button @click="storagesPage = Math.min(storagesTotalPages(), storagesPage + 1)"
+                        :disabled="storagesPage >= storagesTotalPages()"
+                        class="inline-flex items-center justify-center w-9 py-1.5 rounded-lg text-sm font-medium transition-all border border-slate-300 text-slate-600 hover:bg-brand-50 hover:text-brand-700 disabled:opacity-30 disabled:pointer-events-none"
+                        title="Página siguiente">
+                    <i class="fas fa-chevron-right text-[10px]"></i>
+                </button>
+                <select @change="storagesPerPage = [25, 50, 100, 500].includes(+$event.target.value) ? +$event.target.value : 25; storagesPage = 1;"
+                        class="border border-slate-300 rounded-lg px-2.5 py-1.5 text-sm outline-none hover:border-brand-300 transition-colors"
+                        title="Storages por página">
+                    <template x-for="n in [25, 50, 100, 500]" :key="'spp-' + n">
+                        <option :value="n" x-text="n + ' / pág.'" :selected="storagesPerPage === n"></option>
+                    </template>
+                </select>
+            </div>
+        </div>
     </div>
 
 
@@ -1401,6 +1597,48 @@
 
                 {{-- Configuración del lote --}}
                 <div x-show="!batchRunning && !batchResult" class="space-y-4">
+                    {{-- transcriptor-scan-scope-selector: alcance del escaneo --}}
+                    <div class="p-3 bg-brand-50 border border-brand-100 rounded-lg">
+                        <label class="block text-sm font-medium text-slate-700 mb-2">Alcance del escaneo</label>
+                        <div class="flex items-center gap-2 mb-2">
+                            <input type="radio" id="scope-today" value="today" x-model="batchScope" @change="refreshBatchEstimate()" class="w-4 h-4 accent-brand-600">
+                            <label for="scope-today" class="text-sm text-slate-700 cursor-pointer">Hoy (carpeta del día)</label>
+                        </div>
+                        <div class="flex items-center gap-2 flex-wrap">
+                            <input type="radio" id="scope-range" value="range" x-model="batchScope" @change="refreshBatchEstimate()" class="w-4 h-4 accent-brand-600">
+                            <label for="scope-range" class="text-sm text-slate-700 cursor-pointer">Rango:</label>
+                            <input type="date" x-model="batchScopeFrom" @change="refreshBatchEstimate()"
+                                   :max="new Date().toISOString().slice(0,10)"
+                                   class="text-xs border border-slate-300 rounded px-2 py-1">
+                            <span class="text-xs text-slate-400">→</span>
+                            <input type="date" x-model="batchScopeTo" @change="refreshBatchEstimate()"
+                                   :max="new Date().toISOString().slice(0,10)"
+                                   class="text-xs border border-slate-300 rounded px-2 py-1">
+                        </div>
+                        <div class="flex items-center gap-2 mt-2">
+                            <input type="radio" id="scope-all" value="all" x-model="batchScope" @change="refreshBatchEstimate()" class="w-4 h-4 accent-brand-600">
+                            <label for="scope-all" class="text-sm text-slate-700 cursor-pointer">Todo el histórico (todas las carpetas de cada storage)</label>
+                        </div>
+                    </div>
+
+                    {{-- Estimación previa (no muta) --}}
+                    <div x-show="batchScope !== 'today'" class="p-3 bg-slate-50 border border-slate-200 rounded-lg">
+                        <template x-if="batchEstimateLoading">
+                            <p class="text-xs text-slate-500"><i class="fas fa-spinner fa-spin mr-1"></i>Estimando alcance...</p>
+                        </template>
+                        <template x-if="!batchEstimateLoading && batchEstimateError">
+                            <p class="text-xs text-red-600"><i class="fas fa-exclamation-triangle mr-1"></i><span x-text="batchEstimateError"></span></p>
+                        </template>
+                        <template x-if="!batchEstimateLoading && batchEstimate">
+                            <div class="text-xs text-slate-600 space-y-1">
+                                <p><strong x-text="batchEstimate.files_missing.toLocaleString()"></strong> archivos sin transcripción en el alcance<span x-show="batchEstimate.estimation_capped"> (conteo parcial: superó el límite de estimación)</span></p>
+                                <p x-show="batchEstimate.error_recoverable != null"><span x-text="batchEstimate.error_recoverable"></span> transcripciones en <strong>error</strong> reintenables con el checkbox de abajo</p>
+                                <p x-show="batchEstimate.dead_irrecoverable != null" class="text-amber-600"><span x-text="batchEstimate.dead_irrecoverable"></span> en <strong>dead</strong> NO se reintentan (audio ausente; solo upstream-lost con backfill-lost)</p>
+                                <p class="text-slate-400"><i class="fas fa-info-circle mr-1"></i>El envío sigue regulado por ciclo; los pendientes sobrantes los recoge el cron automático.</p>
+                            </div>
+                        </template>
+                    </div>
+
                     <div>
                         <label class="block text-sm font-medium text-slate-700 mb-1">Tamaño del lote</label>
                         <div class="flex items-center gap-3">
@@ -1439,7 +1677,8 @@
                         <i class="fas fa-exclamation-triangle mr-1"></i>No hay storages habilitados para transcripción.
                     </div>
                     <div class="flex gap-2">
-                        <button @click="runBatch()" x-show="storagesEnabled.length > 0"
+                        <button @click="runBatch()" x-show="storagesEnabled.length > 0" :disabled="!batchScopeValid() || batchEstimateLoading"
+                                :class="(!batchScopeValid() || batchEstimateLoading) ? 'opacity-50 cursor-not-allowed' : ''"
                                 class="flex-1 px-4 py-2.5 bg-brand-600 hover:bg-brand-700 text-white rounded-xl text-sm font-medium transition-colors">
                             <i class="fas fa-play mr-1"></i> Iniciar procesamiento
                         </button>
@@ -1475,6 +1714,26 @@
                     </div>
                     <div x-show="batchProgress && batchProgress.status === 'starting'" class="text-center text-xs text-slate-400">
                         <i class="fas fa-cog fa-spin mr-1"></i> Iniciando proceso en background...
+                    </div>
+
+                    {{-- transcriptor-scan-scope-selector: progreso por storage del descubrimiento --}}
+                    <div x-show="batchProgress && (batchProgress.scan_scope === 'range' || batchProgress.scan_scope === 'all') && (batchProgress?.storages || []).length > 0">
+                        <h3 class="text-xs font-semibold text-slate-600 mb-1.5"><i class="fas fa-database mr-1"></i>Descubrimiento por storage</h3>
+                        <div class="space-y-1.5 max-h-64 overflow-y-auto">
+                            <template x-for="(s, idx) in (batchProgress?.storages || [])" :key="s.id || idx">
+                                <div class="flex items-center justify-between px-2.5 py-1.5 bg-slate-50 rounded-lg text-xs">
+                                    <div class="flex items-center gap-2 min-w-0">
+                                        <i class="fas fa-database text-slate-400 text-[10px]"></i>
+                                        <span class="font-medium text-slate-700 truncate" x-text="s.name"></span>
+                                    </div>
+                                    <div class="flex items-center gap-2.5 whitespace-nowrap">
+                                        <span class="text-slate-400" x-text="s.scanned + ' esc.'"></span>
+                                        <span class="text-brand-700 font-medium" x-text="s.files_created + ' arch.'"></span>
+                                        <span class="text-green-600 font-medium" x-text="s.tx_created + ' pend.'"></span>
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
                     </div>
                 </div>
 
@@ -1770,8 +2029,20 @@ window.showToast = function(message, type = 'info', duration = 4000) {
     alert(message);
 };
 
-function apiTranscriptor() {
+function apiTranscriptor(config = {}) {
+    const storageExpansionKey = 'transcriptor-storages-expanded:' + (config.userId || 0);
+    let initialExpanded = [];
+    try {
+        initialExpanded = JSON.parse(localStorage.getItem(storageExpansionKey) || '[]');
+    } catch (e) { initialExpanded = []; }
     return {
+        userId: config.userId || 0,
+        pendingAlertThreshold: config.pendingAlertThreshold || 5,
+        expandedScopes: new Set(initialExpanded),
+        storagesSearch: '',
+        storagesSort: { column: 'name', direction: 'asc' },
+        storagesPage: 1,
+        storagesPerPage: 25,
         loading: false,
         jobs: [],
         storages: [],
@@ -1856,6 +2127,13 @@ function apiTranscriptor() {
         batchRunId: null,
         batchPollTimer: null,
         batchProgress: null,
+        // transcriptor-scan-scope-selector: alcance del escaneo + estimación
+        batchScope: 'today',
+        batchScopeFrom: '',
+        batchScopeTo: '',
+        batchEstimate: null,
+        batchEstimateLoading: false,
+        batchEstimateError: null,
         // Mini-modal confirmación carpeta/día
         showProcessConfirm: false,
         processConfirmText: '',
@@ -1886,6 +2164,11 @@ function apiTranscriptor() {
         refreshingJobs: new Set(),
         async init() {
             await Promise.all([this.load(), this.loadHealth(), this.loadEmptyFolders()]);
+            // add-bg-job-indicator-widget: si el operador llega aquí con
+            // ?focus=bg-transcriptor-batch-{runId} desde el widget global,
+            // abrir el modal con el progreso del batch activo. Sin focus,
+            // no auto-abrir nada (comportamiento normal).
+            this.focusBgJob();
             this.$watch('jobsSubTab', () => {
                 if (this.jobsSubTab !== 'pending') {
                     this.selectedJobIds = new Set();
@@ -2071,6 +2354,139 @@ function apiTranscriptor() {
         },
         get storagesEnabled() {
             return this.storages.filter(s => s.transcription_enabled);
+        },
+        visibleStorages() {
+            return this.storages.filter(s => {
+                if (!s.parent_scope_id) return true;
+                return this.expandedScopes.has(s.parent_scope_id);
+            });
+        },
+        filteredStorages() {
+            const q = (this.storagesSearch || '').toLowerCase().trim();
+            let list = this.visibleStorages();
+            if (q) list = list.filter(s => (s.name || '').toLowerCase().includes(q));
+            // Sort client-side following el patron de Mis Avisos
+            const col = this.storagesSort.column;
+            const dir = this.storagesSort.direction === 'asc' ? 1 : -1;
+            return [...list].sort((a, b) => {
+                const av = this.storagesSortValue(a, col);
+                const bv = this.storagesSortValue(b, col);
+                if (av === bv) return 0;
+                if (av < bv) return -1 * dir;
+                return 1 * dir;
+            });
+        },
+        storagesSortValue(s, col) {
+            switch (col) {
+                case 'cantidad':  return Number(s.cantidad || 0);
+                case 'tipo':      return (s.type || '').toString().toLowerCase();
+                case 'pending':   return Number(s.funnel?.pending || 0);
+                case 'done':      return Number(s.funnel?.done || 0);
+                case 'priority':  return Number(s.transcription_priority || 0);
+                case 'enabled':   return s.transcription_enabled ? 1 : 0;
+                case 'name':
+                default:          return (s.name || '').toString().toLowerCase();
+            }
+        },
+        setStoragesSort(column) {
+            const cur = this.storagesSort;
+            if (cur.column === column) {
+                cur.direction = cur.direction === 'asc' ? 'desc' : 'asc';
+            } else {
+                cur.column = column;
+                cur.direction = 'asc';
+            }
+            this.storagesSort = { ...cur };
+            this.storagesPage = 1;
+        },
+        storagesSortIcon(col) {
+            if (this.storagesSort.column !== col) return 'fa-sort';
+            return this.storagesSort.direction === 'asc' ? 'fa-arrow-up' : 'fa-arrow-down';
+        },
+        storagesSortIconClass(col) {
+            if (this.storagesSort.column !== col) return 'text-slate-300';
+            return this.storagesSort.direction === 'asc' ? 'text-violet-600' : 'text-amber-600';
+        },
+        storagesSortHeaderClass(col) {
+            if (this.storagesSort.column !== col) return 'text-slate-500 hover:text-slate-800';
+            return 'text-slate-800 font-semibold';
+        },
+        storagesPageList(current, last) {
+            if (!last || last <= 7) return Array.from({ length: Math.max(1, last || 1) }, (_, i) => i + 1);
+            const pages = [1];
+            const start = Math.max(2, current - 2), end = Math.min(last - 1, current + 2);
+            if (start > 2) pages.push('…');
+            for (let p = start; p <= end; p++) pages.push(p);
+            if (end < last - 1) pages.push('…');
+            pages.push(last);
+            return pages;
+        },
+        storagesTotalPages() {
+            const total = this.filteredStorages().length;
+            return Math.max(1, Math.ceil(total / this.storagesPerPage));
+        },
+        pagedStorages() {
+            const filtered = this.filteredStorages();
+            const start = (this.storagesPage - 1) * this.storagesPerPage;
+            return filtered.slice(start, start + this.storagesPerPage);
+        },
+        storagesRangeStart() {
+            const total = this.filteredStorages().length;
+            if (!total) return 0;
+            return (this.storagesPage - 1) * this.storagesPerPage + 1;
+        },
+        storagesRangeEnd() {
+            const total = this.filteredStorages().length;
+            return Math.min(this.storagesPage * this.storagesPerPage, total);
+        },
+        // Cantidad total: suma de TODOS los storages con transcripcion ACTIVA
+        // (incluye duplicados entre padres e hijos). El operador lo usa para
+        // ver el tamano bruto del alcance que esta procesandose.
+        cantidadTotal() {
+            return this.storages.reduce((acc, s) => {
+                if (!s.transcription_enabled) return acc;
+                return acc + (Number(s.cantidad) || 0);
+            }, 0);
+        },
+        // Cantidad real (ponderado): suma SOLO de storages hoja con
+        // transcripcion activa, sin padres que ya agregan a sus hijos. Asi
+        // "01 Radio FM Bogota" (hoja, 1) y "01 Emisoras 01" (padre con 12)
+        // no se cuentan doble: 01 Radio FM Bogota vive dentro del scope de
+        // Emisoras, su 1 ya esta cubierto por el conteo del padre. Solo
+        // sumamos donde no hay duplicacion.
+        cantidadPonderada() {
+            return this.storages.reduce((acc, s) => {
+                if (!s.transcription_enabled) return acc;
+                if ((s.descendant_count || 0) > 0) return acc;
+                return acc + (Number(s.cantidad) || 0);
+            }, 0);
+        },
+        pendientesTotal() {
+            return this.storages.reduce((acc, s) => acc + (Number(s.funnel?.pending) || 0), 0);
+        },
+        listosTotal() {
+            return this.storages.reduce((acc, s) => acc + (Number(s.funnel?.done) || 0), 0);
+        },
+        toggleStorageExpansion(rootId) {
+            if (!rootId) return;
+            if (this.expandedScopes.has(rootId)) {
+                this.expandedScopes.delete(rootId);
+            } else {
+                this.expandedScopes.add(rootId);
+            }
+            try {
+                localStorage.setItem(storageExpansionKey, JSON.stringify([...this.expandedScopes]));
+            } catch (e) { /* localStorage no disponible, ignorar */ }
+        },
+        shouldWarnPending(s) {
+            if (!s) return false;
+            const pending = s.funnel?.pending ?? 0;
+            return pending > this.pendingAlertThreshold;
+        },
+        pendingWarningTitle(s) {
+            if (!s) return '';
+            const pending = s.funnel?.pending ?? 0;
+            return pending + ' pendientes hoy supera el umbral de ' + this.pendingAlertThreshold;
         },
         // Los contadores de badge leen stats.local (totales de BD). Contar la
         // pagina cargada daria como mucho per_page y mentiria sobre la cola real.
@@ -2844,6 +3260,8 @@ function apiTranscriptor() {
             this.batchResult = null;
             this.batchRunning = false;
             this.showBatchModal = true;
+            // transcriptor-scan-scope-selector: estimar al abrir (modo vigente).
+            this.$nextTick(() => this.refreshBatchEstimate());
         },
         closeBatchModal() {
             this.stopBatchPolling();
@@ -2852,10 +3270,89 @@ function apiTranscriptor() {
             this.batchRunning = false;
             this.batchProgress = null;
             this.batchRunId = null;
+            this.batchEstimate = null;
+            this.batchEstimateError = null;
+        },
+        // transcriptor-scan-scope-selector: consulta la estimación para el
+        // alcance elegido (debounce interno de 400ms vía timer).
+        async refreshBatchEstimate() {
+            if (this.batchScope === 'range') {
+                if (!this.batchScopeFrom || !this.batchScopeTo) { this.batchEstimate = null; return; }
+                if (this.batchScopeFrom > this.batchScopeTo) {
+                    this.batchEstimateError = 'La fecha "desde" es posterior a "hasta"';
+                    this.batchEstimate = null;
+                    return;
+                }
+            }
+            if (this.batchEstimateLoading) return;
+            this.batchEstimateLoading = true;
+            this.batchEstimateError = null;
+            try {
+                const res = await apiFetch('/ia/api-transcriptor/scan/estimate', {
+                    method: 'POST', credentials: 'same-origin',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json',
+                        'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
+                    },
+                    body: JSON.stringify({
+                        mode: this.batchScope,
+                        from: this.dmYToIso(this.batchScopeFrom),
+                        to: this.dmYToIso(this.batchScopeTo),
+                    }),
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                    this.batchEstimateError = data.error || 'Error al estimar';
+                    this.batchEstimate = null;
+                    return;
+                }
+                this.batchEstimate = data;
+                this.batchEstimateError = null;
+            } catch (e) {
+                this.batchEstimateError = 'Error de conexión al estimar';
+            } finally {
+                this.batchEstimateLoading = false;
+            }
+        },
+        // Convierte DDMMYYYY del input a YYYY-MM-DD para el estimador.
+        // El input date del navegador ya da ISO; acepta ambos por robustez.
+        dmYToIso(v) {
+            const s = String(v || '').trim();
+            const m = s.match(/^(\d{2})(\d{2})(\d{4})$/);
+            if (m) return m[3] + '-' + m[2] + '-' + m[1];
+            return s; // ya ISO (YYYY-MM-DD)
+        },
+        batchScopeValid() {
+            if (this.batchScope === 'range') {
+                return this.batchScopeFrom && this.batchScopeTo
+                    && this.dmYToIso(this.batchScopeFrom) <= this.dmYToIso(this.batchScopeTo);
+            }
+            return true;
         },
         stopBatchPolling() {
             if (this.batchPollTimer) { clearInterval(this.batchPollTimer); this.batchPollTimer = null; }
             this.batchTableRefreshTick = 0;
+        },
+        async focusBgJob() {
+            try {
+                const params = new URLSearchParams(window.location.search);
+                const focus = params.get('focus');
+                if (!focus || !focus.startsWith('bg-transcriptor-batch-')) return;
+                const runId = focus.replace('bg-transcriptor-batch-', '');
+                if (!runId) return;
+                // Si el modal ya está abierto (otro flow), no duplicar
+                if (this.batchRunId === runId && this.batchRunning) return;
+                this.batchRunId = runId;
+                this.batchRunning = true;
+                this.batchProgress = null;
+                this.batchResult = null;
+                this.showBatchModal = true;
+                // Polling del run existente
+                if (this.batchPollTimer) clearInterval(this.batchPollTimer);
+                this.batchPollTimer = setInterval(() => this.pollBatch(), 2000);
+                this.pollBatch();
+            } catch (e) { /* silent */ }
         },
         async runBatch() {
             this.batchRunning = true;
@@ -2874,7 +3371,14 @@ function apiTranscriptor() {
                     'Accept': 'application/json',
                     'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
                 },
-                body: JSON.stringify({ batch: this.batchSize, generate_alerts: this.batchAlerts, include_failed: this.batchIncludeFailed }),
+                body: JSON.stringify({
+                    batch: this.batchSize,
+                    generate_alerts: this.batchAlerts,
+                    include_failed: this.batchIncludeFailed,
+                    scope: this.batchScope === 'range'
+                        ? { mode: 'range', from: this.batchScopeFrom.replace(/-/g, ''), to: this.batchScopeTo.replace(/-/g, '') }
+                        : (this.batchScope === 'all' ? { mode: 'all' } : undefined),
+                }),
             });
 
             // Watchdog blando: si la respuesta HTTP tarda más de `WATCHDOG_MS`

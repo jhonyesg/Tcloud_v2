@@ -7,7 +7,10 @@ use App\Http\Controllers\Controller;
 use App\Jobs\ConvertAndTranscribeJob;
 use App\Models\File;
 use App\Models\StorageProvider;
+use App\Models\SystemSetting;
 use App\Models\Transcription;
+use App\Services\Ia\CacheEpoch;
+use App\Services\Ia\StorageFunnelService;
 use App\Services\Ia\TranscriptionPollingService;
 use App\Services\Ia\TranscriptorApiClient;
 use App\Services\Ia\TranscriptorSettings;
@@ -52,7 +55,10 @@ class ApiTranscriptorController extends Controller
         'all' => null,
     ];
 
-    public function __construct(private TranscriptorSettings $settings) {}
+    public function __construct(
+        private TranscriptorSettings $settings,
+        private StorageFunnelService $funnel,
+    ) {}
 
     /**
      * Respuesta cuando el freno de emergencia esta activo.
@@ -172,32 +178,100 @@ class ApiTranscriptorController extends Controller
         // Habilitados primero, luego por nombre. Adjuntamos el conteo de
         // descendientes con transcription_enabled=true para que la UI muestre
         // un badge "N hijos" en storages con scope heredado.
-        $storages = StorageProvider::select(['id', 'name', 'type', 'transcription_enabled', 'base_path'])
+        $storages = StorageProvider::select(['id', 'name', 'type', 'transcription_enabled', 'base_path', 'allow_parent_overlap', 'transcription_priority'])
             ->orderByRaw('transcription_enabled DESC')
             ->orderBy('name')
             ->get();
 
+        // Cantidad = 1 (el storage mismo) + TODAS las carpetas recursivas bajo
+        // base_path en el filesystem. Asi "Emisoras 01 Reg" muestra los 34
+        // medios reales (regiones + carpetas de medios), no solo los
+        // storage_providers hijos. Cache 5 min via StorageFunnelService.
+        $cantidadByStorage = [];
+        foreach ($storages as $s) {
+            $cantidadByStorage[$s->id] = $this->funnel->cantidadFor((int) $s->id);
+        }
+
         $descendantCounts = [];
         $descendantNames = [];
+        $parentScopeByStorage = [];
+        $funnelByStorage = [];
+        $processedRoots = [];
         foreach ($storages as $s) {
             $inheritedScope = StorageProvider::resolveInheritedTranscriptionScope($s->id);
             $descendants = array_values(array_diff($inheritedScope, [$s->id]));
             $descendantCounts[$s->id] = count($descendants);
+            $parentScopeByStorage[$s->id] = empty($descendants) ? null : (int) $s->id;
             if (!empty($descendants)) {
                 $descendantNames[$s->id] = StorageProvider::whereIn('id', $descendants)
                     ->orderBy('name')
                     ->pluck('name')
                     ->all();
             }
+            // Cada storage aporta SU root de scope. Si es padre, root = self.
+            // Si es hoja, root = ancestro mas lejano. Asi un solo countsForScope
+            // sirve a todos los miembros del mismo scope (padre e hijos).
+            $rootId = $s->transcription_enabled ? $this->funnel->resolveRootIdFor((int) $s->id) : null;
+            if ($rootId !== null && !isset($processedRoots[$rootId])) {
+                $scopeCounts = $this->funnel->countsForScope($rootId);
+                // OJO: array_merge() renumera claves numericas (las promueve a
+                // 0, 1, 2...) y rompe el lookup por storage_id. Usar + para
+                // preservar las claves (storage_id).
+                $funnelByStorage = $funnelByStorage + $scopeCounts;
+                $processedRoots[$rootId] = true;
+            }
         }
 
-        $storages = $storages->map(function ($s) use ($descendantCounts, $descendantNames) {
+        // Padres: su funnel muestra el AGREGADO de todos los miembros de su scope
+        // (incluyendose a si mismo). Asi "Emisoras 01 Reg" suma sus descendientes.
+        foreach ($storages as $s) {
+            $scope = StorageProvider::resolveInheritedTranscriptionScope((int) $s->id);
+            if (count($scope) <= 1) {
+                continue;
+            }
+            $agg = ['pending' => 0, 'done' => 0];
+            foreach ($scope as $sid) {
+                if (isset($funnelByStorage[$sid])) {
+                    $agg['pending'] += (int) ($funnelByStorage[$sid]['pending'] ?? 0);
+                    $agg['done'] += (int) ($funnelByStorage[$sid]['done'] ?? 0);
+                }
+            }
+            $funnelByStorage[$s->id] = $agg;
+        }
+
+        $overlapParents = [];
+        $overlapRoots = StorageProvider::query()
+            ->where('allow_parent_overlap', true)
+            ->where('transcription_enabled', true)
+            ->pluck('id')
+            ->all();
+        foreach ($overlapRoots as $rid) {
+            $scope = StorageProvider::resolveInheritedTranscriptionScope((int) $rid);
+            if (count($scope) > 1) {
+                $overlapParents[(int) $rid] = true;
+            }
+        }
+
+        $pendingAlertThreshold = (int) SystemSetting::get('transcriptor_pending_alert_threshold', 5);
+        if ($pendingAlertThreshold < 1) {
+            $pendingAlertThreshold = 5;
+        }
+        if (SystemSetting::get('transcriptor_pending_alert_threshold') === null) {
+            SystemSetting::set('transcriptor_pending_alert_threshold', (string) $pendingAlertThreshold);
+        }
+
+        $storages = $storages->map(function ($s) use ($descendantCounts, $descendantNames, $parentScopeByStorage, $funnelByStorage, $overlapParents, $cantidadByStorage) {
             $s->descendant_count = $descendantCounts[$s->id] ?? 0;
             $s->descendant_names = $descendantNames[$s->id] ?? [];
+            $s->parent_scope_id = $parentScopeByStorage[$s->id] ?? null;
+            $s->funnel = $funnelByStorage[$s->id] ?? ['pending' => 0, 'done' => 0];
+            $s->overlap_warning = isset($overlapParents[(int) $s->id]);
+            $s->cantidad = $cantidadByStorage[$s->id] ?? 1;
             return $s;
         });
 
         $payload['storages'] = $storages;
+        $payload['pending_alert_threshold'] = $pendingAlertThreshold;
 
         // Topes que la interfaz aplica del lado del navegador. Salen de la capa
         // de settings, NO de config(): la vista los leia del fichero y solo
@@ -622,6 +696,16 @@ class ApiTranscriptorController extends Controller
                 'a' => $ahora,
                 'user_id' => Session::get('user_id'),
             ]);
+
+            $rootId = $this->funnel->resolveRootIdFor((int) $storage->id);
+            $this->funnel->invalidate($rootId);
+
+            // Bumpear el epoch invalida caches globales que dependen del estado
+            // transcription_enabled (cobertura de Avisos Inteligentes, listas
+            // de storages filtradas). Sin esto, los dropdowns del módulo
+            // Avisos Inteligentes ven storages recién apagados hasta 60s
+            // después. Mismo patrón que WatermarkReconciler.
+            CacheEpoch::bump();
         }
 
         return response()->json($storage->only(['id', 'name', 'transcription_enabled']));
@@ -1051,6 +1135,99 @@ class ApiTranscriptorController extends Controller
     }
 
     /**
+     * transcriptor-scan-scope-selector: estimación previa del trabajo para el
+     * alcance elegido (today/range/all). Queries acotadas con guardrail — NO
+     * muta nada. El modal muestra el conteo antes de lanzar.
+     */
+    public function estimateScan(Request $request)
+    {
+        $mode = (string) $request->input('mode', 'today');
+        $from = (string) $request->input('from', '');
+        $to = (string) $request->input('to', '');
+
+        if (!in_array($mode, ['today', 'range', 'all'], true)) {
+            return response()->json(['error' => 'Modo inválido'], 422);
+        }
+
+        $folderNames = [];
+        if ($mode === 'range') {
+            try {
+                $folderNames = \App\Services\Ia\DiskScannerService::foldersInRange($from, $to);
+            } catch (\InvalidArgumentException $e) {
+                return response()->json(['error' => $e->getMessage()], 422);
+            }
+            if (empty($folderNames)) {
+                return response()->json(['error' => 'El rango no contiene ningún día'], 422);
+            }
+        }
+
+        $storages = StorageProvider::transcriptionEnabled()->orderBy('name')->get(['id', 'name', 'base_path']);
+        $perStorage = [];
+        $totalMissing = 0;
+        // Guardrail de carga (design D2): 90 carpetas / 50k archivos por request.
+        $estimationCapped = false;
+        $MAX_FILES = 50000;
+
+        foreach ($storages as $storage) {
+            if ($mode === 'today') {
+                $folders = [$folderName = now()->format('dmY')];
+            } elseif ($mode === 'range') {
+                $folders = $folderNames;
+            } else {
+                // 'all': conteo total de archivos sin transcripción del storage.
+                $folders = null;
+            }
+
+            if ($folders === null) {
+                $missing = DB::table('files as f')
+                    ->leftJoin('transcriptions as t', 't.file_id', '=', 'f.id')
+                    ->where('f.storage_provider_id', $storage->id)
+                    ->whereNull('f.deleted_at')
+                    ->whereNull('t.id')
+                    ->count();
+            } else {
+                $missing = DB::table('files as f')
+                    ->leftJoin('transcriptions as t', 't.file_id', '=', 'f.id')
+                    ->where('f.storage_provider_id', $storage->id)
+                    ->whereNull('f.deleted_at')
+                    ->whereNull('t.id')
+                    ->whereIn(DB::raw("split_part(f.path, '/', 1)"), $folders)
+                    ->count();
+                $missing = (int) $missing;
+            }
+
+            $totalMissing += $missing;
+            if ($totalMissing > $MAX_FILES) {
+                $estimationCapped = true;
+            }
+            $perStorage[] = [
+                'id' => $storage->id,
+                'name' => $storage->name,
+                'missing' => (int) $missing,
+            ];
+        }
+
+        // Fallidos: error con archivo vivo (recuperables con include-failed) y
+        // dead (irrecuperables para el reintento: el dry-run de backfill-lost
+        // confirmó 0 upstream-lost; los dead por audio ausente mueren de nuevo).
+        $errorCount = (int) DB::table('transcriptions')->where('state', 'error')->count();
+        $deadCount = (int) DB::table('transcriptions')->where('state', 'dead')->count();
+
+        return response()->json([
+            'mode' => $mode,
+            'folders' => count($folderNames) ?: 1,
+            'files_missing' => $totalMissing,
+            'estimation_capped' => $estimationCapped,
+            'error_recoverable' => $mode !== 'today' ? $errorCount : null,
+            'dead_irrecoverable' => $mode !== 'today' ? $deadCount : null,
+            'dead_note' => $mode !== 'today'
+                ? 'Los dead NO se reintentan en el escaneo; requieren backfill-lost (solo upstream-lost).'
+                : null,
+            'storages' => $perStorage,
+        ]);
+    }
+
+    /**
      * Procesamiento por lotes BACKGROUND: lanza el comando artisan
      * transcription:scan-and-submit en un proceso separado (nohup) y devuelve
      * inmediatamente un run_id. El frontend consulta /batch-status/{runId}
@@ -1116,7 +1293,41 @@ class ApiTranscriptorController extends Controller
             $cmd .= ' --alerts';
         }
 
+        // transcriptor-scan-scope-selector: alcance elegible desde la UI.
+        // today = comportamiento vigente (nada extra); range/all = flags al comando.
+        $scope = $request->input('scope');
+        $scopeMode = is_array($scope) ? (string) ($scope['mode'] ?? '') : '';
+        if ($scopeMode === 'range') {
+            $fromDmY = (string) ($scope['from'] ?? '');
+            $toDmY = (string) ($scope['to'] ?? '');
+            try {
+                // Validar ANTES de lanzar: from/to en formato dmY, from<=to, to<=hoy.
+                $folders = \App\Services\Ia\DiskScannerService::foldersInRange($fromDmY, $toDmY);
+            } catch (\InvalidArgumentException $e) {
+                return response()->json(['error' => $e->getMessage()], 422);
+            }
+            $todayDmY = now()->format('dmY');
+            if (count($folders) === 1 && $folders[0] === $todayDmY) {
+                // Rango de un solo día = hoy; equivalente, sin flags extra.
+            } elseif (end($folders) > $todayDmY) {
+                return response()->json(['error' => 'El rango no puede incluir fechas futuras'], 422);
+            }
+            $cmd .= ' --from=' . escapeshellarg($fromDmY) . ' --to=' . escapeshellarg($toDmY);
+        } elseif ($scopeMode === 'all') {
+            $cmd .= ' --all';
+        }
+
         try {
+            // Registrar el runId en la lista de batches activos ANTES de lanzar
+            // el worker. Si dos requests corren casi simultáneas, el trait
+            // `add` semantics de Cache ya evita duplicados; acá solo agregamos
+            // para que el widget global pueda descubrirlo.
+            $activeKey = 'transcription_batch:active_runs';
+            $activeList = \Illuminate\Support\Facades\Cache::get($activeKey, []);
+            if (!in_array($runId, $activeList, true)) {
+                $activeList[] = $runId;
+                \Illuminate\Support\Facades\Cache::put($activeKey, $activeList, now()->addHours(2));
+            }
             $launched = $this->execBackground($cmd, 'transcriptor:scan', $logFile, $cacheKey);
         } catch (\Throwable $e) {
             \Illuminate\Support\Facades\Cache::put($cacheKey, [

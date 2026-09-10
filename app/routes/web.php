@@ -95,6 +95,9 @@ Route::middleware(['auth', 'admin'])->group(function () {
     Route::get('/correo', [App\Http\Controllers\CorreoAdminController::class, 'index']);
 });
 
+// Background jobs indicator (add-bg-job-indicator-widget)
+Route::middleware(['auth', 'admin'])->get('/bg-jobs/active', [App\Http\Controllers\BgJobsController::class, 'active'])->name('bg-jobs.active');
+
 // mis-avisos-admin-preview: lista de usuarios impersonables por el admin.
 Route::middleware(['auth', 'admin'])->get('/admin/preview/impersonatable-users', [App\Http\Controllers\Admin\AdminPreviewController::class, 'impersonatableUsers']);
 
@@ -128,6 +131,7 @@ Route::middleware('auth')->group(function () {
     Route::post('/files/{file}/move', [App\Http\Controllers\FileController::class, 'move']);
     Route::get('/files/{file}/text-content', [App\Http\Controllers\FileController::class, 'textContent']);
     Route::put('/files/{file}/text-content', [App\Http\Controllers\FileController::class, 'saveTextContent']);
+    Route::get('/files/{file}/transcription', [App\Http\Controllers\FileController::class, 'transcription']);
 
     Route::get('/media/{file}/preview', [App\Http\Controllers\MediaPreviewController::class, 'preview']);
     Route::get('/media/{file}/thumbnail', [App\Http\Controllers\MediaPreviewController::class, 'thumbnail']);
@@ -198,6 +202,7 @@ Route::middleware(['auth', 'admin'])->prefix('ia')->group(function () {
     Route::post('/api-transcriptor/storages/{id}/process-folder', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'processFolder']);
     Route::post('/api-transcriptor/storages/{id}/process-day', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'processDay']);
     Route::post('/api-transcriptor/process-batch', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'processBatch']);
+    Route::post('/api-transcriptor/scan/estimate', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'estimateScan']);
     Route::get('/api-transcriptor/batch-status/{runId}', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'batchStatus'])->where('runId', '[A-Za-z0-9_\-]+');
     // throttle: este endpoint corre ffmpeg + POST SINCRONOS dentro de php-fpm.
     // Defensa en profundidad, no el limitador principal: el tope real es el pool
@@ -238,9 +243,32 @@ Route::middleware(['auth', 'admin'])->prefix('ia')->group(function () {
     // Runner en background (avisos-scan-bg-runner): sobrevive recargas y
     // cortes de red; la UI hace polling del runId.
     Route::post('/avisos-inteligentes/scan/run-bg', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'runScanBackground'])->middleware('throttle:10,1');
+    Route::post('/avisos-inteligentes/scan/run-bg/preview', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'runScanBackgroundPreview'])->middleware('throttle:30,1');
     Route::get('/avisos-inteligentes/scan/run-bg/active', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'scanRunActive']);
     Route::get('/avisos-inteligentes/scan/run-bg/{runId}', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'scanRunStatus'])->where('runId', '[A-Za-z0-9_\-]+');
     Route::post('/avisos-inteligentes/scan/run-bg/{runId}/stop', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'scanRunStop'])->middleware('throttle:10,1')->where('runId', '[A-Za-z0-9_\-]+');
+
+    Route::get('/avisos-inteligentes/scan/coverage', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'coverage']);
+    Route::post('/avisos-inteligentes/scan/rewind', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'rewindWatermark'])->middleware(['throttle:10,1', 'audit.admin.action']);
+    Route::post('/avisos-inteligentes/scan/full', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'runFullScan'])->middleware(['throttle:10,1', 'audit.admin.action']);
+    Route::post('/avisos-inteligentes/scan/full-bg', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'runFullScanBackground'])->middleware(['throttle:5,1', 'audit.admin.action']);
+    Route::get('/avisos-inteligentes/scan/full-bg/{runId}', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'fullScanStatus'])->where('runId', '[A-Za-z0-9_\-]+');
+    Route::post('/avisos-inteligentes/scan/full-bg/{runId}/stop', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'fullScanStop'])->middleware('throttle:10,1')->where('runId', '[A-Za-z0-9_\-]+');
+    Route::post('/avisos-inteligentes/scan/reconcile', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'runReconcile'])->middleware('throttle:5,1');
+    Route::get('/avisos-inteligentes/scan/audit', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'auditLog']);
+    Route::get('/avisos-inteligentes/scan/audit/export', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'auditLogExport']);
+    Route::get('/avisos-inteligentes/scan/audit/export-xlsx', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'auditLogExportXlsx']);
+    Route::get('/avisos-inteligentes/scan/coverage/stats', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'coverageStats']);
+    Route::get('/avisos-inteligentes/storages', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'storages']);
+    Route::get('/avisos-inteligentes/scan/dashboard', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'dashboard']);
+    Route::get('/avisos-inteligentes/scan/audit/heatmap', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'auditHeatmap']);
+    Route::post('/avisos-inteligentes/scan/retention', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'setRetention'])->middleware('throttle:5,1');
+
+    // Mis Avisos (cliente): cobertura del propio usuario.
+    Route::middleware(['auth', 'misavisos'])->prefix('mis-avisos')->group(function () {
+        Route::get('/coverage', [App\Http\Controllers\MisAvisosCoverageController::class, 'index']);
+        Route::post('/rewind', [App\Http\Controllers\MisAvisosCoverageController::class, 'rewind'])->middleware('throttle:5,1');
+    });
     Route::get('/avisos-inteligentes/{userId}', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'show']);
     Route::post('/avisos-inteligentes/{userId}', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'updateUser']);
     Route::post('/avisos-inteligentes/{userId}/emails', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'storeEmail']);
