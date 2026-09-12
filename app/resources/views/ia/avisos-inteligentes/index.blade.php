@@ -25,7 +25,7 @@
         <button @click="activeTab = 'escaneo'; loadScan()"
                 class="px-4 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px"
                 :class="activeTab === 'escaneo' ? 'border-brand-600 text-brand-700' : 'border-transparent text-slate-500 hover:text-slate-700'">
-            <i class="fas fa-radar mr-1.5"></i>Escaneo
+            <i class="fas fa-broadcast-tower mr-1.5"></i>Escaneo
         </button>
         <button @click="activeTab = 'dashboard'; loadDashboard()"
                 class="px-4 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px"
@@ -176,7 +176,7 @@
         <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
             <div class="flex items-start justify-between gap-4 flex-wrap mb-4">
                 <div>
-                    <h2 class="text-base font-semibold text-slate-800"><i class="fas fa-radar mr-2 text-brand-600"></i>Escaneo de transcripciones</h2>
+                    <h2 class="text-base font-semibold text-slate-800"><i class="fas fa-broadcast-tower mr-2 text-brand-600"></i>Escaneo de transcripciones</h2>
                     <p class="text-xs text-slate-500 mt-0.5">Busca transcripciones terminadas sin avisos y genera las menciones de las keywords de los clientes. El envío de correos sigue gestionándose por la cadencia de cada cliente.</p>
                 </div>
                 <div class="flex items-center gap-3">
@@ -317,7 +317,7 @@
                     ×
                 </button>
                 <h2 class="text-lg font-bold text-slate-800 mb-1 flex items-center gap-2 pr-8">
-                    <i class="fas fa-radar text-brand-600"></i>Escaneo de menciones
+                    <i class="fas fa-broadcast-tower text-brand-600"></i>Escaneo de menciones
                 </h2>
 
                 {{-- Fase confirm: ventana temporal + resumen antes de arrancar --}}
@@ -603,7 +603,7 @@
 
             <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
                 <h3 class="text-sm font-semibold text-slate-800 mb-3">
-                    <i class="fas fa-radar mr-2 text-brand-600"></i>Últimas 3 corridas de scan
+                    <i class="fas fa-broadcast-tower mr-2 text-brand-600"></i>Últimas 3 corridas de scan
                 </h3>
                 <ul class="space-y-2">
                     <template x-for="s in dashboard.scans_recent || []" :key="s.id">

@@ -268,7 +268,7 @@
                     </a>
 
                     <a href="/ia/avisos-inteligentes?activeTab=dashboard" data-nav-path="/ia/avisos-inteligentes?activeTab=dashboard"                       class="nav-link flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg transition-colors text-brand-200 hover:bg-brand-800 hover:text-white">
-                        <i class="nav-icon fas fa-radar w-5 text-center text-brand-300"></i>
+                        <i class="nav-icon fas fa-broadcast-tower w-5 text-center text-brand-300"></i>
                         <span x-show="sidebarOpen" x-transition class="font-medium text-sm">Avisos Inteligentes</span>
                     </a>
 
@@ -765,8 +765,14 @@
     function _instrEscHandler(e) { if (e.key === 'Escape') closeInstructivo(); }
     </script>
 
-    {{-- Indicador global de jobs en background (add-bg-job-indicator-widget) --}}
-    @include('components.bg-job-indicator')
+    {{-- Indicador global de jobs en background (add-bg-job-indicator-widget).
+         Solo se renderiza para admin: el endpoint /bg-jobs/active requiere rol
+         admin, así evitar incluir el widget en /login (no autenticado → 401) y
+         en dashboards de clientes (autenticados sin rol admin → 403) elimina el
+         bucle de retries cada 5s que satura la consola. --}}
+    @if(session('user_role') === 'admin')
+        @include('components.bg-job-indicator')
+    @endif
 
     {{-- Flags operacionales inyectados al frontend para que el blade los pueda
          chequear (e.g. show/hide del botón "Ver transcripción" en Mis Archivos). --}}
@@ -774,6 +780,13 @@
     window.tcloudFeatures = window.tcloudFeatures || {};
     window.tcloudFeatures.mis_archivos_transcript_viewer_enabled =
         {!! json_encode((bool) env('FEATURE_MIS_ARCHIVOS_TRANSCRIPT_VIEWER', true)) !!};
+
+    {{-- Lista de prefijos URL que participan en admin preview (cambio
+         `fix-mis-avisos-admin-preview-viewer-endpoints`). El patch `apiFetch`
+         en `mis-avisos/index.blade.php` la consume para auto-aplicar
+         `?as_user=X` cuando la sesión está impersonando un cliente.
+         Fuente única de verdad: AdminPreviewSwap::PREVIEW_AWARE_PREFIXES. --}}
+    window.__adminPreviewAwarePrefixes = {!! json_encode(\App\Http\Middleware\AdminPreviewSwap::PREVIEW_AWARE_PREFIXES) !!};
     </script>
 
     {{-- Store Alpine compartido para el visor de transcripción (change
