@@ -62,7 +62,7 @@
                     {{-- Cola vs objetivo --}}
                     <div data-tour="cfg-queue" class="md:col-span-2">
                         <div class="flex items-baseline justify-between mb-1">
-                            <span class="text-xs text-slate-500">Cola Redis</span>
+                            <span class="text-xs text-slate-500">Cola de despacho</span>
                             <span class="text-xs font-mono text-slate-600">
                                 <span x-text="cfgRuntime?.queue_depth ?? '—'"></span> / <span x-text="cfgRuntime?.queue_target"></span>
                             </span>
@@ -118,61 +118,105 @@
             {{-- Grupos de knobs --}}
             <template x-for="group in cfgGroups()" :key="group">
                 <div class="mb-4 bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden" :data-tour="'cfg-group-' + group">
-                    <div class="px-5 py-3 border-b border-slate-100 bg-slate-50/60">
-                        <h3 class="text-sm font-semibold text-slate-700" x-text="groupLabel(group)"></h3>
-                        <p class="text-xs text-slate-400 mt-0.5" x-text="groupHelp(group)"></p>
+                    <div class="px-5 py-3 border-b border-slate-100 bg-slate-50/60 flex items-center gap-3">
+                        <i class="fas text-brand-500 text-base" :class="cfgGroupIcons[group] || 'fa-cog'"></i>
+                        <div class="flex-1 min-w-0">
+                            <h3 class="text-sm font-semibold text-slate-700" x-text="groupLabel(group)"></h3>
+                            <p class="text-xs text-slate-400 mt-0.5" x-text="groupHelp(group)"></p>
+                        </div>
                     </div>
                     <div class="divide-y divide-slate-100">
                         <template x-for="k in cfgKeysIn(group)" :key="k">
-                            <div class="px-5 py-3.5 flex items-start gap-4" :data-tour="'cfg-knob-' + k">
-                                <div class="flex-1 min-w-0">
-                                    <div class="flex items-center gap-2 flex-wrap">
-                                        <label class="text-sm font-medium text-slate-700" x-text="cfgMeta[k].label"></label>
-                                        <span x-show="cfgMeta[k].source === 'bd'"
-                                              class="text-[10px] px-1.5 py-0.5 bg-brand-100 text-brand-700 rounded font-semibold">modificado</span>
-                                        <code class="text-[10px] text-slate-400" x-text="k"></code>
+                            <div class="px-5 py-3.5" :data-tour="'cfg-knob-' + k">
+                                <div class="flex items-start gap-4">
+                                    <div class="flex-shrink-0 w-7 pt-0.5">
+                                        <i class="fas text-slate-400 text-sm" :class="cfgMeta[k].icon || 'fa-cog'"></i>
                                     </div>
-                                    <p class="text-xs text-slate-500 mt-1 leading-relaxed" x-text="cfgMeta[k].help"></p>
-                                    <p class="text-[11px] text-slate-400 mt-1">
-                                        Por defecto: <span class="font-mono" x-text="String(cfgMeta[k].default)"></span>
-                                        <span x-text="cfgMeta[k].source === 'env' ? '(.env)' : '(archivo)'"></span>
-                                        <button x-show="cfgMeta[k].source === 'bd'" @click="resetKey(k)"
-                                                class="ml-2 text-brand-600 hover:underline">restaurar</button>
-                                    </p>
-                                    <p x-show="cfgErrors[k]" class="text-[11px] text-red-600 mt-1 font-medium" x-text="cfgErrors[k]"></p>
-                                </div>
-
-                                <div class="flex-shrink-0 w-40">
-                                    {{-- booleano --}}
-                                    <template x-if="cfgMeta[k].type === 'bool'">
-                                        <button @click="cfg[k] = !cfg[k]; cfgDirty = true"
-                                                class="w-11 h-6 rounded-full transition-colors relative"
-                                                :class="cfg[k] ? 'bg-brand-500' : 'bg-slate-300'">
-                                            <span class="absolute top-0.5 w-5 h-5 bg-white rounded-full transition-all shadow"
-                                                  :class="cfg[k] ? 'left-[22px]' : 'left-0.5'"></span>
-                                        </button>
-                                    </template>
-                                    {{-- enum --}}
-                                    <template x-if="cfgMeta[k].options">
-                                        <select x-model="cfg[k]" @change="cfgDirty = true"
-                                                class="w-full px-2.5 py-1.5 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
-                                            <template x-for="o in cfgMeta[k].options" :key="o">
-                                                <option :value="o" x-text="o"></option>
-                                            </template>
-                                        </select>
-                                    </template>
-                                    {{-- entero --}}
-                                    <template x-if="cfgMeta[k].type === 'int'">
-                                        <div>
-                                            <input type="number" x-model.number="cfg[k]" @input="cfgDirty = true"
-                                                   :min="cfgMeta[k].min" :max="cfgMeta[k].max"
-                                                   class="w-full px-2.5 py-1.5 text-sm border rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500"
-                                                   :class="cfgErrors[k] ? 'border-red-300' : 'border-slate-200'">
-                                            <p class="text-[10px] text-slate-400 mt-1 text-right">
-                                                <span x-text="cfgMeta[k].min"></span>–<span x-text="cfgMeta[k].max"></span>
-                                            </p>
+                                    <div class="flex-1 min-w-0">
+                                        <div class="flex items-center gap-2 flex-wrap">
+                                            <label class="text-sm font-medium text-slate-700" x-text="cfgMeta[k].label"></label>
+                                            <span x-show="cfgMeta[k].scope"
+                                                  class="text-[10px] px-1.5 py-0.5 rounded font-semibold uppercase tracking-wide"
+                                                  :class="scopeBadgeClass(cfgMeta[k].scope)"
+                                                  x-text="scopeBadgeLabel(cfgMeta[k].scope)"></span>
+                                            <span x-show="cfgMeta[k].state && cfgMeta[k].state !== 'live'"
+                                                  class="text-[10px] px-1.5 py-0.5 rounded font-semibold uppercase tracking-wide"
+                                                  :class="stateBadgeClass(cfgMeta[k].state)"
+                                                  x-text="stateBadgeLabel(cfgMeta[k].state)"></span>
+                                            <span x-show="cfgMeta[k].source === 'bd'"
+                                                  class="text-[10px] px-1.5 py-0.5 bg-brand-100 text-brand-700 rounded font-semibold">modificado</span>
+                                            <code class="text-[10px] text-slate-400" x-text="k"></code>
                                         </div>
-                                    </template>
+                                        <p class="text-xs text-slate-500 mt-1 leading-relaxed" x-text="cfgMeta[k].help"></p>
+                                        <button x-show="cfgMeta[k].detail"
+                                                @click="toggleDetail(k)"
+                                                class="text-[11px] mt-1 text-brand-600 hover:underline flex items-center gap-1">
+                                            <i class="fas text-[9px]" :class="detailOpen[k] ? 'fa-chevron-down' : 'fa-chevron-right'"></i>
+                                            <span x-text="detailOpen[k] ? 'Ocultar detalle' : 'Ver detalle'"></span>
+                                        </button>
+                                        <div x-show="detailOpen[k] && cfgMeta[k].detail"
+                                             x-transition.opacity.duration.150ms
+                                             class="mt-2 p-3 bg-slate-50 border border-slate-200 rounded-lg text-[11px] text-slate-700 space-y-2">
+                                            <template x-if="cfgMeta[k].detail && cfgMeta[k].detail.alcance">
+                                                <div>
+                                                    <p class="font-semibold text-slate-600 mb-0.5">Alcance</p>
+                                                    <p class="leading-relaxed" x-text="cfgMeta[k].detail.alcance"></p>
+                                                </div>
+                                            </template>
+                                            <template x-if="cfgMeta[k].detail && cfgMeta[k].detail.cuando_tocar">
+                                                <div>
+                                                    <p class="font-semibold text-slate-600 mb-0.5">Cuándo tocar</p>
+                                                    <p class="leading-relaxed" x-text="cfgMeta[k].detail.cuando_tocar"></p>
+                                                </div>
+                                            </template>
+                                            <template x-if="cfgMeta[k].detail && cfgMeta[k].detail.riesgos">
+                                                <div>
+                                                    <p class="font-semibold text-slate-600 mb-0.5">Riesgos</p>
+                                                    <p class="leading-relaxed" x-text="cfgMeta[k].detail.riesgos"></p>
+                                                </div>
+                                            </template>
+                                        </div>
+                                        <p class="text-[11px] text-slate-400 mt-1">
+                                            Por defecto: <span class="font-mono" x-text="String(cfgMeta[k].default)"></span>
+                                            <span x-text="cfgMeta[k].source === 'env' ? '(.env)' : '(archivo)'"></span>
+                                            <button x-show="cfgMeta[k].source === 'bd'" @click="resetKey(k)"
+                                                    class="ml-2 text-brand-600 hover:underline">restaurar</button>
+                                        </p>
+                                        <p x-show="cfgErrors[k]" class="text-[11px] text-red-600 mt-1 font-medium" x-text="cfgErrors[k]"></p>
+                                    </div>
+
+                                    <div class="flex-shrink-0 w-40">
+                                        {{-- booleano --}}
+                                        <template x-if="cfgMeta[k].type === 'bool'">
+                                            <button @click="cfg[k] = !cfg[k]; cfgDirty = true"
+                                                    class="w-11 h-6 rounded-full transition-colors relative"
+                                                    :class="cfg[k] ? 'bg-brand-500' : 'bg-slate-300'">
+                                                <span class="absolute top-0.5 w-5 h-5 bg-white rounded-full transition-all shadow"
+                                                      :class="cfg[k] ? 'left-[22px]' : 'left-0.5'"></span>
+                                            </button>
+                                        </template>
+                                        {{-- enum --}}
+                                        <template x-if="cfgMeta[k].options">
+                                            <select x-model="cfg[k]" @change="cfgDirty = true"
+                                                    class="w-full px-2.5 py-1.5 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+                                                <template x-for="o in cfgMeta[k].options" :key="o">
+                                                    <option :value="o" x-text="o"></option>
+                                                </template>
+                                            </select>
+                                        </template>
+                                        {{-- entero --}}
+                                        <template x-if="cfgMeta[k].type === 'int'">
+                                            <div>
+                                                <input type="number" x-model.number="cfg[k]" @input="cfgDirty = true"
+                                                       :min="cfgMeta[k].min" :max="cfgMeta[k].max"
+                                                       class="w-full px-2.5 py-1.5 text-sm border rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500"
+                                                       :class="cfgErrors[k] ? 'border-red-300' : 'border-slate-200'">
+                                                <p class="text-[10px] text-slate-400 mt-1 text-right">
+                                                    <span x-text="cfgMeta[k].min"></span>–<span x-text="cfgMeta[k].max"></span>
+                                                </p>
+                                            </div>
+                                        </template>
+                                    </div>
                                 </div>
                             </div>
                         </template>
