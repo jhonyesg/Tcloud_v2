@@ -1278,19 +1278,31 @@ function misAvisosPage() {
                     });
                 }
                 const g = byKey.get(key);
-                g.hits.push({
-                    id: r.id,
-                    matched_at: r.matched_at,
-                    minute_label: r.minute_label,
-                    start_seconds: r.start_seconds,
-                    segment_id: r.segment_id,
-                    snippet: r.snippet,
-                    occurrences: r.occurrences,
-                    // change mis-avisos-media-kind-indicator: media_kind por hit
-                    // para que el sub-panel expandido pueda mostrar su ícono.
-                    media_kind: r.media_kind || 'other',
-                    filename: r.filename,
-                });
+                // hotfix mis-avisos-empty-dates-snippet: el backend ya devuelve
+                // filas AGRUPADAS con `r.hits: [...]` anidado. Antes hacíamos
+                // push de un objeto con `snippet: r.snippet` (undefined en
+                // filas agrupadas) y el panel expandido mostraba solo el
+                // índice "(idx+1)" sin texto ni minuto. Si la fila entrante
+                // ya viene con su array de hits, lo usamos directamente; el
+                // path de push se conserva como fallback legacy por si en el
+                // futuro alguien devuelve filas planas.
+                if (Array.isArray(r.hits) && r.hits.length > 0) {
+                    g.hits = r.hits.slice();
+                } else {
+                    g.hits.push({
+                        id: r.id,
+                        matched_at: r.matched_at,
+                        minute_label: r.minute_label,
+                        start_seconds: r.start_seconds,
+                        segment_id: r.segment_id,
+                        snippet: r.first_snippet ?? r.snippet,
+                        occurrences: r.occurrences,
+                        // change mis-avisos-media-kind-indicator: media_kind por hit
+                        // para que el sub-panel expandido pueda mostrar su ícono.
+                        media_kind: r.media_kind || 'other',
+                        filename: r.filename,
+                    });
+                }
             }
             // Ordenar por la mención más reciente del grupo DESC.
             return Array.from(byKey.values()).sort((a, b) => {
