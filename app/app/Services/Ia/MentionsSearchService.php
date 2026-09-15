@@ -116,60 +116,157 @@ class MentionsSearchService
         $dateField = $this->resolveDateField($filters['date_field'] ?? null);
 
         $q = $this->visibleHitsQuery($user);
+        // Filtro del día en forma sargable: usa el MISMO literal de fecha que
+        // binda whereDate(..., today()) pero sin el cast ::date, que bloquea
+        // transcriptions_recorded_at_index y hacia seq-scan de hits en la
+        // primera carga y en cada poll. Medición 2026-09-12 (user 1, pivote real):
+        // count 111ms -> 26ms, página 93ms -> 29ms.
+        $from = today()->toDateString() . ' 00:00:00';
+        $to = today()->addDay()->toDateString() . ' 00:00:00';
         if ($dateField === 'program') {
-            $q->whereDate('t.recorded_at', today());
+            $q->where('t.recorded_at', '>=', $from)->where('t.recorded_at', '<', $to);
         } else {
-            $q->whereDate('h.matched_at', today());
+            $q->where('h.matched_at', '>=', $from)->where('h.matched_at', '<', $to);
         }
 
         $this->applyHitFilters($q, $user, $filters);
 
-        $page = $q->orderByDesc($dateField === 'program' ? 't.recorded_at' : 'h.matched_at')
-            ->select($this->hitSelect())
-            ->paginate($perPage);
-
-        // Total de apariciones por (grabación, keyword) para toda la página
-        // en UNA consulta agrupada (sin N+1).
-        $totals = $this->occurrenceTotals($page->items(), $user);
-
-        return $page->through(function ($r) use ($user, $totals) {
-            return $this->hitRow($r, $user, $totals);
-        });
+        // Paginación AGRUPADA: una página = $perPage grupos (archivo+keyword),
+        // cada uno con TODAS sus menciones. Antes la página era de hits planos
+        // y el navegador agrupaba después: 25 hits con keywords de alta
+        // frecuencia colapsaban a 4-5 filas visibles (bug reportado 2026-09-12).
+        return $this->groupedHitsPage(
+            $q,
+            $user,
+            $perPage,
+            $dateField === 'program' ? 't.recorded_at' : 'h.matched_at'
+        );
     }
 
     /**
-     * Total de apariciones de la keyword en TODA la grabación (todas sus
-     * segmentos con hits del mismo usuario+keyword), en UNA consulta por
-     * página: SUM(occurrences) agrupado por (transcription_id, keyword_id).
+     * Paginación AGRUPADA por (transcription_id, keyword_id): una página de
+     * $perPage GRUPOS (archivo+keyword), cada uno con TODAS sus menciones.
+     *
+     * Dos queries acotadas (sin agregación masiva):
+     *  1. Identidades de grupo con MAX(fecha) + SUM(occurrences) para
+     *     orden/paginación (una fila por grupo).
+     *  2. TODOS los hits de los pares (t,k) de la página en una sola query,
+     *     re-hidratados con hitRow() para capabilities por fila.
+     *
+     * $sort: ['column' => ..., 'direction' => 'asc|desc'] con whitelist de
+     * columnas agregadas; el resto ordena por group_date DESC (lo más
+     * reciente del grupo primero).
      */
-    private function occurrenceTotals(array $rows, User $user): array
+    private function groupedHitsPage(Builder $q, User $user, int $perPage, string $dateColumn, ?array $sort = null): LengthAwarePaginator
     {
-        $pairs = collect($rows)
-            ->filter(fn ($r) => isset($r->transcription_id, $r->keyword_id))
-            ->map(fn ($r) => [$r->transcription_id, $r->keyword_id])
-            ->values();
+        $perPage = max(1, $perPage);
 
-        if ($pairs->isEmpty()) {
-            return [];
+        // Paso 1: identidades de grupo + agregados para orden y paginación.
+        $agg = (clone $q)
+            ->selectRaw("h.transcription_id, h.keyword_id, MAX({$dateColumn}) AS group_date, COUNT(*) AS hits_count, COALESCE(SUM(h.occurrences), 0) AS occ_total")
+            ->groupBy('h.transcription_id', 'h.keyword_id');
+
+        // Sort del cliente sobre agregados (whitelist); desempate determinista.
+        $sortCol = is_array($sort) ? ($sort['column'] ?? null) : null;
+        $sortDir = (is_array($sort) ? ($sort['direction'] ?? 'desc') : 'desc') === 'asc' ? 'asc' : 'desc';
+        $sortMap = [
+            'recorded_at' => 'group_date',
+            'matched_at'  => 'group_date',
+            'occurrences' => 'occ_total',
+            'hits'        => 'hits_count',
+        ];
+        if ($sortCol && isset($sortMap[$sortCol])) {
+            $agg->orderBy($sortMap[$sortCol], $sortDir);
+        }
+        $agg->orderByDesc('group_date')->orderByDesc('h.transcription_id')->orderByDesc('h.keyword_id');
+
+        // Total real de GRUPOS + página: la agregación completa se calcula UNA
+        // vez (12k grupos típicos = filas livianas de ints) y la página se
+        // corta en PHP. Evita una segunda pasada COUNT(DISTINCT) sobre la
+        // misma base pesada de joins (medido: ~430ms extra por request).
+        $allGroups = $agg->get()->all();
+        $total = count($allGroups);
+
+        $page = \Illuminate\Pagination\Paginator::resolveCurrentPage();
+        $offset = ($page - 1) * $perPage;
+        $groupRows = array_slice($allGroups, $offset, $perPage);
+        if (empty($groupRows)) {
+            return new \Illuminate\Pagination\LengthAwarePaginator([], $total, $perPage, $page, [
+                'path' => '/mis-avisos',
+            ]);
         }
 
-        $totals = [];
-        foreach ($pairs->chunk(100) as $chunk) {
-            $tIds = $chunk->map(fn ($p) => $p[0])->unique()->values();
-            $kIds = $chunk->map(fn ($p) => $p[1])->unique()->values();
-            DB::table('segment_keyword_hits as h')
-                ->join('transcription_segments as s', 's.id', '=', 'h.segment_id')
-                ->whereIn('h.transcription_id', $tIds)
-                ->whereIn('h.keyword_id', $kIds)
-                ->groupBy('h.transcription_id', 'h.keyword_id')
-                ->selectRaw('h.transcription_id, h.keyword_id, COALESCE(SUM(h.occurrences), 0) AS total')
-                ->get()
-                ->each(function ($row) use (&$totals) {
-                    $totals["{$row->transcription_id}:{$row->keyword_id}"] = (int) $row->total;
-                });
+        // Paso 2: TODOS los hits de los grupos de esta página, en UNA query.
+        $tIds = array_map(fn ($g) => (int) $g->transcription_id, $groupRows);
+        $kIds = array_values(array_unique(array_map(fn ($g) => (int) $g->keyword_id, $groupRows)));
+        $pairsKey = fn ($t, $k) => ((int) $t) . ':' . ((int) $k);
+
+        $pagePairs = [];
+        foreach ($groupRows as $g) {
+            $pagePairs[$pairsKey($g->transcription_id, $g->keyword_id)] = true;
         }
 
-        return $totals;
+        $flat = (clone $q)
+            ->whereIn('h.transcription_id', $tIds)
+            ->whereIn('h.keyword_id', $kIds)
+            ->select($this->hitSelect())
+            // Intra-grupo: menciones por fecha DESC (la primera es la más
+            // reciente, compatible con los campos first_* de la UI).
+            ->orderByDesc($dateColumn)
+            ->orderByDesc('h.id')
+            ->get()
+            ->all();
+
+        $hydrated = [];
+        foreach ($flat as $r) {
+            $key = $pairsKey($r->transcription_id, $r->keyword_id);
+            // Filtrar pares cruzados: la query por (t IN, k IN) puede traer
+            // hits de un par (t,k) que no está en esta página.
+            if (!isset($pagePairs[$key])) {
+                continue;
+            }
+            $hydrated[$key][] = $this->hitRow($r, $user, []);
+        }
+
+        // Armar grupos en el orden EXACTO del paso 1.
+        $groups = [];
+        foreach ($groupRows as $g) {
+            $key = $pairsKey($g->transcription_id, $g->keyword_id);
+            $rows = $hydrated[$key] ?? [];
+            if (empty($rows)) {
+                continue;
+            }
+            $first = $rows[0];
+            $groups[] = [
+                'key' => 'g:' . $key,
+                'file_id' => $first['file_id'],
+                'filename' => $first['filename'],
+                'file_url' => $first['file_url'],
+                'storage' => $first['storage'],
+                'storage_id' => $first['storage_id'],
+                'parent_id' => $first['parent_id'],
+                'transcription_id' => (int) $g->transcription_id,
+                'keyword' => $first['keyword'],
+                'keyword_id' => (int) $g->keyword_id,
+                'occurrences_in_media' => (int) $g->occ_total,
+                'hits_count' => (int) $g->hits_count,
+                'can_view_file' => $first['can_view_file'],
+                'can_clip' => $first['can_clip'],
+                'first_id' => $first['id'],
+                'first_matched_at' => $first['matched_at'],
+                'first_recorded_at' => $first['recorded_at'],
+                'first_minute_label' => $first['minute_label'],
+                'first_start_seconds' => $first['start_seconds'],
+                'first_segment_id' => $first['segment_id'],
+                'first_snippet' => $first['snippet'],
+                'first_media_kind' => $first['media_kind'],
+                'hits' => $rows,
+            ];
+        }
+
+        return new \Illuminate\Pagination\LengthAwarePaginator($groups, $total, $perPage, $page, [
+            'path' => '/mis-avisos',
+        ]);
     }
 
     /**
@@ -202,15 +299,9 @@ class MentionsSearchService
 
         $this->applyHitFilters($q, $user, $filters);
 
-        $page = $q->orderByDesc($dateColumn)
-            ->select($this->hitSelect())
-            ->paginate(max(1, $perPage));
-
-        $totals = $this->occurrenceTotals($page->items(), $user);
-
-        return $page->through(function ($r) use ($user, $totals) {
-            return $this->hitRow($r, $user, $totals);
-        });
+        // Paginación AGRUPADA (misma semántica que todayHits): una página =
+        // $perPage grupos (archivo+keyword) con todas sus menciones.
+        return $this->groupedHitsPage($q, $user, max(1, $perPage), $dateColumn);
     }
 
     /**
@@ -321,34 +412,51 @@ class MentionsSearchService
         $q = DB::table('transcription_segments')
             ->where('transcription_id', $transcriptionId);
 
+        // hotfix mis-avisos-transcript-duplicate-segments: si la transcripción
+        // se reprocesó, la tabla `transcription_segments` puede tener varias
+        // filas por (transcription_id, segment_index) con IDs distintos. Sin
+        // este DISTINCT ON, el visor muestra cada segmento dos veces. PG exige
+        // que la columna de DISTINCT ON sea la primera en ORDER BY para que
+        // la selección sea determinista; como el resto del bloque ya ordena
+        // por segment_index, agregamos `id` como tie-breaker estable.
+        $select = 'DISTINCT ON (segment_index) ' . implode(', ', $this->segmentSelect());
+
         if ($anchorSegmentId !== null) {
             $anchorIndex = (int) (clone $q)
                 ->where('id', $anchorSegmentId)
                 ->value('segment_index');
             $half = (int) floor($window / 2);
             $rows = $q
+                ->selectRaw($select)
                 ->where('segment_index', '>=', max(0, $anchorIndex - $half))
                 ->where('segment_index', '<=', $anchorIndex + $half)
                 ->orderBy('segment_index')
+                ->orderBy('id')
                 ->limit($window)
-                ->get($this->segmentSelect())->all();
+                ->get()->all();
         } elseif ($afterIndex !== null) {
             $rows = $q
+                ->selectRaw($select)
                 ->where('segment_index', '>', $afterIndex)
                 ->orderBy('segment_index')
+                ->orderBy('id')
                 ->limit($pageLimit)
-                ->get($this->segmentSelect())->all();
+                ->get()->all();
         } elseif ($beforeIndex !== null) {
             $rows = array_reverse($q
+                ->selectRaw($select)
                 ->where('segment_index', '<', $beforeIndex)
                 ->orderByDesc('segment_index')
+                ->orderByDesc('id')
                 ->limit($pageLimit)
-                ->get($this->segmentSelect())->all());
+                ->get()->all());
         } else {
             $rows = $q
+                ->selectRaw($select)
                 ->orderBy('segment_index')
+                ->orderBy('id')
                 ->limit($pageLimit)
-                ->get($this->segmentSelect())->all();
+                ->get()->all();
         }
 
         $segments = array_map(fn ($s) => [
@@ -411,9 +519,16 @@ class MentionsSearchService
 
     private function segmentCount(int $transcriptionId): int
     {
+        // hotfix mis-avisos-transcript-duplicate-segments: el backend puede
+        // contener filas duplicadas de (transcription_id, segment_index) si
+        // la transcripción se reprocesó sin limpiar la previa. Devolvemos
+        // el conteo ÚNICO de segmentos para no inflar `total_segments` en
+        // el header del visor. `COUNT(DISTINCT segment_index)` evita un
+        // GROUP BY completo y usa el índice transcription_id.
         return (int) DB::table('transcription_segments')
             ->where('transcription_id', $transcriptionId)
-            ->count();
+            ->selectRaw('COUNT(DISTINCT segment_index) AS unique_count')
+            ->value('unique_count');
     }
 
     /**
