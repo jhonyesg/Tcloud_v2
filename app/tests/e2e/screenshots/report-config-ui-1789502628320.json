@@ -1,0 +1,58 @@
+{
+  "timestamp": "2026-09-15T20:03:48.319Z",
+  "app_url": "https://cloud.mediaserver.com.co",
+  "admin_login": "js***",
+  "passed": 9,
+  "failed": 0,
+  "results": [
+    {
+      "name": "A.0 Login admin",
+      "status": "PASS",
+      "detail": "redirigido a /dashboard"
+    },
+    {
+      "name": "B.0 Render Configuración",
+      "status": "PASS",
+      "detail": "10 grupos visibles"
+    },
+    {
+      "name": "B.0.b Knobs totales",
+      "status": "PASS",
+      "detail": "67 knobs"
+    },
+    {
+      "name": "B.1 Iconos por grupo",
+      "status": "PASS",
+      "detail": "10/10"
+    },
+    {
+      "name": "B.2 Iconos por knob",
+      "status": "PASS",
+      "detail": "10/10 muestreados"
+    },
+    {
+      "name": "B.3.a LOCAL en dispatch_paused",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "B.3.b MIXTO + EXPERIMENTAL en submit_with_callback",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "C.1 Tres secciones visibles",
+      "status": "PASS",
+      "detail": "Alcance, Cuándo tocar, Riesgos"
+    },
+    {
+      "name": "D.1 Sin uncaught exceptions",
+      "status": "PASS",
+      "detail": "console_errors=0, console_warnings=0"
+    }
+  ],
+  "console_warnings": [],
+  "console_errors": [],
+  "page_errors": [],
+  "failed_requests": []
+}
