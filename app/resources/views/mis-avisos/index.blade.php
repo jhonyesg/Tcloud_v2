@@ -732,6 +732,10 @@ function misAvisosPage() {
         historySort: { column: 'recorded_at', direction: 'desc' },
         historyRows: [], historyPage: 1, historyLastPage: 1, historyTotal: 0, historyPerPage: 25,
         historySearched: false, historyError: '',
+        // change fix-mis-avisos-history-throttle-429: handle para el debounce
+        // de 250ms en searchHistory(). Coalesca clics rápidos consecutivos
+        // (atajos de fecha, per_page) en una sola request HTTP.
+        searchHistoryDebounce: null,
         // Agrupado por (archivo, keyword) con accordion. Cada grupo expone
         // `hits: [row, ...]` con todas las menciones reales que el backend
         // devolvió en la página actual. La fila resumen muestra keyword +
@@ -1356,33 +1360,52 @@ function misAvisosPage() {
             this.activeDateShortcut = shortcut.label;
             this.searchHistory(1);
         },
-        async searchHistory(page) {
+        // change fix-mis-avisos-history-throttle-429: searchHistory ahora
+        // soporta debounce de 250ms. Cambios consecutivos al set de filtros
+        // (atajos de fecha, per_page, media_type) coalescen en una sola call
+        // HTTP. Para la carga inicial desde deep-link (hydrateHistoryFromUrl)
+        // se usa `immediate: true` para saltarse el debounce.
+        async searchHistory(page, opts = {}) {
+            const immediate = !!opts.immediate;
             this.historyError = '';
-            const f = this.historyFilters;
-            const params = new URLSearchParams();
-            params.set('page', page);
-            params.set('per_page', this.historyPerPage);
-            if (f.q) params.set('q', f.q);
-            if (f.from) params.set('from', f.from);
-            if (f.to) params.set('to', f.to);
-            if (f.keyword_id) params.set('keyword_id', f.keyword_id);
-            f.storage_ids.forEach(id => params.append('storage_ids[]', id));
-            // change mis-avisos-media-kind-indicator (G4): propaga media_type al histórico.
-            if (f.media_type && f.media_type !== 'all') params.set('media_type', f.media_type);
-            // change 2026-09-10-mis-avisos-program-date-filter: propaga date_field.
-            if (f.date_field) params.set('date_field', f.date_field);
-            this.syncHistoryUrl(params);
-            const res = await apiFetch('/mis-avisos/history?' + params.toString(), { method: 'GET', credentials: 'same-origin', headers: this.headers(false) });
-            if (res.ok) {
-                const d = await res.json();
-                this.historyRows = d.data; this.historyPage = d.current_page;
-                this.historyLastPage = d.last_page; this.historyTotal = d.total;
-                this.historySearched = true;
-            } else {
-                const d = await res.json();
-                this.historyError = d.error || 'Error al buscar';
-                this.historyRows = [];
+            const run = async () => {
+                const f = this.historyFilters;
+                const params = new URLSearchParams();
+                params.set('page', page);
+                params.set('per_page', this.historyPerPage);
+                if (f.q) params.set('q', f.q);
+                if (f.from) params.set('from', f.from);
+                if (f.to) params.set('to', f.to);
+                if (f.keyword_id) params.set('keyword_id', f.keyword_id);
+                f.storage_ids.forEach(id => params.append('storage_ids[]', id));
+                // change mis-avisos-media-kind-indicator (G4): propaga media_type al histórico.
+                if (f.media_type && f.media_type !== 'all') params.set('media_type', f.media_type);
+                // change 2026-09-10-mis-avisos-program-date-filter: propaga date_field.
+                if (f.date_field) params.set('date_field', f.date_field);
+                this.syncHistoryUrl(params);
+                const res = await apiFetch('/mis-avisos/history?' + params.toString(), { method: 'GET', credentials: 'same-origin', headers: this.headers(false) });
+                if (res.ok) {
+                    const d = await res.json();
+                    this.historyRows = d.data; this.historyPage = d.current_page;
+                    this.historyLastPage = d.last_page; this.historyTotal = d.total;
+                    this.historySearched = true;
+                } else if (res.status === 429) {
+                    // change fix-mis-avisos-history-throttle-429: toast específico
+                    // preserva la tabla actual (no vacía historyRows) para que el
+                    // operador distinga "no hay resultados" de "se agotó el cupo".
+                    this.pushToast('Demasiadas solicitudes en poco tiempo. Espera un momento y vuelve a buscar.', 'warning', 4500);
+                } else {
+                    const d = await res.json();
+                    this.historyError = d.error || 'Error al buscar';
+                    this.historyRows = [];
+                }
+            };
+            if (immediate) {
+                clearTimeout(this.searchHistoryDebounce);
+                return run();
             }
+            clearTimeout(this.searchHistoryDebounce);
+            this.searchHistoryDebounce = setTimeout(run, 250);
         },
         syncHistoryUrl(params) {
             const clean = new URLSearchParams();
@@ -1405,7 +1428,7 @@ function misAvisosPage() {
             const df = sp.get('date_field');
             f.date_field = (df === 'program' || df === 'detected') ? df : 'program';
             this.activeTab = 'history';
-            this.$nextTick(() => this.searchHistory(1));
+            this.$nextTick(() => this.searchHistory(1, { immediate: true }));
             return true;
         },
 

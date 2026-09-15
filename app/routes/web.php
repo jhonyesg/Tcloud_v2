@@ -422,7 +422,11 @@ Route::middleware(['auth', 'misavisos', App\Http\Middleware\AdminPreviewSwap::cl
         ->whereNumber('transcriptionId')->middleware('throttle:20,1');
 
     // mis-avisos-menciones: histórico 60 días + export CSV/Excel
-    Route::get('/mis-avisos/history', [App\Http\Controllers\MisAvisosController::class, 'history'])->middleware('throttle:10,1');
+    // change fix-mis-avisos-history-throttle-429: throttle subido de 10/min a 30/min
+    // (alineado con /mis-avisos/feed) tras reproducir 429 con 7 interacciones
+    // legítimas en <60s. El debounce 250ms en searchHistory() coalesca clics
+    // rápidos; este límite cubre uso intensivo sin permitir scraping real.
+    Route::get('/mis-avisos/history', [App\Http\Controllers\MisAvisosController::class, 'history'])->middleware('throttle:30,1');
     Route::post('/mis-avisos/exports', [App\Http\Controllers\MisAvisosController::class, 'requestExport'])->middleware('throttle:6,1');
     Route::get('/mis-avisos/exports/{exportId}', [App\Http\Controllers\MisAvisosController::class, 'exportStatus']);
     Route::post('/mis-avisos/exports/{exportId}/email', [App\Http\Controllers\MisAvisosController::class, 'emailExport'])->middleware('throttle:4,1');
