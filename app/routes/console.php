@@ -150,12 +150,9 @@ Schedule::command('transcription:check-shm-health')
     ->everyTenMinutes()
     ->withoutOverlapping(30);
 
-// Snapshot por minuto para la serie temporal del panel Consumo.
-// Escribe en Redis un anillo de 60 puntos (TTL 70min) que el endpoint
-// /ia/api-transcriptor/live-consumption lee para alimentar la UI.
-Schedule::command('transcription:consumption-snapshot')
-    ->everyMinute()
-    ->withoutOverlapping(5);
+// (Eliminado el 2026-09-15 — change simplify-api-transcriptor-to-storage-and-config:
+// el snapshot por minuto de la serie temporal de consumo solo alimentaba el
+// tab Consumo del módulo API Transcriptor, retirado en este change.
 
 // Limpieza diaria del log de undo de bulk actions (corrections-bulk-moderation).
 // Borra entries con expires_at < now() - retention (default 7d).

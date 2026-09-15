@@ -182,49 +182,14 @@ Route::get('/s/{token}/preview/{file_id}', [App\Http\Controllers\PublicShareCont
 
 // Modulo IA — admin (M1, M2, M4)
 Route::middleware(['auth', 'admin'])->prefix('ia')->group(function () {
-    // M1: API Transcriptor
+    // M1: API Transcriptor — simplificado a Storages + Configuración
+    // (`simplify-api-transcriptor-to-storage-and-config`).
     Route::get('/api-transcriptor', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'index']);
-    Route::get('/api-transcriptor/jobs/{id}', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'show']);
-    Route::post('/api-transcriptor/jobs/{id}/retry', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'retry']);
-    Route::post('/api-transcriptor/jobs/{id}/dispatch-now', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'dispatchNow']);
-    Route::post('/api-transcriptor/jobs/bulk-dispatch', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'bulkDispatch']);
-    Route::post('/api-transcriptor/jobs/{id}/refresh-status', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'refreshStatus']);
-    Route::post('/api-transcriptor/jobs/{id}/reprocess', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'reprocess']);
-    Route::post('/api-transcriptor/jobs/{id}/cancel', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'cancelJob']);
-    Route::delete('/api-transcriptor/jobs/{id}', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'destroy'])->whereNumber('id');
     // El interruptor de transcripción de un storage vive aquí, en su propio
     // módulo. Entre el 18 y el 20 de agosto estuvo en Avisos Inteligentes (como
     // bandera derivada por cliente); fue un acoplamiento equivocado y costó una
     // caída de 44 horas. Ver ApiTranscriptorController::toggleStorage().
     Route::post('/api-transcriptor/storages/{id}/toggle', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'toggleStorage']);
-    Route::get('/api-transcriptor/storages/{id}/files', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'storageFiles']);
-    Route::post('/api-transcriptor/storages/{id}/scan', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'scanStorage']);
-    Route::post('/api-transcriptor/storages/{id}/process-folder', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'processFolder']);
-    Route::post('/api-transcriptor/storages/{id}/process-day', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'processDay']);
-    Route::post('/api-transcriptor/process-batch', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'processBatch']);
-    Route::post('/api-transcriptor/scan/estimate', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'estimateScan']);
-    Route::get('/api-transcriptor/batch-status/{runId}', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'batchStatus'])->where('runId', '[A-Za-z0-9_\-]+');
-    // throttle: este endpoint corre ffmpeg + POST SINCRONOS dentro de php-fpm.
-    // Defensa en profundidad, no el limitador principal: el tope real es el pool
-    // acotado del navegador (ui_max_parallel_sends) y, en su momento, el semaforo
-    // inflight_max. Se deja holgado a proposito — un limite estrecho devolveria
-    // 429 en envios legitimos de archivos cortos y el usuario los veria como
-    // errores. 60/min solo actua ante la rafaga patologica (una pagina cacheada
-    // con el Promise.allSettled viejo, o peticiones a mano).
-    Route::post('/api-transcriptor/transcribe/{fileId}', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'transcribeFile'])->middleware('throttle:60,1');
-    Route::get('/api-transcriptor/jobs/{id}/status', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'jobStatus']);
-    Route::get('/api-transcriptor/jobs/{id}/transcript', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'transcript']);
-    Route::get('/api-transcriptor/transcribe/progress/{key}', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'transcribeProgress'])->where('key', '[A-Za-z0-9_\-]+');
-    Route::post('/api-transcriptor/storages/{id}/sync', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'syncStorage']);
-    Route::get('/api-transcriptor/health', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'health']);
-    Route::get('/api-transcriptor/stats', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'stats']);
-    Route::get('/api-transcriptor/empty-folders', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'emptyFolders']);
-    Route::get('/api-transcriptor/shm-status', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'shmStatus']);
-    // Diagnostico de pipeline (optimize-transcriptor-dispatch-throughput):
-    // percentiles p50/p95 por etapa + causa del ultimo tick del regulador.
-    Route::get('/api-transcriptor/latency', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'latency']);
-    Route::get('/api-transcriptor/regulator-cause', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'regulatorCause']);
-    Route::get('/api-transcriptor/live-consumption', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'liveConsumption']);
 
     // Configuracion en caliente del pipeline (pestaña "Configuracion").
     Route::get('/api-transcriptor/settings', [App\Http\Controllers\Ia\TranscriptorSettingsController::class, 'index']);
