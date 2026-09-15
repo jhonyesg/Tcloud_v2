@@ -137,8 +137,12 @@
         <p class="text-sm text-amber-700 mt-1">Activa un storage abajo para empezar a transcribir grabaciones.</p>
     </div>
 
-    <!-- Tarjetas resumen del modulo storages -->
-    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
+    <!-- Tarjetas resumen del modulo storages (solo volumen; el funnel por
+         storage vive en las columnas de la tabla y los errores del dia en la
+         celda Snapshot. Tarjetas "Pendientes hoy" / "Listos hoy" retiradas:
+         mezclaban error/dead con pendientes reales y no accionaban nada.
+         Ver change fix-storages-tab-cards-and-dead-retry-button. -->
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-6">
         <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
             <div class="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Cantidad Total</div>
             <div class="text-2xl font-bold text-slate-800 mt-1 tabular-nums" x-text="cantidadTotal()"></div>
@@ -149,35 +153,17 @@
             <div class="text-2xl font-bold text-brand-800 mt-1 tabular-nums" x-text="cantidadPonderada()"></div>
             <div class="text-[11px] text-slate-500 mt-1">Suma solo de storages hoja (sin duplicar padres que agregan hijos).</div>
         </div>
-        <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
-            <div class="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Pendientes hoy</div>
-            <div class="text-2xl font-bold text-slate-800 mt-1 tabular-nums" x-text="pendientesTotal()"></div>
-            <div class="text-[11px] text-slate-400 mt-1">Transcripciones creadas hoy que aun no terminan.</div>
-        </div>
-        <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
-            <div class="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Listos hoy</div>
-            <div class="text-2xl font-bold text-slate-800 mt-1 tabular-nums" x-text="listosTotal()"></div>
-            <div class="text-[11px] text-slate-400 mt-1">Transcripciones que terminaron OK hoy.</div>
-        </div>
     </div>
 
 <!-- Tabla de storages -->
         <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden mb-6">
             <div class="px-4 py-3 border-b border-slate-200 flex items-center justify-between gap-3 flex-wrap">
                 <h2 class="text-sm font-semibold text-slate-700">Storages</h2>
-                <div class="flex items-center gap-2">
-                    <form method="POST" action="/ia/api-transcriptor/retry-batch" target="_blank">
-                        @csrf
-                        <input type="hidden" name="max_age_hours" value="168">
-                        <input type="hidden" name="limit" value="500">
-                        <button type="submit"
-                                onclick="return confirm('¿Reencolar todos los jobs error|dead (últimos 7 días) en el upstream? El proceso corre en background.')"
-                                class="flex items-center gap-1.5 px-3 py-1.5 bg-amber-100 hover:bg-amber-200 text-amber-800 rounded-lg text-xs font-medium transition-colors"
-                                title="Lanza transcription:retry-batch-upstream en background para re-encolar todos los jobs error/dead de los últimos 7 días en el upstream (sin re-ffmpeg).">
-                            <i class="fas fa-rotate"></i> Reintentar fallidos (upstream batch)
-                        </button>
-                    </form>
-                </div>
+                {{-- Botón "Reintentar fallidos (upstream batch)" retirado: su ruta
+                     POST /ia/api-transcriptor/retry-batch fue eliminada en el
+                     change simplify-api-transcriptor-to-storage-and-config y
+                     respondía 404. La recuperación masiva vive en el cron semanal
+                     transcription:retry-batch-upstream (lunes 04:00) y en CLI. --}}
                 <div class="relative">
                     <input type="text" x-model="storagesSearch" @input.debounce.200ms="storagesPage = 1"
                            placeholder="Buscar storage..."
@@ -192,6 +178,14 @@
                     <option value="disabled" :selected="storagesStatusFilter === 'disabled'">Inactivos</option>
                 </select>
                 <span class="text-xs text-slate-400 whitespace-nowrap" x-text="storagesEnabled.length + ' habilitado(s) de ' + storages.length"></span>
+                {{-- Errores hoy: suma reactiva de los error_count de los snapshots
+                     por fila de la página visible (ver snapshotErrorsTotal). --}}
+                <span class="text-xs whitespace-nowrap tabular-nums font-medium"
+                      :class="snapshotErrorsTotal() > 0 ? 'text-red-600' : 'text-slate-400'"
+                      title="Suma de errores del día según el último snapshot por storage (página visible). Se actualiza cada 15 min con el snapshot.">
+                    <i class="fas fa-triangle-exclamation text-[10px]"></i>
+                    Errores hoy: <span x-text="snapshotErrorsTotal()"></span>
+                </span>
             </div>
         </div>
         <div x-show="storages.length === 0" class="text-center py-12 text-slate-400">
@@ -259,11 +253,11 @@
                             <i class="fas text-[10px]" :class="storagesSortIcon('tipo') + ' ' + storagesSortIconClass('tipo')"></i>
                         </button>
                     </th>
-                    <th class="py-2.5 pr-3 font-medium whitespace-nowrap text-right">
+                    <th class="py-2.5 pr-3 font-medium whitespace-nowrap text-right" title="Conteo en vivo del funnel de pendientes por storage (calculado en cada render).">
                         <button type="button" @click="setStoragesSort('pending')"
                                 :class="storagesSortHeaderClass('pending') + ' inline-flex items-center gap-1.5 transition-colors ml-auto'"
-                                title="Ordenar por pendientes hoy">
-                            Pendientes (hoy)
+                                title="Ordenar por pendientes">
+                            Pendientes (live)
                             <i class="fas text-[10px]" :class="storagesSortIcon('pending') + ' ' + storagesSortIconClass('pending')"></i>
                         </button>
                     </th>
@@ -376,6 +370,55 @@
                                 {{-- Botón "Escanear" eliminado: confundir con "Escanear storages" del header y bloquea navegador.
                                      Para escanear un storage específico, usar el flujo batch del header que es async. --}}
                             </div>
+                        </td>
+
+                        {{-- Snapshot transcriptor (transcriptor-pg-native-queue): tarjeta con el ultimo snapshot
+                             y delta vs el anterior. Solo si transcription_enabled=true; si no, "N/A". --}}
+                        <td class="py-3 pr-3 text-xs"
+                            :title="s.transcription_enabled ? 'Snapshot del transcriptor por storage (15min)' : 'Transcripcion deshabilitada'">
+                            <template x-if="s.transcription_enabled">
+                                <div x-data="{ snapshot: null, loading: false, fetch() { if (this.snapshot) return; this.loading = true; fetch('/ia/api-transcriptor/storages/' + s.id + '/snapshot').then(r => r.ok ? r.json() : null).then(d => { this.snapshot = d; this.loading = false; if (d && d.current && d.current.error_count != null) $data.snapshotErrors[s.id] = Number(d.current.error_count); }).catch(() => { this.loading = false; }); } }"
+                                     x-init="fetch()"
+                                     class="text-slate-600">
+                                    <template x-if="loading">
+                                        <div class="flex items-center gap-1 text-slate-400">
+                                            <i class="fas fa-spinner fa-spin text-[10px]"></i>
+                                            <span>cargando…</span>
+                                        </div>
+                                    </template>
+                                     <template x-if="!loading && snapshot && snapshot.current">
+                                         <div class="space-y-0.5">
+                                             <div class="flex items-center gap-1">
+                                                 <span class="font-semibold text-slate-700 tabular-nums" x-text="snapshot.current.pending_count"></span>
+                                                 <span class="text-slate-500">pendientes</span>
+                                             </div>
+                                             <div class="flex items-center gap-1 text-[10px] text-slate-400">
+                                                 <span x-text="snapshot.delta && snapshot.delta.pending_count != null ? (snapshot.delta.pending_count > 0 ? '+' + snapshot.delta.pending_count : snapshot.delta.pending_count) + ' vs 15min' : 'primer snapshot'"></span>
+                                             </div>
+                                             <div class="flex items-center gap-1 text-[10px] text-slate-400">
+                                                 <i class="fas fa-clock text-[9px]"></i>
+                                                 <span x-text="'cola remota: ' + (snapshot.current.remote_queue_queued != null ? snapshot.current.remote_queue_queued : '—')"></span>
+                                             </div>
+                                             {{-- Errores del dia (change fix-storages-tab-cards-and-dead-retry-button):
+                                                  del campo error_count del snapshot. Para rol cliente el
+                                                  endpoint NO devuelve error_count -> la linea no se renderiza. --}}
+                                             <template x-if="snapshot.current.error_count != null && snapshot.current.error_count > 0">
+                                                 <div class="flex items-center gap-1 text-[10px] text-red-600 font-semibold"
+                                                      :title="'error_count=' + snapshot.current.error_count + ' en snapshot ' + (snapshot.current.captured_at || '')">
+                                                     <i class="fas fa-triangle-exclamation text-[9px]"></i>
+                                                     <span x-text="snapshot.current.error_count + (snapshot.current.error_count === 1 ? ' error hoy' : ' errores hoy')"></span>
+                                                 </div>
+                                             </template>
+                                         </div>
+                                     </template>
+                                    <template x-if="!loading && !snapshot">
+                                        <span class="text-slate-400">Sin datos</span>
+                                    </template>
+                                </div>
+                            </template>
+                            <template x-if="!s.transcription_enabled">
+                                <span class="text-slate-300">N/A</span>
+                            </template>
                         </td>
                     </tr>
                 </template>
@@ -1012,22 +1055,73 @@ function apiTranscriptor(config = {}) {
 
         // ---------------------------------------------- pestaña Configuración
 
-        cfgGroupsOrder: ['ritmo', 'descubrimiento', 'confiabilidad', 'api', 'workers', 'ui'],
+        cfgGroupsOrder: ['ritmo', 'descubrimiento', 'api', 'workers', 'saturacion', 'burst', 'webhook', 'confiabilidad', 'ia', 'ui'],
         cfgGroupLabels: {
             ritmo: 'Ritmo de envío',
             descubrimiento: 'Descubrimiento',
-            confiabilidad: 'Confiabilidad',
             api: 'API del transcriptor',
             workers: 'Pool de workers',
+            saturacion: 'Defensa contra saturación',
+            burst: 'Ráfaga manual',
+            webhook: 'Webhook entrante (experimental)',
+            confiabilidad: 'Confiabilidad',
+            ia: 'Pase de coherencia IA',
             ui: 'Interfaz',
         },
         cfgGroupHelps: {
             ritmo: 'Cuánto y cada cuánto se envía. Es lo que convierte la ráfaga en goteo.',
             descubrimiento: 'Qué archivos encuentra el escáner y cuántos toma por ciclo.',
-            confiabilidad: 'Recogida de resultados y cierre de lo que no se resuelve. No hay webhook: si nadie consulta, nada vuelve.',
             api: 'Tiempos de espera y reintentos contra el transcriptor externo.',
             workers: 'Cuántos procesos consumen la cola. El tuner los ajusta cada 5 min.',
+            saturacion: 'Circuit breaker, idempotency y backoff. Protege a la API upstream de nuestros reintentos cuando va mal.',
+            burst: 'Solo aplica si ejecutas `transcription:burst-dispatch` a mano. El cron automático NO usa este flujo todavía.',
+            webhook: 'Recepción alternativa de resultados por webhook en vez de polling. Off por defecto; requiere coordinación con la API upstream (Fase D).',
+            confiabilidad: 'Recogida de resultados y cierre de lo que no se resuelve. No hay webhook activo: si nadie consulta, nada vuelve.',
+            ia: 'Corrige con LLM los segmentos con inglés residual que el diccionario no cubre. Activo por defecto; usar LLM cuesta latencia y dinero, ajustá los topes si lo necesitás.',
             ui: 'Topes de la propia interfaz.',
+        },
+        cfgGroupIcons: {
+            ritmo: 'fa-gauge-high',
+            descubrimiento: 'fa-magnifying-glass',
+            api: 'fa-paper-plane',
+            workers: 'fa-microchip',
+            saturacion: 'fa-shield-halved',
+            burst: 'fa-bolt',
+            webhook: 'fa-link',
+            confiabilidad: 'fa-shield-halved',
+            ia: 'fa-brain',
+            ui: 'fa-sliders',
+        },
+        // Badges de scope (a quién afecta el knob)
+        scopeBadgeClass(scope) {
+            const map = {
+                local:  'bg-slate-100 text-slate-700',
+                remoto: 'bg-purple-100 text-purple-700',
+                mixto:  'bg-emerald-100 text-emerald-700',
+            };
+            return map[scope] || 'bg-slate-100 text-slate-700';
+        },
+        scopeBadgeLabel(scope) {
+            const map = { local: 'Local', remoto: 'Remoto', mixto: 'Mixto' };
+            return map[scope] || (scope || '');
+        },
+        // Badges de state (estado del knob). LIVE no se muestra.
+        stateBadgeClass(state) {
+            const map = {
+                experimental: 'bg-amber-100 text-amber-700',
+                manual:       'bg-blue-100 text-blue-700',
+                obsoleto:     'bg-red-100 text-red-700',
+            };
+            return map[state] || '';
+        },
+        stateBadgeLabel(state) {
+            const map = { experimental: 'Experimental', manual: 'Manual', obsoleto: 'Obsoleto' };
+            return map[state] || '';
+        },
+        // Estado del acordeón de detalle por knob
+        detailOpen: {},
+        toggleDetail(k) {
+            this.detailOpen = { ...this.detailOpen, [k]: !this.detailOpen[k] };
         },
 
         cfgGroups() {
@@ -1291,7 +1385,16 @@ function apiTranscriptor(config = {}) {
         pagedStorages() {
             const filtered = this.filteredStorages();
             const start = (this.storagesPage - 1) * this.storagesPerPage;
-            return filtered.slice(start, start + this.storagesPerPage);
+            const page = filtered.slice(start, start + this.storagesPerPage);
+            // Purga de errores de storages que ya no están en la página visible:
+            // el contador "Errores hoy" solo suma la página actual (spec del
+            // change fix-storages-tab-cards-and-dead-retry-button). Sin esto,
+            // al paginar quedarían residuos de la página anterior.
+            const visible = new Set(page.map(s => Number(s.id)));
+            for (const id of Object.keys(this.snapshotErrors)) {
+                if (!visible.has(Number(id))) delete this.snapshotErrors[id];
+            }
+            return page;
         },
         // Numero global de fila (1-based) dentro de la lista filtrada/ordenada,
         // continuo entre paginas. Padding a 2 digitos para lectura rapida.
@@ -1330,11 +1433,14 @@ function apiTranscriptor(config = {}) {
                 return acc + (Number(s.cantidad) || 0);
             }, 0);
         },
-        pendientesTotal() {
-            return this.storages.reduce((acc, s) => acc + (Number(s.funnel?.pending) || 0), 0);
-        },
-        listosTotal() {
-            return this.storages.reduce((acc, s) => acc + (Number(s.funnel?.done) || 0), 0);
+        // Snapshot de errores del día: suma reactiva de los error_count de los
+        // snapshots por fila (los que la celda "Snapshot transcriptor" ya
+        // fetcha). Cambia cuando cada fetch resuelve. Solo suma storages con
+        // transcription_enabled=true (los inhabilitados no fetchan snapshot).
+        // Ver change fix-storages-tab-cards-and-dead-retry-button.
+        snapshotErrors: {},
+        snapshotErrorsTotal() {
+            return Object.values(this.snapshotErrors).reduce((acc, n) => acc + (Number(n) || 0), 0);
         },
         toggleStorageExpansion(rootId) {
             if (!rootId) return;
@@ -2053,12 +2159,12 @@ function apiTranscriptor(config = {}) {
                 });
                 const data = await res.json().catch(() => ({}));
                 if (res.status === 503) {
-                    // Redis caído parcial
+                    // Servicio no disponible (típicamente dispatch_paused o saturación upstream)
                     this.bulkDispatchResult = {
                         enqueued: data.enqueued ?? 0,
                         skipped_queued: data.skipped_queued ?? 0,
                         errors: data.errors ?? 1,
-                        message: 'Redis no disponible — reintenta en unos segundos.',
+                        message: 'Servicio no disponible — reintenta en unos segundos.',
                     };
                     showToast(this.bulkDispatchResult.message, 'warning', 5000);
                     return;
@@ -2424,8 +2530,7 @@ function apiTranscriptor(config = {}) {
                     }
                 }
 
-                // Si termino (done/queued/error/partial/not_found), detener polling y mostrar resultados.
-// 'queued' es el estado final cuando el batch-and-submit terminó exitosamente y encoló jobs a Redis.
+// Si termino (done/queued/error/partial/not_found), detener polling y mostrar resultados.
                 if (data.status === 'done' || data.status === 'queued' || data.status === 'error' || data.status === 'partial' || data.status === 'not_found') {
                     this.stopBatchPolling();
                     this.batchRunning = false;
