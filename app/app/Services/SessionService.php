@@ -26,9 +26,12 @@ class SessionService
      */
     private function sessionRedisKey(string $sessionId): string
     {
-        $redisPrefix = (string) config('database.redis.options.prefix', '');
+        // La conexión 'session' usa OPT_PREFIX = 'tcloud_' a nivel de phpredis,
+        // por lo que phpredis YA añade el prefijo Redis. Solo necesitamos
+        // aportar el cache.prefix aquí (de lo contrario el comando sale con
+        // triple prefijo y no encuentra la clave real en Redis).
         $cachePrefix = (string) config('cache.prefix', '');
-        return $redisPrefix . $cachePrefix . $sessionId;
+        return $cachePrefix . $sessionId;
     }
 
     private function sessionRedisConnection()
