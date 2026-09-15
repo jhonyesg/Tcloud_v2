@@ -23,7 +23,8 @@ class ScanAndSubmitCommand extends Command
                             {--run-id= : Identificador para reportar progreso en cache (opcional)}
                             {--no-dispatch : Solo escanea y crea pending, NO encola a Redis}
                             {--alerts= : Entrar al matching global de menciones (KeywordMatcher) para las transcripciones creadas (1=si default, 0=opt-out explicito)}
-                            {--include-failed : Incluir transcripciones en estado error con archivo accesible (max retries configurable)}';
+                            {--include-failed : Incluir transcripciones en estado error con archivo accesible (max retries configurable)}
+                            {--include-done : Incluir transcripciones en estado done con archivo accesible (reprocesar finalizados, transcriptor-rescan-completed)}';
 
     protected $description = 'Escanea el disco de storages habilitados, crea transcripciones pendientes y las encola en Redis para que los workers supervisord las procesen en paralelo.';
 
@@ -75,6 +76,8 @@ class ScanAndSubmitCommand extends Command
         $runId = $this->option('run-id');
         $cacheKey = $runId ? 'transcription_batch:' . preg_replace('/[^a-z0-9_\-]/i', '_', $runId) : null;
         $includeFailed = (bool) $this->option('include-failed');
+        // transcriptor-rescan-completed: nuevo flag espejado de --include-failed.
+        $includeDone = (bool) $this->option('include-done');
         $dryRun = (bool) $this->option('dry-run');
 
         // transcriptor-scan-scope-selector: construir el alcance. --from/--to
@@ -129,6 +132,15 @@ class ScanAndSubmitCommand extends Command
             'reset_to_pending' => 0,
             'promoted_to_dead' => 0,
             'skipped_max_retries' => 0,
+        ];
+
+        // transcriptor-rescan-completed: stats de reproceso de completados
+        // (solo si --include-done). Shape análogo a failedStats para consistencia.
+        $doneStats = [
+            'candidates' => 0,
+            'reset_to_pending' => 0,
+            'promoted_to_dead' => 0,
+            'skipped_no_file' => 0,
         ];
 
         // Fase 1: escanear disco y crear pendientes (o solo contar con --dry-run).
@@ -243,6 +255,32 @@ class ScanAndSubmitCommand extends Command
             $this->info("Retry-failed resumen: candidates={$failedStats['candidates']} reset_to_pending={$failedStats['reset_to_pending']} promoted_to_dead={$failedStats['promoted_to_dead']} skipped_max_retries={$failedStats['skipped_max_retries']}");
         }
 
+        // Fase 1.6: reprocesar transcripciones en estado done (transcriptor-rescan-completed).
+        // Espejo de la Fase 1.5 pero filtrando state='done' y por finished_at (no created_at).
+        if ($includeDone) {
+            foreach ($storages as $storage) {
+                try {
+                    $stats = $scanner->collectDoneCandidates($storage, $retryFromIso, $retryToIso);
+                    foreach ($stats as $k => $v) {
+                        $doneStats[$k] = ($doneStats[$k] ?? 0) + $v;
+                    }
+                    if (($stats['candidates'] ?? 0) > 0) {
+                        $this->info("Storage {$storage->name} (rescan-done): candidates={$stats['candidates']} reset={$stats['reset_to_pending']} dead={$stats['promoted_to_dead']}");
+                    }
+                } catch (\Throwable $e) {
+                    $msg = "Storage {$storage->name} (collect-done): {$e->getMessage()}";
+                    $this->error($msg);
+                    Log::error("ScanAndSubmitCommand: {$msg}", ['exception' => $e]);
+                    $perStorageErrors[] = [
+                        'storage_id' => $storage->id,
+                        'storage_name' => $storage->name,
+                        'message' => 'collect-done: ' . $e->getMessage(),
+                    ];
+                }
+            }
+            $this->info("Rescan-done resumen: candidates={$doneStats['candidates']} reset_to_pending={$doneStats['reset_to_pending']} promoted_to_dead={$doneStats['promoted_to_dead']} skipped_no_file={$doneStats['skipped_no_file']}");
+        }
+
         // Fase 2: encolar pendientes sin job_id en Redis. El dispatch es NO
         // bloqueante: los workers supervisord (queue:work) consumen la cola y
         // ejecutan el pipeline ffmpeg+POST en paralelo (hasta numprocs simultáneos).
@@ -266,13 +304,14 @@ class ScanAndSubmitCommand extends Command
                     'processed' => $storages->count(),
                     'errors' => $failedStorages,
                     'total_to_process' => $storages->count(),
-                    'total_candidates' => $totalPendingCreated + $failedStats['reset_to_pending'],
+                    'total_candidates' => $totalPendingCreated + $failedStats['reset_to_pending'] + $doneStats['reset_to_pending'],
                     'pending_created' => $totalPendingCreated,
                     'dispatched' => 0,
                     'per_storage_errors' => $perStorageErrors,
                     'failed_recovered' => $failedStats['reset_to_pending'],
                     'failed_promoted_to_dead' => $failedStats['promoted_to_dead'],
                     'failed_skipped_max_retries' => $failedStats['skipped_max_retries'],
+                    'done_rescan' => $doneStats,
                     'message' => $message,
                     'started_at' => now()->toIso8601String(),
                     'finished_at' => now()->toIso8601String(),
@@ -346,22 +385,27 @@ class ScanAndSubmitCommand extends Command
             $existingCache = \Illuminate\Support\Facades\Cache::get($cacheKey, []);
             $startedAtIso = $existingCache['started_at'] ?? $finishedAtIso;
 
-            // bg-job-indicator-widget (fix-A): NO borramos el runId de
-            // active_runs al terminar. Lo dejamos con finishedAt para que el
-            // scanner lo muestre en estado terminal durante 5 min y el
-            // usuario vea el resultado final (X pendientes, Y encolados) en
-            // el widget flotante. Pasado ese tiempo, el scanner lo descarta.
+            // bg-job-indicator-widget (fix-A + bg-job-indicator-hide-completed):
+            // Garantizamos que la entrada quede con finishedAt poblado al terminar,
+            // sea cual sea el formato inicial (string plano del controller o array
+            // de una corrida previa). Esto permite que el scanner descarte el job
+            // pasados TERMINAL_TTL_SECONDS (5 min) en lugar de mantenerlo visible
+            // hasta que expire la cache individual (2h).
             $activeKey = 'transcription_batch:active_runs';
             $activeList = \Illuminate\Support\Facades\Cache::get($activeKey, []);
             $alreadyListed = false;
             foreach ($activeList as $i => $entry) {
                 $eRunId = is_array($entry) ? ($entry['runId'] ?? null) : $entry;
-                if ($eRunId === $runId) { $alreadyListed = true; break; }
+                if ($eRunId === $runId) {
+                    $activeList[$i] = ['runId' => $runId, 'finishedAt' => $finishedAtIso];
+                    $alreadyListed = true;
+                    break;
+                }
             }
             if (!$alreadyListed) {
                 $activeList[] = ['runId' => $runId, 'finishedAt' => $finishedAtIso];
-                \Illuminate\Support\Facades\Cache::put($activeKey, $activeList, now()->addHours(2));
             }
+            \Illuminate\Support\Facades\Cache::put($activeKey, $activeList, now()->addHours(2));
 
             // bg-job-indicator-widget (fix-B): processed refleja el trabajo
             // real hecho, no 0. processed = storages escaneados (cubre los
@@ -373,13 +417,14 @@ class ScanAndSubmitCommand extends Command
                 'processed' => $storages->count(),
                 'errors' => $errors + $failedStorages,
                 'total_to_process' => $storages->count(),
-                'total_candidates' => $totalPendingCreated + $failedStats['reset_to_pending'],
+                'total_candidates' => $totalPendingCreated + $failedStats['reset_to_pending'] + $doneStats['reset_to_pending'],
                 'pending_created' => $totalPendingCreated,
                 'dispatched' => $dispatched,
                 'per_storage_errors' => $perStorageErrors,
                 'failed_recovered' => $failedStats['reset_to_pending'],
                 'failed_promoted_to_dead' => $failedStats['promoted_to_dead'],
                 'failed_skipped_max_retries' => $failedStats['skipped_max_retries'],
+                'done_rescan' => $doneStats,
                 'message' => $message,
                 'started_at' => $startedAtIso,
                 'finished_at' => $finishedAtIso,

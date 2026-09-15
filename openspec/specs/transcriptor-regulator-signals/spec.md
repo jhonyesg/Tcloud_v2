@@ -25,6 +25,81 @@ El sistema SHALL soportar tres modos seleccionables desde la UI de settings y de
 - **THEN** el tick registra la señal que PRIMERO disparó (`signals_evaluated` en orden) y frena
 - **AND** la respuesta indica cuál fue la causa dominante y cuáles eran secundarias
 
+### Requirement: Señal de RAM host remota (`remote_ram_pressure`)
+El sistema SHALL evaluar el porcentaje de RAM del host del API upstream en cada tick cuando `regulator_mode` sea `remote_aware` o `hybrid`, leyéndolo desde `/api/metrics/overview::ram.pct` (vía `getRemoteInfo()`, cacheado con `regulator_remote_cache_seconds`).
+
+Cuando `ram_pct >= remote_ram_pressure_pct` (default 90%): `decision=skipped`, `reason=remote_ram_pressure`, `batch_computed=0`. RAM alta mata el contenedor del ASR antes que cualquier otra señal.
+
+#### Scenario: RAM del host al 93%
+- **WHEN** `/api/metrics/overview` devuelve `ram.pct=93` y `remote_ram_pressure_pct=90`
+- **THEN** el tick frena con `decision=skipped, reason=remote_ram_pressure`, sin importar el estado de la cola Redis local
+
+#### Scenario: RAM sana, cola llena
+- **WHEN** `ram.pct=46` (bajo umbral) y `Redis::llen >= target_redis_queue`
+- **THEN** el freno es por `queue_at_target`; `remote_ram_pressure` no dispara
+
+### Requirement: Señal de ramdisk remoto (`remote_ramdisk_pressure`)
+El sistema SHALL evaluar el porcentaje de uso del ramdisk del API upstream (`/api/metrics/overview::ramdisk.pct`) en cada tick cuando `regulator_mode` sea `remote_aware` o `hybrid`. El ramdisk es donde el ASR escribe los WAV intermedios.
+
+Cuando `ramdisk_pct >= remote_ramdisk_pressure_pct` (default 85%): `decision=skipped`, `reason=remote_ramdisk_pressure`, `value=ramdisk_pct`, `batch_computed=0`.
+
+Prioridad de evaluación de frenos (primer match gana):
+1. `upstream_circuit_open`
+2. `remote_ram_pressure`
+3. `remote_ramdisk_pressure`
+4. `remote_queue_full`
+5. `redis_queue_depth` (`queue_at_target`)
+6. `shm_free_bytes` (`shm_low`)
+7. `inflight_full`
+
+`gpu.util_pct` NO SHALL evaluarse como freno: GPU al 100% es señal de trabajo en curso, no de saturación. Las señales reales de salud del nodo ASR son RAM (mata el contenedor), ramdisk (llena `/mnt/ramdisk`) y cola remota (trabajo ya pendiente).
+
+#### Scenario: ramdisk al 91% con GPU al 95%
+- **WHEN** `/api/metrics/overview` devuelve `ramdisk.pct=91.08` y `remote_ramdisk_pressure_pct=85`
+- **THEN** `decision=skipped, reason=remote_ramdisk_pressure, value=91.08, batch_computed=0`
+
+#### Scenario: ramdisk normal, resto sano
+- **WHEN** `ramdisk.pct=42` y las demás señales bajo umbral
+- **THEN** el regulador no frena por ramdisk y evalúa las señales restantes
+
+### Requirement: Señal de cola remota llena (`remote_queue_full`) y batch por rampa
+El sistema SHALL leer `queue.by_state_corrected["queued/0"]` del upstream (`queue_queued`) y usarlo como la señal principal de carga real del cluster:
+
+- **Freno**: si `queue_queued >= target_remote_queue` (default 180), `decision=skipped, reason=remote_queue_full`.
+- **Batch por rampa** (`computeEffectiveBatch`): entre `floor_remote_queue` (default 30) y `target_remote_queue` el batch baja linealmente; a `queue_queued <= floor` envía un pulso completo de `pulse_batch_size` (default 50). El resultado se corta además por el deficit Redis local (`computeDispatchBatch`), por `max_batch` estático, y baja con el `stuck_multiplier` (`1 - min(0.8, stuck_count * stuck_penalty_pct / 100)`) donde `stuck_count` son filas `queued` con `started_at` más viejas que `remote_wait_warn_seconds`.
+
+#### Scenario: cola remota en piso → pulso completo
+- **WHEN** `queue_queued=10 <= floor_remote_queue=30`
+- **THEN** el batch candidato es `pulse_batch_size` (sujeto a deficit local, `max_batch` y stuck penalty)
+
+#### Scenario: cola remota sobre target → freno
+- **WHEN** `queue_queued=200 >= target_remote_queue=180`
+- **THEN** `decision=skipped, reason=remote_queue_full, batch_computed=0`
+
+#### Scenario: rampa lineal en zona media
+- **WHEN** `queue_queued=105`, floor=30, target=180, pulse=50
+- **THEN** el candidato es `round((180-105)/(180-30) * 50) = 25`, recortado después por deficit/max_batch/stuck
+
+### Requirement: Telemetría remota vía `/api/metrics/overview`
+`TranscriptorApiClient::getRemoteInfo()` SHALL consultar `GET {base_url}/api/metrics/overview` (endpoint público, plano, sin auth) con timeout estricto (`regulator_remote_timeout_ms`, default 800) y devolver un payload normalizado que incluye: `workers`, `processing`, `capacity`, `usage_pct`, `cluster_state`, `circuit_open`, `gpu_util_pct`, `gpu_vram_pct`, `gpu_model`, `ram_pct`, `ramdisk_pct`, `ramdisk_free_gb`, `cpu_pct`, `cpu_load_1m`, `queue_total`, `queue_queued`, `queue_done_minus1`, `source`, `fetched_at`. Si el endpoint no responde en plazo, devuelve `null` y el regulador corre fail-open (sin freno por señales remotas).
+
+`getRemoteStats()` queda como wrapper backward-compatible que consume el mismo endpoint y devuelve `{processing, capacity, usage_pct}`.
+
+#### Scenario: fetch exitoso
+- **WHEN** la API responde <800ms con JSON plano
+- **THEN** el regulador obtiene `workers=3, ram_pct=46.3, ramdisk_pct=0, queue_queued=0` (ejemplo real 2026-09-14) y evalúa todas las señales remotas
+
+#### Scenario: endpoint caído
+- **WHEN** `/api/metrics/overview` no responde o devuelve garbage
+- **THEN** `getRemoteInfo()` devuelve `null`, el regulador NO frena por señales remotas, y el log registra el fallo
+
+### Requirement: Ramp-up progresivo con stagger de chunks
+El tick SHALL dividir el batch final en chunks de `stagger_chunk_size` (default 5) y encolarlos con una pausa de `dispatch_stagger_ms` (default 250) entre chunk y chunk, evitando arrancar N ffmpeg simultáneos en el mismo instante.
+
+#### Scenario: batch 60 con chunk 5 y stagger 250ms
+- **WHEN** el regulador computa `batch_computed=60`
+- **THEN** el tick encola 12 chunks de 5 jobs, con 250ms entre cada chunk (verificado en producción 2026-09-14: `chunks=12, stagger_ms=250`)
+
 ### Requirement: Señal de GPU remota con caché y timeout estricto
 El sistema SHALL consultar `GET /api/stats` de la API externa con un timeout estricto (`TRANSCRIPTOR_REGULATOR_REMOTE_TIMEOUT_MS`, default 800) y caché en Redis bajo clave `transcriptor:remote_stats` con TTL configurable (`TRANSCRIPTOR_REGULATOR_REMOTE_CACHE_SECONDS`, default 15).
 
@@ -94,3 +169,55 @@ El sistema SHALL mantener `dispatch_paused` como freno de emergencia prioritario
 - **WHEN** `dispatch_paused=false` y el resto de señales sanas
 - **THEN** el tick reanuda encolo normal en el siguiente ciclo
 - **AND** el endpoint `/regulator-cause` muestra `decision=dispatched`
+
+### Requirement: El cliente respeta `Retry-After` en 429 y 503
+El sistema SHALL, ante respuesta HTTP 429 o 503 del upstream, leer el header `Retry-After` (entero o RFC-7231 HTTP-date), normalizarlo a segundos enteros, y propagarlo como `int $retryAfter` en `UpstreamRateLimitException` o `UpstreamUnavailableException` respectivamente. Si el header está ausente o mal formado en 503, SHALL usar `SystemSetting('max_backoff_seconds')` (default 300).
+
+#### Scenario: 429 con Retry-After numérico
+- **WHEN** `GET /v1/transcribe` responde `429` y `Retry-After: 12`
+- **THEN** `TranscriptorApiClient` lanza `UpstreamRateLimitException($retryAfter=12)`
+- **AND** `TranscriptionSubmitService::submit()` captura y llama `markRequeueable($tx, now()->addSeconds(12))`
+- **AND** `last_run` del tick y la fila NO se marcan como `dead`
+
+#### Scenario: 503 con Retry-After HTTP-date
+- **WHEN** `503` con `Retry-After: Wed, 21 Oct 2026 07:28:00 GMT`
+- **THEN** el sistema calcula diff con `now()` y propaga `UpstreamUnavailableException(294)` (por ejemplo)
+
+### Requirement: Circuit breaker corta el tick tras strikes consecutivos
+El sistema SHALL contar strikes upstream en Redis bajo `transcriptor:upstream:strikes:{minute}` (TTL 5 min) y abrir el break cuando `count >= SystemSetting('circuit_breaker_threshold')` (default 3) en una ventana móvil de 5 min. El break abierto SHALL persistir `circuit_breaker_open_until = now() + SystemSetting('circuit_breaker_open_seconds')` (default 60). Mientras el break esté abierto, el regulador SHALL evaluar `upstream_circuit_open` y frenar con `reason=upstream_circuit_open`, `batch_computed=0`.
+
+#### Scenario: 3 strikes en 5 min abre el break
+- **WHEN** 3 respuestas 4xx/5xx transitorias en menos de 5 min
+- **THEN** `UpstreamCircuitBreaker::isOpen()` retorna true
+- **AND** el siguiente tick sale con `decision=skipped, reason=upstream_circuit_open`
+- **AND** `regulator_skip_reason='upstream_circuit_open'` se persiste en filas pendientes
+
+#### Scenario: Tras 60 s sin strikes, half-open permite encolar
+- **WHEN** `circuit_breaker_open_until < now()` y no hay strikes nuevos
+- **THEN** el tick reanuda encolo normal
+- **AND** si llega una nueva respuesta transitoria, vuelve a contar y reabre
+
+### Requirement: El regulador expone causa upstream en endpoint
+El sistema SHALL extender `GET /ia/api-transcriptor/regulator-cause` para incluir `signals_evaluated[]` la cadena `'upstream_circuit'` cuando el break esté abierto, y SHALL traducir el valor a texto humano en el panel de diagnóstico ("API externa no responde tras N strikes").
+
+#### Scenario: Diagnóstico muestra estado del break
+- **WHEN** el admin abre el panel de diagnóstico y el break está abierto
+- **THEN** la sección "Causa actual" muestra "API externa no responde tras N strikes (próximo intento en Xs)"
+
+#### Scenario: Sin break, la señal no aparece
+- **WHEN** el break nunca se ha abierto desde el último reset
+- **THEN** `signals_evaluated` no contiene `'upstream_circuit'`
+- **AND** el endpoint no muestra la sección de texto humano de break
+
+### Requirement: Configuración del break y backoff por env/system setting
+El sistema SHALL leer las nuevas claves `max_backoff_seconds`, `circuit_breaker_threshold`, `circuit_breaker_open_seconds` desde la capa `TranscriptorSettings` (con fallback al env y a config) y SHALL NO requerir config nueva de supervisor ni reinicio del servicio.
+
+#### Scenario: Ajuste sin redeploy
+- **WHEN** el admin guarda `SystemSetting('circuit_breaker_threshold') = 5`
+- **THEN** el siguiente tick usa el nuevo valor sin tocar nada más
+- **AND** `php artisan tinker` confirmando lectura ve `'circuit_breaker_threshold' => '5'`
+
+#### Scenario: Setting vacío o inválido no rompe el regulador
+- **WHEN** un setting no existe o es no-numérico
+- **THEN** `TranscriptorSettings::int('circuit_breaker_threshold')` devuelve el default `3`
+- **AND** el regulador no lanza excepciones por configuración

@@ -3,6 +3,7 @@
 namespace App\Services\BgJobs;
 
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Scanner de batches del API Transcriptor en background.
@@ -26,6 +27,11 @@ class TranscriptorBatchJobScanner
      * Tiempo en segundos que un job terminal permanece visible en el widget
      * antes de descartarse. Suficiente para que el operador lea el resumen
      * tras disparar el batch.
+     *
+     * NOTA: a partir del fix bg-job-indicator-hide-completed, este scanner
+     * ya NO está registrado en BgJobRegistry (la card no aparece más en el
+     * widget flotante). Este TTL queda como contrato defensivo por si alguien
+     * re-registra el scanner en el futuro.
      */
     private const TERMINAL_TTL_SECONDS = 300;
 
@@ -49,22 +55,29 @@ class TranscriptorBatchJobScanner
                 continue;
             }
 
-            // Descartar entradas terminales que superaron TERMINAL_TTL_SECONDS.
-            // El cache del run individual puede seguir vivo (TTL 2h) pero el
-            // operador ya tuvo tiempo de leer el resultado.
-            if ($finishedAtIso !== null) {
-                $finishedTs = strtotime($finishedAtIso);
-                if ($finishedTs !== false && ($now - $finishedTs) > self::TERMINAL_TTL_SECONDS) {
-                    $cleaned[] = $entry;
-                    continue;
-                }
-            }
-
             $state = Cache::get("transcription_batch:{$runId}");
             if (!is_array($state)) {
                 // runId huérfano: limpiar
                 $cleaned[] = $entry;
                 continue;
+            }
+
+            // bg-job-indicator-hide-completed: si la entrada es string plano
+            // (legacy, registrada por el controller antes del fix), $finishedAtIso
+            // es null. Usamos $state['updated_at'] o $state['finished_at'] como
+            // fallback para que esas entradas también se drenen en 5 min y no
+            // queden atrapadas hasta que expire la cache individual (2h).
+            $effectiveFinishedAtIso = $finishedAtIso ?? ($state['updated_at'] ?? $state['finished_at'] ?? null);
+
+            // Descartar entradas terminales que superaron TERMINAL_TTL_SECONDS.
+            // El cache del run individual puede seguir vivo (TTL 2h) pero el
+            // operador ya tuvo tiempo de leer el resultado.
+            if ($effectiveFinishedAtIso !== null) {
+                $finishedTs = strtotime($effectiveFinishedAtIso);
+                if ($finishedTs !== false && ($now - $finishedTs) > self::TERMINAL_TTL_SECONDS) {
+                    $cleaned[] = $entry;
+                    continue;
+                }
             }
 
             $processed = (int) ($state['processed'] ?? 0);
@@ -84,6 +97,20 @@ class TranscriptorBatchJobScanner
             }
             if ($total > 0) {
                 $label .= " ({$processed}/{$total})";
+            }
+
+            // bg-job-indicator-hide-completed: defensa contra jobs terminales
+            // huérfanos de timestamp. Si llegamos acá con status terminal pero
+            // sin finishedAt/updated_at/finished_at, es un bug latente — el
+            // job terminó pero nadie registró cuándo. Lo descartamos igual y
+            // loggeamos para que un operador lo investigue si reaparece.
+            if ($isTerminal && $effectiveFinishedAtIso === null) {
+                Log::warning('TranscriptorBatchJobScanner: job terminal sin timestamp de finalizacion', [
+                    'run_id' => $runId,
+                    'status' => $status,
+                ]);
+                $cleaned[] = $entry;
+                continue;
             }
 
             $jobs[] = [

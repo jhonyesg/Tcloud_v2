@@ -1,0 +1,90 @@
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+
+/**
+ * hotfix transcription-segments-insert-dedup (parte 3/3):
+ *
+ * Defensa-en-profundidad del fix de TranscriptionProcessor (DELETE + INSERT
+ * en la misma transacción). Esta migración crea un UNIQUE INDEX sobre
+ * (transcription_id, segment_index) para que, si en el futuro algún path
+ * olvida el DELETE previo, la BD rechace la inserción duplicada con
+ * SQLSTATE 23505 (unique_violation) en lugar de aceptar el duplicado.
+ *
+ * La tabla tiene ~63M filas (29 GB), por lo que la migración se hace en
+ * tres pasos, todos sin ACCESS EXCLUSIVE lockout sobre la tabla:
+ *
+ *   1. Crear índice NO-UNIQUE (transcription_id, segment_index)
+ *      CONCURRENTLY. Es la herramienta de deduplicación — sin él, el
+ *      GROUP BY de paso 2 sería un parallel seq scan de 30s+.
+ *
+ *   2. DELETE por chunks de 5000 filas, conservando MIN(id) por
+ *      (transcription_id, segment_index). ROW_NUMBER() OVER PARTITION
+ *      usa el índice recién creado. Cada batch mide su avance; el
+ *      loop termina cuando un batch devuelve 0 filas.
+ *
+ *   3. DROP del índice no-unique + CREATE UNIQUE INDEX
+ *      (transcription_id, segment_index) CONCURRENTLY.
+ *
+ * El log final reporta filas eliminadas y batches para que el operador
+ * audite la migración.
+ */
+return new class extends Migration {
+    /**
+     * CREATE INDEX CONCURRENTLY no puede correr dentro de un BEGIN/COMMIT.
+     * Laravel envuelve cada migración en una transacción por defecto;
+     * sobreescribimos este flag para que el SQL se ejecute en modo
+     * autocommit y CONCURRENTLY funcione.
+     */
+    public $withinTransaction = false;
+
+    public function up(): void
+    {
+        // Paso 1: índice no-UNIQUE para acelerar el dedupe.
+        DB::statement('CREATE INDEX CONCURRENTLY IF NOT EXISTS transcription_segments_dedupe_temp_idx ON transcription_segments (transcription_id, segment_index)');
+
+        // Paso 2: dedupe en chunks. Cada batch borra hasta 5000 filas y
+        // termina cuando un batch no afecta nada (ya no quedan duplicados).
+        $deleted = 0;
+        $batches = 0;
+        $maxBatches = 50000; // safety: 5000 * 50000 = 250M filas (cap generoso)
+
+        do {
+            $batchDeleted = DB::affectingStatement("
+                DELETE FROM transcription_segments
+                WHERE id IN (
+                    SELECT id FROM (
+                        SELECT id,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY transcription_id, segment_index
+                                   ORDER BY id ASC
+                               ) AS rn
+                        FROM transcription_segments
+                    ) t
+                    WHERE rn > 1
+                    LIMIT 5000
+                )
+            ");
+            $deleted += $batchDeleted;
+            $batches++;
+
+            if ($batches >= $maxBatches) {
+                Log::warning("migration dedupe-transcription-segments-unique: alcanzó maxBatches={$maxBatches} con {$deleted} eliminados. Revisar manualmente.");
+                break;
+            }
+        } while ($batchDeleted > 0);
+
+        Log::info("migration dedupe-transcription-segments-unique: {$deleted} filas duplicadas eliminadas en {$batches} batch(es)");
+
+        // Paso 3: drop temp index + crear UNIQUE INDEX.
+        DB::statement('DROP INDEX CONCURRENTLY IF EXISTS transcription_segments_dedupe_temp_idx');
+        DB::statement('CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS transcription_segments_unique_idx ON transcription_segments (transcription_id, segment_index)');
+    }
+
+    public function down(): void
+    {
+        DB::statement('DROP INDEX CONCURRENTLY IF EXISTS transcription_segments_unique_idx');
+    }
+};

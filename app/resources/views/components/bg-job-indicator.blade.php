@@ -68,21 +68,23 @@ function bgJobIndicator() {
         POLL_INTERVAL_MS: 5000,
         MAX_VISIBLE: 3,
         EMPTY_THRESHOLD: 2,        // polls vacíos antes de pausar
+        DISMISS_TTL_MS: 86_400_000, // 24h: un descarte manual sobrevive al menos este tiempo
+        DISMISSED_KEY: 'bg_jobs:dismissed:v2',
         ENDPOINT: '/bg-jobs/active',
         POLL_TIMEOUT_MS: 8000,
 
         async boot() {
             // Cargar dismissed persistido
             try {
-                const stored = localStorage.getItem('bg_jobs:dismissed');
+                const stored = localStorage.getItem(this.DISMISSED_KEY);
                 if (stored) this.dismissed = JSON.parse(stored) || {};
             } catch (e) {}
             await this.poll();
             this.startTimer();
             this.attachVisibilityHandlers();
-            // Limpieza periódica de dismissed antiguos (>1h se olvida)
+            // Limpieza periódica de dismissed antiguos (DISMISS_TTL_MS se olvida)
             setInterval(() => {
-                const cutoff = Date.now() - 3600_000;
+                const cutoff = Date.now() - this.DISMISS_TTL_MS;
                 for (const [k, ts] of Object.entries(this.dismissed)) {
                     if (ts < cutoff) delete this.dismissed[k];
                 }
@@ -165,7 +167,7 @@ function bgJobIndicator() {
 
         persistDismissed() {
             try {
-                localStorage.setItem('bg_jobs:dismissed', JSON.stringify(this.dismissed));
+                localStorage.setItem(this.DISMISSED_KEY, JSON.stringify(this.dismissed));
             } catch (e) {}
         },
 

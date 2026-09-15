@@ -165,6 +165,7 @@ class FileScannerService
             'flac' => 'audio/flac',
             'aac' => 'audio/aac',
             'm4a' => 'audio/mp4',
+            'opus' => 'audio/opus',
             'pdf' => 'application/pdf',
             'doc' => 'application/msword',
             'docx' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',

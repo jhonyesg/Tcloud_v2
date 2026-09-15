@@ -13,6 +13,8 @@ class StorageFunnelService
     private const CACHE_KEY_PREFIX = 'transcriptor.funnel.scope.';
     private const CANTIDAD_CACHE_PREFIX = 'transcriptor.cantidad.';
     private const CANTIDAD_CACHE_TTL = 300;
+    private const ROOT_ID_CACHE_PREFIX = 'transcriptor.root_id_for.';
+    private const ROOT_ID_CACHE_TTL = 600;
 
     /**
      * Conteos del dia de hoy por storage dentro del scope heredado
@@ -186,7 +188,26 @@ class StorageFunnelService
         return $count;
     }
 
+    /**
+     * Resuelve el rootId del scope al que pertenece un storage. Cacheado en
+     * Redis 10 min (ROOT_ID_CACHE_TTL): la geometria del filesystem cambia
+     * lento y este helper se llamaba 70+ veces por indexData() sin cache,
+     * cada una disparando 2 queries (find + LIKE seq scan). Change
+     * 2026-09-12-api-transcriptor-index-perf-cache.
+     */
     public function resolveRootIdFor(int $storageId): int
+    {
+        $cacheKey = self::ROOT_ID_CACHE_PREFIX . $storageId;
+        $cached = Cache::get($cacheKey);
+        if ($cached !== null) {
+            return (int) $cached;
+        }
+        $result = $this->computeRootIdFor($storageId);
+        Cache::put($cacheKey, $result, self::ROOT_ID_CACHE_TTL);
+        return $result;
+    }
+
+    private function computeRootIdFor(int $storageId): int
     {
         $current = StorageProvider::find($storageId);
         if (!$current || empty($current->base_path)) {

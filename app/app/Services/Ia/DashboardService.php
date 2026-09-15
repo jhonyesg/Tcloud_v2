@@ -22,6 +22,36 @@ class DashboardService
         'segment_keyword_hits' => 10_000_000,
     ];
 
+    /**
+     * Resumen acotado para el dashboard: SOLO los KPIs que consumen los
+     * partials (`pairs_*`, `drift_negative`). Evita pagar auditRecent,
+     * scansRecent, readiness (count de tablas grandes) ni driftReport completo
+     * en la ruta caliente del dashboard.
+     *
+     * El cacheo por tier lo aplica DashboardDataProvider.
+     */
+    public function coverageSummary(): array
+    {
+        $pairsTotal = (int) DB::table('keyword_scan_watermarks')->count();
+        $pairsPending = (int) DB::table('keyword_scan_watermarks')->whereNull('scanned_until')->count();
+        $pairsWithHits = (int) DB::table('keyword_scan_watermarks')->where('hits_total', '>', 0)->count();
+
+        $driftNegative = 0;
+        try {
+            $report = app(WatermarkReconciler::class)->driftReport();
+            $driftNegative = (int) ($report['summary']['missing'] ?? 0);
+        } catch (\Throwable $e) {
+            $driftNegative = 0;
+        }
+
+        return [
+            'pairs_total' => $pairsTotal,
+            'pairs_pending' => $pairsPending,
+            'pairs_with_hits' => $pairsWithHits,
+            'drift_negative' => $driftNegative,
+        ];
+    }
+
     public function build(): array
     {
         return Cache::remember('coverage:dashboard', self::CACHE_TTL, function () {

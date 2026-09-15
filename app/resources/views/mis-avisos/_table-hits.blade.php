@@ -68,7 +68,7 @@
             <template x-for="g in (activeTab === 'live' ? displayLiveRows : displayHistoryRows)" :key="'g-' + g.key">
                 <tr class="align-top"
                     :class="isGroupExpanded(g.key) ? 'bg-amber-50/30' : 'hover:bg-slate-50/60'">
-                    <td :colspan="isGroupExpanded(g.key) ? 9 : 1" class="py-3 pr-2 whitespace-nowrap align-top">
+                    <td colspan="1" class="py-3 pr-2 whitespace-nowrap align-top">
                         <button x-show="!isGroupExpanded(g.key)"
                                 @click="toggleGroupExpansion(g.key)"
                                 :title="'Ver las ' + g.hits.length + ' menciones'"
@@ -147,10 +147,12 @@
                         </div>
                     </td>
 
-                    {{-- Vista expandida dentro de la MISMA fila (colspan=8). Solo se
-                         renderiza cuando isGroupExpanded(g.key)===true. La fila
-                         "crece" en altura para mostrar las menciones reales. --}}
-<td x-show="isGroupExpanded(g.key)" colspan="9" class="px-4 py-3 align-top">
+                    {{-- Vista expandida dentro de la MISMA fila (colspan=8:
+                          con la celda del chevron = 9 columnas totales). Solo se
+                          muestra cuando isGroupExpanded(g.key)===true; las 8
+                          celdas de datos se ocultan con x-show. La fila
+                          "crece" en altura para mostrar las menciones reales. --}}
+<td x-show="isGroupExpanded(g.key)" colspan="8" class="px-4 py-3 align-top">
                         <div class="mb-2 flex items-center justify-between">
                             <div class="text-xs text-slate-600 inline-flex items-center gap-1">
                                 {{-- change 2026-09-10-mis-avisos-program-date-filter: ícono TV/Radio en el header del panel expandido --}}

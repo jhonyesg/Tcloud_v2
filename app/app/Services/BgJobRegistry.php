@@ -24,10 +24,19 @@ class BgJobRegistry
      *
      * El kind debe ser kebab-case y único en el sistema. Es el prefijo del
      * deep-link `?focus=bg-{kind}-{runId}`.
+     *
+     * bg-job-indicator-hide-completed: 'transcriptor-batch' ya NO está acá.
+     * El progreso del escaneo del API Transcriptor se muestra inline en el
+     * propio módulo (/ia/api-transcriptor: header pill línea 911 + modal
+     * automático) en lugar de una tarjeta flotante global. Esto evita el
+     * ruido visual de tarjetas que reaparecen tras recargar y elimina la
+     * necesidad de un descarte manual por parte del operador.
+     *
+     * El scanner `TranscriptorBatchJobScanner` sigue existiendo por si en el
+     * futuro se quiere re-registrar; solo hay que volver a agregarlo acá.
      */
     private array $scanners = [
         'avisos-scan' => [\App\Services\BgJobs\AvisosScanJobScanner::class, 'scan'],
-        'transcriptor-batch' => [\App\Services\BgJobs\TranscriptorBatchJobScanner::class, 'scan'],
     ];
 
     /**

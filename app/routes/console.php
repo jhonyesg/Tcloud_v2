@@ -95,9 +95,32 @@ Schedule::command('transcription:tune --apply')
 // dejaba el polling parado 24h en silencio — y el polling es el UNICO camino
 // de retorno de resultados (no hay webhook entrante). 10 min cubre de sobra un
 // ciclo normal.
+// Centinela de flujo: cada hora comprueba que sigan naciendo transcripciones.
+//
+// Es la pieza que faltó el 2026-08-18: el pipeline estuvo 44 horas parado (el
 Schedule::command('transcription:poll-results')
     ->everyMinute()
     ->withoutOverlapping(10);
+
+// Cambio transcriptor-api-surface-completeness: recuperación masiva semanal.
+// Lunes 04:00 hora local. Re-encola en bloque los jobs error/dead de los últimos
+// 7 días en el upstream via POST /v1/jobs/retry-batch. Complementa al tick diario:
+// el tick solo encola del día, este absorbe los fallos viejos antes del fin de
+// semana para arrancar la semana con cola limpia. Sin --apply: el operador decide
+// la primera vez correrlo a mano.
+Schedule::command('transcription:retry-batch-upstream --max-age-hours=168')
+    ->weeklyOn(1, '04:00')
+    ->withoutOverlapping(120)
+    ->appendOutputTo(storage_path('logs/transcription-retry-batch.log'));
+
+// Cambio transcriptor-api-surface-completeness Fase E: audit semanal de `corrected`.
+// Martes 03:00 — corre --dry-run primero para que el operador vea en el log
+// cuántos jobs done hay sin auditar, sin tocar el upstream. Si decide
+// aplicarlo, lo corre a mano sin la flag.
+Schedule::command('transcription:backfill-corrected-audit --days=30 --dry-run')
+    ->weeklyOn(2, '03:00')
+    ->withoutOverlapping(60)
+    ->appendOutputTo(storage_path('logs/transcription-backfill-corrected.log'));
 
 // Centinela de flujo: cada hora comprueba que sigan naciendo transcripciones.
 //
@@ -126,6 +149,13 @@ Schedule::command('transcription:cleanup-orphan-wav')
 Schedule::command('transcription:check-shm-health')
     ->everyTenMinutes()
     ->withoutOverlapping(30);
+
+// Snapshot por minuto para la serie temporal del panel Consumo.
+// Escribe en Redis un anillo de 60 puntos (TTL 70min) que el endpoint
+// /ia/api-transcriptor/live-consumption lee para alimentar la UI.
+Schedule::command('transcription:consumption-snapshot')
+    ->everyMinute()
+    ->withoutOverlapping(5);
 
 // Limpieza diaria del log de undo de bulk actions (corrections-bulk-moderation).
 // Borra entries con expires_at < now() - retention (default 7d).

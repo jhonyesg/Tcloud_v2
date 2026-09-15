@@ -85,26 +85,22 @@
         </div>
         @endif
 
-        @if($mediaEditorEnabled)
+        @if($canalesCount > 0)
         <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
             <div class="flex items-center gap-4">
-                <div class="w-12 h-12 bg-purple-100 rounded-xl flex items-center justify-center">
-                    <i class="fas fa-film text-purple-600 text-xl"></i>
+                <div class="w-12 h-12 bg-orange-100 rounded-xl flex items-center justify-center">
+                    <i class="fas fa-satellite-dish text-orange-600 text-xl"></i>
                 </div>
                 <div>
-                    <h3 class="font-semibold text-slate-800">Editor de Medios</h3>
-                    <p class="text-xs text-slate-500">
-                        Habilitado ·
-                        @if($mediaEditorClipLimit > 0)
-                            {{ $mediaEditorClipsUsed }}/{{ $mediaEditorClipLimit }} clips este mes
-                        @else
-                            Sin límite de clips
-                        @endif
-                    </p>
+                    <h3 class="font-semibold text-slate-800">Medios Puntuales</h3>
+                    <p class="text-xs text-slate-500">{{ $canalesCount }} canal{{ $canalesCount !== 1 ? 'es' : '' }} asignado{{ $canalesCount !== 1 ? 's' : '' }}</p>
                 </div>
             </div>
         </div>
         @endif
+
+        @include('dashboard.partials._media-editor', ['context' => 'client', 'user' => $user])
+        @include('dashboard.partials._mis-avisos', ['context' => 'client', 'user' => $user])
     </div>
 
     @if(count($instructivos) > 0)

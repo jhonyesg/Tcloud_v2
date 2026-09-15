@@ -61,6 +61,11 @@ class AlertDeliveryService
      */
     private function deliverForUser(int $userId, int $emailsQuota): int
     {
+        // Ventana del día en forma sargable (mismo literal que bindaba
+        // whereDate): el cast ::date bloquea el uso de índices.
+        $dayFrom = today()->toDateString() . ' 00:00:00';
+        $dayTo = today()->addDay()->toDateString() . ' 00:00:00';
+
         $pendientes = DB::table('alert_deliveries as ad')
             ->join('segment_keyword_hits as h', 'h.id', '=', 'ad.hit_id')
             ->where('ad.user_id', $userId)
@@ -69,8 +74,9 @@ class AlertDeliveryService
             // Solo el día actual. La reposición (reposition_for = mañana) se
             // permite cuando la fila ya fue marcada por el techo: su due_at
             // quedó movido a la ventana de mañana.
-            ->where(function ($q) {
-                $q->whereDate('h.matched_at', today())
+            ->where(function ($q) use ($dayFrom, $dayTo) {
+                $q->where('h.matched_at', '>=', $dayFrom)
+                    ->where('h.matched_at', '<', $dayTo)
                     ->orWhereNotNull('ad.reposition_for');
             })
             ->select(
@@ -90,9 +96,11 @@ class AlertDeliveryService
         }
 
         // Techo diario: correos de aviso ya enviados HOY a este usuario.
+        // Forma sargable: el cast ::date de whereDate bloquea índices.
         $sentToday = DB::table('alert_logs')
             ->where('user_id', $userId)
-            ->whereDate('sent_at', today())
+            ->where('sent_at', '>=', $dayFrom)
+            ->where('sent_at', '<', $dayTo)
             ->where('status', 'sent')
             ->count();
 

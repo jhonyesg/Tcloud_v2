@@ -2,16 +2,16 @@
 
 namespace App\Http\Controllers;
 
-use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Session;
 use App\Models\User;
-use App\Models\StorageProvider;
-use App\Models\File;
-use App\Models\Share;
-use App\Models\UserStorage;
+use App\Services\Dashboard\DashboardDataProvider;
 
 class DashboardController extends Controller
 {
+    public function __construct(private readonly DashboardDataProvider $dataProvider)
+    {
+    }
+
     private function personalStorageId(User $user): ?int
     {
         $us = $user->userStorages()
@@ -49,19 +49,11 @@ class DashboardController extends Controller
             $shmFree      = @disk_free_space($shmDir) ?: 0;
             $shmUsed      = $shmTotal - $shmFree;
 
-            $activeShares = Share::where(function ($query) {
-                $query->whereNull('expires_at')->orWhere('expires_at', '>=', now());
-            })->count();
+            $blocks = $this->dataProvider->buildAdmin($user);
+            $dashboardData = $this->dataProvider->dataOf($blocks);
 
             return view('dashboard.admin', [
-                'stats' => [
-                    'total_users'    => User::count(),
-                    'total_storages' => StorageProvider::count(),
-                    'total_files'    => File::count(),
-                    'total_shares'   => Share::count(),
-                    'active_shares'  => $activeShares,
-                    'storage_used'   => File::sum('size'),
-                ],
+                'stats' => $dashboardData['stats'],
                 'ramdisk' => [
                     'available'  => $diskTotal > 0,
                     'total_gb'   => $diskTotal > 0 ? round($diskTotal / 1073741824, 1) : 0,
@@ -76,6 +68,8 @@ class DashboardController extends Controller
                     'free_gb'    => $shmTotal > 0 ? round($shmFree  / 1073741824, 1) : 0,
                     'percent'    => $shmTotal > 0 ? round(($shmUsed / $shmTotal) * 100, 1) : 0,
                 ],
+                'dashboardData' => $dashboardData,
+                'dashboardFreshness' => $this->dataProvider->freshnessOf($blocks),
                 'user' => $user,
                 'personalStorageId' => $this->personalStorageId($user),
                 'instructivos' => $this->scanInstructivos(),
@@ -83,8 +77,6 @@ class DashboardController extends Controller
         }
 
         $userStorages = $user->userStorages()->with('storageProvider')->get();
-
-        $mediaEditorEnabled = $user->canUseMediaEditor();
 
         $activeShares = $user->shares()
             ->where(function ($query) {
@@ -102,13 +94,14 @@ class DashboardController extends Controller
             ->whereHas('file', fn ($query) => $query->where('availability_state', 'missing'))
             ->count();
 
+        $blocks = $this->dataProvider->buildClient($user);
+        $dashboardData = $this->dataProvider->dataOf($blocks);
+
         return view('dashboard.user', [
             'user' => $user,
             'storages' => $userStorages,
             'canalesCount' => $user->canales()->count(),
-            'mediaEditorEnabled' => $mediaEditorEnabled,
-            'mediaEditorClipLimit' => (int) $user->media_editor_clip_limit,
-            'mediaEditorClipsUsed' => $mediaEditorEnabled ? $user->mediaEditorClipsThisMonth() : 0,
+            'dashboardData' => $dashboardData,
             'shareStats' => [
                 'active' => $activeShares,
                 'expired' => $expiredShares,

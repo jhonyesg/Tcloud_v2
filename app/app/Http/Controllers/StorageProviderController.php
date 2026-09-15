@@ -4,8 +4,10 @@ namespace App\Http\Controllers;
 
 use App\Models\User;
 use App\Models\StorageProvider;
+use App\Models\SystemSetting;
 use Aws\S3\S3Client;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Storage;
 
 class StorageProviderController extends Controller
@@ -13,11 +15,38 @@ class StorageProviderController extends Controller
     public function index(Request $request)
     {
         if ($request->ajax()) {
-            $storages = StorageProvider::withCount('files')->get();
-            return response()->json($storages);
+            // Cache 60s (change 2026-09-13-perf-audit-and-improve).
+            // `withCount('files')` ejecuta un subquery por storage sobre 190
+            // filas, lo que pesa ~1.2s cold segun Playwright. Con cache, los
+            // requests siguientes son <100ms.
+            $ttl = self::resolveAdminStoragesCacheTtl();
+            if ($ttl === 0) {
+                return response()->json(self::computeAdminStorages());
+            }
+            $payload = Cache::remember('admin:storages:index', $ttl, fn () => self::computeAdminStorages());
+            return response()->json($payload);
         }
 
         return view('admin.storages');
+    }
+
+    private static function computeAdminStorages(): array
+    {
+        return StorageProvider::withCount('files')->get()->toArray();
+    }
+
+    private static function resolveAdminStoragesCacheTtl(): int
+    {
+        // Default 60s. Rango [0, 600]. 0 = bypass (freno de emergencia).
+        $raw = SystemSetting::get('admin_storages_cache_ttl');
+        if ($raw === null || $raw === '' || !is_numeric($raw)) {
+            return 60;
+        }
+        $ttl = (int) $raw;
+        if ($ttl < 0 || $ttl > 600) {
+            return 60;
+        }
+        return $ttl;
     }
 
     public function store(Request $request)
@@ -37,6 +66,9 @@ class StorageProviderController extends Controller
             'base_path' => $request->input('base_path'),
             'enabled' => $request->boolean('enabled', true),
         ]);
+
+        // Change 2026-09-13-perf-audit-and-improve: creacion invalida el cache del listado.
+        Cache::forget('admin:storages:index');
 
         return response()->json($storage, 201);
     }
@@ -68,6 +100,9 @@ class StorageProviderController extends Controller
 
         $storage->update($data);
 
+        // Change 2026-09-13-perf-audit-and-improve: cambio invalida el cache del listado.
+        Cache::forget('admin:storages:index');
+
         return response()->json($storage);
     }
 
@@ -75,6 +110,8 @@ class StorageProviderController extends Controller
     {
         $storage = StorageProvider::findOrFail($id);
         $storage->delete();
+        // Change 2026-09-13-perf-audit-and-improve: borrado invalida el cache del listado.
+        Cache::forget('admin:storages:index');
         return response()->json(['message' => 'Storage deleted']);
     }
 

@@ -77,13 +77,13 @@ class TranscriptionProcessor
 
         $segments = $this->parser->parse($srt);
 
-        // Borrar segmentos viejos antes de re-insertar. Matching previo se
-        // mantiene: la transición 0→1 rara vez introduce keywords nuevos y
-        // las alertas ya enviadas son idempotentes desde el lado del usuario.
-        DB::transaction(function () use ($transcription, $segments) {
-            $transcription->segments()->delete();
-        });
-
+        // hotfix transcription-segments-insert-dedup: el DELETE de segmentos
+        // viejos ahora vive dentro de persistSegmentsAndUpdate (en la misma
+        // transacción que el INSERT), así que es idempotente para TODOS los
+        // paths de reproceso: rescan-completed, retry manual, race condition,
+        // crash entre INSERT y UPDATE de state. Antes, si processDone() se
+        // llamaba cuando state era pending pero ya existían segmentos de un
+        // intento previo fallido, se insertaban duplicados sobre los huérfanos.
         $this->persistSegmentsAndUpdate($transcription, $srt, $segments, triggerMatcher: false);
     }
 
@@ -117,6 +117,16 @@ class TranscriptionProcessor
         }
 
         DB::transaction(function () use ($transcription, $srt, $segmentsForCorrections, $coherenceApplied) {
+            // hotfix transcription-segments-insert-dedup: BORRAR segmentos
+            // previos en la MISMA transacción que el INSERT. Garantiza que
+            // cualquier reintento (rescan-completed, retry manual, crash
+            // recovery) produce una sola fila por segment_index. Sin esto,
+            // processDone() sobre state='pending' con segmentos huérfanos
+            // de un intento previo fallido duplicaba el resultado.
+            // (ON DELETE CASCADE de keyword_matches h.segment_id limpia los
+            // matches viejos automáticamente.)
+            $transcription->segments()->delete();
+
             $rows = [];
             $now = now();
             foreach ($segmentsForCorrections as $seg) {

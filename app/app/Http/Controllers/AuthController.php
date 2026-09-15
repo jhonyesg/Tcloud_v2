@@ -46,7 +46,22 @@ class AuthController extends Controller
             return back()->withInput($request->only('login'))->with('error', 'No existe una cuenta con ese usuario o correo electrónico.');
         }
 
-        if (!Hash::check($request->password, $user->password_hash)) {
+        try {
+            $passwordOk = Hash::check($request->password, $user->password_hash);
+        } catch (\RuntimeException $e) {
+            // Hash::check lanza RuntimeException cuando el hash almacenado no es
+            // un bcrypt válido (datos corruptos / cuentas migradas con hash en
+            // otro formato). Tratamos como contraseña inválida para no exponer
+            // 500 al operador y para que el usuario use el flujo de forgot-password.
+            Log::warning('auth.login.malformed_password_hash', [
+                'user_id' => $user->id,
+                'email' => $user->email,
+                'error' => $e->getMessage(),
+            ]);
+            $passwordOk = false;
+        }
+
+        if (!$passwordOk) {
             return back()->withInput($request->only('login'))->with('error', 'La contraseña es incorrecta. Verifica e intenta de nuevo.');
         }
 

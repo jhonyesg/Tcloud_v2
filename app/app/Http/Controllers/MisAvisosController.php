@@ -4,7 +4,6 @@ namespace App\Http\Controllers;
 
 use App\Models\Keyword;
 use App\Models\KeywordCategory;
-use App\Models\KeywordMatch;
 use App\Models\Keyword as KeywordModel;
 use App\Models\User;
 use App\Services\Ia\AlertDeliveryService;
@@ -25,16 +24,10 @@ class MisAvisosController extends Controller
         $quota = $user->alertsInteligente?->keywords_quota ?? 0;
         $moduleEnabled = (bool) $user->alertsInteligente?->enabled && $quota > 0;
 
-        $matches = $user->keywordMatches()
-            ->with(['transcription.file', 'keyword'])
-            ->whereHas('transcription.file.storageProvider', function ($q) use ($user) {
-                $q->whereHas('userStorages', function ($sq) use ($user) {
-                    $sq->where('user_id', $user->id)
-                        ->where('transcription_access', true);
-                });
-            })
-            ->orderByDesc('matched_at')
-            ->paginate(25);
+        // Rendimiento primera carga: la query de keywordMatches paginada
+        // ($matches) se eliminó — la vista no la consume (el feed vivo y el
+        // histórico llegan por /mis-avisos/feed y /mis-avisos/history) y
+        // costaba ~34ms con 0 filas en el render HTML.
 
         // Storages con acceso del cliente: hidrata el selector de alcance
         // keyword→store sin fetch extra al abrir la pestaña.
@@ -66,7 +59,6 @@ class MisAvisosController extends Controller
             'used' => $used,
             'quota' => $quota,
             'moduleEnabled' => $moduleEnabled,
-            'matches' => $matches,
             'accessibleStorages' => $accessibleStorages,
             'categories' => $categories,
             'keywordCategories' => $keywordCategories,

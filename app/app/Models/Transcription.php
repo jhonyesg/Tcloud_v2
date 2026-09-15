@@ -36,6 +36,7 @@ class Transcription extends Model
         'srt_content', 'duration_seconds', 'word_count',
         'started_at', 'finished_at', 'recorded_at', 'requeue_after_at', 'last_polled_at', 'error_message', 'retries',
         'discovered_at', 'dispatched_at', 'submission_committed_at', 'regulator_skip_reason',
+        'srt_truncated_retries',
     ];
 
     protected $casts = [

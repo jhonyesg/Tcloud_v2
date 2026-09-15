@@ -82,7 +82,7 @@ $fileId = (int) DB::table('files')->insertGetId([
 ]);
 $transcriptionId = (int) DB::table('transcriptions')->insertGetId([
     'file_id' => $fileId, 'state' => 'done', 'duration_seconds' => 120,
-    'created_at' => now(), 'updated_at' => now(),
+    'recorded_at' => now(), 'created_at' => now(), 'updated_at' => now(),
 ]);
 $segmentIds = [];
 for ($i = 0; $i < 40; $i++) {
@@ -114,7 +114,7 @@ $fileRemoteId = (int) DB::table('files')->insertGetId([
     'owner_id' => $adminId, 'is_folder' => false, 'created_at' => now(), 'updated_at' => now(),
 ]);
 $transcriptionRemoteId = (int) DB::table('transcriptions')->insertGetId([
-    'file_id' => $fileRemoteId, 'state' => 'done', 'created_at' => now(), 'updated_at' => now(),
+    'file_id' => $fileRemoteId, 'state' => 'done', 'recorded_at' => now(), 'created_at' => now(), 'updated_at' => now(),
 ]);
 $segRemoteId = (int) DB::table('transcription_segments')->insertGetId([
     'transcription_id' => $transcriptionRemoteId, 'segment_index' => 0,
@@ -180,14 +180,26 @@ try {
     // ─── Feed con filtros + hitRow ─────────────────────────────────────────
     h_section('todayHits: filtros y capabilities en fila');
 
+    // Contrato AGRUPADO (2026-09-12): todayHits pagina GRUPOS por
+    // (transcription_id, keyword_id); cada grupo trae todas sus menciones en
+    // hits[] y expone first_* de la más reciente. Fixture: 1 hit local + 1
+    // remoto en archivos distintos → 2 grupos con 2 menciones totales.
     $feed = $service->todayHits($userReadModel);
-    h_check($feed->total() === 2, 'Feed del día contiene los 2 hits creados (local + remoto)');
+    $groups = collect($feed->items());
+    $hitsFlat = $groups->flatMap(fn ($g) => $g['hits'] ?? [])->values();
+    h_check($groups->count() === 2 && $hitsFlat->count() === 2,
+        'Feed del día agrupa: 2 grupos (local+remoto) con sus 2 menciones');
+    h_check(($groups->firstWhere('file_id', $fileId)['hits_count'] ?? null) === 1
+            && count($groups->firstWhere('file_id', $fileId)['hits'] ?? []) === 1,
+        'Grupo local trae su mención en hits[] con hits_count=1');
     $row = collect($feed->items())->first(fn ($r) => $r['file_id'] === $fileId);
     h_check($row !== null && str_contains((string) $row['file_url'], "/files/{$fileId}/view?t=60"),
         'file_url deep-link a /view?t= (seg 60)');
     h_check($row !== null && ($row['can_view_file'] ?? false) === true && ($row['can_clip'] ?? false) === true,
         'Capabilities de fila correctas (read+editor+local)');
-    h_check($row !== null && ($row['segment_id'] ?? null) === $hitLocalSegmentId, 'segment_id expuesto para anclar el modal');
+    h_check($row !== null && ($row['first_segment_id'] ?? null) === $hitLocalSegmentId
+            && collect($row['hits'])->contains(fn ($h) => ($h['segment_id'] ?? null) === $hitLocalSegmentId),
+        'segment_id expuesto para anclar el modal (first_ + hits[])');
 
     $remoteRow = collect($feed->items())->first(fn ($r) => $r['file_id'] === $fileRemoteId);
     h_check($remoteRow !== null && ($remoteRow['can_view_file'] ?? false) === true, 'Hit remoto: can_view_file=true con read');

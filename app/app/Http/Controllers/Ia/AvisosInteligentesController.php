@@ -12,6 +12,7 @@ use App\Services\Ia\AvisosScanService;
 use App\Services\Ia\MentionBackfillService;
 use App\Services\Ia\MentionsSearchService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Session;
@@ -369,9 +370,24 @@ class AvisosInteligentesController extends Controller
     /** Estado del escaneo: settings + últimas corridas + pendientes estimados. */
     public function scanStatus(Request $request, AvisosScanService $service)
     {
-        // Estimado con filtros explícitos (preset/rango/storage) si vienen en
-        // la query: el modal de confirmación muestra el estimado real de la
-        // corrida que se va a lanzar, no el de la ventana global.
+        // Cacheado en Redis 60s (change 2026-09-13-perf-audit-and-improve).
+        // El compute original ejecuta service->estimate() DOS veces + recentRuns()
+        // + lastRun() + settings() — cada estimate() recorre ~387k transcriptions.
+        // Sin cache, este endpoint tardaba ~4.9s warm en mediciones Playwright.
+        $ttl = self::resolveScanStatusCacheTtl();
+        if ($ttl === 0) {
+            return response()->json($this->computeScanStatus($request, $service));
+        }
+        $payload = Cache::remember('avisos:scan_status', $ttl, fn () => $this->computeScanStatus($request, $service));
+        return response()->json($payload);
+    }
+
+    /**
+     * Compute real de scanStatus (sin cache). Extraido del controller para
+     * que Cache::remember pueda invocarlo sin repetir logica.
+     */
+    private function computeScanStatus(Request $request, AvisosScanService $service): array
+    {
         $filterOpts = $service->filterOptsFromRequest($request);
 
         $pending = $filterOpts !== null
@@ -380,13 +396,27 @@ class AvisosInteligentesController extends Controller
                 ? $service->estimate(['noWindow' => true])
                 : $service->estimate());
 
-        return response()->json([
+        return [
             'settings' => $service->settings(),
             'last_run' => $service->lastRun(),
             'runs' => $service->recentRuns(10),
             'pending_estimate' => $pending,
             'total_pending_estimate' => $service->estimate(['noWindow' => true]),
-        ]);
+        ];
+    }
+
+    private function resolveScanStatusCacheTtl(): int
+    {
+        // Default 60s. Rango [0, 600]. 0 = bypass (freno de emergencia).
+        $raw = \App\Models\SystemSetting::get('avisos_scan_status_cache_ttl');
+        if ($raw === null || $raw === '' || !is_numeric($raw)) {
+            return 60;
+        }
+        $ttl = (int) $raw;
+        if ($ttl < 0 || $ttl > 600) {
+            return 60;
+        }
+        return $ttl;
     }
 
     /** Guarda la configuración del escaneo automático. */
@@ -403,6 +433,10 @@ class AvisosInteligentesController extends Controller
             'intervalMinutes' => $validated['intervalMinutes'],
             'windowHours' => $validated['windowHours'],
         ]);
+
+        // Change 2026-09-13-perf-audit-and-improve: el cache de /scan ahora
+        // cubre este endpoint; el cambio de settings debe invalidarlo.
+        Cache::forget('avisos:scan_status');
 
         return response()->json(['ok' => true, 'settings' => $settings]);
     }

@@ -8,6 +8,19 @@
         <div>
             <h1 class="text-2xl font-bold text-slate-800">Panel de Administración</h1>
             <p class="text-slate-500 mt-0.5">Resumen del sistema y estadísticas</p>
+            @php
+                $statsFresh = $dashboardFreshness['stats'] ?? null;
+                $statsAt = $statsFresh['generated_at'] ?? null;
+            @endphp
+            @if($statsAt)
+                <p class="text-xs text-slate-400 mt-1 flex items-center gap-1.5" title="Los totales se recalculan cada {{ (int) config('dashboard.cold_ttl') / 60 }} min">
+                    <i class="fas fa-clock text-[10px]"></i>
+                    <span>Datos actualizados {{ \Illuminate\Support\Carbon::parse($statsAt)->diffForHumans(['short' => true, 'syntax' => \Carbon\CarbonInterface::DIFF_RELATIVE_TO_NOW]) }}</span>
+                    @if($statsFresh['stale'] ?? false)
+                        <span class="text-amber-600 font-medium">· revalidando…</span>
+                    @endif
+                </p>
+            @endif
         </div>
         <button onclick="startAdminDashboardTour()" class="flex items-center gap-2 bg-purple-600 hover:bg-purple-700 text-white px-3 py-2 rounded text-sm transition-colors" title="Guía interactiva">
             <i class="fas fa-map-marked-alt"></i>
@@ -216,6 +229,29 @@
                     @endforeach
                 </div>
                 @endif
+            </div>
+        </div>
+    </div>
+
+    <!-- Módulos inteligentes -->
+    <div class="mt-6">
+        <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
+            <div class="flex items-center justify-between mb-5">
+                <div class="flex items-center gap-3">
+                    <div class="w-9 h-9 bg-indigo-100 rounded-lg flex items-center justify-center">
+                        <i class="fas fa-microchip text-indigo-600 text-sm"></i>
+                    </div>
+                    <div>
+                        <h3 class="text-lg font-semibold text-slate-800">Módulos Inteligentes</h3>
+                        <p class="text-xs text-slate-400">Estado agregado de los módulos IA / Editor del sistema</p>
+                    </div>
+                </div>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                @include('dashboard.partials._media-editor', ['context' => 'admin', 'data' => $dashboardData['media_editor']])
+                @include('dashboard.partials._mis-avisos', ['context' => 'admin', 'data' => $dashboardData['mis_avisos']])
+                @include('dashboard.partials._bg-jobs-active', ['context' => 'admin', 'data' => $dashboardData['bg_jobs']])
+                @include('dashboard.partials._active-sessions', ['context' => 'admin', 'data' => $dashboardData['active_sessions']])
             </div>
         </div>
     </div>

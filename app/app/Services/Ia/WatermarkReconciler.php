@@ -2,6 +2,7 @@
 
 namespace App\Services\Ia;
 
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -69,6 +70,8 @@ class WatermarkReconciler
 
         if ($inserted > 0) {
             CacheEpoch::bump();
+            // Change 2026-09-13-perf-audit-and-improve: invalidar cache de /scan.
+            \Illuminate\Support\Facades\Cache::forget("avisos:scan_status");
             $this->audit(null, 'hook_auto', null, null, null, null, [
                 'trigger' => 'WatermarkReconciler::ensureForUser',
                 'user_id' => $userId,
@@ -104,6 +107,8 @@ class WatermarkReconciler
 
         if ($inserted > 0) {
             CacheEpoch::bump();
+            // Change 2026-09-13-perf-audit-and-improve: invalidar cache de /scan.
+            \Illuminate\Support\Facades\Cache::forget("avisos:scan_status");
             $this->audit(null, 'hook_auto', $keywordId, null, null, null, [
                 'trigger' => 'WatermarkReconciler::ensureForKeyword',
                 'created' => $inserted,
@@ -139,6 +144,8 @@ class WatermarkReconciler
 
         if ($inserted > 0) {
             CacheEpoch::bump();
+            // Change 2026-09-13-perf-audit-and-improve: invalidar cache de /scan.
+            \Illuminate\Support\Facades\Cache::forget("avisos:scan_status");
             $this->audit(null, 'hook_auto', null, $storageId, null, null, [
                 'trigger' => 'WatermarkReconciler::ensureForStorage',
                 'storage_id' => $storageId,
@@ -187,6 +194,8 @@ class WatermarkReconciler
         );
 
         CacheEpoch::bump();
+            // Change 2026-09-13-perf-audit-and-improve: invalidar cache de /scan.
+            \Illuminate\Support\Facades\Cache::forget("avisos:scan_status");
     }
 
     /**
@@ -222,23 +231,39 @@ class WatermarkReconciler
         }
         $existingPairs = $existing->get(['keyword_id', 'storage_provider_id']);
 
-        $applicableKey = fn ($r) => $r->keyword_id . ':' . $r->storage_provider_id;
-        $missing = $applicablePairs->reject(function ($r) use ($existingPairs, $applicableKey) {
-            return $existingPairs->contains(function ($e) use ($r, $applicableKey) {
-                return $e->keyword_id === $r->keyword_id && $e->storage_provider_id === $r->storage_provider_id;
-            });
-        })->values()->all();
+        // Set-difference por hash O(n+m) en vez de contains() anidados O(n*m).
+        // Con ~1.2k aplicables × ~0.9k existentes el cálculo baja de ~1.2 s a
+        // pocos ms, sin cambiar el shape ni los conteos. Ver change
+        // `optimize-watermark-drift-report`.
+        $pairKey = fn ($r) => ((int) $r->keyword_id) . ':' . ((int) $r->storage_provider_id);
 
-        $orphan = $existingPairs->reject(function ($r) use ($applicablePairs, $applicableKey) {
-            return $applicablePairs->contains(function ($a) use ($r) {
-                return $a->keyword_id === $r->keyword_id && $a->storage_provider_id === $r->storage_provider_id;
-            });
-        })->values()->all();
+        $applicableByKey = [];
+        foreach ($applicablePairs as $r) {
+            $applicableByKey[$pairKey($r)] = $r;
+        }
+        $existingByKey = [];
+        foreach ($existingPairs as $r) {
+            $existingByKey[$pairKey($r)] = $r;
+        }
+
+        $missing = [];
+        foreach ($applicableByKey as $key => $r) {
+            if (!isset($existingByKey[$key])) {
+                $missing[] = $r;
+            }
+        }
+
+        $orphan = [];
+        foreach ($existingByKey as $key => $r) {
+            if (!isset($applicableByKey[$key])) {
+                $orphan[] = $r;
+            }
+        }
 
         return [
             'summary' => [
-                'applicable_pairs' => $applicablePairs->count(),
-                'existing_pairs' => $existingPairs->count(),
+                'applicable_pairs' => count($applicableByKey),
+                'existing_pairs' => count($existingByKey),
                 'missing' => count($missing),
                 'orphan' => count($orphan),
                 'scope_user_id' => $userId,

@@ -224,6 +224,7 @@ Route::middleware(['auth', 'admin'])->prefix('ia')->group(function () {
     // percentiles p50/p95 por etapa + causa del ultimo tick del regulador.
     Route::get('/api-transcriptor/latency', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'latency']);
     Route::get('/api-transcriptor/regulator-cause', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'regulatorCause']);
+    Route::get('/api-transcriptor/live-consumption', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'liveConsumption']);
 
     // Configuracion en caliente del pipeline (pestaña "Configuracion").
     Route::get('/api-transcriptor/settings', [App\Http\Controllers\Ia\TranscriptorSettingsController::class, 'index']);

@@ -1707,19 +1707,26 @@ class CorreccionesController extends Controller
      */
     public function miningStatus()
     {
-        $lastMining = Correction::query()
-            ->where('source', 'LIKE', 'mining-%')
-            ->orderByDesc('created_at')
-            ->first(['created_at']);
+        // Cache 30s (change 2026-09-13-perf-audit-and-improve).
+        // Mide ultimo mining + count de pending. Cambia solo cuando se crea
+        // o resuelve una correccion desde 'mining-%'.
+        $payload = Cache::remember('correcciones:mining_status', 30, function () {
+            $lastMining = Correction::query()
+                ->where('source', 'LIKE', 'mining-%')
+                ->orderByDesc('created_at')
+                ->first(['created_at']);
 
-        $pendingFromMining = Correction::pending()
-            ->where('source', 'LIKE', 'mining-%')
-            ->count();
+            $pendingFromMining = Correction::pending()
+                ->where('source', 'LIKE', 'mining-%')
+                ->count();
 
-        return response()->json([
-            'last_mining_at' => $lastMining?->created_at?->toIso8601String(),
-            'pending_from_mining' => $pendingFromMining,
-        ]);
+            return [
+                'last_mining_at' => $lastMining?->created_at?->toIso8601String(),
+                'pending_from_mining' => $pendingFromMining,
+            ];
+        });
+
+        return response()->json($payload);
     }
 
     /**
@@ -1730,19 +1737,25 @@ class CorreccionesController extends Controller
      */
     public function aiSuggestStatus()
     {
-        $lastAi = Correction::query()
-            ->where('source', 'LIKE', 'ai-suggest-%')
-            ->orderByDesc('created_at')
-            ->first(['created_at']);
+        // Cache 30s (change 2026-09-13-perf-audit-and-improve).
+        // Igual patron que miningStatus pero para source='ai-suggest-%'.
+        $payload = Cache::remember('correcciones:ai_suggest_status', 30, function () {
+            $lastAi = Correction::query()
+                ->where('source', 'LIKE', 'ai-suggest-%')
+                ->orderByDesc('created_at')
+                ->first(['created_at']);
 
-        $pendingFromAi = Correction::pending()
-            ->where('source', 'LIKE', 'ai-suggest-%')
-            ->count();
+            $pendingFromAi = Correction::pending()
+                ->where('source', 'LIKE', 'ai-suggest-%')
+                ->count();
 
-        return response()->json([
-            'last_ai_suggest_at' => $lastAi?->created_at?->toIso8601String(),
-            'pending_from_ai_suggest' => $pendingFromAi,
-        ]);
+            return [
+                'last_ai_suggest_at' => $lastAi?->created_at?->toIso8601String(),
+                'pending_from_ai_suggest' => $pendingFromAi,
+            ];
+        });
+
+        return response()->json($payload);
     }
 
     /**
@@ -1849,14 +1862,20 @@ class CorreccionesController extends Controller
      */
     public function aiSuggestSettings(\App\Services\Ia\LlmCorrectionSettings $settings)
     {
-        $effective = $settings->effective();
-        return response()->json([
-            'settings' => $effective,
-            'has_api_key' => $settings->apiKey() !== '',
-            'api_key_source' => $settings->apiKeySource(),
-            'available_models' => $settings->availableModels(),
-            'quick_action_windows' => $settings->quickActionWindows(),
-        ]);
+        // Cache 60s (change 2026-09-13-perf-audit-and-improve).
+        // Los settings cambian muy raramente; 60s es aceptable para una UI
+        // que solo muestra valores booleanos / numericos.
+        $payload = Cache::remember('correcciones:ai_suggest_settings', 60, function () use ($settings) {
+            return [
+                'settings' => $settings->effective(),
+                'has_api_key' => $settings->apiKey() !== '',
+                'api_key_source' => $settings->apiKeySource(),
+                'available_models' => $settings->availableModels(),
+                'quick_action_windows' => $settings->quickActionWindows(),
+            ];
+        });
+
+        return response()->json($payload);
     }
 
     /**
@@ -1868,6 +1887,8 @@ class CorreccionesController extends Controller
     public function aiSuggestSettingsRefreshModels(\App\Services\Ia\LlmCorrectionSettings $settings)
     {
         $models = $settings->refreshModels();
+        // Change 2026-09-13-perf-audit-and-improve: refetch invalida la cache.
+        Cache::forget('correcciones:ai_suggest_settings');
         return response()->json([
             'available_models' => $models,
             'count' => count($models),
@@ -1907,6 +1928,10 @@ class CorreccionesController extends Controller
             'values' => array_map(fn($v) => is_scalar($v) ? $v : '<non-scalar>', $clean),
         ]);
 
+        // Change 2026-09-13-perf-audit-and-improve: el cache de settings cubre
+        // este endpoint; el update debe invalidarlo.
+        Cache::forget('correcciones:ai_suggest_settings');
+
         return response()->json([
             'ok' => true,
             'settings' => $settings->effective(),
@@ -1929,6 +1954,8 @@ class CorreccionesController extends Controller
             $keys = [];
         }
         $values = $settings->reset(array_values($keys));
+        // Change 2026-09-13-perf-audit-and-improve: reset invalida el cache.
+        Cache::forget('correcciones:ai_suggest_settings');
         return response()->json([
             'ok' => true,
             'settings' => $settings->effective(),
@@ -1959,6 +1986,9 @@ class CorreccionesController extends Controller
             'user_id' => \Illuminate\Support\Facades\Session::get('user_id'),
             'cleared' => !$stored,
         ]);
+
+        // Change 2026-09-13-perf-audit-and-improve: cambio de api key invalida cache.
+        Cache::forget('correcciones:ai_suggest_settings');
 
         return response()->json([
             'ok' => true,

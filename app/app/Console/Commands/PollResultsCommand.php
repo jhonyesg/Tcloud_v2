@@ -25,13 +25,19 @@ class PollResultsCommand extends Command
         // ahora es ajustable en caliente (stale_resend_limit).
         $staleAfter = $settings->int('stale_after_minutes');
         $resendLimit = $settings->int('stale_resend_limit');
+        $pollScope = $settings->str('poll_scope');
+        $dispatchPaused = $settings->bool('dispatch_paused');
 
-        $stuck = $resendLimit > 0
-            ? Transcription::where('state', Transcription::STATE_PENDING)
-                ->whereNull('job_id')
-                ->where('created_at', '<', now()->subMinutes($staleAfter))
-                ->limit($resendLimit)
-                ->get()
+        $stuckQuery = Transcription::where('state', Transcription::STATE_PENDING)
+            ->whereNull('job_id')
+            ->where('created_at', '<', now()->subMinutes($staleAfter));
+
+        if ($pollScope !== 'unbounded') {
+            $stuckQuery->where('created_at', '>=', \Carbon\CarbonImmutable::today());
+        }
+
+        $stuck = ($resendLimit > 0 && !$dispatchPaused)
+            ? $stuckQuery->limit($resendLimit)->get()
             : collect();
 
         $recoveredPending = 0;

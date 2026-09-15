@@ -48,6 +48,16 @@
                     </button>
                 </form>
                 @endif
+                @if($job->state === 'processing' && $job->started_at && $job->started_at->lt(now()->subMinutes(15)) && !empty($job->job_id))
+                <button @click="unstick()" class="flex items-center gap-1.5 px-4 py-2 bg-purple-50 hover:bg-purple-100 text-purple-700 rounded-xl text-sm font-medium transition-colors" title="Job en processing hace más de 15 min — posiblemente zombie. Re-encolar al upstream.">
+                    <i class="fas fa-rotate-left"></i> Re-encolar upstream
+                </button>
+                @endif
+                @if(in_array($job->state, ['done','error','dead']))
+                <button @click="deleteUpstream()" class="flex items-center gap-1.5 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-sm font-medium transition-colors" title="Eliminar también del upstream (libera SRT + .bin). Solo permitido en estados terminales.">
+                    <i class="fas fa-server"></i> Borrar upstream
+                </button>
+                @endif
                 <button @click="destroyJob()" class="flex items-center gap-1.5 px-4 py-2 bg-red-50 hover:bg-red-100 text-red-700 rounded-xl text-sm font-medium transition-colors">
                     <i class="fas fa-trash"></i> Eliminar Transcription
                 </button>
@@ -100,6 +110,45 @@
         <pre class="p-4 text-xs text-slate-700 overflow-auto max-h-[600px] bg-slate-50">{{ $job->srt_content }}</pre>
     </div>
     @endif
+
+    {{-- Panel lateral: estado del corrector async (Fase E) --}}
+    @if($job->state === 'done' && $job->corrected !== null)
+    <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-6 mt-6">
+        <h2 class="text-sm font-semibold text-slate-700 mb-3">Corrector async</h2>
+        @if($job->corrected === \App\Models\Transcription::CORRECTED_PENDING)
+            <div class="p-3 rounded-lg bg-blue-50 border border-blue-200 text-sm text-blue-800">
+                <i class="fas fa-hourglass-half mr-1.5"></i>
+                Corrector async de la API todavía no terminó. El SRT arriba es la versión sin corregir.
+            </div>
+        @elseif($job->corrected === \App\Models\Transcription::CORRECTED_DONE)
+            <div class="space-y-2 text-sm text-slate-700">
+                <div class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-800 text-xs font-medium">
+                    <i class="fas fa-spell-check"></i> Corrector aplicado
+                </div>
+                @if($job->corr_pass !== null)
+                    <div><i class="fas fa-redo text-slate-400 mr-1"></i> Reemplazos parakeet: <span class="font-mono">{{ (int) $job->corr_pass }}</span></div>
+                @endif
+                @if($job->corr_mms !== null)
+                    <div><i class="fas fa-language text-slate-400 mr-1"></i> Reemplazos mms fallback: <span class="font-mono">{{ (int) $job->corr_mms }}</span></div>
+                @endif
+                @if($job->last_polled_at)
+                    <div class="text-xs text-slate-500">Ultimo poll: {{ $job->last_polled_at->format('Y-m-d H:i') }}</div>
+                @endif
+            </div>
+        @elseif($job->corrected === \App\Models\Transcription::CORRECTED_LOST)
+            <div class="space-y-2 text-sm">
+                <div class="p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-800">
+                    <i class="fas fa-question-circle mr-1.5"></i>
+                    Corrector falló (timeout o motor reiniciado). SRT sin post-proceso, aún usable.
+                </div>
+                <button @click="retry()"
+                        class="inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white rounded-lg text-xs font-medium">
+                    <i class="fas fa-redo"></i> Reintentar corrector
+                </button>
+            </div>
+        @endif
+    </div>
+    @endif
 </div>
 
 @push('scripts')
@@ -117,6 +166,26 @@ function jobDetail() {
             });
             if (res.ok) { window.location.href = '/ia/api-transcriptor'; }
             else { const d = await res.json(); alert(d.error || 'No se pudo reintentar'); }
+        },
+        async unstick() {
+            if (!confirm('¿Re-encolar este job en la API externa?')) return;
+            const res = await apiFetch('/ia/api-transcriptor/jobs/' + this.jobId + '/unstick', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content },
+            });
+            if (res.ok) { window.location.reload(); }
+            else { const d = await res.json(); alert(d.error || 'No se pudo re-encolar'); }
+        },
+        async deleteUpstream() {
+            if (!confirm('¿Eliminar el job también de la API externa? Esta acción es irreversible.')) return;
+            const res = await apiFetch('/ia/api-transcriptor/jobs/' + this.jobId + '/delete-upstream', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content },
+            });
+            if (res.ok) { window.location.href = '/ia/api-transcriptor'; }
+            else { const d = await res.json(); alert(d.error || 'No se pudo borrar upstream'); }
         },
         async destroyJob() {
             if (!confirm('¿Eliminar esta transcripción?')) return;

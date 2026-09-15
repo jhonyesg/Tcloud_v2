@@ -115,6 +115,73 @@ redis-cli -a 'Clouding2026!Redis' -n 2 --scan --pattern 'tcloud_tcloud_cache_*' 
 - **PHP**: ver `phpcs.xml` / `pint.json` (si existen). PSR-12 por defecto.
 - **Tests**: ver `phpunit.xml`. Tests de integración usan el harness
   `tests/harness_*.php` que ejecuta contra PostgreSQL y Redis reales.
+
+## Harnesses de regresión (`tests/harness_*.php`)
+
+Suite de scripts PHP ejecutables directamente contra PostgreSQL/Redis
+reales. Cada uno valida un contrato operacional o una regresión específica
+sin levantar el stack completo. Patrón común:
+
+- Tag único por corrida (ej. `hmv_<8-hex>`, `harness_<8-hex>`, `hmcl_<8-hex>`)
+  para que todo INSERT/UPDATE sea trazable y limpiable.
+- Helpers `h_ok` / `h_fail` / `h_section` / `h_check(cond, ok, fail?)` con
+  contador global `$failures`; exit code `0` (todos OK) o `1` (algún fail).
+- Bloque `try { ... } finally { cleanup por tag }` que borra en orden
+  inverso. Cleanup defensivo al inicio elimina residuos de corridas
+  previas con `LIKE 'hmcl_%'` (mismo prefijo) para no acumular basura.
+
+### Inventario de harnesses actuales
+
+| Harness | Change | Contrato verificado |
+|---|---|---|
+| `harness_mis_avisos_viewer.php` | `2026-09-05-mis-avisos-mentions-viewer` | Visor: `visibleTranscription`, `pageVisibleSegments`, `todayHits`, capabilities por fila; `MediaClipController::canAccessFile`. |
+| `harness_storage_sync_is_file_linked.php` | `fix-storage-sync-missing-db-facade-import` | Regresión: facade `DB` resuelve a `Illuminate\Support\Facades\DB` (no `App\Services\DB`); `syncFolderWithReport()` end-to-end sin 500. |
+| `harness_mis_avisos_clip_limit.php` | `verify-mis-avisos-clip-counts-toward-editor-limit` | **Cupo mensual del editor de medios**: clips desde Mis Avisos cuentan en `mediaEditorClipsThisMonth()`; al alcanzar `media_editor_clip_limit` el endpoint responde **HTTP 403** ("Límite mensual alcanzado..."). Previews, jobs `status='failed'`, admin y `limit=0` NO cuentan. |
+| `harness_dashboard_partials.php` | `dashboard-modular-partials` | **Contrato de partials auto-gated del dashboard**: 22 aserciones sobre gating (no renderiza cuando flag=false), shape por contexto (admin/client), privacidad (cliente NO incluye `hits_`/`audit_`/`drift_*`), separación de contexto (`bg-jobs-active` solo admin), y presencia de selectores `data-dashboard-partial="..."` para tours. |
+
+### Runbook: `harness_mis_avisos_clip_limit.php`
+
+```bash
+# Desde la raíz del repo
+cd app && php tests/harness_mis_avisos_clip_limit.php
+# exit 0 = OK, exit 1 = alguna aserción falló
+```
+
+**Cuándo correrlo:**
+- Tras cualquier cambio en `MediaClipController.php` (lógica de `clip()`,
+  `processLegacySegments`, guard de la línea 126).
+- Tras cualquier cambio en `User::hasReachedClipLimit()` /
+  `User::mediaEditorClipsThisMonth()` / `User::canUseMediaEditor()`.
+- Tras cualquier cambio que toque la capability `can_clip` en
+  `MentionsSearchService` o el deep-link Mis Avisos → editor.
+- Tras migraciones que agreguen/modifiquen columnas en `media_edit_jobs`
+  (`status`, `user_id`, `created_at`).
+
+**Qué verifica (8 aserciones):**
+1. **(a)** 1 clip confirmado → `MediaEditJob` con `status='done'` → `count=1`,
+   `hasReachedClipLimit()=false`.
+2. **(b)** `preview=true` con `count=limit` → response `!= 403` (guard NO
+   dispara; resto puede fallar 5xx en fixture fake — eso prueba el bypass).
+3. **(c)** 2 clips → `count=2=limit`, `hasReachedClipLimit()=true`.
+4. **(d)** 3er intento sin preview → **HTTP 403** con body conteniendo
+   "Límite" (o su forma unicode-escaped `\u00ed`).
+5. **Admin**: 3 jobs done con `limit=1` → `hasReachedClipLimit()=false`
+   (admin bypass en `User.php:126`).
+6. **Failed**: `status='failed'` no incrementa el conteo.
+7. **`limit=0`**: ilimitado (`hasReachedClipLimit()=false` aunque `count=5`).
+8. **Sin editor**: `media_editor_enabled=false` → **HTTP 403** con body
+   "Editor de medios no habilitado" (guard previo al del cupo).
+
+**Caveats documentados:**
+- La aserción (b) NO verifica que la pipeline ffmpeg/ffprobe del preview
+  funcione — solo verifica que el guard del 403 NO dispara. Esto es
+  intencional (decisión de diseño 4: "sin ejecutar ffmpeg en el harness").
+- El fixture mp4 (`/tmp/hmcl_<tag>/emision.mp4`) contiene bytes random;
+  suficiente para pasar el check `file_exists()` pero no para que ffmpeg
+  produzca un output válido. Esa parte la cubren los tests de integración
+  del transcriptor.
+- El harness hace queries ligeras y acotadas a filas con prefijo
+  `hmcl_*`; no satura la BD.
 - **Migrations**: prefijo de fecha, ej. `2026_05_13_100002_add_session_fields_to_users_table.php`.
 - **OpenSpec**: specs en `openspec/specs/`, cambios activos en `openspec/changes/`.
 - **Acceso a `$validated`/`$request` para claves opcionales**: SIEMPRE
@@ -285,6 +352,50 @@ Comportamiento equivalente al rollback completo: el cliente ve sus archivos
 como antes del change.
 
 Para volver al estado normal: quitar la línea del `.env` y correr
+
+## Reprocesar completados (`--include-done` / checkbox "Incluir completados")
+
+**Change:** `transcriptor-rescan-completed`. El botón "Escanear storages" tiene
+un tercer checkbox, "Incluir completados", que reprocesa transcripciones en
+`state='done'` (mismo trato que el path de fallidos, distinto `state`).
+
+**Comportamiento:**
+- Conserva el archivo en disco y la fila; solo sobreescribe `srt_content` al
+  confirmar el nuevo resultado del upstream.
+- Bumpea `retries++` (sirve como "veces reprocesado").
+- Si el archivo se borró del disco, promueve la fila a `state='dead'` con
+  `error_message` mencionando "Archivo no accesible".
+- Si el reenvío falla upstream, la fila queda en `state='error'` con el
+  `srt_content` viejo intacto como fallback. En el siguiente batch con
+  `--include-failed`, la fila es elegible para un nuevo reintento.
+- El filtro de fecha es por `finished_at` (no `created_at`): el operador piensa
+  en "lo que terminó hoy", no en "lo que se creó hoy".
+
+**Lock `ShouldBeUnique` (R1):** `ConvertAndTranscribeJob` es `ShouldBeUnique`
+con `uniqueFor=900s` keyed por `file_id`. Antes del dispatch, `collectDoneCandidates`
+libera el lock vía `Cache::lock('laravel_unique_job:' . ConvertAndTranscribeJob::class . ':' . $fileId)->forceRelease()`.
+El patrón del cache key viene de `Illuminate\Bus\UniqueLock::getKey()`
+(vendor/laravel/framework/src/Illuminate/Bus/UniqueLock.php).
+
+**Verificación operacional:**
+- Log por corrida: `grep "rescan-done\|collectDoneCandidates" /www/wwwroot/cloud.mediaserver.com.co/Tcloud_v2/app/storage/logs/laravel.log`
+- Conteo en estimación previa: campo `done_rescan` en `/ia/api-transcriptor/scan/estimate`.
+- Comando CLI directo: `php artisan transcription:scan-and-submit --include-done --days=0 --batch=200 --from=12092026 --to=12092026`
+
+**Rollback (sin deploy de emergencia):** ignorar la flag en cualquiera de los
+tres puntos — UI checkbox, controller propaga al comando, comando invoca el
+service. Cero migración que revertir. Si se quisiera reversión completa:
+
+```bash
+cd /www/wwwroot/cloud.mediaserver.com.co/Tcloud_v2
+git revert <commit-hash>
+systemctl reload php84-php-fpm   # liberar opcode cache
+```
+
+No hay workers que reiniciar (cambio NO toca `ConvertAndTranscribeJob` ni
+`TranscriptorTickCommand`). El regulador de cola Redis y el cron automático
+siguen funcionando idéntico.
+
 `php artisan config:cache`.
 
 ## Rollback del change `fix-transcriptor-batch-bg-launcher`
@@ -344,6 +455,104 @@ cd /www/wwwroot/cloud.mediaserver.com.co/Tcloud_v2/app
 El cron `TranscriptionTickCommand` también corre el mismo comando
 in-process (no vía `execBackground`), por lo que el escaneo
 automático sigue funcionando aunque el botón manual esté roto.
+
+## Cómo agregar un nuevo módulo al dashboard (`dashboard-modular-partials`)
+
+El dashboard (`/dashboard`, `dashboard.admin` + `dashboard.user`) usa el patrón
+**partials auto-gated**: cada módulo inteligente expone una tarjeta como partial
+Blade independiente en `app/resources/views/dashboard/partials/` que decide
+internamente si renderiza según el flag del modelo. El `DashboardController`
+siempre hace `@include` sin condicionar, así agregar un módulo nuevo cuesta:
+
+1. Crear `app/resources/views/dashboard/partials/_<modulo>.blade.php` con
+   header documentando el shape de `$data` (admin) y/o `$user` (cliente).
+   Cada partial declara su flag de gating en el primer `@if`.
+2. Agregar el helper correspondiente en `App\Services\Dashboard\DashboardDataProvider`
+   (`buildAdminXxxData()` y/o `buildClientXxxData()`) que retorne el slice
+   de datos ya calculado (queries acotadas, sin N+1). El provider decide el
+   tier de cache (frío/tibio/caliente) de cada bloque.
+3. Registrar el bloque en `buildAdmin()` / `buildClient()` y agregar el
+   `@include('dashboard.partials._<modulo>', ['context' => 'admin', 'data' => $dashboardData['<modulo>']])`
+   (o `'context' => 'client', 'user' => $user`) en `admin.blade.php` /
+   `user.blade.php`. El controller desembolsa `['data']` de cada sobre antes
+   de pasar a la vista.
+
+Contrato del partial (header del archivo):
+```
+Recibe $context ('admin' | 'client') + $user? + $data (shape tipado).
+Reglas:
+  1. Decide solo si renderiza según $context + flag del modelo.
+  2. Si no aplica → vacío (nunca rompe el dashboard).
+  3. data-dashboard-partial="<id>" en el contenedor para tours estables.
+  4. Icono FontAwesome consistente + shell `bg-white rounded-xl shadow-sm
+     border border-slate-200 p-5`.
+```
+
+**Privacidad**: los partials en contexto cliente NO deben incluir datos
+derivados de `watermark_audit_log`, `keyword_matches`, `alert_logs`,
+`drift_missing`/`drift_orphan`. Solo estado del módulo (config + cuotas).
+
+**Validación**: cualquier cambio en partials debe pasar
+`php tests/harness_dashboard_partials.php` (22 aserciones sobre gating,
+shape, privacidad y separación de contexto).
+
+## Cache por tiers del dashboard (`dashboard-tiered-cache`)
+
+El payload de `/dashboard` se cachea por tiers de volatilidad en
+`App\Services\Dashboard\DashboardDataProvider`. Cada bloque se expone en un
+sobre uniforme `{data, generated_at, stale}`; el controller desembolsa `data`
+y la vista muestra `Datos actualizados hace X` a partir de `generated_at`.
+
+| Tier | Bloque | Key | Fresh / Stale | Mecanismo |
+|---|---|---|---|---|
+| ❄ frío | stats globales (`total_*`, `storage_used`) | `dashboard:cold:stats` | 900 / 1800 s | `Cache::flexible` |
+| ❄ frío | agregados admin media editor | `dashboard:cold:media-editor` | 900 / 1800 s | `Cache::flexible` |
+| ~ tibio | resumen Mis Avisos (4 KPIs) | `dashboard:warm:mis-avisos:e{epoch}` | 120 / 600 s | `Cache::flexible` |
+| ☀ caliente | RAM/SHM, sesiones, bg_jobs | sin cache | — | por request |
+
+- **TTLs configurables por env**: `DASHBOARD_COLD_TTL`,
+  `DASHBOARD_COLD_STALE_TOTAL`, `DASHBOARD_WARM_TTL`,
+  `DASHBOARD_WARM_STALE_TOTAL` (ver `app/config/dashboard.php`). Subir el TTL
+  no requiere deploy de código, solo `php artisan config:cache`.
+- **Invalidación del tibio**: la key incluye `CacheEpoch::get()`; un
+  rewind/reconcile de watermarks se ve en la siguiente carga sin esperar TTL.
+- **El resumen tibio es acotado**: `DashboardService::coverageSummary()` solo
+  calcula `pairs_*` + `drift_negative`. NO paga `auditRecent`, `scansRecent`,
+  `readiness` ni `driftReport` completo.
+- **Cliente sin cache**: los bloques de `buildClient()` son por-usuario y
+  baratos; se sirven en vivo para no filtrar datos entre usuarios.
+
+### Invalidación manual
+
+```bash
+cd app && php artisan dashboard:clear-cache
+```
+
+Olvida `dashboard:cold:*` y `dashboard:warm:mis-avisos:e{epoch-5..epoch+1}`.
+NO toca `coverage:dashboard` ni las keys del `WatermarkReconciler` (esas se
+invalidan solas con el bump del epoch).
+
+### Verificación
+
+```bash
+cd app && php tests/harness_dashboard_tiered_cache.php
+```
+
+Mide frío vs caliente (referencia: ~1.5 s → ~9 ms, ratio ~170x), valida el
+sobre uniforme, la preservación de shapes, la frescura y la key por epoch.
+
+### Rollback
+
+1. `git revert <commit-hash-de-la-feature>` (el change NO tiene migración).
+2. `php artisan config:cache` si se tocó `.env`.
+3. No hay estado persistente que limpiar: las claves Redis expiran solas.
+   Para forzar limpieza inmediata tras el revert: `redis-cli -a '...' -n 1
+   --scan --pattern 'tcloud_cache_dashboard:*' | xargs -r redis-cli ... DEL`
+   (usar la DB del cache, no la de sesiones).
+
+**Freno de emergencia sin deploy**: subir `DASHBOARD_COLD_TTL` (y
+`..._STALE_TOTAL`) en `.env` + `php artisan config:cache` hace el cache más
+conservador; el comportamiento funcional no depende del cache.
 
 ## Cómo agregar un nuevo job al indicador global (`bg-job-indicator-widget`)
 
@@ -450,3 +659,193 @@ Se invoca automáticamente al inicio de `bumpWatermarks()`.
 
 Reproducido y resuelto el 2026-09-10: el modo mensual procesó 3/3 meses
 con `failed: 0` (150 transcripciones escaneadas, sin el error).
+
+## Cache del scope heredado de `StorageProvider`
+
+**Change:** `2026-09-12-api-transcriptor-index-perf-cache`.
+
+`StorageProvider::resolveInheritedTranscriptionScope(int $rootId)` está cacheado
+en Redis con TTL configurable (default **300 s**). La cache del propio TTL
+(`transcriptor.scope.ttl`) vive 60 s.
+
+### Contrato de invalidación
+
+**Quién debe invalidar** — toda mutación de `storage_providers.base_path` o
+`transcription_enabled` DEBE llamar `StorageProvider::forgetInheritedTranscriptionScope($rootId)`
+(o el helper que ya lo hace, ej. `ApiTranscriptorController::toggleStorage`).
+
+Único mutador hoy: `ApiTranscriptorController::toggleStorage` (línea 738+ del
+controller). Si se agrega un endpoint UI que edite `base_path`, ese endpoint
+debe invalidar también. Mismo criterio para `StorageFunnelService::resolveRootIdFor`
+(key `transcriptor.root_id_for.{storageId}`, TTL 600 s).
+
+### Helpers públicos
+
+```php
+StorageProvider::resolveInheritedTranscriptionScope(int $rootId): array  // cacheado
+StorageProvider::forgetInheritedTranscriptionScope(int $rootId): void     // invalidar
+StorageProvider::inheritedTranscriptionScopeInfo(int $rootId): array      // hereda cache
+```
+
+### Settings relacionados
+
+| Setting | Default | Efecto |
+|---------|---------|--------|
+| `SystemSetting('transcriptor_scope_cache_ttl')` | `300` | TTL de la cache del scope. `0` = bypass (freno de emergencia). Rango válido `[0, 3600]`. Cambiar el setting tarda hasta 60 s en aplicarse (la key `transcriptor.scope.ttl` cachea el valor leído). |
+
+### Performance observada
+
+- Cold (compute): 4-24 ms / scope
+- Warm (cache hit): 1-2 ms / scope
+- Reducción de queries en `indexData()` warm: 544 → 24 (cache de SystemSetting TTL + resolveRootIdFor incluida)
+- Latencia warm `indexData()`: ~950 ms → ~470 ms
+
+### Diagnóstico
+
+```bash
+# Cuantas keys de scope hay cacheadas:
+redis-cli -a 'Clouding2026!Redis' -n 1 --scan --pattern 'tcloud_tcloud_cache_transcriptor.scope.inherited.*' | wc -l
+
+# Forzar bypass:
+php -r 'require "vendor/autoload.php"; ... App\Models\SystemSetting::set("transcriptor_scope_cache_ttl","0");'
+
+# Reset completo:
+redis-cli -a 'Clouding2026!Redis' -n 1 --scan --pattern 'tcloud_tcloud_cache_transcriptor.scope.*' | xargs -r redis-cli -a 'Clouding2026!Redis' -n 1 DEL
+```
+
+### Harness de regresión
+
+`tests/harness_api_transcriptor_index_perf.php` — 22 aserciones sobre el cache,
+invalidación, bypass, e índice `storage_providers_base_path_pattern_idx`.
+
+## Cache de `/stats`, `/health` y `/empty-folders` (transcriptor)
+
+**Change:** `2026-09-12-api-transcriptor-pending-perf`.
+
+Tres endpoints AJAX del módulo API Transcriptor disparados durante el Alpine
+init tienen caches Redis para evitar HTTP calls al upstream transcriptor y
+rescaneos de filesystem.
+
+### Endpoints cacheados
+
+| Endpoint | Cache key | TTL default | Override |
+|----------|-----------|-------------|----------|
+| `GET /ia/api-transcriptor/stats` | `transcriptor:stats:combined` | **300 s** (5 min) | `SystemSetting('transcriptor_stats_cache_ttl')` |
+| `GET /ia/api-transcriptor/health` | `transcriptor:health:combined` | **120 s** (2 min) | `SystemSetting('transcriptor_health_cache_ttl')` |
+| `GET /ia/api-transcriptor/empty-folders` | `transcriptor:empty_folders:{storage_id}:max{maxDirs}` | 600 s (10 min) | (hardcoded; revisar si necesita override) |
+
+**Justificación del TTL de `/stats` y `/health`**: el operador recarga `/ia/api-transcriptor` después de navegar 1-3 minutos por otros módulos. Con TTL 60s/30s originales, esos caches expiraban antes de la vuelta y la página se sentía lenta al regresar. Con 300s/120s, el reload tras navegación prolongada encuentra los caches calientes y los AJAX pesan <100 ms en lugar de 200-500 ms. Si el operador necesita tiempo real, `SystemSetting::set('transcriptor_stats_cache_ttl', '0')` (bypass).
+
+Ambos `/stats` y `/health` emiten `Cache-Control: max-age=30, private` para
+que el navegador no revalide en cada navegación entre pestañas.
+
+### Contrato de invalidación
+
+**Quién debe invalidar** — `POST /api-transcriptor/storages/{id}/toggle`
+(=`ApiTranscriptorController::toggleStorage`) ya invalida las tres caches
+relevantes en una sola pasada:
+
+```php
+foreach ([200, 300, 400, 500] as $cap) {
+    Cache::forget("transcriptor:empty_folders:{$storage->id}:max{$cap}");
+}
+Cache::forget('transcriptor:stats:combined');
+Cache::forget('transcriptor:health:combined');
+```
+
+Las mutaciones individuales de `transcriptions` (crear / completar / fallar)
+**NO invalidan `/stats`**. El TTL de 60 s es aceptable para contadores
+informativos; si el operador necesita tiempo real, esperar 60 s.
+
+### Race-safe scan en `/empty-folders`
+
+El scan inicial de cada storage usa `Cache::lock("transcriptor:empty_folders:lock:{storage_id}", 30)`
+para serializar: dos requests concurrentes que llegan en cold path solo
+ejecutan UN `scandir()` por storage. El segundo espera el resultado del primero.
+
+Sentinel `__none__`: si un storage no tiene carpetas vacías, se cachea ese
+sentinel para no re-escanear en cada hit.
+
+### Performance observada (medición live, 2026-09-12)
+
+| Endpoint | Cold | Warm |
+|----------|------|------|
+| `/stats` | 288 ms | **1.9 ms** |
+| `/health` | 8 ms | **1.3 ms** |
+| `/empty-folders` (todos los 70 storages) | 3.6 s | **18 ms** |
+
+Page load warm del módulo API Transcriptor (browser total): **~3.5 s → ~1.5 s**.
+
+### Diagnóstico
+
+```bash
+# Cuantas stats cacheadas hay:
+redis-cli -a 'Clouding2026!Redis' -n 1 --scan --pattern 'tcloud_tcloud_cache_transcriptor:stats:*'
+
+# Forzar bypass global de stats:
+php -r 'require "vendor/autoload.php"; ... App\Models\SystemSetting::set("transcriptor_stats_cache_ttl","0");'
+
+# Reset completo:
+redis-cli -a 'Clouding2026!Redis' -n 1 --scan --pattern 'tcloud_tcloud_cache_transcriptor:*' \
+  | xargs -r redis-cli -a 'Clouding2026!Redis' -n 1 DEL
+```
+
+## Cache de endpoints pesados de Avisos Inteligentes, Correcciones y Admin Storages
+
+**Change:** `2026-09-13-perf-audit-and-improve`.
+
+Audit Playwright (2026-09-13) identificó 4 endpoints con latencias inaceptables (>500 ms warm).
+Todos ahora cacheados en Redis con TTL configurable.
+
+### Endpoints cacheados
+
+| Endpoint | Cache key | TTL default | Override |
+|----------|-----------|-------------|----------|
+| `GET /ia/avisos-inteligentes/scan` | `avisos:scan_status` | 60 s | `SystemSetting('avisos_scan_status_cache_ttl')` |
+| `GET /ia/correcciones/mining-status` | `correcciones:mining_status` | 30 s | (hardcoded) |
+| `GET /ia/correcciones/ai-suggest-status` | `correcciones:ai_suggest_status` | 30 s | (hardcoded) |
+| `GET /ia/correcciones/ai-suggest-settings` | `correcciones:ai_suggest_settings` | 60 s | (hardcoded) |
+| `GET /admin/storages` (AJAX) | `admin:storages:index` | 60 s | `SystemSetting('admin_storages_cache_ttl')` |
+
+### Contrato de invalidación
+
+**`avisos:scan_status`** — invalidada en:
+- `WatermarkReconciler::ensureForUser/Keyword/Storage/rewindPair` (cualquier `bump`).
+- `AvisosInteligentesController::saveScanSettings`.
+
+**`correcciones:mining_status` / `correcciones:ai_suggest_status`** — TTL-only. Cambian solo cuando se crea/resuelve una correccion; 30 s de staleness es aceptable.
+
+**`correcciones:ai_suggest_settings`** — invalidada en:
+- `aiSuggestSettingsUpdate` (POST).
+- `aiSuggestSettingsReset` (DELETE).
+- `aiSuggestSettingsRefreshModels` (POST /refresh-models).
+- `aiSuggestSettingsApiKey` (POST /api-key).
+
+**`admin:storages:index`** — invalidada en:
+- `StorageProviderController::store/update/destroy`.
+- `ApiTranscriptorController::toggleStorage()` (afecta `transcription_enabled`).
+
+### Performance observada (medición live, 2026-09-13)
+
+| Endpoint | Cold | Warm |
+|----------|------|------|
+| `/ia/avisos-inteligentes/scan` | 4939 ms | **2.6 ms** |
+| `/ia/correcciones/mining-status` | 78 ms | **0.6 ms** |
+| `/ia/correcciones/ai-suggest-status` | 6 ms | **0.4 ms** |
+| `/admin/storages` (AJAX) | 1254 ms | **4.0 ms** |
+
+### Runbook de diagnóstico
+
+```bash
+# Ver todas las caches del modulo:
+redis-cli -a 'Clouding2026!Redis' -n 1 --scan --pattern 'tcloud_tcloud_cache_avisos:scan_status*'
+redis-cli -a 'Clouding2026!Redis' -n 1 --scan --pattern 'tcloud_tcloud_cache_correcciones:*'
+redis-cli -a 'Clouding2026!Redis' -n 1 --scan --pattern 'tcloud_tcloud_cache_admin:storages:*'
+
+# Forzar bypass:
+php -r 'require "vendor/autoload.php"; ... App\Models\SystemSetting::set("avisos_scan_status_cache_ttl","0");'
+
+# Reset completo de las caches nuevas:
+redis-cli -a 'Clouding2026!Redis' -n 1 --scan --pattern 'tcloud_tcloud_cache_avisos:*' \
+  | xargs -r redis-cli ... DEL
+```

@@ -145,6 +145,21 @@ class TranscriptionSubmitService
             ]);
 
             return ['ok' => true, 'job_id' => $transcription->job_id, 'state' => $transcription->state];
+        } catch (UpstreamRateLimitException $e) {
+            // 429: respetar Retry-After. No marcar error/dead; el tick reintentara.
+            $reason = "Rate limit upstream (retry_after={$e->retryAfter()}s)";
+            $this->markRequeueable($transcription, $reason);
+            Log::warning("TranscriptionSubmitService: 429 file={$file->id} retry_after={$e->retryAfter()}s");
+            return ['ok' => false, 'error' => $reason, 'requeueable' => true, 'retry_after' => $e->retryAfter()];
+        } catch (UpstreamUnavailableException $e) {
+            // 503: respetar Retry-After (o fallback). Strike al circuit breaker.
+            $reason = "Upstream unavailable (retry_after={$e->retryAfter()}s)";
+            $this->markRequeueable($transcription, $reason);
+            try {
+                app(UpstreamCircuitBreaker::class)->recordStrike();
+            } catch (\Throwable $ignored) {}
+            Log::warning("TranscriptionSubmitService: 503 file={$file->id} retry_after={$e->retryAfter()}s");
+            return ['ok' => false, 'error' => $reason, 'requeueable' => true, 'retry_after' => $e->retryAfter()];
         } catch (\Throwable $e) {
             $this->markError($transcription, $e->getMessage());
             Log::error("TranscriptionSubmitService: file {$file->id}: {$e->getMessage()}");

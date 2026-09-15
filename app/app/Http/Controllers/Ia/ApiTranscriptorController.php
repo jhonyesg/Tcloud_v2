@@ -583,8 +583,7 @@ class ApiTranscriptorController extends Controller
         if (!empty($job->job_id) && in_array($job->state, [Transcription::STATE_QUEUED, Transcription::STATE_PROCESSING], true)) {
             try {
                 $client = app(TranscriptorApiClient::class);
-                Http::timeout(10)->withHeaders($client->authHeadersPublic())
-                    ->post($client->getBaseUrl() . '/v1/jobs/' . $job->job_id . '/cancel');
+                $client->cancelUpstream($job->job_id, $job->node_url ?? '');
             } catch (\Throwable $e) {
                 \Illuminate\Support\Facades\Log::debug("reprocess cancel upstream {$job->id}: {$e->getMessage()}");
             }
@@ -630,6 +629,52 @@ class ApiTranscriptorController extends Controller
      * Cancela un job pendiente: cancela en la API externa (si tiene job_id y
      * está queued) y marca la transcripción local como error/cancelado.
      */
+    public function retryBatch(Request $request)
+    {
+        $maxAgeHours = (int) $request->input('max_age_hours', 168);
+        $limit = (int) $request->input('limit', 500);
+
+        $runId = 'rbatch_' . bin2hex(random_bytes(4));
+        $cacheKey = "transcription_batch:{$runId}";
+
+        \Illuminate\Support\Facades\Cache::put($cacheKey, [
+            'status' => 'starting',
+            'started_at' => now()->toIso8601String(),
+            'tool' => 'transcription:retry-batch-upstream',
+            'max_age_hours' => $maxAgeHours,
+            'limit' => $limit,
+        ], now()->addHours(2));
+
+        // Compone el comando con quoting seguro (sin bash interpolation).
+        $cmd = sprintf(
+            "%s artisan transcription:retry-batch-upstream --max-age-hours=%d --limit=%d 2>&1",
+            escapeshellarg(PHP_BINARY),
+            $maxAgeHours,
+            $limit
+        );
+
+        $logFile = storage_path("logs/{$runId}.log");
+
+        try {
+            $launched = $this->execBackground($cmd, 'transcriptor:retry-batch', $logFile, $cacheKey);
+            return response()->json([
+                'accepted' => true,
+                'runId' => $runId,
+                'log' => $logFile,
+            ], 202);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Cache::put($cacheKey, [
+                'status' => 'error',
+                'message' => 'No se pudo iniciar el proceso: ' . $e->getMessage(),
+            ], now()->addHours(2));
+            return response()->json(['error' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Cancela un job pendiente: cancela en la API externa (si tiene job_id y
+     * está queued) y marca la transcripción local como error/cancelado.
+     */
     public function cancelJob(int $id)
     {
         $job = Transcription::findOrFail($id);
@@ -657,9 +702,8 @@ class ApiTranscriptorController extends Controller
         if (!empty($job->job_id) && $job->state === Transcription::STATE_QUEUED) {
             try {
                 $client = app(TranscriptorApiClient::class);
-                $resp = Http::timeout(10)->withHeaders($client->authHeadersPublic())
-                    ->post($client->getBaseUrl() . '/v1/jobs/' . $job->job_id . '/cancel');
-                if ($resp->ok()) {
+                $resp = $client->cancelUpstream($job->job_id, $job->node_url ?? '');
+                if (!empty($resp['state']) || !empty($resp['job_id'])) {
                     $errorMsg = 'Cancelado en la API externa';
                 }
             } catch (\Throwable $e) {
@@ -674,6 +718,77 @@ class ApiTranscriptorController extends Controller
         ]);
 
         return response()->json(['message' => 'Job cancelado', 'state' => $job->state]);
+    }
+
+    public function unstick(int $id)
+    {
+        $job = Transcription::findOrFail($id);
+
+        if ($job->state !== Transcription::STATE_PROCESSING) {
+            return response()->json(['error' => 'Solo jobs en processing'], 409);
+        }
+        if (empty($job->job_id)) {
+            return response()->json(['error' => 'Sin job_id upstream'], 422);
+        }
+        // Solo zombies plausibles (>15 min en processing)
+        if ($job->started_at && $job->started_at->gt(now()->subMinutes(15))) {
+            return response()->json([
+                'error' => 'Job lleva menos de 15 min en processing; no es un zombie plausible',
+            ], 409);
+        }
+
+        try {
+            $client = app(TranscriptorApiClient::class);
+            $resp = $client->unstickUpstream($job->job_id, $job->node_url ?? '');
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning(
+                "unstick tx={$job->id} job_id={$job->job_id} fallo: {$e->getMessage()}"
+            );
+            return response()->json(['error' => $e->getMessage()], 502);
+        }
+
+        \Illuminate\Support\Facades\Log::info(
+            "unstick admin action tx={$job->id} job_id={$job->job_id} actor=" . (session('user_id') ?? '?')
+        );
+
+        return response()->json([
+            'message' => 'unstick enviado al upstream; el próximo poll-results lo cierra como queued o done',
+            'transcription_id' => $job->id,
+            'upstream' => $resp,
+        ], 200);
+    }
+
+    public function deleteUpstream(int $id)
+    {
+        $job = Transcription::findOrFail($id);
+
+        $terminal = [
+            Transcription::STATE_DONE,
+            Transcription::STATE_ERROR,
+            Transcription::STATE_DEAD,
+        ];
+        if (!in_array($job->state, $terminal, true)) {
+            return response()->json(['error' => 'Solo jobs terminales se pueden borrar upstream'], 409);
+        }
+        if (empty($job->job_id)) {
+            $job->delete();
+            return response()->json(['deleted' => true, 'reason' => 'sin job_id upstream, solo local'], 200);
+        }
+
+        try {
+            $client = app(TranscriptorApiClient::class);
+            $client->deleteUpstream($job->job_id, $job->node_url ?? '');
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning(
+                "deleteUpstream tx={$job->id} fallo: {$e->getMessage()}; fila local no se borra"
+            );
+            return response()->json([
+                'error' => 'delete upstream fallo: ' . $e->getMessage(),
+            ], 502);
+        }
+
+        $job->delete();
+        return response()->json(['deleted' => true], 200);
     }
 
     public function destroy(int $id)
@@ -737,6 +852,29 @@ class ApiTranscriptorController extends Controller
 
             $rootId = $this->funnel->resolveRootIdFor((int) $storage->id);
             $this->funnel->invalidate($rootId);
+
+            // Tambien invalidar la cache del scope heredado (change
+            // 2026-09-12-api-transcriptor-index-perf-cache): antes, el modulo
+            // API Transcriptor servia el scope stale hasta 5 min despues del
+            // toggle. Con este forget el siguiente GET refleja el cambio de
+            // inmediato, sin esperar al TTL.
+            StorageProvider::forgetInheritedTranscriptionScope((int) $rootId);
+
+            // Change 2026-09-12-api-transcriptor-pending-perf: invalidar las
+            // caches de stats/health/empty-folders porque el toggle cambia el
+            // conjunto de storages que contribuye a los contadores y al funnel.
+            // Solo olvidamos las keys del storage afectado para evitar trabajo
+            // extra en los demas storages.
+            $maxDirsKey = 'transcriptor:empty_folders:' . (int) $storage->id . ':max';
+            foreach ([200, 300, 400, 500] as $cap) {
+                Cache::forget($maxDirsKey . $cap);
+            }
+            Cache::forget('transcriptor:stats:combined');
+            Cache::forget('transcriptor:health:combined');
+
+            // Change 2026-09-13-perf-audit-and-improve: el listado de admin
+            // storages (GET /admin/storages) cachea 60s; toggle afecta metricas.
+            Cache::forget('admin:storages:index');
 
             // Bumpear el epoch invalida caches globales que dependen del estado
             // transcription_enabled (cobertura de Avisos Inteligentes, listas
@@ -1258,6 +1396,30 @@ class ApiTranscriptorController extends Controller
         $errorCount = (int) DB::table('transcriptions')->where('state', 'error')->count();
         $deadCount = (int) DB::table('transcriptions')->where('state', 'dead')->count();
 
+        // transcriptor-rescan-completed: conteo de transcripciones state='done'
+        // filtradas por finished_at según el scope elegido. Indica cuántos
+        // reprocesaría el operador si marca "Incluir completados".
+        // Mismo guardarraíl MAX_FILES que el resto del endpoint (línea 1214).
+        $doneCountQuery = DB::table('transcriptions')->where('state', 'done');
+        if ($mode === 'today') {
+            $doneCountQuery->where('finished_at', '>=', now()->startOfDay());
+        } elseif ($mode === 'range' && !empty($folderNames)) {
+            // folderNames viene como 'dmY' (ej: '11092026'), convertir a 'YYYY-MM-DD'
+            $firstDmY = $folderNames[0];
+            $lastDmY = end($folderNames);
+            $fromIso = substr($firstDmY, 4, 4) . '-' . substr($firstDmY, 2, 2) . '-' . substr($firstDmY, 0, 2);
+            $toIsoExclusive = date('Y-m-d', strtotime(substr($lastDmY, 4, 4) . '-' . substr($lastDmY, 2, 2) . '-' . substr($lastDmY, 0, 2) . ' +1 day'));
+            $doneCountQuery->where('finished_at', '>=', $fromIso)
+                           ->where('finished_at', '<', $toIsoExclusive);
+        }
+        $doneCount = (int) $doneCountQuery->count();
+        // Aplicar el mismo tope MAX_FILES sumando al total acumulado para mantener
+        // el flag estimation_capped consistente.
+        $totalMissing += $doneCount;
+        if ($totalMissing > $MAX_FILES) {
+            $estimationCapped = true;
+        }
+
         return response()->json([
             'mode' => $mode,
             'folders' => count($folderNames) ?: 1,
@@ -1265,6 +1427,7 @@ class ApiTranscriptorController extends Controller
             'estimation_capped' => $estimationCapped,
             'error_recoverable' => $mode !== 'today' ? $errorCount : null,
             'dead_irrecoverable' => $mode !== 'today' ? $deadCount : null,
+            'done_rescan' => $doneCount,
             'dead_note' => $mode !== 'today'
                 ? 'Los dead NO se reintentan en el escaneo; requieren backfill-lost (solo upstream-lost).'
                 : null,
@@ -1293,6 +1456,8 @@ class ApiTranscriptorController extends Controller
         // con generate_alerts=false excluye el medio de los avisos.
         $generateAlerts = (bool) $request->input('generate_alerts', true);
         $includeFailed = (bool) $request->input('include_failed', false);
+        // transcriptor-rescan-completed: nuevo flag espejado de include_failed.
+        $includeDone = (bool) $request->input('include_done', false);
         $runId = 'batch_' . time() . '_' . substr(md5(uniqid('', true)), 0, 6);
         $cacheKey = 'transcription_batch:' . $runId;
 
@@ -1331,6 +1496,10 @@ class ApiTranscriptorController extends Controller
              . ' --run-id=' . escapeshellarg($runId);
         if ($includeFailed) {
             $cmd .= ' --include-failed';
+        }
+        // transcriptor-rescan-completed: propagar el flag --include-done al comando.
+        if ($includeDone) {
+            $cmd .= ' --include-done';
         }
         // generate_alerts se validaba arriba pero nunca llegaba al comando: el
         // checkbox de la UI prometia un comportamiento que no ocurria.
@@ -1842,9 +2011,20 @@ class ApiTranscriptorController extends Controller
         }
     }
 
+    /**
+     * Health del transcriptor upstream. Cacheado en Redis 30s
+     * (SystemSetting('transcriptor_health_cache_ttl')). El bypass TTL=0
+     * deja el comportamiento legacy (HTTP call directo cada vez).
+     * Change 2026-09-12-api-transcriptor-pending-perf.
+     */
     public function health(TranscriptorApiClient $client)
     {
-        return response()->json($client->getHealth());
+        $ttl = self::resolveHealthCacheTtl();
+        $payload = $ttl === 0
+            ? $client->getHealth()
+            : Cache::remember('transcriptor:health:combined', $ttl, fn () => $client->getHealth());
+        return response()->json($payload)
+            ->header('Cache-Control', 'max-age=30, private');
     }
 
     /**
@@ -1880,15 +2060,70 @@ class ApiTranscriptorController extends Controller
         return response()->json($cached);
     }
 
+    /**
+     * Stats del transcriptor: contadores locales (GROUP BY state) + respuesta
+     * del upstream getStats(). Cacheado en Redis 60s
+     * (SystemSetting('transcriptor_stats_cache_ttl')). El bypass TTL=0 deja el
+     * comportamiento legacy. Change 2026-09-12-api-transcriptor-pending-perf.
+     */
     public function stats(TranscriptorApiClient $client)
     {
+        $ttl = self::resolveStatsCacheTtl();
+        $payload = $ttl === 0
+            ? $this->computeStats($client)
+            : Cache::remember('transcriptor:stats:combined', $ttl, fn () => $this->computeStats($client));
+        return response()->json($payload)->header('Cache-Control', 'max-age=30, private');
+    }
+
+    /**
+     * Compute real de stats (sin cache). Combina upstream + local.
+     * Acepta cualquier TranscriptorApiClient para tests.
+     */
+    private function computeStats(TranscriptorApiClient $client): array
+    {
         $stats = $client->getStats();
-        // Contadores locales por estado
         $stats['local'] = Transcription::selectRaw("state, count(*) as count")
             ->groupBy('state')
             ->pluck('count', 'state')
             ->toArray();
-        return response()->json($stats);
+        $stats['cached_at'] = now()->toIso8601String();
+        return $stats;
+    }
+
+    private function resolveStatsCacheTtl(): int
+    {
+        // Default 300s (5 min). Justificacion: el operador recarga la pagina
+        // despues de navegar un rato (>60s) y el reload dispara cold de stats
+        // (HTTP upstream + GROUP BY), perceptible como "lento al volver".
+        // 5 min es suficiente frescura para contadores informativos.
+        return self::resolveConfigurableTtl('transcriptor_stats_cache_ttl', 300);
+    }
+
+    private function resolveHealthCacheTtl(): int
+    {
+        // Default 120s (2 min). Health del upstream se ve "estancado" si
+        // demora mas de 30s en actualizarse en pantalla. 2 min es buen
+        // trade-off: fresco pero sin stressing al upstream.
+        return self::resolveConfigurableTtl('transcriptor_health_cache_ttl', 120);
+    }
+
+    /**
+     * Helper compartido: lee SystemSetting(key, default) y lo acota al rango
+     * [0, 3600]. 0 = bypass (freno de emergencia). El valor leido NO se
+     * cachea (a diferencia del TTL del scope, que se cachea porque se llama
+     * MUCHAS veces por request; aqui se llama 1 vez por endpoint hit).
+     */
+    private static function resolveConfigurableTtl(string $key, int $default): int
+    {
+        $raw = SystemSetting::get($key);
+        if ($raw === null || $raw === '' || !is_numeric($raw)) {
+            return $default;
+        }
+        $ttl = (int) $raw;
+        if ($ttl < 0 || $ttl > 3600) {
+            return $default;
+        }
+        return $ttl;
     }
 
     /**
@@ -1896,7 +2131,12 @@ class ApiTranscriptorController extends Controller
      * "hoja" sin archivos en absoluto. Escanea hasta 2 niveles bajo
      * base_path con cap por storage.
      *
-     * Cache 5 min: el escaneo de filesystem por subdir es caro.
+     * Cache POR STORAGE 10 min (change 2026-09-12-api-transcriptor-pending-perf):
+     * el scan global era 3+ s en cold. Con cache per-storage, el primer hit
+     * paga un scan completo (igual que antes), pero los subsiguientes son N
+     * lookups en Redis (<5 ms total). Cache::lock serializa el scan inicial
+     * para que dos requests concurrentes no dupliquen trabajo.
+     *
      * Cap `max_dirs` por storage protege contra explosiones.
      *
      * @return \Illuminate\Http\JsonResponse
@@ -1905,63 +2145,111 @@ class ApiTranscriptorController extends Controller
     {
         $maxDirs = max(50, min(500, (int) $request->input('max_dirs', 200)));
 
-        $cacheKey = 'transcriptor:empty_folders:max' . $maxDirs;
-        $data = \Cache::remember($cacheKey, 300, function () use ($maxDirs) {
-            $storages = DB::table('storage_providers')
-                ->where('transcription_enabled', true)
-                ->orderBy('id')
-                ->get(['id', 'name', 'base_path']);
+        $storages = DB::table('storage_providers')
+            ->where('transcription_enabled', true)
+            ->orderBy('id')
+            ->get(['id', 'name', 'base_path']);
 
-            $empty = [];
-            foreach ($storages as $sp) {
-                if (!is_dir($sp->base_path)) continue;
-                $entries = @scandir($sp->base_path);
-                if (!$entries) continue;
+        $empty = [];
+        foreach ($storages as $sp) {
+            $row = $this->emptyFoldersForStorage($sp, $maxDirs);
+            if (!empty($row)) {
+                $empty[] = $row;
+            }
+        }
 
-                $missing = [];
-                $scanned = 0;
-                foreach ($entries as $e) {
-                    if ($e === '.' || $e === '..') continue;
-                    if (!is_dir($sp->base_path . '/' . $e)) continue;
-                    if ($scanned >= $maxDirs) break;
-                    $scanned++;
-                    if ($this->dirHasNoFiles($sp->base_path . '/' . $e)) {
-                        $missing[] = $e;
-                        continue;
-                    }
-                    $subEntries = @scandir($sp->base_path . '/' . $e);
-                    if (!$subEntries) continue;
-                    foreach ($subEntries as $sub) {
-                        if ($sub === '.' || $sub === '..') continue;
-                        $subPath = $sp->base_path . '/' . $e . '/' . $sub;
-                        if (!is_dir($subPath)) continue;
-                        if ($scanned >= $maxDirs) break;
-                        $scanned++;
-                        if ($this->dirHasNoFiles($subPath)) {
-                            $missing[] = $e . '/' . $sub;
-                        }
-                    }
-                }
-                if (!empty($missing)) {
-                    $empty[] = [
-                        'storage_id' => $sp->id,
-                        'storage_name' => $sp->name,
-                        'base_path' => $sp->base_path,
-                        'missing_count' => count($missing),
-                        'missing' => array_slice($missing, 0, 30),
-                    ];
-                }
+        return response()->json([
+            'generated_at' => now()->toIso8601String(),
+            'storages_with_empty' => count($empty),
+            'total_missing_folders' => array_sum(array_column($empty, 'missing_count')),
+            'items' => $empty,
+        ]);
+    }
+
+    /**
+     * Cache + scan por storage. Devuelve null si el storage no contribuye
+     * carpetas vacias (cachea igualmente para no re-escanear).
+     *
+     * Cache key: transcriptor:empty_folders:{storage_id}:max{maxDirs}.
+     * TTL: 600 s. Invalidar en toggleStorage.
+     */
+    private function emptyFoldersForStorage(object $sp, int $maxDirs): ?array
+    {
+        $cacheKey = "transcriptor:empty_folders:{$sp->id}:max{$maxDirs}";
+        $cached = Cache::get($cacheKey);
+        if ($cached !== null) {
+            // Sentinel: '__none__' = storage escaneado pero sin carpetas vacias.
+            return $cached === '__none__' ? null : $cached;
+        }
+
+        $lock = Cache::lock("transcriptor:empty_folders:lock:{$sp->id}", 30);
+        try {
+            // Si no pudimos tomar el lock, otro request esta escaneando. Esperamos.
+            if (!$lock->get()) {
+                $lock->block(25);
+            }
+            // Re-check tras tomar el lock (otro pudo haber terminado).
+            $cached = Cache::get($cacheKey);
+            if ($cached !== null) {
+                return $cached === '__none__' ? null : $cached;
             }
 
-            return [
-                'generated_at' => now()->toIso8601String(),
-                'storages_with_empty' => count($empty),
-                'total_missing_folders' => array_sum(array_column($empty, 'missing_count')),
-                'items' => $empty,
-            ];
-        });
+            $missing = $this->scanEmptyFolders($sp, $maxDirs);
+            if (empty($missing)) {
+                // Sentinel: el storage NO tiene carpetas vacias. Cachear para
+                // no re-escanear en cada hit.
+                Cache::put($cacheKey, '__none__', 600);
+                return null;
+            }
 
-        return response()->json($data);
+            $row = [
+                'storage_id' => (int) $sp->id,
+                'storage_name' => $sp->name,
+                'base_path' => $sp->base_path,
+                'missing_count' => count($missing),
+                'missing' => array_slice($missing, 0, 30),
+            ];
+            Cache::put($cacheKey, $row, 600);
+            return $row;
+        } finally {
+            optional($lock)->release();
+        }
+    }
+
+    /**
+     * Logica pura de scan de un storage. Sin cache, sin lock.
+     */
+    private function scanEmptyFolders(object $sp, int $maxDirs): array
+    {
+        if (!is_dir($sp->base_path)) return [];
+        $entries = @scandir($sp->base_path);
+        if (!$entries) return [];
+
+        $missing = [];
+        $scanned = 0;
+        foreach ($entries as $e) {
+            if ($e === '.' || $e === '..') continue;
+            if (!is_dir($sp->base_path . '/' . $e)) continue;
+            if ($scanned >= $maxDirs) break;
+            $scanned++;
+            if ($this->dirHasNoFiles($sp->base_path . '/' . $e)) {
+                $missing[] = $e;
+                continue;
+            }
+            $subEntries = @scandir($sp->base_path . '/' . $e);
+            if (!$subEntries) continue;
+            foreach ($subEntries as $sub) {
+                if ($sub === '.' || $sub === '..') continue;
+                $subPath = $sp->base_path . '/' . $e . '/' . $sub;
+                if (!is_dir($subPath)) continue;
+                if ($scanned >= $maxDirs) break;
+                $scanned++;
+                if ($this->dirHasNoFiles($subPath)) {
+                    $missing[] = $e . '/' . $sub;
+                }
+            }
+        }
+        return $missing;
     }
 
     /**
@@ -2187,5 +2475,71 @@ class ApiTranscriptorController extends Controller
         }
 
         return response()->json($cached);
+    }
+
+    /**
+     * GET /ia/api-transcriptor/live-consumption
+     *
+     * Snapshot consolidado del estado del cluster: telemetria remota
+     * (/api/metrics/overview) + conteos locales del dia + ultima decision
+     * del regulador + serie temporal de 60 min (cacheada en Redis).
+     *
+     * Diseñado para alimentar el panel "Consumo" en /ia/api-transcriptor.
+     */
+    public function liveConsumption(Request $request)
+    {
+        $apiClient = app(\App\Services\Ia\TranscriptorApiClient::class);
+        $settings = app(\App\Services\Ia\TranscriptorSettings::class);
+
+        $info = $apiClient->getRemoteInfo();
+
+        $local = \App\Models\Transcription::query()
+            ->selectRaw("state, COUNT(*) AS n")
+            ->where('created_at', '>=', \Carbon\CarbonImmutable::today())
+            ->groupBy('state')
+            ->pluck('n', 'state');
+
+        $series = $this->loadConsumptionSeries(60);
+
+        $oldestQueued = \App\Models\Transcription::where('state', \App\Models\Transcription::STATE_QUEUED)
+            ->orderBy('updated_at')
+            ->limit(5)
+            ->get(['id', 'job_id', 'original_name', 'updated_at']);
+
+        return response()->json([
+            'remote' => $info ?? ['unreachable' => true, 'source' => $settings->str('regulator_remote_info_path')],
+            'local'  => [
+                'pending'    => (int) ($local['pending'] ?? 0),
+                'queued'     => (int) ($local['queued'] ?? 0),
+                'processing' => (int) ($local['processing'] ?? 0),
+                'done'       => (int) ($local['done'] ?? 0),
+                'error'      => (int) ($local['error'] ?? 0),
+                'dead'       => (int) ($local['dead'] ?? 0),
+            ],
+            'last_decision'  => Cache::get('transcriptor:tick:last_decision'),
+            'series'         => $series,
+            'oldest_queued'  => $oldestQueued,
+            'fetched_at'     => now()->toIso8601String(),
+        ]);
+    }
+
+    /**
+     * Lee el anillo de snapshots de 60 min de la serie temporal en Redis.
+     * Keys: transcriptor:consumption:series:{minute_epoch} con TTL 70min.
+     */
+    private function loadConsumptionSeries(int $minutes = 60): array
+    {
+        $now = now()->timestamp;
+        $start = $now - ($minutes * 60);
+        $bucket = 60;
+        $points = [];
+        for ($t = (int) (floor($start / $bucket) * $bucket); $t <= $now; $t += $bucket) {
+            $payload = Cache::get('transcriptor:consumption:series:' . $t);
+            $points[] = [
+                't' => $t,
+                'data' => $payload ?: null,
+            ];
+        }
+        return $points;
     }
 }

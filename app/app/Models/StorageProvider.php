@@ -2,9 +2,11 @@
 
 namespace App\Models;
 
+use App\Models\SystemSetting;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Facades\Cache;
 
 class StorageProvider extends Model
 {
@@ -21,6 +23,23 @@ class StorageProvider extends Model
         'is_personal' => 'boolean',
         'kind' => 'string',
     ];
+
+    /**
+     * Cache del scope heredado de StorageProvider::resolveInheritedTranscriptionScope().
+     *
+     * - PREFIX: prefijo de clave en el cache store default (Redis en produccion).
+     * - TTL_DEFAULT: 5 min. Configurable via SystemSetting('transcriptor_scope_cache_ttl').
+     *                Valor 0 = bypass (freno de emergencia operativo).
+     * - El rango valido es [0, 3600] segundos (ver resolveInheritedTranscriptionScope).
+     *
+     * Change: 2026-09-12-api-transcriptor-index-perf-cache. Antes de mutar
+     * storage_providers.base_path o transcription_enabled, llamar
+     * StorageProvider::forgetInheritedTranscriptionScope($rootId).
+     */
+    private const SCOPE_CACHE_PREFIX = 'transcriptor.scope.inherited.';
+    private const SCOPE_CACHE_TTL_DEFAULT = 300;
+    private const SCOPE_CACHE_TTL_MIN = 0;
+    private const SCOPE_CACHE_TTL_MAX = 3600;
 
     public function userStorages(): HasMany
     {
@@ -42,19 +61,38 @@ class StorageProvider extends Model
      * transcripciones: el storage root más todos sus descendientes con
      * transcription_enabled=true, recursivamente.
      *
-     * Un descendiente es cualquier storage cuyo base_path comience con
-     * parent.base_path + '/'. Esto preserva la invariante de que la
-     * jerarquía se deriva del filesystem real, no de una columna FK.
+     * Wrapper cacheado de computeInheritedTranscriptionScope(). Cache:
+     * 5 min default, configurable via SystemSetting('transcriptor_scope_cache_ttl').
+     * Bypass con valor 0 (freno de emergencia).
      *
-     * Esta capa es SOLO LECTURA: el scanner y el tick siguen trabajando
-     * con storages reales. El helper existe para que las consultas de la
-     * UI (ej. storageFiles) puedan mostrar las transcripciones de los
-     * hijos como si estuvieran bajo el padre.
+     * Antes de mutar storage_providers.base_path o transcription_enabled,
+     * llamar StorageProvider::forgetInheritedTranscriptionScope($rootId).
+     *
+     * Change: 2026-09-12-api-transcriptor-index-perf-cache.
+     */
+    public static function resolveInheritedTranscriptionScope(int $rootId): array
+    {
+        $ttl = self::resolveScopeCacheTtl();
+        if ($ttl === 0) {
+            return static::computeInheritedTranscriptionScope($rootId);
+        }
+
+        return Cache::remember(
+            self::SCOPE_CACHE_PREFIX . $rootId,
+            $ttl,
+            fn () => static::computeInheritedTranscriptionScope($rootId)
+        );
+    }
+
+    /**
+     * BFS recursivo del scope heredado. Logica original movida aqui sin
+     * cambios para mantener la compatibilidad exacta. Cambio solo en la
+     * capa de cache (resolveInheritedTranscriptionScope).
      *
      * @param  int $rootId  ID del storage root
      * @return array<int>   IDs ordenados (root primero, descendientes después)
      */
-    public static function resolveInheritedTranscriptionScope(int $rootId): array
+    private static function computeInheritedTranscriptionScope(int $rootId): array
     {
         $root = static::find($rootId);
         if (!$root) {
@@ -86,6 +124,47 @@ class StorageProvider extends Model
         }
 
         return $order;
+    }
+
+    /**
+     * Invalida la cache del scope de un root especifico. Idempotente.
+     * Llamar este metodo en cualquier mutacion de base_path o
+     * transcription_enabled del root o sus descendientes.
+     */
+    public static function forgetInheritedTranscriptionScope(int $rootId): void
+    {
+        Cache::forget(self::SCOPE_CACHE_PREFIX . $rootId);
+    }
+
+    /**
+     * Lee el TTL configurado via SystemSetting('transcriptor_scope_cache_ttl').
+     * Si no esta seteado, usa SCOPE_CACHE_TTL_DEFAULT (5 min).
+     * Acota al rango [SCOPE_CACHE_TTL_MIN, SCOPE_CACHE_TTL_MAX].
+     * Valor fuera de rango o invalido cae al default.
+     *
+     * El TTL se cachea en Redis 60s para evitar una query a system_settings
+     * por cada llamada a resolveInheritedTranscriptionScope (con 70 storages
+     * eso eran 70 queries redundantes por page load). 60s es aceptable:
+     * el operador rara vez cambia este setting; si lo cambia, la nueva
+     * configuracion tarda 60s en aplicarse.
+     */
+    private static function resolveScopeCacheTtl(): int
+    {
+        $cached = Cache::get('transcriptor.scope.ttl');
+        if ($cached !== null) {
+            return (int) $cached;
+        }
+        $raw = SystemSetting::get('transcriptor_scope_cache_ttl');
+        if ($raw === null || $raw === '' || !is_numeric($raw)) {
+            $ttl = self::SCOPE_CACHE_TTL_DEFAULT;
+        } else {
+            $ttl = (int) $raw;
+            if ($ttl < self::SCOPE_CACHE_TTL_MIN || $ttl > self::SCOPE_CACHE_TTL_MAX) {
+                $ttl = self::SCOPE_CACHE_TTL_DEFAULT;
+            }
+        }
+        Cache::put('transcriptor.scope.ttl', $ttl, 60);
+        return $ttl;
     }
 
     /**

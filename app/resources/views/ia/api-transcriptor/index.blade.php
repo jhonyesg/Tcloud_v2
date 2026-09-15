@@ -113,6 +113,157 @@
         </div>
     </div>
 
+    {{-- Barra inline de progreso del batch: aparece cuando hay un escaneo corriendo
+         o un resultado reciente. Compacta por defecto, expandible con "Más".
+         bg-job-indicator-hide-completed: reemplaza la tarjeta flotante del widget
+         global y el modal bloqueante. El operador nunca pierde el control del
+         módulo: puede seguir navegando la página mientras corre el batch.
+         Vive solo dentro de este módulo (no afecta /files, /storages, etc.). --}}
+    <div x-show="batchRunning || batchResult"
+         x-cloak
+         x-transition.opacity.duration.200ms
+         data-test="batch-inline-bar"
+         class="mb-4 bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+
+        {{-- Fila compacta (siempre visible cuando el batch está activo) --}}
+        <div class="flex items-center gap-3 px-4 py-3">
+            <i class="fas fa-circle-notch fa-spin text-brand-500 text-lg flex-shrink-0"
+               x-show="batchRunning"></i>
+            <i class="fas fa-check-circle text-emerald-500 text-lg flex-shrink-0"
+               x-show="!batchRunning && batchResult && (batchResult.errors || 0) === 0"></i>
+            <i class="fas fa-exclamation-triangle text-amber-500 text-lg flex-shrink-0"
+               x-show="!batchRunning && batchResult && (batchResult.errors || 0) > 0"></i>
+
+            <div class="flex-1 min-w-0">
+                <div class="flex items-baseline justify-between gap-2 mb-1">
+                    <p class="text-sm font-medium text-slate-800 truncate">
+                        <span x-show="batchRunning">
+                            Escanear storages:
+                            <span class="font-semibold"
+                                  x-text="(batchProgress?.processed || 0) + ' / ' + (batchProgress?.total_to_process || 0)"></span>
+                            <span class="text-slate-400 ml-2 text-xs"
+                                  x-text="batchProgress?.current_storage ? '· ' + batchProgress.current_storage : ''"></span>
+                        </span>
+                        <span x-show="!batchRunning && batchResult">
+                            <span x-show="(batchResult?.errors || 0) === 0">Escaneo completado:</span>
+                            <span x-show="(batchResult?.errors || 0) > 0">Escaneo con errores:</span>
+                            <span class="font-semibold"
+                                  x-text="' ' + (batchResult?.processed || 0) + ' storages OK'"></span>
+                            <span x-show="(batchResult?.errors || 0) > 0"
+                                  class="text-amber-600 ml-1"
+                                  x-text="' · ' + (batchResult?.errors || 0) + ' con error'"></span>
+                        </span>
+                    </p>
+                    <p class="text-xs text-slate-500 whitespace-nowrap tabular-nums"
+                       x-show="batchRunning && batchProgress?.total_to_process"
+                       x-text="Math.round(((batchProgress?.processed || 0) / (batchProgress?.total_to_process || 1)) * 100) + '%'"></p>
+                </div>
+                <div class="h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                    <div class="h-full bg-brand-500 transition-all duration-300"
+                         :style="'width: ' + (batchProgress?.total_to_process ? Math.round(((batchProgress?.processed || 0) / batchProgress.total_to_process) * 100) : (batchRunning ? 8 : 100)) + '%'"></div>
+                </div>
+            </div>
+
+            <button type="button"
+                    @click="batchExpanded = !batchExpanded"
+                    data-test="batch-expand-toggle"
+                    class="text-xs text-slate-500 hover:text-slate-700 px-2.5 py-1.5 rounded-lg hover:bg-slate-100 flex items-center gap-1 flex-shrink-0">
+                <span x-text="batchExpanded ? 'Menos' : 'Más'"></span>
+                <i :class="batchExpanded ? 'fa-chevron-up' : 'fa-chevron-down'" class="fas text-[10px]"></i>
+            </button>
+
+            <button type="button"
+                    x-show="!batchRunning && batchResult"
+                    @click="batchResult = null; batchProgress = null;"
+                    data-test="batch-dismiss"
+                    class="text-slate-400 hover:text-slate-700 text-xl leading-none px-1 flex-shrink-0"
+                    title="Cerrar (la tarea ya terminó en el servidor)">×</button>
+        </div>
+
+        {{-- Detalles expandidos (storage por storage, errores, archivo actual) --}}
+        <div x-show="batchExpanded"
+             x-transition.opacity.duration.150ms
+             class="border-t border-slate-200 px-4 py-3 bg-slate-50 max-h-80 overflow-y-auto">
+
+            {{-- Archivo procesándose ahora --}}
+            <div x-show="batchRunning && batchProgress?.current_file" class="mb-3">
+                <p class="text-[10px] uppercase font-semibold text-slate-400 mb-1">Procesando ahora</p>
+                <p class="text-xs text-slate-700 font-mono truncate" x-text="batchProgress?.current_file"></p>
+            </div>
+
+            {{-- Lista de storages --}}
+            <template x-if="batchProgress && batchProgress.storages && batchProgress.storages.length > 0">
+                <div class="mb-3">
+                    <p class="text-[10px] uppercase font-semibold text-slate-400 mb-1.5">Storages</p>
+                    <div class="space-y-1">
+                        <template x-for="(s, idx) in batchProgress.storages" :key="s.id || idx">
+                            <div class="flex items-center gap-2 text-xs">
+                                <i :class="{
+                                    'fa-check-circle text-emerald-500': s.status === 'done',
+                                    'fa-circle-notch fa-spin text-brand-500': s.status === 'running',
+                                    'fa-times-circle text-red-500': s.status === 'error',
+                                    'fa-clock text-slate-300': !s.status || s.status === 'pending'
+                                }" class="fas flex-shrink-0"></i>
+                                <span class="flex-1 truncate text-slate-700" x-text="s.name || ('Storage #' + s.id)"></span>
+                                <span class="text-slate-400 whitespace-nowrap tabular-nums" x-text="(s.processed || 0) + '/' + (s.total || 0)"></span>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+            </template>
+
+            {{-- Errores en vivo --}}
+            <div x-show="batchRunning && (batchProgress?.errors || 0) > 0"
+                 class="mb-3 text-xs text-red-600">
+                <i class="fas fa-exclamation-triangle mr-1"></i>
+                <span x-text="batchProgress?.errors || 0"></span> errores en este ciclo
+            </div>
+
+            {{-- Resultado final: errores por storage --}}
+            <template x-if="!batchRunning && batchResult && batchResult.per_storage_errors && batchResult.per_storage_errors.length > 0">
+                <div class="mb-3">
+                    <p class="text-[10px] uppercase font-semibold text-red-600 mb-1.5">Storages con error</p>
+                    <div class="space-y-1">
+                        <template x-for="e in batchResult.per_storage_errors" :key="e.storage_id">
+                            <div class="text-xs text-red-700 flex items-start gap-1.5">
+                                <i class="fas fa-times-circle mt-0.5 flex-shrink-0"></i>
+                                <span><b x-text="e.storage_name || ('Storage #' + e.storage_id)"></b>:
+                                    <span x-text="e.error"></span></span>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+            </template>
+
+            {{-- Resumen final --}}
+            <template x-if="!batchRunning && batchResult">
+                <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-1">
+                    <div class="bg-white border border-slate-200 rounded-lg p-2 text-center">
+                        <p class="text-[9px] uppercase text-slate-400 font-semibold">Candidatos</p>
+                        <p class="text-lg font-bold text-slate-700" x-text="batchResult?.total_candidates || 0"></p>
+                    </div>
+                    <div class="bg-white border border-slate-200 rounded-lg p-2 text-center">
+                        <p class="text-[9px] uppercase text-emerald-600 font-semibold">Procesados</p>
+                        <p class="text-lg font-bold text-emerald-600" x-text="batchResult?.processed || 0"></p>
+                    </div>
+                    <div class="bg-white border border-slate-200 rounded-lg p-2 text-center">
+                        <p class="text-[9px] uppercase text-red-600 font-semibold">Errores</p>
+                        <p class="text-lg font-bold text-red-600" x-text="batchResult?.errors || 0"></p>
+                    </div>
+                    <div class="bg-white border border-slate-200 rounded-lg p-2 text-center">
+                        <p class="text-[9px] uppercase text-brand-600 font-semibold">Encolados</p>
+                        <p class="text-lg font-bold text-brand-600" x-text="batchResult?.dispatched || 0"></p>
+                    </div>
+                </div>
+            </template>
+
+            {{-- Mensaje final del backend --}}
+            <p x-show="!batchRunning && batchResult && batchResult.message"
+               class="mt-2 text-xs text-slate-600 italic"
+               x-text="batchResult?.message"></p>
+        </div>
+    </div>
+
     {{-- Pestañas principales: Storages | Trabajos --}}
     <div class="mb-4 flex items-center gap-1 border-b border-slate-200">
         <button @click="tab = 'storages'"
@@ -138,6 +289,13 @@
             <i class="fas fa-sliders-h mr-1.5"></i>
             Configuración
             <span x-show="cfg.dispatch_paused" class="ml-1.5 inline-block w-2 h-2 bg-amber-500 rounded-full align-middle" title="Envío pausado"></span>
+        </button>
+        <button @click="tab = 'consumo'"
+                :class="tab === 'consumo' ? 'bg-white border-x border-t border-slate-200 text-brand-600' : 'text-slate-500 hover:text-slate-700'"
+                class="px-5 py-2.5 rounded-t-lg text-sm font-medium border-b-2 -mb-px transition-colors"
+                :class-extra="tab === 'consumo' ? 'border-b-brand-500' : 'border-b-transparent'">
+            <i class="fas fa-chart-line mr-1.5"></i>
+            Consumo
         </button>
         <div class="flex-1"></div>
         <button @click="openBatchModal()"
@@ -289,17 +447,36 @@
         </div>
     </div>
 
-    <!-- Tabla de storages -->
-    <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden mb-6">
-        <div class="px-4 py-3 border-b border-slate-200 flex items-center justify-between gap-3 flex-wrap">
-            <h2 class="text-sm font-semibold text-slate-700">Storages</h2>
-            <div class="flex items-center gap-2">
+<!-- Tabla de storages -->
+        <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden mb-6">
+            <div class="px-4 py-3 border-b border-slate-200 flex items-center justify-between gap-3 flex-wrap">
+                <h2 class="text-sm font-semibold text-slate-700">Storages</h2>
+                <div class="flex items-center gap-2">
+                    <form method="POST" action="/ia/api-transcriptor/retry-batch" target="_blank">
+                        @csrf
+                        <input type="hidden" name="max_age_hours" value="168">
+                        <input type="hidden" name="limit" value="500">
+                        <button type="submit"
+                                onclick="return confirm('¿Reencolar todos los jobs error|dead (últimos 7 días) en el upstream? El proceso corre en background.')"
+                                class="flex items-center gap-1.5 px-3 py-1.5 bg-amber-100 hover:bg-amber-200 text-amber-800 rounded-lg text-xs font-medium transition-colors"
+                                title="Lanza transcription:retry-batch-upstream en background para re-encolar todos los jobs error/dead de los últimos 7 días en el upstream (sin re-ffmpeg).">
+                            <i class="fas fa-rotate"></i> Reintentar fallidos (upstream batch)
+                        </button>
+                    </form>
+                </div>
                 <div class="relative">
                     <input type="text" x-model="storagesSearch" @input.debounce.200ms="storagesPage = 1"
                            placeholder="Buscar storage..."
                            class="pl-7 pr-2 py-1 text-xs border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none w-48">
                     <i class="fas fa-search absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 text-[10px]"></i>
                 </div>
+                <select @change="setStoragesStatusFilter($event.target.value)"
+                        class="border border-slate-300 rounded-lg px-2 py-1 text-xs outline-none hover:border-brand-300 transition-colors"
+                        title="Filtrar por estado de transcripcion">
+                    <option value="all" :selected="storagesStatusFilter === 'all'">Todos</option>
+                    <option value="enabled" :selected="storagesStatusFilter === 'enabled'">Transcribiendo</option>
+                    <option value="disabled" :selected="storagesStatusFilter === 'disabled'">Inactivos</option>
+                </select>
                 <span class="text-xs text-slate-400 whitespace-nowrap" x-text="storagesEnabled.length + ' habilitado(s) de ' + storages.length"></span>
             </div>
         </div>
@@ -343,6 +520,7 @@
         <table x-show="storages.length > 0" class="w-full text-sm">
             <thead class="bg-slate-50 border-b border-slate-200">
                 <tr class="text-left text-xs text-slate-500">
+                    <th class="py-2.5 pr-2 font-medium whitespace-nowrap text-right" title="Posicion en la lista ordenada (continua entre paginas)">#</th>
                     <th class="py-2.5 pr-3 font-medium whitespace-nowrap">
                         <button type="button" @click="setStoragesSort('name')"
                                 :class="storagesSortHeaderClass('name') + ' inline-flex items-center gap-1.5 transition-colors'"
@@ -403,8 +581,12 @@
                 </tr>
             </thead>
             <tbody class="divide-y divide-slate-100">
-                <template x-for="s in pagedStorages()" :key="s.id">
-                    <tr class="hover:bg-slate-50/60 align-top" :class="s.transcription_enabled ? '' : 'opacity-70'">
+                <template x-for="(s, idx) in pagedStorages()" :key="s.id">
+                    <tr class="hover:bg-slate-50/60 align-top"
+                        :class="(s.transcription_enabled ? '' : 'opacity-70') + (emptyFoldersFor(s.id) ? ' bg-amber-50/40' : '')">
+                        <td class="py-3 pr-2 text-right text-xs text-slate-400 tabular-nums select-none align-top"
+                            :title="'Posicion ' + storageRowNumber(idx) + ' de ' + filteredStorages().length"
+                            x-text="storageRowNumber(idx)"></td>
                         <td class="py-3 pr-3 text-sm font-medium text-slate-700">
                             <div class="flex items-center gap-2">
                                 <template x-if="s.descendant_count > 0">
@@ -427,6 +609,12 @@
                                     <span class="text-[10px] px-1.5 py-0.5 bg-slate-100 text-slate-500 rounded-full"
                                           :title="'Descendientes: ' + (s.descendant_names || []).join(', ')"
                                           x-text="s.descendant_count + ' hijo(s)'"></span>
+                                </template>
+                                <template x-if="emptyFoldersFor(s.id)">
+                                    <button type="button" @click.stop="emptyFoldersExpanded = true; emptyFoldersExpanded && setTimeout(() => { const el = document.querySelector('[data-tour=\"storages-empties\"]'); if (el) el.scrollIntoView({behavior:'smooth', block:'start'}); }, 50)"
+                                            class="text-[10px] px-1.5 py-0.5 bg-amber-100 text-amber-800 rounded-full font-semibold cursor-pointer hover:bg-amber-200 transition-colors"
+                                            :title="emptyFoldersBadge(s.id) + '. Click para ver el detalle en el banner.'"
+                                            x-text="'⚠ ' + emptyFoldersBadge(s.id)"></button>
                                 </template>
                             </div>
                         </td>
@@ -513,7 +701,6 @@
                 </select>
             </div>
         </div>
-    </div>
 
 
     <!-- Modal navegador de archivos de un storage -->
@@ -632,6 +819,20 @@
                                                 <i class="fas fa-folder text-amber-400"></i>
                                                 <span class="font-medium text-slate-700 truncate" x-text="folder.name"></span>
                                                 <span class="text-slate-400 text-[10px]">carpeta</span>
+                                                {{-- storage origen: si la carpeta viene de un descendiente del
+                                                     storage que el operador clickeó, mostrar el nombre del
+                                                     storage hijo para que pueda distinguir entre 11 carpetas
+                                                     "14092026" (una por cada descendiente). Sin esto, las
+                                                     carpetas del mismo nombre en distintos storages del
+                                                     scope aparecen indistinguibles y el operador no sabe
+                                                     a cuál descender. --}}
+                                                <template x-if="folder.source_storage_id && folder.source_storage_id !== currentStorage?.id && storageById(folder.source_storage_id)">
+                                                    <span class="ml-auto inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 bg-slate-100 text-slate-600 rounded font-medium"
+                                                          :title="'Esta carpeta vive en el storage ' + (storageById(folder.source_storage_id)?.name || folder.source_storage_id)">
+                                                        <i class="fas fa-server text-[9px]"></i>
+                                                        <span x-text="storageById(folder.source_storage_id)?.name"></span>
+                                                    </span>
+                                                </template>
                                                 <i class="fas fa-chevron-right text-slate-300 text-xs ml-auto"></i>
                                             </div>
                                         </td>
@@ -1086,6 +1287,7 @@
                     <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider hidden md:table-cell">Duración</th>
                     <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider hidden sm:table-cell">Iniciado</th>
                     <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider hidden lg:table-cell">Finalizado</th>
+                    <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider" title="Estado del corrector async de la API. Verde=aplicado, Azul=pendiente, Ambar=falló (SRT usable), Gris=sin auditar.">Corrector</th>
                     <th class="px-4 py-3 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">Acciones</th>
                 </tr>
             </thead>
@@ -1121,6 +1323,30 @@
                             x-text="formatDate(job.started_at)"></td>
                         <td class="px-4 py-3 hidden lg:table-cell text-sm text-slate-600"
                             x-text="formatDate(job.finished_at)"></td>
+                        <td class="px-4 py-3 text-sm">
+                            {{-- Status del corrector async. Mismo shape que job-detail.blade.php. --}}
+                            <template x-if="job.state !== 'done' || job.corrected === null || job.corrected === undefined">
+                                <span class="text-slate-300 text-xs" title="Sin auditar o estado no final">—</span>
+                            </template>
+                            <template x-if="job.state === 'done' && job.corrected === 0">
+                                <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 animate-pulse text-xs"
+                                      title="El corrector async de la API todavía no terminó. El SRT visible es la versión sin corregir.">
+                                    <i class="fas fa-hourglass-half text-[10px]"></i> Pendiente
+                                </span>
+                            </template>
+                            <template x-if="job.state === 'done' && job.corrected === 1">
+                                <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-xs"
+                                      :title="'Corrector aplicado: ' + (job.corr_pass ?? '?') + ' reemplazos parakeet, ' + (job.corr_mms ?? '?') + ' mms'">
+                                    <i class="fas fa-spell-check text-[10px]"></i> Aplicado
+                                </span>
+                            </template>
+                            <template x-if="job.state === 'done' && job.corrected === -1">
+                                <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-xs"
+                                      title="Corrector falló (timeout/error). El SRT visible es la versión sin corregir pero usable.">
+                                    <i class="fas fa-question-circle text-[10px]"></i> Falló
+                                </span>
+                            </template>
+                        </td>
                         <td class="px-4 py-3 text-right">
                             <div class="inline-flex items-center gap-1.5">
                                 {{-- En proceso: Enviar ahora (sin job_id) / Refrescar estado (con job_id) --}}
@@ -1214,6 +1440,120 @@
         </div>
 
     </div> {{-- /TAB JOBS --}}
+
+    {{-- TAB: CONSUMO (api-transcriptor-consumption-aware-dispatch) --}}
+    <div x-show="tab === 'consumo'" x-transition:enter.opacity.duration.150ms
+         x-data="{
+             data: null,
+             loading: false,
+             async load() {
+                 this.loading = true;
+                 try {
+                     const r = await fetch('/ia/api-transcriptor/live-consumption');
+                     this.data = await r.json();
+                 } catch (e) { console.error(e); }
+                 this.loading = false;
+             },
+             get remote() { return (this.data && this.data.remote) || {}; },
+             get local() { return (this.data && this.data.local) || {}; },
+             get decision() { return (this.data && this.data.last_decision) || null; },
+             get series() { return (this.data && this.data.series) || []; },
+             get oldestQueued() { return (this.data && this.data.oldest_queued) || []; },
+             pctColor(p) { return p >= 90 ? 'text-red-600' : (p >= 80 ? 'text-amber-600' : 'text-emerald-600'); },
+             ageMin(iso) { if (!iso) return '?'; const s = (Date.now() - new Date(iso).getTime()) / 1000; return Math.round(s/60) + 'm'; }
+         }"
+         x-init="load(); setInterval(() => load(), 30000)">
+        <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
+            <div class="flex items-center justify-between mb-4">
+                <h3 class="text-lg font-semibold text-slate-800">Consumo del cluster GPU remoto</h3>
+                <button @click="load()" :disabled="loading" class="text-xs px-3 py-1.5 bg-slate-100 hover:bg-slate-200 rounded-lg">
+                    <i class="fas fa-sync-alt" :class="loading ? 'fa-spin' : ''"></i> Actualizar
+                </button>
+            </div>
+
+            <div x-show="!data" class="text-sm text-slate-500">Cargando telemetria...</div>
+
+            <div x-show="data" class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-5">
+                <div class="p-3 bg-slate-50 rounded-lg border border-slate-200">
+                    <div class="text-xs text-slate-500 uppercase">Workers</div>
+                    <div class="text-2xl font-bold" x-text="remote.workers ?? '—'"></div>
+                    <div class="text-xs text-slate-400" x-text="remote.processing != null ? (remote.processing + ' en vuelo') : ''"></div>
+                </div>
+                <div class="p-3 bg-slate-50 rounded-lg border border-slate-200">
+                    <div class="text-xs text-slate-500 uppercase">VRAM</div>
+                    <div class="text-2xl font-bold" :class="pctColor(remote.gpu_vram_pct || 0)" x-text="(remote.gpu_vram_pct ?? '—') + '%'"></div>
+                </div>
+                <div class="p-3 bg-slate-50 rounded-lg border border-slate-200">
+                    <div class="text-xs text-slate-500 uppercase">GPU util</div>
+                    <div class="text-2xl font-bold" :class="pctColor(remote.gpu_util_pct || 0)" x-text="(remote.gpu_util_pct ?? '—') + '%'"></div>
+                </div>
+                <div class="p-3 bg-slate-50 rounded-lg border border-slate-200">
+                    <div class="text-xs text-slate-500 uppercase">Ramdisk</div>
+                    <div class="text-2xl font-bold" :class="pctColor(remote.ramdisk_pct || 0)" x-text="(remote.ramdisk_pct ?? '—') + '%'"></div>
+                    <div class="text-xs text-slate-400" x-text="remote.ramdisk_free_gb != null ? (remote.ramdisk_free_gb + ' GB libres') : ''"></div>
+                </div>
+                <div class="p-3 bg-slate-50 rounded-lg border border-slate-200">
+                    <div class="text-xs text-slate-500 uppercase">CPU host</div>
+                    <div class="text-2xl font-bold" x-text="(remote.cpu_pct ?? '—') + '%'"></div>
+                </div>
+            </div>
+
+            <div x-show="data" class="grid grid-cols-2 md:grid-cols-6 gap-3 mb-5">
+                <template x-for="(count, state) in local" :key="state">
+                    <div class="p-2 bg-white border border-slate-200 rounded text-center">
+                        <div class="text-xs text-slate-500 uppercase" x-text="state"></div>
+                        <div class="text-lg font-bold" x-text="count"></div>
+                    </div>
+                </template>
+            </div>
+
+            <div x-show="decision" class="mb-4 p-3 bg-slate-50 rounded-lg border border-slate-200 text-sm">
+                <div class="font-semibold text-slate-700 mb-1">Ultima decision del regulador</div>
+                <div>
+                    <span class="font-mono px-2 py-0.5 rounded text-xs"
+                          :class="decision && decision.decision === 'skipped' ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'"
+                          x-text="(decision && decision.decision) || 'none'"></span>
+                    <span class="ml-2 text-slate-600">razon: <span class="font-mono" x-text="(decision && decision.reason) || 'none'"></span></span>
+                    <span class="ml-2 text-slate-600">batch: <span class="font-mono" x-text="(decision && decision.batch_computed) || 0"></span></span>
+                    <span class="ml-2 text-slate-500 text-xs" x-text="decision && decision.now_local"></span>
+                </div>
+                <div class="mt-2 text-xs text-slate-500">
+                    <span x-show="decision && decision.values">
+                        ramdisk=<span x-text="decision?.values?.remote_ramdisk_pct ?? '?'"></span>%
+                        gpu_util=<span x-text="decision?.values?.remote_gpu_usage ?? '?'"></span>%
+                        redis=<span x-text="decision?.values?.redis_queue_depth ?? '?'"></span>
+                        circuit=<span x-text="decision?.values?.upstream_circuit_open ? 'OPEN' : 'closed'"></span>
+                    </span>
+                </div>
+            </div>
+
+            <div x-show="data" class="mt-4">
+                <h4 class="text-sm font-semibold text-slate-700 mb-2">Top 5 jobs mas antiguos en `queued`</h4>
+                <div class="text-xs text-slate-500 mb-2" x-show="oldestQueued.length === 0">Sin jobs en `queued`.</div>
+                <table class="w-full text-xs" x-show="oldestQueued.length > 0">
+                    <thead class="text-left text-slate-500">
+                        <tr><th class="py-1">ID</th><th>job_id</th><th>nombre</th><th>edad</th></tr>
+                    </thead>
+                    <tbody>
+                        <template x-for="j in oldestQueued" :key="j.id">
+                            <tr class="border-t border-slate-100">
+                                <td class="py-1 font-mono" x-text="j.id"></td>
+                                <td class="font-mono text-[10px]" x-text="(j.job_id || '—').substring(0, 16)"></td>
+                                <td x-text="j.original_name"></td>
+                                <td x-text="ageMin(j.updated_at)"></td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
+
+            <div x-show="data" class="mt-4 text-xs text-slate-500">
+                Endpoint: <code>/ia/api-transcriptor/live-consumption</code> ·
+                Auto-refresh 30s ·
+                Source: <code x-text="remote.source || '?'"></code>
+            </div>
+        </div>
+    </div> {{-- /TAB CONSUMO --}}
 
     {{-- TAB: CONFIGURACIÓN --}}
     <div x-show="tab === 'config'" x-transition:enter.opacity.duration.150ms>
@@ -1658,6 +1998,7 @@
                             <div class="text-xs text-slate-600 space-y-1">
                                 <p><strong x-text="batchEstimate.files_missing.toLocaleString()"></strong> archivos sin transcripción en el alcance<span x-show="batchEstimate.estimation_capped"> (conteo parcial: superó el límite de estimación)</span></p>
                                 <p x-show="batchEstimate.error_recoverable != null"><span x-text="batchEstimate.error_recoverable"></span> transcripciones en <strong>error</strong> reintenables con el checkbox de abajo</p>
+                                <p x-show="batchEstimate.done_rescan != null && batchEstimate.done_rescan > 0"><span x-text="batchEstimate.done_rescan.toLocaleString()"></span> transcripciones en <strong>done</strong> reprocesables marcando "Incluir completados" abajo</p>
                                 <p x-show="batchEstimate.dead_irrecoverable != null" class="text-amber-600"><span x-text="batchEstimate.dead_irrecoverable"></span> en <strong>dead</strong> NO se reintentan (audio ausente; solo upstream-lost con backfill-lost)</p>
                                 <p class="text-slate-400"><i class="fas fa-info-circle mr-1"></i>El envío sigue regulado por ciclo; los pendientes sobrantes los recoge el cron automático.</p>
                             </div>
@@ -1700,14 +2041,26 @@
                         </label>
                         <span class="text-xs text-amber-700" x-show="batchIncludeFailed"><i class="fas fa-redo mr-1"></i>Se reencolarán transcripciones con error previo (archivo accesible, retries &lt; 3)</span>
                     </div>
+                    {{-- transcriptor-rescan-completed: checkbox incluir completados --}}
+                    <div class="flex items-center gap-3 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+                        <label class="flex items-center gap-2 cursor-pointer">
+                            <input type="checkbox" x-model="batchIncludeDone" class="w-4 h-4 accent-amber-600 rounded">
+                            <span class="text-sm font-medium text-slate-700">Incluir completados</span>
+                            <i class="fas fa-info-circle text-slate-400 text-xs cursor-help"
+                               title="Reenvía transcripciones ya finalizadas (state='done') a la API externa para regenerarlas. Conserva el archivo en disco y la fila; solo se sobreescribe srt_content al confirmar el nuevo resultado. Si el reenvío falla, la fila queda en 'error' con el srt_content viejo como fallback. Genera nuevas alertas según el flag 'Generar alertas'."></i>
+                        </label>
+                        <span class="text-xs text-amber-700" x-show="batchIncludeDone"><i class="fas fa-redo mr-1"></i>Se reencolarán transcripciones finalizadas (archivo accesible, retries++). El srt_content viejo se mantiene hasta que el nuevo se confirme.</span>
+                    </div>
                     <div x-show="storagesEnabled.length === 0" class="p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-700">
                         <i class="fas fa-exclamation-triangle mr-1"></i>No hay storages habilitados para transcripción.
                     </div>
                     <div class="flex gap-2">
-                        <button @click="runBatch()" x-show="storagesEnabled.length > 0" :disabled="!batchScopeValid() || batchEstimateLoading"
-                                :class="(!batchScopeValid() || batchEstimateLoading) ? 'opacity-50 cursor-not-allowed' : ''"
+                        <button @click="runBatch()" x-show="storagesEnabled.length > 0" :disabled="!batchScopeValid()"
+                                :class="!batchScopeValid() ? 'opacity-50 cursor-not-allowed' : ''"
+                                :title="batchEstimateLoading ? 'Estimación cargando... podés iniciar de todos modos' : ''"
                                 class="flex-1 px-4 py-2.5 bg-brand-600 hover:bg-brand-700 text-white rounded-xl text-sm font-medium transition-colors">
-                            <i class="fas fa-play mr-1"></i> Iniciar procesamiento
+                            <i class="fas fa-play mr-1" :class="batchEstimateLoading ? 'fa-spin' : ''"></i>
+                            <span x-text="batchEstimateLoading ? 'Iniciar (estimando...)' : 'Iniciar procesamiento'"></span>
                         </button>
                         <button @click="showBatchModal = false"
                                 class="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl text-sm font-medium transition-colors">
@@ -2062,12 +2415,24 @@ function apiTranscriptor(config = {}) {
     try {
         initialExpanded = JSON.parse(localStorage.getItem(storageExpansionKey) || '[]');
     } catch (e) { initialExpanded = []; }
+    // Vista de la tabla storages (sort + filtro de estado) persistente por
+    // usuario. Default: activos primero (column 'enabled' desc), que es como
+    // el operador piensa la tabla: lo que esta transcribiendo arriba.
+    const storagesViewKey = 'transcriptor-storages-view:' + (config.userId || 0);
+    let savedView = {};
+    try {
+        savedView = JSON.parse(localStorage.getItem(storagesViewKey) || '{}') || {};
+    } catch (e) { savedView = {}; }
+    const VALID_STATUS_FILTERS = ['all', 'enabled', 'disabled'];
+    const savedSort = (savedView.sort && savedView.sort.column) ? savedView.sort : null;
+    const savedStatus = VALID_STATUS_FILTERS.includes(savedView.statusFilter) ? savedView.statusFilter : null;
     return {
         userId: config.userId || 0,
         pendingAlertThreshold: config.pendingAlertThreshold || 5,
         expandedScopes: new Set(initialExpanded),
         storagesSearch: '',
-        storagesSort: { column: 'name', direction: 'asc' },
+        storagesStatusFilter: savedStatus || 'all',
+        storagesSort: savedSort || { column: 'enabled', direction: 'desc' },
         storagesPage: 1,
         storagesPerPage: 25,
         loading: false,
@@ -2150,8 +2515,11 @@ function apiTranscriptor(config = {}) {
         batchSize: {{ (int) ($ui_limits['scan_batch'] ?? 100) }},
         batchAlerts: true,
         batchIncludeFailed: false,
+        // transcriptor-rescan-completed: reprocesar transcripciones state='done'.
+        batchIncludeDone: false,
         batchResult: null,
         batchRunId: null,
+        batchExpanded: false,
         batchPollTimer: null,
         batchProgress: null,
         // transcriptor-scan-scope-selector: alcance del escaneo + estimación
@@ -2384,24 +2752,64 @@ function apiTranscriptor(config = {}) {
         },
         visibleStorages() {
             return this.storages.filter(s => {
+                // Root de scope (parent_scope_id = mi propio id): SIEMPRE visible
+                // aunque el operador no haya expandido el scope. Sin esto, los
+                // roots como "01 Emisoras 01" (con 11 hijos) desaparecian de la
+                // tabla porque el filtro los trataba como "hijo colapsado".
+                // Bug: usuario buscaba "emisoras" y solo veia las hojas
+                // (Emisoras 03/05/ABC) pero no los roots que aparecian en el
+                // banner amarillo.
+                if (s.parent_scope_id && s.parent_scope_id === s.id) return true;
+                // Storage sin scope (parent_scope_id null): visible siempre.
                 if (!s.parent_scope_id) return true;
+                // Hijo de un scope ajeno: visible solo si el scope esta expandido.
                 return this.expandedScopes.has(s.parent_scope_id);
             });
         },
         filteredStorages() {
             const q = (this.storagesSearch || '').toLowerCase().trim();
-            let list = this.visibleStorages();
+            // Filtro rapido por estado de transcripcion (all | enabled | disabled).
+            // Con filtro activo la vista se aplana: los hijos de un padre
+            // colapsado matchean aunque el padre este oculto, igual que la
+            // busqueda global del header.
+            const statusActive = this.storagesStatusFilter !== 'all';
+            let list = statusActive ? [...this.storages] : this.visibleStorages();
+            if (this.storagesStatusFilter === 'enabled') {
+                list = list.filter(s => s.transcription_enabled);
+            } else if (this.storagesStatusFilter === 'disabled') {
+                list = list.filter(s => !s.transcription_enabled);
+            }
             if (q) list = list.filter(s => (s.name || '').toLowerCase().includes(q));
-            // Sort client-side following el patron de Mis Avisos
+            // Sort client-side following el patron de Mis Avisos.
+            // Desempate por nombre para orden determinista dentro del mismo valor.
             const col = this.storagesSort.column;
             const dir = this.storagesSort.direction === 'asc' ? 1 : -1;
             return [...list].sort((a, b) => {
                 const av = this.storagesSortValue(a, col);
                 const bv = this.storagesSortValue(b, col);
-                if (av === bv) return 0;
+                if (av === bv) {
+                    const an = (a.name || '').toString().toLowerCase();
+                    const bn = (b.name || '').toString().toLowerCase();
+                    if (an === bn) return 0;
+                    return an < bn ? -1 : 1;
+                }
                 if (av < bv) return -1 * dir;
                 return 1 * dir;
             });
+        },
+        persistStoragesView() {
+            try {
+                localStorage.setItem(storagesViewKey, JSON.stringify({
+                    sort: this.storagesSort,
+                    statusFilter: this.storagesStatusFilter,
+                }));
+            } catch (e) { /* localStorage no disponible, ignorar */ }
+        },
+        setStoragesStatusFilter(value) {
+            if (!VALID_STATUS_FILTERS.includes(value)) return;
+            this.storagesStatusFilter = value;
+            this.storagesPage = 1;
+            this.persistStoragesView();
         },
         storagesSortValue(s, col) {
             switch (col) {
@@ -2425,6 +2833,7 @@ function apiTranscriptor(config = {}) {
             }
             this.storagesSort = { ...cur };
             this.storagesPage = 1;
+            this.persistStoragesView();
         },
         storagesSortIcon(col) {
             if (this.storagesSort.column !== col) return 'fa-sort';
@@ -2456,6 +2865,12 @@ function apiTranscriptor(config = {}) {
             const filtered = this.filteredStorages();
             const start = (this.storagesPage - 1) * this.storagesPerPage;
             return filtered.slice(start, start + this.storagesPerPage);
+        },
+        // Numero global de fila (1-based) dentro de la lista filtrada/ordenada,
+        // continuo entre paginas. Padding a 2 digitos para lectura rapida.
+        storageRowNumber(index) {
+            const n = (this.storagesPage - 1) * this.storagesPerPage + index + 1;
+            return String(n).padStart(2, '0');
         },
         storagesRangeStart() {
             const total = this.filteredStorages().length;
@@ -2638,6 +3053,21 @@ function apiTranscriptor(config = {}) {
         },
         storageById(id) {
             return this.storages.find(s => s.id === Number(id));
+        },
+        // Badge de "carpetas sin archivos" en la tabla: lookup O(1) sobre el
+        // array de emptyFolders (pocos items, <storages_with_empty). Permite
+        // ver de un vistazo qué storages aparecen en el banner amarillo sin
+        // tener que expandirlo. Sin esto, esos 10 storages se "esconden"
+        // entre las 173 filas y el operador tiene que cruzar IDs a mano.
+        emptyFoldersFor(storageId) {
+            const items = (this.emptyFolders && this.emptyFolders.items) || [];
+            return items.find(it => Number(it.storage_id) === Number(storageId)) || null;
+        },
+        emptyFoldersBadge(storageId) {
+            const ef = this.emptyFoldersFor(storageId);
+            if (!ef) return '';
+            const n = Number(ef.missing_count || 0);
+            return n === 1 ? '1 carpeta sin archivos' : `${n} carpetas sin archivos`;
         },
         // Encender es directo; apagar pide confirmación en un modal de la propia
         // página. NO se usa confirm() nativo: el navegador lo suprime en silencio
@@ -3326,6 +3756,7 @@ function apiTranscriptor(config = {}) {
                         mode: this.batchScope,
                         from: this.dmYToIso(this.batchScopeFrom),
                         to: this.dmYToIso(this.batchScopeTo),
+                        include_done: this.batchIncludeDone,
                     }),
                 });
                 const data = await res.json().catch(() => ({}));
@@ -3385,6 +3816,12 @@ function apiTranscriptor(config = {}) {
             this.batchRunning = true;
             this.batchResult = null;
             this.batchProgress = null;
+            this.batchExpanded = false;
+            // bg-job-indicator-hide-completed: cerrar el modal bloqueante de
+            // configuración/progreso para que la barra inline tome el control.
+            // El operador puede volver a abrir el modal con el botón "Escanear
+            // storages" si necesita reconfigurar otro batch.
+            this.showBatchModal = false;
             const startPolling = (runId) => {
                 this.batchRunId = runId;
                 if (this.batchPollTimer) clearInterval(this.batchPollTimer);
@@ -3402,6 +3839,7 @@ function apiTranscriptor(config = {}) {
                     batch: this.batchSize,
                     generate_alerts: this.batchAlerts,
                     include_failed: this.batchIncludeFailed,
+                    include_done: this.batchIncludeDone,
                     scope: this.batchScope === 'range'
                         ? { mode: 'range', from: this.batchScopeFrom, to: this.batchScopeTo }
                         : (this.batchScope === 'all' ? { mode: 'all' } : undefined),

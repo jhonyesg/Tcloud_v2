@@ -24,9 +24,38 @@ use Symfony\Component\HttpFoundation\Response;
  *  - Si el admin impersona a sí mismo (`as_user === session('user_id')`),
  *    no-op silencioso (no log, no swap, no banner).
  *  - Log único a canal `admin_preview` por request (ok o rejected).
+ *
+ * Contrato de participación en admin preview (`PREVIEW_AWARE_PREFIXES`):
+ *   Lista de prefijos de URL cuyos endpoints participan en admin preview
+ *   cuando `?as_user=X` está presente. Esta constante es la FUENTE ÚNICA
+ *   de verdad usada por:
+ *     1. La colocación de rutas en `routes/web.php` (cada ruta con uno
+ *        de estos prefijos debe vivir dentro del grupo con este middleware).
+ *     2. El patch `apiFetch` en `mis-avisos/index.blade.php`, que
+ *        auto-aplica `?as_user=X` a URLs que coincidan con uno de estos
+ *        prefijos (lee la lista desde `window.__adminPreviewAwarePrefixes`,
+ *        inyectada en `layouts/app.blade.php`).
+ *   Para agregar un endpoint nuevo: añadir el prefijo aquí, mover la
+ *   ruta al grupo correspondiente en `routes/web.php`, y verificar que el
+ *   apiFetch wrapper lo propaga correctamente.
+ *
+ * Spec: `openspec/changes/fix-mis-avisos-admin-preview-viewer-endpoints/specs/admin-preview-aware-endpoints/spec.md`
  */
 class AdminPreviewSwap
 {
+    /**
+     * Prefijos de URL cuyos endpoints honran `?as_user=X` durante el admin preview.
+     *
+     * Cobertura actual:
+     *  - `mis-avisos`: rutas JSON del módulo Mis Avisos (feed, history,
+     *    coverage, keywords, transcriptions).
+     *  - `files`: endpoints del visor unificado de transcripción
+     *    (introducido por `mis-archivos-transcript-viewer`) y de clip.
+     *  - `media`: endpoints de preview de medios consumidos por el visor
+     *    unificado (`<video>` y `<audio>` tags).
+     */
+    public const PREVIEW_AWARE_PREFIXES = ['mis-avisos', 'files', 'media'];
+
     public function handle(Request $request, Closure $next): Response
     {
         $adminUser = session('user');
