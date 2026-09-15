@@ -134,6 +134,7 @@ deleteConfirmFile: null,
         hasMore: false,
         _fetchController: null,
         _fetchMoreController: null,
+        _navGen: 0,
         _prevFolder: null,
         _prevFolderName: null,
         _prevBreadcrumbs: [],
@@ -306,6 +307,7 @@ deleteConfirmFile: null,
             if (!saved) return;
             const state = JSON.parse(saved);
             if (!state.storageId) return;
+            if (state.folderId) this._navGen++;
             this.currentStorage = state.storageId;
             this.currentStorageName = state.storageName;
             const storage = this.availableStorages.find(s => s.id === state.storageId);
@@ -386,6 +388,7 @@ deleteConfirmFile: null,
     },
 
     enterStorage(storageId, storageName) {
+        this._navGen++;
         this.currentStorage = storageId;
         this.currentStorageName = storageName;
         const storage = this.availableStorages.find(s => s.id === storageId);
@@ -417,6 +420,7 @@ deleteConfirmFile: null,
     },
 
     navigateToRoot() {
+        this._navGen++;
         this.currentStorage = null;
         this.currentStorageName = null;
         this.highlightFileId = null;
@@ -445,6 +449,17 @@ deleteConfirmFile: null,
         // guardas de borrado masivo en ese caso. silentSync manda sync=1 a secas.
         if (forceSync) url += '&sync=1&prune=1';
         if (skipBreadcrumbs) url += '&nb=1';
+        const myGen = this._navGen;
+        const capturedFolder = this.currentFolder;
+        const capturedStorage = this.currentStorage;
+        const staleCleanup = () => {
+            this.isNavigating = false;
+            this.navigatingToId = null;
+            this.isLoadingFiles = false;
+            this.showEmptyState = false;
+            if (this._emptyStateTimer) { clearTimeout(this._emptyStateTimer); this._emptyStateTimer = null; }
+        };
+        const isStale = () => this._navGen !== myGen || this.currentFolder !== capturedFolder || this.currentStorage !== capturedStorage;
 
         apiFetch(url, {
             credentials: 'include',
@@ -458,17 +473,17 @@ deleteConfirmFile: null,
                 this.currentFolder = this._prevFolder;
                 this.currentFolderName = this._prevFolderName;
                 this.breadcrumbs = [...this._prevBreadcrumbs];
-                this.isNavigating = false;
-                this.navigatingToId = null;
-                this.isLoadingFiles = false;
-                this.showEmptyState = false;
-                if (this._emptyStateTimer) { clearTimeout(this._emptyStateTimer); this._emptyStateTimer = null; }
+                staleCleanup();
                 this.showToast('No se pudo cargar la carpeta (' + res.status + '). Intenta de nuevo.', 'error');
                 return null;
             }
             return res.json();
         }).then(data => {
             if (data === null) return;
+            if (isStale()) {
+                staleCleanup();
+                return;
+            }
             const serverData = Array.isArray(data?.files) ? data.files : (Array.isArray(data) ? data : []);
             const serverBreadcrumbs = data?.breadcrumbs ?? [];
             this.files = serverData;
@@ -518,6 +533,7 @@ deleteConfirmFile: null,
             this.isLoadingFiles = false;
             this.showEmptyState = false;
             if (this._emptyStateTimer) { clearTimeout(this._emptyStateTimer); this._emptyStateTimer = null; }
+            if (isStale()) return;
             this.showToast('Error de red al navegar. Intenta de nuevo.', 'error');
         });
     },
@@ -532,6 +548,9 @@ deleteConfirmFile: null,
         if (this.currentFolder) url += '&parent_id=' + this.currentFolder;
         if (this.currentStorage) url += '&storage_id=' + this.currentStorage;
         url += '&nb=1';
+        const myGen = this._navGen;
+        const capturedFolder = this.currentFolder;
+        const capturedStorage = this.currentStorage;
         apiFetch(url, {
             credentials: 'include',
             signal: this._fetchMoreController.signal,
@@ -539,6 +558,10 @@ deleteConfirmFile: null,
         }).then(r => r.ok ? r.json() : null)
         .then(data => {
             if (!data) { this.isLoadingMore = false; return; }
+            if (this._navGen !== myGen || this.currentFolder !== capturedFolder || this.currentStorage !== capturedStorage) {
+                this.isLoadingMore = false;
+                return;
+            }
             const newFiles = Array.isArray(data?.files) ? data.files : [];
             this.files = [...this.files, ...newFiles];
             this.currentPage = data?.pagination?.page ?? nextPage;
@@ -620,6 +643,9 @@ deleteConfirmFile: null,
         let url = '/files?page=1&sync=1&nb=1';
         if (this.currentFolder) url += '&parent_id=' + this.currentFolder;
         if (this.currentStorage) url += '&storage_id=' + this.currentStorage;
+        const myGen = this._navGen;
+        const capturedFolder = this.currentFolder;
+        const capturedStorage = this.currentStorage;
         try {
             const res = await apiFetch(url, {
                 credentials: 'include',
@@ -627,6 +653,7 @@ deleteConfirmFile: null,
             });
             if (!res.ok) return;
             const data = await res.json();
+            if (this._navGen !== myGen || this.currentFolder !== capturedFolder || this.currentStorage !== capturedStorage) return;
             const newFiles = Array.isArray(data?.files) ? data.files : [];
             const fingerprint = (files) =>
                 files.map(f => f.id + ':' + f.name + ':' + (f.size ?? 0) + ':' + (f.updated_at ?? '')).join('|');
@@ -641,6 +668,7 @@ deleteConfirmFile: null,
     navigateToFolder(folderId, folderName) {
         if (this.isNavigating || folderId === this.currentFolder) return;
         this.highlightFileId = null;
+        this._navGen++;
         this._prevFolder = this.currentFolder;
         this._prevFolderName = this.currentFolderName;
         this._prevBreadcrumbs = [...this.breadcrumbs];
@@ -662,6 +690,7 @@ deleteConfirmFile: null,
     },
 
     goToStorageRoot() {
+        this._navGen++;
         this.currentFolder = null;
         this.currentFolderName = null;
         this.breadcrumbs = [];
@@ -673,6 +702,7 @@ deleteConfirmFile: null,
 
     navigateToBreadcrumb(breadcrumb, index) {
         if (this.isNavigating) return;
+        this._navGen++;
         this.breadcrumbs = this.breadcrumbs.slice(0, index);
         this.currentFolder = breadcrumb.id;
         this.currentFolderName = breadcrumb.id === null ? null : breadcrumb.name;
