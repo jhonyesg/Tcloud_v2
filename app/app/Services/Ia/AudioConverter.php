@@ -87,6 +87,14 @@ class AudioConverter
 
         $cmd = [
             $ffmpeg, '-y',
+            // Tolerancia a inputs con streams corruptos/embebidos (AAC dentro
+            // de MP3, headers ICE de radios online, etc). Sin estas flags
+            // ffmpeg aborta al primer "Invalid data found when processing
+            // input" y el job se pierde. Con ignore_err + discardcorrupt
+            // ffmpeg salta los paquetes malos y sigue produciendo el WAV
+            // (perdiendo microsegundos pero entregando audio util).
+            '-err_detect', 'ignore_err',
+            '-fflags', '+discardcorrupt',
             '-i', $srcPath,
             '-map', $audioMap,
             '-vn', '-ac', '1', '-ar', '16000',

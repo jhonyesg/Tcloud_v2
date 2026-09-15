@@ -2,10 +2,13 @@
 
 namespace App\Services\Ia;
 
+use App\Jobs\ConvertAndTranscribeJob;
 use App\Models\File;
 use App\Models\StorageProvider;
 use App\Models\Transcription;
+use App\Services\FileScannerService;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -94,6 +97,7 @@ class DiskScannerService
     public function __construct(
         private TranscriptorSettings $settings,
         private \App\Services\FileRegistry $registry,
+        private FileScannerService $fileScanner,
     ) {}
 
     /**
@@ -172,7 +176,7 @@ class DiskScannerService
 
                 $full = $folder . '/' . $name;
                 if (!is_file($full)) continue;
-                if (!preg_match('/\.(mp4|mkv|opus|flac|wav|mp3|aac)$/i', $name)) continue;
+                if (!preg_match('/\.(mp4|mkv|m4a|opus|flac|wav|mp3|aac)$/i', $name)) continue;
 
                 $scanned++;
 
@@ -234,7 +238,7 @@ class DiskScannerService
                         'name' => $c['name'],
                         'path' => $c['path'],
                         'size' => $c['size'],
-                        'mime_type' => 'video/mp4',
+                        'mime_type' => $this->fileScanner->getMimeType($c['name']),
                         'storage_provider_id' => $storage->id,
                         'owner_id' => $ownerId,
                         'parent_id' => $this->resolveParentId($storage, $c['path']),
@@ -369,6 +373,96 @@ class DiskScannerService
     }
 
     /**
+     * Recolecta transcripciones en estado 'done' de un storage y las prepara
+     * para reprocesamiento (transcriptor-rescan-completed): verifica accesibilidad
+     * del archivo en disco y resetea la fila a 'pending' (manteniendo id, file_id,
+     * srt_content y retries++). Si el archivo no es accesible, promueve la fila
+     * a 'dead' con un mensaje claro.
+     *
+     * A diferencia de collectFailedCandidates, este método:
+     *  - No tiene tope de retries (el admin decide cuándo reprocesar).
+     *  - Conserva srt_content como fallback si el job nuevo falla upstream.
+     *  - Limpia el lock ShouldBeUnique (ConvertAndTranscribeJob::uniqueFor=900s)
+     *    para que el dispatch posterior no sea deduplicado por Laravel.
+     *
+     * El filtro de fecha es por finished_at (no created_at): el operador piensa
+     * en "lo que terminó hoy", no en "lo que se creó hoy".
+     *
+     * @param  StorageProvider $storage
+     * @param  string|null $fromIso YYYY-MM-DD (inclusive, filtra finished_at >=)
+     * @param  string|null $toIso YYYY-MM-DD (inclusive, filtra finished_at <=)
+     * @return array{candidates:int, reset_to_pending:int, promoted_to_dead:int, skipped_no_file:int}
+     */
+    public function collectDoneCandidates(StorageProvider $storage, ?string $fromIso = null, ?string $toIso = null): array
+    {
+        $stats = [
+            'candidates' => 0,
+            'reset_to_pending' => 0,
+            'promoted_to_dead' => 0,
+            'skipped_no_file' => 0,
+        ];
+
+        $candidates = Transcription::where('state', Transcription::STATE_DONE)
+            ->whereHas('file', function ($q) use ($storage) {
+                $q->where('storage_provider_id', $storage->id);
+            })
+            ->when($fromIso !== null, fn ($q) => $q->where('finished_at', '>=', $fromIso . ' 00:00:00'))
+            ->when($toIso !== null, fn ($q) => $q->where('finished_at', '<=', $toIso . ' 23:59:59'))
+            ->with('file.storageProvider')
+            ->get();
+
+        foreach ($candidates as $tx) {
+            $stats['candidates']++;
+            $file = $tx->file;
+            if (!$file || !$file->storageProvider) {
+                $tx->update([
+                    'state' => Transcription::STATE_DEAD,
+                    'error_message' => 'Archivo o storage asociado no existe. No se reintentará automáticamente.',
+                    'finished_at' => now(),
+                ]);
+                $stats['skipped_no_file']++;
+                continue;
+            }
+
+            $srcPath = rtrim((string) $file->storageProvider->base_path, '/')
+                     . '/' . ltrim((string) $file->path, '/');
+
+            if (!is_file($srcPath) || !is_readable($srcPath)) {
+                $tx->update([
+                    'state' => Transcription::STATE_DEAD,
+                    'error_message' => "Archivo no accesible en disco ({$srcPath}). No se reintentará automáticamente.",
+                    'finished_at' => now(),
+                ]);
+                Log::info("DiskScanner::collectDoneCandidates tx {$tx->id}: archivo no accesible, promovido a dead");
+                $stats['promoted_to_dead']++;
+                continue;
+            }
+
+            $tx->update([
+                'state' => Transcription::STATE_PENDING,
+                'error_message' => null,
+                'job_id' => null,
+                'node_url' => null,
+                'node_id' => null,
+                'finished_at' => null,
+                'retries' => $tx->retries + 1,
+            ]);
+
+            // transcriptor-rescan-completed (R1): limpiar el lock ShouldBeUnique
+            // para que el dispatch en Fase 2 NO sea deduplicado por Laravel.
+            // El patrón de cache key viene de UniqueLock::getKey() en
+            // Illuminate\Bus: 'laravel_unique_job:{class}:{uniqueId}'.
+            // ConvertAndTranscribeJob no implementa displayName(), por lo que
+            // getKey() usa get_class($job) literal.
+            Cache::lock('laravel_unique_job:' . ConvertAndTranscribeJob::class . ':' . $tx->file_id)->forceRelease();
+
+            $stats['reset_to_pending']++;
+        }
+
+        return $stats;
+    }
+
+    /**
      * Devuelve las rutas absolutas de las carpetas del día para hoy y los N días anteriores.
      */
     private function dayFolders(string $basePath, int $daysBack): array
@@ -491,9 +585,13 @@ class DiskScannerService
     }
 
     /**
-     * Devuelve la lista de primeros segmentos de path (relativos a $storage->base_path)
-     * que son base_path de otros storages con transcription_enabled=true y allow_parent_overlap=false.
-     * El scanner omitirá esos subdirectorios completos para no duplicar.
+     * Devuelve la lista de subpaths completos (relativos a $storage->base_path)
+     * que son base_path de otros storages con transcription_enabled=true y
+     * allow_parent_overlap=false. El scanner omitira SOLO esos subdirectorios
+     * especificos, no el primer segmento completo. Antes (bug 2026-09-15) se
+     * skipeaba el primer segmento completo (ej: "Antioquia/"), lo que dejaba
+     * emisoras hermanas sin reclamar dentro del mismo padre (ej: archivos bajo
+     * "Antioquia/Otra_Emisora_Sin_Storage_Hijo/14092026/" nunca se escaneaban).
      */
     private function computeExcludedSubpaths(StorageProvider $storage): array
     {
@@ -507,7 +605,7 @@ class DiskScannerService
             ->pluck('base_path')
             ->map(function ($otherBase) use ($base) {
                 $relative = ltrim(substr($otherBase, strlen($base)), '/');
-                return explode('/', $relative)[0]; // solo el primer segmento
+                return rtrim($relative, '/');
             })
             ->filter(fn ($seg) => $seg !== '' && $seg !== null)
             ->unique()
@@ -516,16 +614,24 @@ class DiskScannerService
     }
 
     /**
-     * Determina si una carpeta absoluta cae dentro de algún subpath excluido.
+     * Determina si una carpeta absoluta cae dentro de algun subpath excluido.
+     * Ahora compara contra paths completos (no solo primer segmento), asi que
+     * solo se skipea lo que un storage hijo reclama explicitamente.
      */
-    private function isInExcludedPath(string $absoluteFolder, string $basePath, array $excludedFirstSegments): bool
+    private function isInExcludedPath(string $absoluteFolder, string $basePath, array $excludedSubpaths): bool
     {
-        if (empty($excludedFirstSegments)) return false;
+        if (empty($excludedSubpaths)) return false;
 
         $relative = ltrim(substr($absoluteFolder, strlen(rtrim($basePath, '/'))), '/');
-        $firstSegment = explode('/', $relative)[0] ?? '';
 
-        return in_array($firstSegment, $excludedFirstSegments, true);
+        foreach ($excludedSubpaths as $excluded) {
+            if ($excluded === '' || $excluded === null) continue;
+            if ($relative === $excluded || str_starts_with($relative . '/', $excluded . '/')) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
