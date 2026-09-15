@@ -1255,14 +1255,21 @@ function misAvisosPage() {
                         // de la PRIMERA mención que entró (típicamente la
                         // más reciente, dado el orderByDesc del backend).
                         first_id: r.id,
-                        first_matched_at: r.matched_at,
+                        // hotfix mis-avisos-empty-dates-snippet: el backend ya
+                        // devuelve filas AGRUPADAS con `first_*` (cambio
+                        // groupedHitsPage del 2026-09-12). Antes leíamos los
+                        // campos sin prefijo y terminaban undefined, por lo
+                        // que Programa/Detectado/Contexto aparecían como "—"
+                        // / "....". El `??` preserva compatibilidad si en el
+                        // futuro alguien envía filas planas legacy.
+                        first_matched_at: r.first_matched_at ?? r.matched_at,
                         // change 2026-09-10-mis-avisos-program-date-filter:
                         // fecha del programa (recorded_at) por grupo.
-                        first_recorded_at: r.recorded_at,
+                        first_recorded_at: r.first_recorded_at ?? r.recorded_at,
                         first_minute_label: r.minute_label,
                         first_start_seconds: r.start_seconds,
                         first_segment_id: r.segment_id,
-                        first_snippet: r.snippet,
+                        first_snippet: r.first_snippet ?? r.snippet,
                         // change mis-avisos-media-kind-indicator: tipo de medio de
                         // la primera mención (todas comparten mime_type porque
                         // comparten archivo).
