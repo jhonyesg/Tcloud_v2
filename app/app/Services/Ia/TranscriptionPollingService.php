@@ -105,54 +105,8 @@ class TranscriptionPollingService
 
         try {
             $remote = $this->client->getJob($transcription->job_id, $transcription->node_url ?? '');
-            $state = $remote['state'] ?? $remote['status'] ?? null;
 
-            // Nuevo en la API v2: campo `corrected` que distingue entre SRT
-            // sin corregir (0), corregido (1) o no recuperable (-1). Ver
-            // docs §2 "Semántica expandida de corrected". El webhook NO
-            // se re-dispara cuando el corrector termina: el orquestador
-            // DEBE pollear este campo hasta ver ∈ {1, -1}.
-            $remoteCorrected = array_key_exists('corrected', $remote) ? (int) $remote['corrected'] : null;
-
-            if ($state === null) {
-                return $this->settle($transcription, 'la API no devolvio estado', $ageCutoff, $maxAgeHours, $tally);
-            }
-
-            if ($state === Transcription::STATE_DONE) {
-                $this->ingestDone($transcription, $remote, $remoteCorrected);
-                $tally['done']++;
-
-                return 'done';
-            }
-
-            if (in_array($state, [Transcription::STATE_ERROR, Transcription::STATE_DEAD], true)) {
-                $this->processor->markError(
-                    $transcription,
-                    $state,
-                    $remote['error'] ?? ($remote['error_message'] ?? 'upstream error')
-                );
-                $tally['errors']++;
-
-                return 'error';
-            }
-
-            if ($state === 'cancelled') {
-                $this->processor->markError($transcription, Transcription::STATE_ERROR, 'Job cancelado en la API externa');
-                $tally['errors']++;
-
-                return 'error';
-            }
-
-            if ($state === Transcription::STATE_PROCESSING) {
-                if ($transcription->state !== Transcription::STATE_PROCESSING) {
-                    $transcription->update(['state' => Transcription::STATE_PROCESSING]);
-                }
-
-                return $this->settle($transcription, 'sigue en processing upstream', $ageCutoff, $maxAgeHours, $tally);
-            }
-
-            // queued u otro: dejar como está.
-            return $this->settle($transcription, "sigue en '{$state}' upstream", $ageCutoff, $maxAgeHours, $tally);
+            return $this->applyRemoteState($transcription, $remote, $ageCutoff, $maxAgeHours, $tally, 'poll');
         } catch (TranscriptorUpstreamException $e) {
             // Perdida definitiva: el resultado ya no existe upstream y
             // reintentar no lo va a traer. Cerrar la fila para que no siga
@@ -182,6 +136,73 @@ class TranscriptionPollingService
     }
 
     /**
+     * Aplica una respuesta del upstream (obtenida via poll o via webhook) al
+     * estado local de una Transcription. Idempotente: si llega dos veces
+     * con el mismo body, no crea duplicados ni re-genera alertas.
+     *
+     * Refactor del 2026-09-14 (change `transcriptor-api-surface-completeness`):
+     * la lógica antes vivía inline en pollOne(), ahora es reutilizable desde
+     * el TranscriptionWebhookController.
+     *
+     * @param  string $source 'poll'|'webhook' — se loguea para diagnóstico
+     */
+    public function applyRemoteState(
+        Transcription $transcription,
+        array $remote,
+        ?Carbon $ageCutoff,
+        ?int $maxAgeHours,
+        array &$tally,
+        string $source = 'poll',
+    ): string {
+        $maxAgeHours ??= $this->settings->int('poll_max_age_hours');
+        $ageCutoff ??= now()->subHours($maxAgeHours);
+        $tally = array_merge(self::emptyTally(), $tally);
+
+        $state = $remote['state'] ?? $remote['status'] ?? null;
+        $remoteCorrected = array_key_exists('corrected', $remote) ? (int) $remote['corrected'] : null;
+
+        if ($state === null) {
+            return $this->settle($transcription, 'la API no devolvio estado', $ageCutoff, $maxAgeHours, $tally);
+        }
+
+        if ($state === Transcription::STATE_DONE) {
+            $this->ingestDone($transcription, $remote, $remoteCorrected);
+            $tally['done']++;
+
+            return 'done';
+        }
+
+        if (in_array($state, [Transcription::STATE_ERROR, Transcription::STATE_DEAD], true)) {
+            $this->processor->markError(
+                $transcription,
+                $state,
+                $remote['error'] ?? ($remote['error_message'] ?? 'upstream error')
+            );
+            $tally['errors']++;
+
+            return 'error';
+        }
+
+        if ($state === 'cancelled') {
+            $this->processor->markError($transcription, Transcription::STATE_ERROR, 'Job cancelado en la API externa');
+            $tally['errors']++;
+
+            return 'error';
+        }
+
+        if ($state === Transcription::STATE_PROCESSING) {
+            if ($transcription->state !== Transcription::STATE_PROCESSING) {
+                $transcription->update(['state' => Transcription::STATE_PROCESSING]);
+            }
+
+            return $this->settle($transcription, 'sigue en processing upstream', $ageCutoff, $maxAgeHours, $tally);
+        }
+
+        // queued u otro: dejar como está.
+        return $this->settle($transcription, "sigue en '{$state}' upstream", $ageCutoff, $maxAgeHours, $tally);
+    }
+
+    /**
      * Descarga el SRT de un job terminado y lo persiste.
      */
     private function ingestDone(Transcription $transcription, array $remote, ?int $remoteCorrected): void
@@ -193,8 +214,22 @@ class TranscriptionPollingService
         // processDoneWithSrt aborta si ya está done).
         if ($prevCorrected === null || ($remoteCorrected === Transcription::CORRECTED_PENDING && $fresh->state !== Transcription::STATE_DONE)) {
             $srtUrl = $remote['srt_url'] ?? null;
+            $srt = null;
             if ($srtUrl) {
                 $srt = $this->client->getSrtFromUrl($srtUrl, $transcription->node_url ?? '');
+            }
+
+            // Deteccion de SRT truncado: la API upstream a veces marca como
+            // done transcripciones que solo procesaron una fraccion del
+            // audio (caso real: los40 streaming = 48s de 21 min). Validamos
+            // chars SRT vs duracion_audio_reportada y reencolamos si el
+            // resultado es demasiado corto.
+            if ($srt !== null && $this->isSrtTruncated($fresh, $srt, $remote)) {
+                $this->requeueTruncatedSrt($fresh, $srt, $remote);
+                return;
+            }
+
+            if ($srt !== null) {
                 $this->processor->processDoneWithSrt($fresh, $srt);
             } else {
                 $this->processor->processDone($fresh);
@@ -222,6 +257,107 @@ class TranscriptionPollingService
                 Log::warning("poll: re-proceso corrected=1 falló para tx={$fresh->id}: {$e->getMessage()}");
             }
         }
+    }
+
+    /**
+     * Deteccion de SRT truncado: compara el ULTIMO timestamp del SRT contra
+     * la duracion del audio reportada por la API. Caso real: la API upstream
+     * marca como done transcripciones que solo procesaron una fraccion del
+     * audio (los40 streaming = 48s de 21 min, el SRT termina con timestamps
+     * alrededor del segundo 48).
+     *
+     * Settings:
+     *   - min_srt_completion_pct (default 90): % minimo del audio que debe
+     *     cubrir el SRT para considerarlo completo. Con 90%, un audio de 21 min
+     *     cuyo SRT termina antes de 18.9 min se considera truncado.
+     */
+    private function isSrtTruncated(Transcription $transcription, string $srt, array $remote): bool
+    {
+        $audioSeconds = (float) ($remote['audio_seconds'] ?? 0);
+        if ($audioSeconds <= 60) {
+            return false;
+        }
+        $lastSrtSeconds = $this->extractLastSrtTimestamp($srt);
+        if ($lastSrtSeconds === null) {
+            return false;
+        }
+        $ratio = $lastSrtSeconds / $audioSeconds;
+        $minRatio = $this->settings->int('min_srt_completion_pct') / 100.0;
+
+        return $ratio < $minRatio;
+    }
+
+    /**
+     * Extrae el ultimo timestamp (en segundos) del SRT parseando los headers
+     * "--> HH:MM:SS,mmm" del ultimo cue. Devuelve null si el SRT no tiene
+     * formato parseable.
+     */
+    private function extractLastSrtTimestamp(string $srt): ?float
+    {
+        if (!preg_match_all('/(\d{2}):(\d{2}):(\d{2})[,.](\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})[,.](\d{3})/', $srt, $matches, PREG_SET_ORDER)) {
+            return null;
+        }
+        if (empty($matches)) {
+            return null;
+        }
+        $last = end($matches);
+        $h = (int) $last[5];
+        $m = (int) $last[6];
+        $s = (int) $last[7];
+        $ms = (int) $last[8];
+        return $h * 3600 + $m * 60 + $s + $ms / 1000.0;
+    }
+
+    /**
+     * En lugar de marcar como done, reencolar el job para retry. Si supera
+     * el max de reintentos, se promueve a dead con detalle del problema.
+     */
+    private function requeueTruncatedSrt(Transcription $transcription, string $srt, array $remote): void
+    {
+        $audioSeconds = (float) ($remote['audio_seconds'] ?? 0);
+        $lastSrtSeconds = $this->extractLastSrtTimestamp($srt) ?? 0;
+        $ratio = $audioSeconds > 0 ? round(($lastSrtSeconds / $audioSeconds) * 100, 1) : 0;
+
+        $retryCount = (int) ($transcription->srt_truncated_retries ?? 0) + 1;
+        $maxRetries = $this->settings->int('srt_retry_max');
+
+        if ($retryCount > $maxRetries) {
+            $transcription->update([
+                'state' => Transcription::STATE_DEAD,
+                'error_message' => "SRT truncado agotado tras {$maxRetries} reintentos: ultimo timestamp a {$lastSrtSeconds}s de {$audioSeconds}s audio ({$ratio}% completado).",
+                'finished_at' => now(),
+            ]);
+            Log::warning('TranscriptionPollingService: SRT truncado promueve a dead tras agotar reintentos', [
+                'tx_id' => $transcription->id,
+                'job_id' => $transcription->job_id,
+                'last_srt_seconds' => $lastSrtSeconds,
+                'audio_seconds' => $audioSeconds,
+                'completion_pct' => $ratio,
+                'retries' => $retryCount,
+            ]);
+            return;
+        }
+
+        $transcription->update([
+            'state' => Transcription::STATE_PENDING,
+            'job_id' => null,
+            'error_message' => "SRT truncado: ultimo timestamp a {$lastSrtSeconds}s de {$audioSeconds}s audio ({$ratio}% completado). Reintento {$retryCount}/{$maxRetries}.",
+            'srt_content' => null,
+            'dispatched_at' => null,
+            'started_at' => null,
+            'submission_committed_at' => null,
+            'last_polled_at' => null,
+            'srt_truncated_retries' => $retryCount,
+        ]);
+
+        Log::warning('TranscriptionPollingService: SRT truncado reencolado para retry', [
+            'tx_id' => $transcription->id,
+            'job_id' => $transcription->job_id,
+            'last_srt_seconds' => $lastSrtSeconds,
+            'audio_seconds' => $audioSeconds,
+            'completion_pct' => $ratio,
+            'retries' => $retryCount,
+        ]);
     }
 
     /**

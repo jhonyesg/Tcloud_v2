@@ -95,12 +95,21 @@ return [
     // Cada cuantos minutos encola el tick. El scheduler corre cada minuto y el
     // comando se autolimita contra un timestamp en cache, asi que esto es
     // ajustable en caliente sin tocar routes/console.php.
-    'tick_interval_minutes' => (int) env('TRANSCRIPTOR_TICK_INTERVAL_MINUTES', 2),
+    'tick_interval_minutes' => (int) env('TRANSCRIPTOR_TICK_INTERVAL_MINUTES', 3),
 
     // Separacion entre encolados dentro de un mismo lote (ms). 0 = todos a la vez.
     // Con >0 los jobs entran a Redis escalonados en vez de en el mismo instante:
     // es la diferencia entre 145 arranques simultaneos de ffmpeg y 145 repartidos.
-    'dispatch_stagger_ms' => (int) env('TRANSCRIPTOR_DISPATCH_STAGGER_MS', 0),
+    'dispatch_stagger_ms' => (int) env('TRANSCRIPTOR_DISPATCH_STAGGER_MS', 250),
+
+    // Tamano del chunk para el ramp-up progresivo. El batch se divide en
+    // chunks de este tamano y se reparten con dispatch_stagger_ms entre cada uno.
+    'stagger_chunk_size' => (int) env('TRANSCRIPTOR_STAGGER_CHUNK_SIZE', 5),
+
+    // Ratio de batch por worker remoto. max_batch adaptativo =
+    // ceil(remote_capacity * batch_per_worker_ratio). Con 3 workers y 1.5
+    // el techo efectivo es 5 en lugar de 200.
+    'batch_per_worker_ratio' => (float) env('TRANSCRIPTOR_BATCH_PER_WORKER_RATIO', 1.5),
 
     // Maximo de ffmpeg+POST SIMULTANEOS, independiente del numero de workers.
     // 0 = desactivado. Con 11 workers e inflight_max=4, los sobrantes esperan en
@@ -111,6 +120,15 @@ return [
     // === Confiabilidad ===
     // Cuantos pending atascados reenvia poll-results por ciclo (era 50 hardcodeado).
     'stale_resend_limit' => (int) env('TRANSCRIPTOR_STALE_RESEND_LIMIT', 50),
+
+    // Alcance del reenvio automatico de atascados en poll-results.
+    // current_day (default): solo re-envia pendientes con created_at >= hoy,
+    //   mismo criterio que TranscriptionTickCommand. Los archivos antiguos
+    //   solo llegan por envio manual (rango explicito, historico completo
+    //   o bulk dispatch desde la UI).
+    // unbounded: re-envia cualquier pending atascado. Reservado para rescate
+    //   manual controlado; NUNCA debe quedar activo en el cron automatico.
+    'poll_scope' => env('TRANSCRIPTOR_POLL_SCOPE', 'current_day'),
 
     // Cuantos jobs queued/processing consulta el polling por ciclo. Estaba
     // hardcodeado en 100, por debajo del target de cola 140: el poll no alcanzaba
@@ -218,15 +236,61 @@ return [
     // nodo ASR sin perder relevancia operativa.
     'regulator_remote_cache_seconds' => (int) env('TRANSCRIPTOR_REGULATOR_REMOTE_CACHE_SECONDS', 15),
 
-    // Timeout estricto para /api/stats. Si la API no responde en este plazo
+    // Timeout estricto para /api/info. Si la API no responde en este plazo
     // el regulador considera la senal como "unknown" y NO dispara freno por
     // GPU (fail-open conservador). 800ms es compatible con una API bajo carga
     // pero descarta conexiones colgadas.
     'regulator_remote_timeout_ms' => (int) env('TRANSCRIPTOR_REGULATOR_REMOTE_TIMEOUT_MS', 800),
 
+    // Path del endpoint de telemetria remota. La API upstream expone
+    // /api/metrics/overview (publicado 2026-09-14, plano, sin auth, con
+    // node.workers, gpu.util_pct, ramdisk.pct, queue.by_state_corrected).
+    // /api/info es alternativo mas detallado pero requiere Bearer token.
+    'regulator_remote_info_path' => env('TRANSCRIPTOR_REGULATOR_REMOTE_INFO_PATH', '/api/metrics/overview'),
+
     // Umbral (0-100) de ocupacion de la GPU remota a partir del cual el
     // regulador dispara `reason=remote_gpu_saturated`.
     'regulator_remote_saturation_pct' => (int) env('TRANSCRIPTOR_REGULATOR_REMOTE_SATURATION_PCT', 80),
+
+    // Umbral (0-100) de uso del ramdisk remoto a partir del cual el regulador
+    // dispara `reason=remote_ramdisk_pressure`. La API upstream
+    // (/api/metrics/overview) reporta ramdisk.pct; cuando supera este umbral
+    // el tick frena para no empeorar la presion de espacio.
+    'remote_ramdisk_pressure_pct' => (int) env('TRANSCRIPTOR_REMOTE_RAMDISK_PRESSURE_PCT', 85),
+
+    // Umbral (0-100) de uso de RAM host remoto a partir del cual el regulador
+    // dispara `reason=remote_ram_pressure`. RAM alta mata el contenedor antes
+    // que el disco se llene; es la senal de OOM inminente.
+    'remote_ram_pressure_pct' => (int) env('TRANSCRIPTOR_REMOTE_RAM_PRESSURE_PCT', 90),
+
+    // Estrategia target-cola-remota: el regulador mantiene la cola del API
+    // upstream entre [floor_remote_queue, target_remote_queue]. Bajo el piso,
+    // envia un pulso completo (pulse_batch_size). Sobre el techo, frena.
+    // Entre los dos, el batch baja linealmente para drenar sin saturar.
+    'target_remote_queue'  => (int) env('TRANSCRIPTOR_TARGET_REMOTE_QUEUE', 180),
+    'floor_remote_queue'   => (int) env('TRANSCRIPTOR_FLOOR_REMOTE_QUEUE', 30),
+    'pulse_batch_size'     => (int) env('TRANSCRIPTOR_PULSE_BATCH_SIZE', 50),
+
+    // Edad (segundos) a partir de la cual un job en `queued` se cuenta como
+    // stuck y reduce el batch del siguiente tick. Suele correlacionar con
+    // "la API upstream esta congestionada".
+    'remote_wait_warn_seconds' => (int) env('TRANSCRIPTOR_REMOTE_WAIT_WARN_SECONDS', 60),
+
+    // Porcentaje de reduccion del batch por cada job stuck detectado. Maximo
+    // acumulado 80%. Con 2 stuck y 20% el batch baja 40%.
+    'stuck_penalty_pct' => (int) env('TRANSCRIPTOR_STUCK_PENALTY_PCT', 20),
+
+    // Minimo porcentaje del audio que debe cubrir el SRT para considerarlo
+    // completo. Caso real: la API upstream marca como done transcripciones
+    // que solo procesaron ~48 segundos de 21 min de audio. Con 90% el
+    // orquestador detecta cualquier SRT que termine antes del 90% del
+    // audio y lo reencola. Threshold conservador: el ultimo timestamp del
+    // SRT puede quedar 5-10% corto por pausas naturales del locutor.
+    'min_srt_completion_pct' => (int) env('TRANSCRIPTOR_MIN_SRT_COMPLETION_PCT', 90),
+
+    // Maximo de reintentos para SRT truncado antes de marcar dead. Evita
+    // loops infinitos si la API tiene un bug permanente.
+    'srt_retry_max' => (int) env('TRANSCRIPTOR_SRT_RETRY_MAX', 3),
 
     // Umbral (segundos) para que el panel de diagnostico pinte en ambar la
     // tarjeta de la etapa cuyo p95 lo supere. Default 300s = 5min, alineado

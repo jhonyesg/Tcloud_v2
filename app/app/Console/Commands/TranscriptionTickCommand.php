@@ -7,6 +7,8 @@ use App\Models\StorageProvider;
 use App\Models\Transcription;
 use App\Services\Ia\TranscriptorApiClient;
 use App\Services\Ia\TranscriptorSettings;
+use App\Services\Ia\UpstreamCircuitBreaker;
+use App\Support\TimeFormat;
 use Carbon\CarbonImmutable;
 use Illuminate\Console\Command;
 use Illuminate\Contracts\Console\Kernel as ConsoleKernel;
@@ -125,7 +127,7 @@ class TranscriptionTickCommand extends Command
 
             $msg = sprintf(
                 "[tick %s] SCAN: ok; DISPATCH: skip (%s, current=%d, target=%d)",
-                now()->format('Y-m-d H:i:s'),
+                TimeFormat::bogota(now(), 'Y-m-d H:i:s'),
                 $decision['reason'],
                 $decision['values']['redis_queue_depth'] ?? -1,
                 $settings->int('target_redis_queue'),
@@ -168,7 +170,7 @@ class TranscriptionTickCommand extends Command
 
             $msg = sprintf(
                 "[tick %s] SCAN: ok; DISPATCH: 0 (%s; current=%d, target=%d, batch_computed=%d, storages_habilitados=%d)",
-                now()->format('Y-m-d H:i:s'),
+                TimeFormat::bogota(now(), 'Y-m-d H:i:s'),
                 $storagesHabilitados === 0
                     ? 'NINGUN storage con transcripcion habilitada'
                     : 'no hay pending del dia actual',
@@ -202,7 +204,7 @@ class TranscriptionTickCommand extends Command
         if ($this->dryRun) {
             $msg = sprintf(
                 "[tick DRY-RUN %s] SCAN: ok; DISPATCH: encolaria %d jobs de %d pendientes (current=%d, target=%d, batch_computed=%d)",
-                now()->format('Y-m-d H:i:s'),
+                TimeFormat::bogota(now(), 'Y-m-d H:i:s'),
                 min(count($pendientes), $batch),
                 $pendientes->count(),
                 $current,
@@ -221,47 +223,52 @@ class TranscriptionTickCommand extends Command
             return Command::SUCCESS;
         }
 
-        // Goteo: con stagger > 0 los jobs entran a Redis escalonados en vez de
-        // todos en el mismo instante. Es la diferencia entre 145 arranques
-        // simultaneos de ffmpeg y 145 repartidos a lo largo del intervalo.
-        $staggerMs = $settings->int('dispatch_stagger_ms');
+        // Ramp-up progresivo: divide el batch en chunks y reparte con stagger.
+        // Antes el loop encolaba todos los jobs del lote en el mismo instante;
+        // ahora cada chunk se procesa con dispatch_stagger_ms entre ellos para
+        // no arrancar N ffmpeg simultaneos.
+        $pendientesArray = $pendientes->all();
+        $pendientesKeys = array_keys($pendientesArray);
+        $idsToDispatch = array_slice($pendientesKeys, 0, $batch);
 
         $dispatched = 0;
         $errores = 0;
-        $stopAt = $batch;
-        foreach ($pendientes as $txId => $fileId) {
-            if ($dispatched >= $stopAt) break;
-            try {
-                // Marcamos `dispatched_at` ANTES del dispatch con un UPDATE crudo
-                // para minimizar round-trips y cubrir el caso del worker que
-                // muere justo despues del LPUSH: la siguiente vez que otro
-                // worker tome el job, esta marca ya refleja el encolado real.
-                DB::table('transcriptions')
-                    ->where('id', $txId)
-                    ->whereNull('dispatched_at')
-                    ->update(['dispatched_at' => now()]);
+        $chunksProcessed = 0;
+        foreach ($this->applyStagger($idsToDispatch, $settings) as $chunk) {
+            $chunksProcessed++;
+            foreach ($chunk as $txId) {
+                if (!isset($pendientesArray[$txId])) continue;
+                $fileId = $pendientesArray[$txId];
+                try {
+                    DB::table('transcriptions')
+                        ->where('id', $txId)
+                        ->whereNull('dispatched_at')
+                        ->update(['dispatched_at' => now()]);
 
-                ConvertAndTranscribeJob::dispatch($fileId, true, $staggerMs > 0 ? $dispatched * $staggerMs : 0);
-                $dispatched++;
-            } catch (\Throwable $e) {
-                $errores++;
-                Log::error("TranscriptionTick: error encolando tx={$txId} file={$fileId}: " . $e->getMessage());
+                    ConvertAndTranscribeJob::dispatch($fileId, true);
+                    $dispatched++;
+                } catch (\Throwable $e) {
+                    $errores++;
+                    Log::error("TranscriptionTick: error encolando tx={$txId} file={$fileId}: " . $e->getMessage());
+                }
             }
         }
 
         $msg = sprintf(
-            "[tick %s] SCAN: ok; DISPATCH: encolados=%d errores=%d (current_redis=%d, target=%d, batch_computed=%d, stagger_ms=%d)",
-            now()->format('Y-m-d H:i:s'),
+            "[tick %s] SCAN: ok; DISPATCH: encolados=%d errores=%d (current_redis=%d, target=%d, batch_computed=%d, chunks=%d, stagger_ms=%d)",
+            TimeFormat::bogota(now(), 'Y-m-d H:i:s'),
             $dispatched,
             $errores,
             $current,
             $settings->int('target_redis_queue'),
             $batch,
-            $staggerMs,
+            $chunksProcessed,
+            $settings->int('dispatch_stagger_ms'),
         );
         $this->line($msg);
         Log::info('TranscriptionTick: dispatch', [
-            'stagger_ms' => $staggerMs,
+            'stagger_ms' => $settings->int('dispatch_stagger_ms'),
+            'chunks' => $chunksProcessed,
             'dispatched' => $dispatched,
             'errores' => $errores,
             'current_redis_before' => $current,
@@ -301,6 +308,12 @@ class TranscriptionTickCommand extends Command
             'redis_target' => $target,
         ];
 
+        // upstream_circuit: Cualquier modo puede frenar si el break está abierto.
+        $circuit = app(UpstreamCircuitBreaker::class);
+        $circuitOpen = $circuit->isOpen();
+        $values['upstream_circuit_open'] = $circuitOpen;
+        $values['upstream_circuit'] = $circuit->summary();
+
         // shm_free_bytes: lo evalua cualquier modo (afecta a todos).
         $shmFree = @disk_free_space('/dev/shm');
         $shmFreeBytes = is_int($shmFree) ? $shmFree : null;
@@ -309,20 +322,27 @@ class TranscriptionTickCommand extends Command
         }
         $minShm = $settings->int('min_shm_free_bytes');
 
-        // remote_gpu_usage: solo en remote_aware y hybrid. Cacheado con
-        // Cache::remember para no castigar al nodo ASR.
+        // remote_ram_pressure y remote_ramdisk_pressure: solo en remote_aware
+        // y hybrid. Cacheado con Cache::remember para no castigar al nodo ASR.
+        // gpu.util_pct NO se evalua como freno: 100% es normal cuando hay
+        // trabajo pendiente; la senal real de salud es RAM y ramdisk.
         $remoteStats = null;
+        $remoteInfo = null;
         if (in_array($mode, ['remote_aware', 'hybrid'], true)) {
             $cacheKey = 'transcriptor:remote_stats';
             $cacheTtl = max(1, $settings->int('regulator_remote_cache_seconds'));
-            $remoteStats = Cache::remember($cacheKey, $cacheTtl, function () use ($client, $settings) {
-                $stats = $client->getRemoteStats();
-                if ($stats === null) {
-                    Log::info('TranscriptionTick: remote_stats no disponible, fail-open');
-                }
-                return $stats;
+            $remoteInfo = Cache::remember($cacheKey . ':info', $cacheTtl, function () use ($client) {
+                return $client->getRemoteInfo();
             });
-            $values['remote_gpu_usage'] = $remoteStats['usage_pct'] ?? null;
+            $remoteStats = Cache::remember($cacheKey, $cacheTtl, function () use ($client) {
+                return $client->getRemoteStats();
+            });
+            $values['remote_capacity'] = $remoteInfo['workers'] ?? null;
+            $values['remote_ram_pct'] = $remoteInfo['ram_pct'] ?? null;
+            $values['remote_ramdisk_pct'] = $remoteInfo['ramdisk_pct'] ?? null;
+            $values['remote_queue_queued'] = $remoteInfo['queue_queued'] ?? null;
+            $values['remote_gpu_vram_pct'] = $remoteInfo['gpu_vram_pct'] ?? null;
+            $values['remote_gpu_util_pct_observability'] = $remoteInfo['gpu_util_pct'] ?? null;
         }
 
         // inflight_active: solo en hybrid y solo si inflight_max > 0.
@@ -335,21 +355,32 @@ class TranscriptionTickCommand extends Command
         }
 
         // Reglas de freno (orden de prioridad):
-        //   1. redis_queue_depth >= target  → queue_at_target
-        //   2. remote_gpu_usage >= umbral   → remote_gpu_saturated
-        //   3. shm_free_bytes < min         → shm_low
-        //   4. inflight_active >= inflight_max → inflight_full
-        // local_only: solo evalua 1 y 3 (con la formula clasica).
-        // remote_aware: evalua 2 antes que 1.
-        // hybrid: evalua las cuatro en orden.
+        //   1. upstream_circuit_open        → upstream_circuit_open
+        //   2. remote_ram_pressure          → remote_ram_pressure
+        //   3. remote_ramdisk_pressure      → remote_ramdisk_pressure
+        //   4. remote_queue_full            → remote_queue_full (NUEVO)
+        //   5. redis_queue_depth <= 0       → queue_at_target
+        //   6. shm_free_bytes               → shm_low
+        //   7. inflight_active              → inflight_full
+        //
+        // NOTA: gpu.util_pct NO se evalua como freno. GPU al 100% es
+        // senal de que esta haciendo el trabajo que le mandamos (es bueno),
+        // no de que esta saturada. Los frenos reales son RAM (mata el
+        // contenedor), ramdisk (llena /mnt/ramdisk) y cola remota (ya tiene
+        // trabajo pendiente).
         $saturationPct = $settings->int('regulator_remote_saturation_pct');
+        $ramdiskPressurePct = $settings->int('remote_ramdisk_pressure_pct');
+        $ramPressurePct = $settings->int('remote_ram_pressure_pct');
         $skipped = false;
         $reason = 'none';
 
         $signalsEvaluated = ['redis_queue_depth'];
         if (in_array($mode, ['remote_aware', 'hybrid'], true)) {
-            $signalsEvaluated[] = 'remote_gpu_usage';
+            $signalsEvaluated[] = 'remote_ram_pressure';
+            $signalsEvaluated[] = 'remote_ramdisk_pressure';
+            $signalsEvaluated[] = 'remote_queue_full';
         }
+        $signalsEvaluated[] = 'upstream_circuit';
         if ($mode === 'hybrid') {
             $signalsEvaluated[] = 'shm_free_bytes';
             if ($inflightMax > 0) {
@@ -359,16 +390,28 @@ class TranscriptionTickCommand extends Command
             $signalsEvaluated[] = 'shm_free_bytes';
         }
 
-        $checkRedis = function () use ($current, $target, $runway, $settings) {
-            // Formula clasica: deficit = target - current + runway.
+        $checkCircuit = function () use ($circuitOpen) {
+            return $circuitOpen;
+        };
+
+        $checkRedis = function () use ($current, $target, $runway) {
             return $target - $current + $runway;
         };
 
-        $checkRemote = function () use ($remoteStats, $saturationPct) {
-            if ($remoteStats === null) {
-                return false;
-            }
-            return ($remoteStats['usage_pct'] ?? 0) >= $saturationPct;
+        $checkRamdisk = function () use ($remoteInfo, $ramdiskPressurePct) {
+            if ($remoteInfo === null) return false;
+            return ($remoteInfo['ramdisk_pct'] ?? 0) >= $ramdiskPressurePct;
+        };
+
+        $checkRam = function () use ($remoteInfo, $ramPressurePct) {
+            if ($remoteInfo === null) return false;
+            return ($remoteInfo['ram_pct'] ?? 0) >= $ramPressurePct;
+        };
+
+        $checkRemoteQueueFull = function () use ($remoteInfo, $settings) {
+            if ($remoteInfo === null) return false;
+            $targetQ = $settings->int('target_remote_queue');
+            return ($remoteInfo['queue_queued'] ?? 0) >= $targetQ;
         };
 
         $checkShm = function () use ($shmFreeBytes, $minShm) {
@@ -381,15 +424,23 @@ class TranscriptionTickCommand extends Command
 
         switch ($mode) {
             case 'local_only':
-                if ($checkShm()) {
+                if ($checkCircuit()) {
+                    $skipped = true; $reason = 'upstream_circuit_open';
+                } elseif ($checkShm()) {
                     $skipped = true; $reason = 'shm_low';
                 } elseif ($checkRedis() <= 0) {
                     $skipped = true; $reason = 'queue_at_target';
                 }
                 break;
             case 'remote_aware':
-                if ($checkRemote()) {
-                    $skipped = true; $reason = 'remote_gpu_saturated';
+                if ($checkCircuit()) {
+                    $skipped = true; $reason = 'upstream_circuit_open';
+                } elseif ($checkRam()) {
+                    $skipped = true; $reason = 'remote_ram_pressure';
+                } elseif ($checkRamdisk()) {
+                    $skipped = true; $reason = 'remote_ramdisk_pressure';
+                } elseif ($checkRemoteQueueFull()) {
+                    $skipped = true; $reason = 'remote_queue_full';
                 } elseif ($checkShm()) {
                     $skipped = true; $reason = 'shm_low';
                 } elseif ($checkRedis() <= 0) {
@@ -397,14 +448,18 @@ class TranscriptionTickCommand extends Command
                 }
                 break;
             case 'hybrid':
-                if ($checkRedis() <= 0) { $skipped = true; $reason = 'queue_at_target'; }
-                elseif ($checkRemote()) { $skipped = true; $reason = 'remote_gpu_saturated'; }
+                if ($checkCircuit()) { $skipped = true; $reason = 'upstream_circuit_open'; }
+                elseif ($checkRam()) { $skipped = true; $reason = 'remote_ram_pressure'; }
+                elseif ($checkRamdisk()) { $skipped = true; $reason = 'remote_ramdisk_pressure'; }
+                elseif ($checkRemoteQueueFull()) { $skipped = true; $reason = 'remote_queue_full'; }
+                elseif ($checkRedis() <= 0) { $skipped = true; $reason = 'queue_at_target'; }
                 elseif ($checkShm()) { $skipped = true; $reason = 'shm_low'; }
                 elseif ($checkInflight()) { $skipped = true; $reason = 'inflight_full'; }
                 break;
             default:
-                // Modo desconocido: comportamiento conservador = local_only.
-                if ($checkShm()) {
+                if ($checkCircuit()) {
+                    $skipped = true; $reason = 'upstream_circuit_open';
+                } elseif ($checkShm()) {
                     $skipped = true; $reason = 'shm_low';
                 } elseif ($checkRedis() <= 0) {
                     $skipped = true; $reason = 'queue_at_target';
@@ -423,7 +478,8 @@ class TranscriptionTickCommand extends Command
             ];
         }
 
-        $batch = $settings->computeDispatchBatch($current);
+        $baseBatch = $settings->computeDispatchBatch($current);
+        $batch = $this->computeEffectiveBatch($settings, $baseBatch, $current, $remoteInfo);
 
         return [
             'decision' => 'dispatched',
@@ -432,7 +488,87 @@ class TranscriptionTickCommand extends Command
             'values' => $values,
             'deficit' => $deficit,
             'batch_computed' => $batch,
+            'remote_info' => $remoteInfo,
         ];
+    }
+
+    /**
+     * Batch efectivo con estrategia target-cola-remota.
+     *
+     * Idea: la API upstream expone queue.by_state_corrected["queued/0"] que
+     * es la mejor senal real de carga. Mantenemos esa cola entre
+     * [floor_remote_queue, target_remote_queue]:
+     *
+     *   cola <= floor        -> pulso completo (pulse_batch_size)
+     *   cola >= target       -> 0 (frenar)
+     *   cola en (floor, target) -> ramp lineal entre 1 y pulse_batch_size
+     *
+     * Despues aplicamos stuck_penalty para reducir si hay zombies, y
+     * cortamos por el max_static del setting.
+     */
+    private function computeEffectiveBatch(TranscriptorSettings $settings, int $baseBatch, int $current, ?array $remoteInfo): int
+    {
+        $maxStatic = $settings->int('max_batch');
+        $minBatch = $settings->int('min_batch');
+
+        $targetQ = $settings->int('target_remote_queue');
+        $floorQ  = $settings->int('floor_remote_queue');
+        $pulse   = $settings->int('pulse_batch_size');
+
+        $remoteQueue = $remoteInfo['queue_queued'] ?? null;
+
+        if ($remoteInfo === null || $remoteQueue === null) {
+            $candidate = $baseBatch;
+        } elseif ($remoteQueue >= $targetQ) {
+            $candidate = 0;
+        } elseif ($remoteQueue <= $floorQ) {
+            $candidate = $pulse;
+        } else {
+            $span = max(1, $targetQ - $floorQ);
+            $headroom = $targetQ - $remoteQueue;
+            $candidate = (int) max(1, round(($headroom / $span) * $pulse));
+        }
+
+        $stuckCount = Transcription::where('state', Transcription::STATE_QUEUED)
+            ->where('started_at', '<', now()->subSeconds($settings->int('remote_wait_warn_seconds')))
+            ->count();
+        $stuckPenaltyPct = min(80, $stuckCount * $settings->int('stuck_penalty_pct'));
+        $stuckMultiplier = (100 - $stuckPenaltyPct) / 100.0;
+        $candidate = (int) floor($candidate * $stuckMultiplier);
+
+        if ($candidate === 0) {
+            return 0;
+        }
+
+        $effective = min($candidate, $baseBatch, $maxStatic);
+        $effective = max($minBatch, $effective);
+
+        return max(0, $effective);
+    }
+
+    /**
+     * Divide el batch en chunks de `stagger_chunk_size` y aplica
+     * `dispatch_stagger_ms` entre cada chunk. Devuelve un generator que
+     * produce arrays de IDs listos para encolar.
+     *
+     * Si stagger_ms == 0 devuelve todos los IDs de una sola vez (sin pausa).
+     */
+    private function applyStagger(array $ids, TranscriptorSettings $settings): \Generator
+    {
+        if (empty($ids)) {
+            return;
+        }
+
+        $chunkSize = max(1, $settings->int('stagger_chunk_size'));
+        $staggerMs = max(0, $settings->int('dispatch_stagger_ms'));
+        $chunks = array_chunk($ids, $chunkSize);
+
+        foreach ($chunks as $i => $chunk) {
+            if ($i > 0 && $staggerMs > 0) {
+                usleep($staggerMs * 1000);
+            }
+            yield $chunk;
+        }
     }
 
     /**
@@ -489,7 +625,7 @@ class TranscriptionTickCommand extends Command
         }
         try {
             $payload = array_merge(
-                ['fired_at' => now()->toIso8601String(), 'regulator_mode' => app(TranscriptorSettings::class)->str('regulator_mode')],
+                ['fired_at' => TimeFormat::utc(now(), 'Y-m-d\TH:i:s'), 'regulator_mode' => app(TranscriptorSettings::class)->str('regulator_mode'), 'now_local' => TimeFormat::bogota(now(), 'Y-m-d H:i:s')],
                 $decision,
             );
             Cache::put('transcriptor:tick:last_decision', $payload, now()->addHour());
@@ -518,7 +654,13 @@ class TranscriptionTickCommand extends Command
         try {
             $last = Cache::get(self::LAST_RUN_CACHE_KEY);
 
-            if ($last !== null && now()->diffInSeconds(CarbonImmutable::parse($last), true) < ($intervalMinutes * 60) - 5) {
+            if ($last === null) {
+                Cache::put(self::LAST_RUN_CACHE_KEY, now()->toIso8601String(), now()->addHours(6));
+                return true;
+            }
+
+            $parsed = CarbonImmutable::parse($last);
+            if (now()->diffInSeconds($parsed, true) < ($intervalMinutes * 60) - 5) {
                 return false;
             }
 

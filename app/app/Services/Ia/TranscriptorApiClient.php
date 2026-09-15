@@ -3,10 +3,10 @@
 namespace App\Services\Ia;
 
 use App\Models\File;
+use App\Models\Transcription;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-
 /**
  * Cliente HTTP de la API externa del transcriptor ASR.
  *
@@ -132,10 +132,20 @@ class TranscriptorApiClient
 
         $endpoint = $this->baseUrl() . '/v1/transcribe';
         try {
-            $response = $this->submitRequest($audioPath, $stream)->post($endpoint, [
+            $payload = [
                 'language' => $this->settings->str('language'),
                 'lang_fix' => $this->settings->str('lang_fix'),
-            ]);
+            ];
+            if ($this->settings->bool('submit_with_idempotency_key')) {
+                $payload['idempotency_key'] = hash_file('sha256', $audioPath);
+            }
+            if ($this->settings->bool('submit_with_callback')) {
+                $callback = env('TCLOUD_CALLBACK_URL');
+                if (!empty($callback)) {
+                    $payload['callback_url'] = $callback;
+                }
+            }
+            $response = $this->submitRequest($audioPath, $stream)->post($endpoint, $payload);
         } catch (ConnectionException $e) {
             throw new \RuntimeException("No se pudo conectar al transcriptor: {$e->getMessage()}", 0, $e);
         } finally {
@@ -144,6 +154,19 @@ class TranscriptorApiClient
 
         if ($response->status() === 401) {
             throw new \RuntimeException('API auth required');
+        }
+
+        if ($response->status() === 429) {
+            throw UpstreamRateLimitException::fromResponse(429, $response, 'submit');
+        }
+
+        if ($response->status() === 503) {
+            throw UpstreamUnavailableException::fromResponse(
+                503,
+                $response,
+                'submit',
+                $this->settings->int('max_backoff_seconds')
+            );
         }
 
         if (!$response->successful()) {
@@ -309,74 +332,103 @@ class TranscriptorApiClient
     }
 
     /**
-     * Lectura normalizada de ocupacion de la GPU remota para el regulador.
+     * Lectura normalizada del endpoint /api/metrics/overview del transcriptor
+     * remoto (publicado el 2026-09-14, sin auth, plano).
      *
-     * Devuelve {processing: int, capacity: int} o null si la respuesta no
-     * encaja con la forma esperada. Timeout estricto configurable por
-     * `regulator_remote_timeout_ms`; el caller debe usar Cache::remember()
-     * para no castigar al nodo ASR (TTL sugerido: regulator_remote_cache_seconds).
+     * Devuelve un payload uniforme con todos los campos que el regulador y
+     * la UI de Consumo necesitan, o null si la respuesta no encaja. El campo
+     * `processing` se deriva de `queue.by_state_corrected["processing/0"]`,
+     * reporte autoritativo del propio cluster (no depende de la BD local).
      *
-     * Fail-open: cualquier excepcion o respuesta no parseable devuelve null,
-     * que el regulador trata como "senial desconocida" (no dispara freno por
-     * GPU). Asi un corte de red no escala a un falso skip global.
+     * Fail-open: cualquier excepcion o respuesta no parseable devuelve null.
+     * El campo critico que valida la forma esperada es `node.workers` (int).
      */
-    public function getRemoteStats(): ?array
+    public function getRemoteInfo(): ?array
     {
         $timeoutSeconds = max(0.05, $this->settings->int('regulator_remote_timeout_ms') / 1000.0);
+        $path = $this->settings->str('regulator_remote_info_path');
 
         try {
-            $response = Http::withHeaders($this->authHeaders())
-                ->timeout($timeoutSeconds)
-                ->get($this->baseUrl() . '/api/stats');
+            $response = Http::timeout($timeoutSeconds)
+                ->get($this->baseUrl() . $path);
 
             if (!$response->successful()) {
                 return null;
             }
 
             $data = $response->json();
-            if (!is_array($data)) {
+            if (!is_array($data) || !isset($data['node']['workers']) || !is_numeric($data['node']['workers'])) {
+                Log::warning('TranscriptorApiClient::getRemoteInfo respuesta sin node.workers', [
+                    'path' => $path,
+                    'http' => $response->status(),
+                ]);
                 return null;
             }
 
-            $payload = $data['data'] ?? $data;
+            $gpu = is_array($data['gpu'] ?? null) ? $data['gpu'] : [];
+            $ramdisk = is_array($data['ramdisk'] ?? null) ? $data['ramdisk'] : [];
+            $queue = is_array($data['queue']['by_state_corrected'] ?? null)
+                ? $data['queue']['by_state_corrected'] : [];
+            $circuit = is_array($data['circuit_breakers'] ?? null)
+                ? $data['circuit_breakers'] : [];
+            $cpu = is_array($data['cpu'] ?? null) ? $data['cpu'] : [];
 
-            // Candidatos a "processing" (jobs vivos en GPU remota).
-            $processing = $payload['processing']
-                ?? $payload['processing_jobs']
-                ?? $payload['jobs_processing']
-                ?? $payload['active']
-                ?? null;
-
-            // Candidatos a "capacity" (total de workers/cupos del nodo GPU).
-            $capacity = $payload['capacity']
-                ?? $payload['total_capacity']
-                ?? $payload['workers']
-                ?? $payload['max_concurrent']
-                ?? null;
-
-            if (!is_numeric($processing) || !is_numeric($capacity)) {
-                return null;
-            }
-
-            $processing = max(0, (int) $processing);
-            $capacity = max(0, (int) $capacity);
-
-            if ($capacity === 0) {
-                return null;
-            }
+            $workers = max(0, (int) $data['node']['workers']);
+            $processing = max(0, (int) ($queue['processing/0'] ?? 0));
 
             return [
-                'processing' => $processing,
-                'capacity' => $capacity,
-                'usage_pct' => (int) round(($processing / $capacity) * 100),
+                'workers'         => $workers,
+                'processing'      => $processing,
+                'capacity'        => $workers,
+                'usage_pct'       => $workers > 0
+                    ? (int) round(($processing / $workers) * 100)
+                    : 0,
+                'cluster_state'   => 'UP',
+                'circuit_open'    => ((int) ($circuit['open'] ?? 0)) > 0,
+                'gpu_util_pct'    => max(0, min(100, (int) ($gpu['util_pct'] ?? 0))),
+                'gpu_vram_pct'    => max(0, min(100, (int) ($gpu['vram_used_pct'] ?? 0))),
+                'gpu_model'       => (string) ($gpu['model'] ?? ''),
+                'ram_pct'         => max(0, min(100, (float) ($data['ram']['pct'] ?? 0))),
+                'ramdisk_pct'     => max(0, min(100, (float) ($ramdisk['pct'] ?? 0))),
+                'ramdisk_free_gb' => max(0, (float) ($ramdisk['free_gb'] ?? 0)),
+                'cpu_pct'         => max(0, min(100, (float) ($cpu['pct'] ?? 0))),
+                'cpu_load_1m'     => max(0, (float) ($cpu['load_1m'] ?? 0)),
+                'queue_total'     => (int) ($data['queue']['total_jobs'] ?? 0),
+                'queue_queued'    => (int) ($queue['queued/0'] ?? 0),
+                'queue_done_minus1' => (int) ($queue['done/-1'] ?? 0),
+                'source'          => $path,
+                'fetched_at'      => now()->toIso8601String(),
             ];
         } catch (\Throwable $e) {
-            Log::warning('TranscriptorApiClient::getRemoteStats fallo', [
+            Log::warning('TranscriptorApiClient::getRemoteInfo fallo', [
+                'path' => $path,
                 'error' => $e->getMessage(),
                 'timeout_ms' => $this->settings->int('regulator_remote_timeout_ms'),
             ]);
             return null;
         }
+    }
+
+    /**
+     * Lectura normalizada de ocupacion de la GPU remota para el regulador.
+     *
+     * Devuelve {processing: int, capacity: int, usage_pct: int, source: string}
+     * o null si la respuesta no encaja. Wrapper sobre getRemoteInfo() que
+     * mantiene el shape backward-compatible que el regulador ya consume.
+     */
+    public function getRemoteStats(): ?array
+    {
+        $info = $this->getRemoteInfo();
+        if ($info === null || $info['workers'] === 0) {
+            return null;
+        }
+
+        return [
+            'processing' => $info['processing'],
+            'capacity'   => $info['capacity'],
+            'usage_pct'  => $info['usage_pct'],
+            'source'     => $info['source'],
+        ];
     }
 
     public function getBaseUrl(): string
@@ -458,6 +510,58 @@ class TranscriptorApiClient
 
         if (!$response->successful()) {
             throw new \RuntimeException("priority upstream {$response->status()}: {$response->body()}");
+        }
+
+        return $response->json() ?: [];
+    }
+
+    /**
+     * Cancela un job en queued en la API externa. Solo permitido desde
+     * estado queued; si está processing, debe usarse unstick primero.
+     *
+     * Endpoint: POST /v1/jobs/{id}/cancel
+     * Respuesta 200: {job_id, state: "cancelled"}
+     * 409: job no está en queued
+     */
+    public function cancelUpstream(string $jobId, string $nodeUrl = ''): array
+    {
+        $base = rtrim($nodeUrl ?: $this->baseUrl(), '/');
+        $endpoint = "{$base}/v1/jobs/{$jobId}/cancel";
+
+        $response = Http::withHeaders($this->authHeaders())
+            ->timeout($this->getTimeout())
+            ->post($endpoint);
+
+        if ($response->status() === 409) {
+            throw new \RuntimeException("cancel upstream 409: job no está en estado queued");
+        }
+        if (!$response->successful()) {
+            throw new \RuntimeException("cancel upstream {$response->status()}: {$response->body()}");
+        }
+
+        return $response->json() ?: [];
+    }
+
+    /**
+     * Re-encola en bloque los jobs fallidos (error|dead) en la API externa.
+     * El operador pasa los parámetros y la API decide cuáles re-enviar.
+     *
+     * Endpoint: POST /v1/jobs/retry-batch
+     * Respuesta 200: {requeued: int, skipped: int, failed: int}
+     */
+    public function retryBatchUpstream(int $olderThanSeconds, int $limit): array
+    {
+        $endpoint = $this->baseUrl() . '/v1/jobs/retry-batch';
+
+        $response = Http::withHeaders($this->authHeaders())
+            ->timeout($this->getTimeout())
+            ->post($endpoint, [
+                'older_than_seconds' => $olderThanSeconds,
+                'limit' => $limit,
+            ]);
+
+        if (!$response->successful()) {
+            throw new \RuntimeException("retry-batch upstream {$response->status()}: {$response->body()}");
         }
 
         return $response->json() ?: [];
