@@ -776,9 +776,8 @@
 
     </div> {{-- /TAB STORAGES --}}
 
-    {{-- TAB: TRABAJOS --}}
-    <div x-show="tab === 'config'" x-transition:enter.opacity.duration.150ms>
-    </div>
+    {{-- TAB: CONFIGURACIÓN --}}
+    @include('ia.api-transcriptor._settings-tab')
 @push('scripts')
 <script>
 // =========================================================================
@@ -982,7 +981,11 @@ function apiTranscriptor(config = {}) {
         bulkDispatchResult: null,
         refreshingJobs: new Set(),
         async init() {
-            await Promise.all([this.load(), this.loadHealth(), this.loadEmptyFolders()]);
+            // Antes cargaba también loadHealth/loadStats/loadEmptyFolders contra
+            // los endpoints eliminados en simplify-api-transcriptor-to-storage-and-config:
+            // ahora devuelven 404 y ensucian la consola. La señal viva es
+            // `load()` (storages) + `loadConfig()` (settings tab).
+            await Promise.all([this.load(), this.loadConfig()]);
             // add-bg-job-indicator-widget: si el operador llega aquí con
             // ?focus=bg-transcriptor-batch-{runId} desde el widget global,
             // abrir el modal con el progreso del batch activo. Sin focus,
@@ -1426,7 +1429,10 @@ function apiTranscriptor(config = {}) {
          */
         async load(opts = {}) {
             this.loading = true;
-            if (!opts.jobsOnly) this.loadStats();
+            // loadStats() eliminado (endpoint /ia/api-transcriptor/stats ya no
+            // existe). Si volvemos a un badge "Trabajos N" en algún futuro, lo
+            // agregamos apuntando a un endpoint nuevo o a un GROUP BY local
+            // sin lanzar 404.
             try {
                 const params = new URLSearchParams();
                 params.set('scope', this.jobsSubTab);
@@ -1455,26 +1461,14 @@ function apiTranscriptor(config = {}) {
                 }
             } finally { this.loading = false; }
         },
-        async loadHealth() {
-            try {
-                const res = await apiFetch('/ia/api-transcriptor/health', { headers: { 'Accept': 'application/json' } });
-                if (res.ok) this.health = await res.json();
-                else this.health = { ok: false };
-            } catch { this.health = { ok: false }; }
-        },
-        async loadStats() {
-            try {
-                const res = await apiFetch('/ia/api-transcriptor/stats', { headers: { 'Accept': 'application/json' } });
-                if (res.ok) this.stats = await res.json();
-            } catch { this.stats = { local: {} }; }
-        },
-        async loadEmptyFolders() {
-            try {
-                const res = await apiFetch('/ia/api-transcriptor/empty-folders', { headers: { 'Accept': 'application/json' } });
-                if (res.ok) this.emptyFolders = await res.json();
-                else this.emptyFolders = { items: [], storages_with_empty: 0, total_missing_folders: 0 };
-            } catch { this.emptyFolders = { items: [], storages_with_empty: 0, total_missing_folders: 0 }; }
-        },
+        // loadHealth / loadStats / loadEmptyFolders se reemplazaron por no-ops tras
+        // simplify-api-transcriptor-to-storage-and-config. Sus endpoints fueron
+        // eliminados y la UI que los consumía (banner "API en línea", cards
+        // Trabajos N, banner carpetas vacías) también. Si quedan referencias
+        // inesperadas desde el JS no se levantan HTTP 404.
+        async loadHealth() { /* no-op: endpoint eliminado */ },
+        async loadStats() { /* no-op: endpoint eliminado */ },
+        async loadEmptyFolders() { /* no-op: endpoint eliminado */ },
         storageById(id) {
             return this.storages.find(s => s.id === Number(id));
         },
@@ -2667,3 +2661,5 @@ function apiTranscriptor(config = {}) {
     };
 }
 </script>
+@endpush
+@endsection
