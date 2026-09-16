@@ -1232,29 +1232,6 @@ function apiTranscriptor(config = {}) {
                 next ? 'Envío pausado.' : 'Envío reanudado.');
         },
 
-        async runTick(dryRun) {
-            this.cfgSaving = true;
-            try {
-                const r = await fetch('/ia/api-transcriptor/settings/run-tick', {
-                    method: 'POST',
-                    credentials: 'same-origin',
-                    headers: {
-                        'Accept': 'application/json',
-                        'Content-Type': 'application/json',
-                        'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content,
-                    },
-                    body: JSON.stringify({ dry_run: dryRun }),
-                });
-                const data = await r.json();
-                if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
-                showToast(data.message, 'success', 5000);
-                setTimeout(() => this.refreshConfigRuntime(), 4000);
-            } catch (e) {
-                showToast('Error: ' + e.message, 'error');
-            } finally {
-                this.cfgSaving = false;
-            }
-        },
         get storagesEnabled() {
             return this.storages.filter(s => s.transcription_enabled);
         },

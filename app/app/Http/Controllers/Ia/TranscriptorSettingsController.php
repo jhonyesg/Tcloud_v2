@@ -2,7 +2,6 @@
 
 namespace App\Http\Controllers\Ia;
 
-use App\Http\Controllers\Concerns\RunsBackgroundCommands;
 use App\Http\Controllers\Controller;
 use App\Models\Transcription;
 use App\Services\Ia\BogotaTime;
@@ -26,8 +25,6 @@ use Illuminate\Support\Facades\Session;
  */
 class TranscriptorSettingsController extends Controller
 {
-    use RunsBackgroundCommands;
-
     public function __construct(
         private TranscriptorSettings $settings,
         private TodayPendingService $todayPending,
@@ -123,52 +120,6 @@ class TranscriptorSettingsController extends Controller
             'message' => $keys ? 'Valor restaurado.' : 'Todos los valores restaurados.',
             'groups' => $this->settings->effective(),
             'runtime' => $this->runtime(),
-        ]);
-    }
-
-    /**
-     * Ejecuta la tarea programada bajo demanda.
-     *
-     * Es la contraparte de "necesito verlo": permite disparar el ciclo y ver el
-     * efecto sin esperar al scheduler. En modo simulacion no escribe en BD.
-     */
-    public function runTick(Request $request)
-    {
-        $dryRun = (bool) $request->input('dry_run', false);
-
-        $artisan = base_path('artisan');
-        $php = PHP_BINDIR . '/php';
-        if (!is_file($php)) {
-            $php = 'php';
-        }
-
-        $logFile = storage_path('logs/transcription-tick-manual.log');
-
-        // El autolimitado por intervalo haria salir al comando en silencio si el
-        // scheduler acaba de correr. Una ejecucion manual es una orden explicita,
-        // asi que se limpia la marca.
-        if (!$dryRun) {
-            Cache::forget('transcriptor:tick:last_run');
-        }
-
-        $cmd = escapeshellarg($php) . ' ' . escapeshellarg($artisan) . ' transcription:tick';
-        if ($dryRun) {
-            $cmd .= ' --dry-run';
-        }
-        $cmd .= ' >> ' . escapeshellarg($logFile) . ' 2>&1 &';
-
-        $this->execBackground($cmd, 'transcriptor:settings');
-
-        Log::info('TranscriptorSettings: tick lanzado manualmente', [
-            'user_id' => Session::get('user_id'),
-            'dry_run' => $dryRun,
-        ]);
-
-        return response()->json([
-            'message' => $dryRun
-                ? 'Simulacion lanzada. El resultado aparece en el log en unos segundos.'
-                : 'Tarea lanzada.',
-            'log' => 'storage/logs/transcription-tick-manual.log',
         ]);
     }
 

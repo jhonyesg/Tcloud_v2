@@ -47,14 +47,6 @@
                         </p>
                     </div>
                     <div data-tour="cfg-run" class="flex items-center gap-2 flex-shrink-0">
-                        <button @click="runTick(true)" :disabled="cfgSaving"
-                                class="px-3 py-1.5 text-xs rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 transition-colors disabled:opacity-50">
-                            <i class="fas fa-flask mr-1"></i> Simular
-                        </button>
-                        <button @click="runTick(false)" :disabled="cfgSaving"
-                                class="px-3 py-1.5 text-xs rounded-lg bg-brand-600 hover:bg-brand-700 text-white transition-colors disabled:opacity-50">
-                            <i class="fas fa-play mr-1"></i> Ejecutar ahora
-                        </button>
                         {{-- Procesamiento personalizado: mismo modal que el boton
                              de la cabecera, accesible desde la tarea programada
                              porque es ahi donde el operador piensa el "que falta". --}}

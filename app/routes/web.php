@@ -208,7 +208,6 @@ Route::middleware(['auth', 'admin'])->prefix('ia')->group(function () {
     Route::get('/api-transcriptor/settings', [App\Http\Controllers\Ia\TranscriptorSettingsController::class, 'index']);
     Route::post('/api-transcriptor/settings', [App\Http\Controllers\Ia\TranscriptorSettingsController::class, 'update'])->middleware('throttle:30,1');
     Route::post('/api-transcriptor/settings/reset', [App\Http\Controllers\Ia\TranscriptorSettingsController::class, 'reset'])->middleware('throttle:30,1');
-    Route::post('/api-transcriptor/settings/run-tick', [App\Http\Controllers\Ia\TranscriptorSettingsController::class, 'runTick'])->middleware('throttle:6,1');
 
     // M2: Avisos Inteligentes
     Route::get('/avisos-inteligentes', [App\Http\Controllers\Ia\AvisosInteligentesController::class, 'index']);
