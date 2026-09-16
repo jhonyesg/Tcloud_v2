@@ -194,7 +194,6 @@ Fuente unica de verdad del comportamiento en ejecucion del modulo de transcripci
 - El sistema **SHALL** exponer, bajo el grupo de rutas existente `['auth','admin']` + `prefix('ia')`:
   - `GET  /ia/api-transcriptor/settings` — valores efectivos con su origen, mas contexto en vivo (profundidad de cola vs objetivo, workers activos y huerfanos, conteos por estado, y el lote que el regulador calcularia ahora mismo)
   - `POST /ia/api-transcriptor/settings` y `POST /ia/api-transcriptor/settings/reset`
-  - `POST /ia/api-transcriptor/settings/run-tick` — ejecutar o simular la tarea programada bajo demanda
   - `GET  /ia/api-transcriptor/latency` — percentiles p50/p95 por etapa del pipeline (mtime→BD, BD→Redis, Redis→API, API→resultado) + `count_by_state` para la ventana solicitada.
   - `GET  /ia/api-transcriptor/regulator-cause` — devuelve `{fired_at, signals_evaluated, values, decision, reason, batch_computed}` de la decision del ultimo tick, cacheado en Redis (`transcriptor:tick:last_decision`, TTL 1h). Permite ver al operador POR QUE freno el regulador en lenguaje humano, sin tener que correlacionar logs.
 - Las escrituras **MUST** validarse desde la misma constante de esquema que renderiza el formulario, y **MUST** registrarse en log con el id del admin tomado de `session('user')` (este proyecto usa auth por sesion, nunca `auth()->user()`).
