@@ -147,9 +147,6 @@ deleteConfirmFile: null,
             // restoreNavState y pizotaba la carpeta del deep-link de mis-avisos.
             if (this._initDone) return;
             this._initDone = true;
-            // Mis Archivos ya no persiste nav state en localStorage.
-            // Limpiamos cualquier dato legacy de sesiones anteriores.
-            try { localStorage.removeItem('tcloud_files_nav'); } catch (e) {}
             await Promise.all([
                 this.loadStorages(),
                 apiFetch('/auth/me', { credentials: 'include', headers: { 'Accept': 'application/json' } })
@@ -287,9 +284,15 @@ deleteConfirmFile: null,
     },
 
     saveNavState() {
-        // Mis Archivos ya no persiste nav state en localStorage:
-        // cada carga lee de BD en tiempo real. No-op para mantener
-        // compatibilidad con callers existentes.
+        localStorage.setItem('tcloud_files_nav', JSON.stringify({
+            storageId: this.currentStorage,
+            storageName: this.currentStorageName,
+            storagePermission: this.currentStoragePermission,
+            folderId: this.currentFolder,
+            folderName: this.currentFolderName,
+            breadcrumbs: this.breadcrumbs,
+            viewMode: this.viewMode
+        }));
     },
 
     clearNavState() {
@@ -297,9 +300,28 @@ deleteConfirmFile: null,
     },
 
     async restoreNavState() {
-        // Mis Archivos no restaura nav state: arranca siempre en raíz
-        // salvo deep-link explícito en la URL (chequeado en init()).
-        return;
+        // Con deep-link activo, el estado de localStorage es obsoleto.
+        if (this._deepLinkActive) return;
+        try {
+            const saved = localStorage.getItem('tcloud_files_nav');
+            if (!saved) return;
+            const state = JSON.parse(saved);
+            if (!state.storageId) return;
+            if (state.folderId) this._navGen++;
+            this.currentStorage = state.storageId;
+            this.currentStorageName = state.storageName;
+            const storage = this.availableStorages.find(s => s.id === state.storageId);
+            this.currentStoragePermission = storage ? storage.permissions : 'read';
+            this.currentStorageCanShare = storage ? !!storage.can_create_shares : false;
+            this.currentStorageTranscriptionAccess = storage ? !!storage.transcription_access : false;
+            this.currentFolder = state.folderId || null;
+            this.currentFolderName = state.folderName || null;
+            this.breadcrumbs = state.breadcrumbs || [];
+            this.viewMode = 'files';
+            this.loadFiles(false, true, true);
+        } catch (e) {
+            this.clearNavState();
+        }
     },
 
     setFilesViewMode(mode) {
