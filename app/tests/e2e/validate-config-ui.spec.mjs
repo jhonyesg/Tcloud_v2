@@ -36,8 +36,13 @@
  *     para evitar leaks accidentales en CI artifacts.
  */
 
-import { chromium } from '/usr/local/lib/hermes-agent/node_modules/playwright/index.mjs';
+// Playwright vive en el cache de npx (no hay instalación local en el proyecto).
+// Override con PLAYWRIGHT_MODULE si la ruta cambia.
 import { mkdirSync, existsSync, writeFileSync } from 'node:fs';
+
+const PLAYWRIGHT_MODULE = process.env.PLAYWRIGHT_MODULE
+    || '/root/.npm/_npx/e41f203b7505f1fb/node_modules/playwright/index.mjs';
+const { chromium } = await import(PLAYWRIGHT_MODULE);
 
 // --------------------------------------------------------------------------
 // Configuracion via env. Defaults solo para la URL; credenciales obligatorias.

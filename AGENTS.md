@@ -850,6 +850,50 @@ redis-cli -a 'Clouding2026!Redis' -n 1 --scan --pattern 'tcloud_tcloud_cache_avi
   | xargs -r redis-cli ... DEL
 ```
 
+## Procesamiento personalizado / "Procesar históricos" (2026-09-16)
+
+Botón + modal en `/ia/api-transcriptor` (cabecera del módulo y tarjeta "Tarea
+programada") para **descubrir y encolar manualmente** trabajo por alcance:
+
+- **Alcance**: Hoy / Rango de fechas / Histórico.
+- **Tipo de trabajo**: sin transcripción (`--include-failed` ausente, descubrimiento),
+  con error (`--include-failed`), completados (`--include-done`).
+
+### Endpoints
+
+| Endpoint | Rol |
+|---|---|
+| `POST /ia/api-transcriptor/scan/estimate` | **Solo lectura**: cuenta trabajo disponible (sin fila, error, done). No muta. |
+| `POST /ia/api-transcriptor/scan/run` | Lanza `transcription:scan-and-submit` en background; devuelve `run_id` (HTTP 202). |
+| `GET /ia/api-transcriptor/scan/status/{runId}` | Polling del progreso (cada 2 s desde la UI). |
+
+### Piezas
+
+- `App\Services\Ia\TranscriptorWorkEstimator` — estimación acotada
+  (`COUNT_CAP = 50000`); devuelve `capped: true` cuando un conteo toca el techo.
+  Mide latencia: hoy ≈ 0.5 s, histórico ≈ 1.4 s.
+- `ApiTranscriptorController::estimateScan/runScan/scanStatus` + helpers
+  `resolveScanScope` y `toDmY` (ISO `YYYY-MM-DD` → carpeta `DDMMYYYY`).
+- Estado Alpine: `pz*` en `index.blade.php`; markup del modal en
+  `_settings-tab.blade.php`.
+
+### Reglas de diseño
+
+- **El modal DESCUBRE y ENCOLA, no salta el regulador.** El envío sigue
+  gobernado por el stager, el worker PG y la histéresis de la cola remota.
+- **Candado de concurrencia** `transcriptor:scan_run:lock`: un segundo lanzamiento
+  simultáneo devuelve HTTP 409. Lo libera el comando `ScanAndSubmitCommand` en un
+  `finally`, así no depende de que el navegador siga haciendo polling.
+- **Estimación barata**: los conteos de `transcriptions` usan `recorded_at`; el
+  "sin fila" se resuelve contra la tabla `files` (no recorre el disco).
+
+### Regla histórica que este botón habilita
+
+El worker PG y el stager filtran `recorded_at >= hoy`, así que las filas de
+**fechas pasadas** no las toma el pipeline automático. Para procesar históricos
+hay que usar este modal con alcance Rango/Histórico; el descubrimiento las crea
+y el `bulkDispatch` las encola explícitamente.
+
 ## Filtro de tamaño en el escaneo (`min_file_size_bytes`, 2026-09-16)
 
 Una grabación con el stream caído existe en disco pero pesa **0 bytes**. El

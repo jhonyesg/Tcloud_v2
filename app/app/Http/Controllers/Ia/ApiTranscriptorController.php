@@ -2,13 +2,16 @@
 
 namespace App\Http\Controllers\Ia;
 
+use App\Http\Controllers\Concerns\RunsBackgroundCommands;
 use App\Http\Controllers\Controller;
 use App\Models\StorageProvider;
 use App\Models\Transcription;
 use App\Services\Ia\CacheEpoch;
+use App\Services\Ia\DiskScannerService;
 use App\Services\Ia\StorageFunnelService;
 use App\Services\Ia\TranscriptionBulkDispatchService;
 use App\Services\Ia\TranscriptorSettings;
+use App\Services\Ia\TranscriptorWorkEstimator;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -49,6 +52,8 @@ use Illuminate\Support\Facades\Session;
  */
 class ApiTranscriptorController extends Controller
 {
+    use RunsBackgroundCommands;
+
     public function __construct(
         private TranscriptorSettings $settings,
         private StorageFunnelService $funnel,
@@ -239,6 +244,236 @@ class ApiTranscriptorController extends Controller
         $stats = app(TranscriptionBulkDispatchService::class)->dispatch($ids);
 
         return response()->json($stats);
+    }
+
+    /**
+     * POST /ia/api-transcriptor/scan/estimate
+     *
+     * Cuenta el trabajo disponible en un alcance para el modal de
+     * "Procesamiento personalizado". SOLO LEE: no crea filas ni encola nada.
+     *
+     * Body: { scope: 'today'|'range'|'all', from?: 'YYYY-MM-DD', to?: 'YYYY-MM-DD',
+     *         storage_ids?: int[] }
+     */
+    public function estimateScan(Request $request)
+    {
+        $validated = $request->validate([
+            'scope' => 'required|in:today,range,all',
+            'from' => 'nullable|date_format:Y-m-d',
+            'to' => 'nullable|date_format:Y-m-d',
+            'storage_ids' => 'sometimes|array',
+            'storage_ids.*' => 'integer|min:1',
+        ]);
+
+        try {
+            $scope = $this->resolveScanScope(
+                $validated['scope'],
+                $validated['from'] ?? null,
+                $validated['to'] ?? null,
+            );
+        } catch (\InvalidArgumentException $e) {
+            return response()->json(['error' => $e->getMessage()], 422);
+        }
+
+        $estimator = app(TranscriptorWorkEstimator::class);
+        $estimate = $estimator->estimate($scope, $validated['storage_ids'] ?? []);
+
+        return response()->json($estimate);
+    }
+
+    /**
+     * POST /ia/api-transcriptor/scan/run
+     *
+     * Lanza el descubrimiento + encolado en background y devuelve un runId para
+     * que la UI haga polling. Cubre los tres alcances (hoy / rango / histórico)
+     * y los tres tipos de trabajo del modal:
+     *   - `--include-failed`  reencola las que están en error
+     *   - `--include-done`    reprocesa las ya finalizadas
+     *   - (por defecto)       descubre archivos SIN fila del alcance
+     *
+     * El envío sigue regulado por el tick/worker PG: este botón DESCUBRE y
+     * ENCOLA, no salta el regulador.
+     */
+    public function runScan(Request $request)
+    {
+        $validated = $request->validate([
+            'scope' => 'required|in:today,range,all',
+            'from' => 'nullable|date_format:Y-m-d',
+            'to' => 'nullable|date_format:Y-m-d',
+            'batch' => 'nullable|integer|min:1|max:200',
+            'include_failed' => 'boolean',
+            'include_done' => 'boolean',
+            'generate_alerts' => 'boolean',
+            'purge_queue' => 'boolean',
+        ]);
+
+        $scopeMode = $validated['scope'];
+        $from = $validated['from'] ?? null;
+        $to = $validated['to'] ?? null;
+
+        try {
+            $this->resolveScanScope($scopeMode, $from, $to);
+        } catch (\InvalidArgumentException $e) {
+            return response()->json(['error' => $e->getMessage()], 422);
+        }
+
+        // Guard de concurrencia: dos corridas simultáneas sobre el histórico
+        // duplicarían ffmpeg y saturarían el host (incidente 2026-09-16).
+        $lockKey = 'transcriptor:scan_run:lock';
+        if (Cache::has($lockKey)) {
+            return response()->json([
+                'error' => 'Ya hay un procesamiento en curso. Espera a que termine antes de lanzar otro.',
+            ], 409);
+        }
+
+        $runId = 'scan_' . time() . '_' . substr(md5(uniqid('', true)), 0, 6);
+        $cacheKey = 'transcription_batch:' . $runId;
+        $batch = (int) ($validated['batch'] ?? 0);
+
+        $args = ['transcription:scan-and-submit'];
+        if ($scopeMode === 'today') {
+            $args[] = '--days=0';
+        } elseif ($scopeMode === 'range') {
+            $args[] = '--from=' . $this->toDmY((string) $from);
+            $args[] = '--to=' . $this->toDmY((string) ($to ?? $from));
+        } else {
+            $args[] = '--all';
+        }
+        if ($batch > 0) {
+            $args[] = '--batch=' . $batch;
+        }
+        if (($validated['include_failed'] ?? false) === true) {
+            $args[] = '--include-failed';
+        }
+        if (($validated['include_done'] ?? false) === true) {
+            $args[] = '--include-done';
+        }
+        if (array_key_exists('generate_alerts', $validated)) {
+            $args[] = '--alerts=' . ($validated['generate_alerts'] ? '1' : '0');
+        }
+        $args[] = '--run-id=' . $runId;
+
+        $cmd = implode(' ', array_map('escapeshellarg', $args));
+
+        // Estado inicial para que la UI muestre algo de inmediato.
+        Cache::put($cacheKey, [
+            'status' => 'starting',
+            'scan_scope' => $scopeMode,
+            'batch' => $batch,
+            'processed' => 0,
+            'errors' => 0,
+            'total_to_process' => 0,
+            'total_candidates' => 0,
+            'pending_created' => 0,
+            'dispatched' => 0,
+            'storages' => [],
+            'files' => [],
+            'started_at' => now()->toIso8601String(),
+            'updated_at' => now()->toIso8601String(),
+        ], now()->addHours(2));
+
+        // TTL del lock: la corrida del comando es acotada (MAX_BATCHES_PER_RUN
+        // del stager y batch por storage del scanner), pero el histórico puede
+        // tardar. 2 h es el mismo TTL del resultado.
+        Cache::put($lockKey, $runId, now()->addHours(2));
+
+        $logFile = storage_path('logs/transcription-scan-' . $runId . '.log');
+        $ok = $this->execBackground($cmd, 'transcriptor:scan', $logFile, $cacheKey);
+
+        if (!$ok) {
+            Cache::forget($lockKey);
+            Cache::put($cacheKey, [
+                'status' => 'error',
+                'message' => 'No se pudo iniciar el proceso (sintaxis del comando inválida).',
+                'processed' => 0,
+                'errors' => 1,
+                'storages' => [],
+                'files' => [],
+                'finished_at' => now()->toIso8601String(),
+                'updated_at' => now()->toIso8601String(),
+            ], now()->addHours(2));
+
+            return response()->json(['error' => 'No se pudo iniciar el proceso.'], 500);
+        }
+
+        Log::info('ApiTranscriptor: procesamiento personalizado lanzado', [
+            'run_id' => $runId,
+            'scope' => $scopeMode,
+            'from' => $from,
+            'to' => $to,
+            'include_failed' => (bool) ($validated['include_failed'] ?? false),
+            'include_done' => (bool) ($validated['include_done'] ?? false),
+            'user_id' => Session::get('user_id'),
+        ]);
+
+        return response()->json([
+            'run_id' => $runId,
+            'scope' => $scopeMode,
+            'message' => 'Procesamiento iniciado en background.',
+        ], 202);
+    }
+
+    /**
+     * GET /ia/api-transcriptor/scan/status/{runId}
+     *
+     * Estado en vivo de una corrida lanzada por `runScan` (polling cada 2 s).
+     */
+    public function scanStatus(string $runId)
+    {
+        $safe = preg_replace('/[^a-z0-9_\-]/i', '_', $runId);
+        $data = Cache::get('transcription_batch:' . $safe);
+
+        if (!$data) {
+            // Sin estado: la corrida expiró o crasheó. Liberar el candado para
+            // que el operador no quede bloqueado 2 h por una corrida muerta.
+            Cache::forget('transcriptor:scan_run:lock');
+
+            return response()->json(['status' => 'not_found'], 404);
+        }
+
+        // Estado terminal: el comando ya terminó, liberar el candado de
+        // concurrencia para permitir la siguiente corrida.
+        if (in_array($data['status'] ?? '', ['queued', 'partial', 'error', 'done', 'completed'], true)) {
+            Cache::forget('transcriptor:scan_run:lock');
+        }
+
+        return response()->json($data);
+    }
+
+    /**
+     * Traduce el alcance del modal a la estructura que entiende el scanner.
+     *
+     * @throws \InvalidArgumentException rango inválido o fechas faltantes
+     */
+    private function resolveScanScope(string $mode, ?string $fromIso, ?string $toIso): array
+    {
+        if ($mode === 'all') {
+            return DiskScannerService::scopeAll();
+        }
+
+        if ($mode === 'today') {
+            return DiskScannerService::scopeToday();
+        }
+
+        if ($fromIso === null || $toIso === null) {
+            throw new \InvalidArgumentException('El alcance por rango requiere fecha inicial y final.');
+        }
+
+        return DiskScannerService::scopeRange(
+            $this->toDmY($fromIso),
+            $this->toDmY($toIso),
+        );
+    }
+
+    /** YYYY-MM-DD (input date del navegador) -> DDMMYYYY (nombre de carpeta). */
+    private function toDmY(string $isoDate): string
+    {
+        $d = \DateTimeImmutable::createFromFormat('Y-m-d', $isoDate);
+        if (!$d || $d->format('Y-m-d') !== $isoDate) {
+            throw new \InvalidArgumentException("Fecha inválida: {$isoDate} (se espera YYYY-MM-DD)");
+        }
+
+        return $d->format('dmY');
     }
 
     /**

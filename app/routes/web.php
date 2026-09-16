@@ -194,6 +194,14 @@ Route::middleware(['auth', 'admin'])->prefix('ia')->group(function () {
     // la clase de job del transcriptor eliminada. Ver TranscriptionBulkDispatchService.
     Route::post('/api-transcriptor/jobs/bulk-dispatch', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'bulkDispatch'])->middleware('throttle:30,1');
 
+    // Procesamiento personalizado (modal "Procesar históricos"): estimación
+    // previa (solo lectura), lanzamiento en background y polling de progreso.
+    // El descubrimiento + encolado sigue pasando por el regulador; estos
+    // endpoints no lo saltan.
+    Route::post('/api-transcriptor/scan/estimate', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'estimateScan'])->middleware('throttle:60,1');
+    Route::post('/api-transcriptor/scan/run', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'runScan'])->middleware('throttle:10,1');
+    Route::get('/api-transcriptor/scan/status/{runId}', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'scanStatus'])->where('runId', '[A-Za-z0-9_\-]+');
+
     Route::get('/api-transcriptor/storages/{id}/snapshot', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'storageSnapshot'])->whereNumber('id');
 
     // Configuracion en caliente del pipeline (pestaña "Configuracion").

@@ -985,6 +985,33 @@ function apiTranscriptor(config = {}) {
         // Procesamiento personalizado
         // ------------------------------------------------------------------
 
+        /**
+         * Deep-link del widget global: ?focus=bg-transcriptor-scan-{runId}.
+         *
+         * Si el operador llega con ese parámetro, abre el modal y se re-adjunta
+         * al progreso de la corrida. Sin focus no abre nada (comportamiento
+         * normal). Idempotente: si ya está mostrando ese run, no duplica.
+         *
+         * Nota: el widget dejó de registrar `bg-transcriptor-batch-*` cuando se
+         * retiró el batch legacy; el prefijo vigente es `bg-transcriptor-scan-`.
+         */
+        focusBgJob() {
+            try {
+                const params = new URLSearchParams(window.location.search);
+                const focus = params.get('focus');
+                if (!focus || !focus.startsWith('bg-transcriptor-scan-')) return;
+                const runId = focus.replace('bg-transcriptor-scan-', '');
+                if (!runId) return;
+                if (this.pzRunId === runId && this.pzRunning) return;
+                this.pzRunId = runId;
+                this.pzRunning = true;
+                this.pzProgress = null;
+                this.pzResult = null;
+                this.pzOpen = true;
+                this.startPzPoll();
+            } catch (e) { /* silent: el deep-link es best-effort */ }
+        },
+
         openPz() {
             this.pzOpen = true;
             this.pzResult = null;
@@ -1426,6 +1453,21 @@ function apiTranscriptor(config = {}) {
         //   en la API   -> ya enviado, falta recoger el resultado (mirar poll)
         get jobsUnsentCount()    { return this.statCount('pending'); },
         get jobsInApiCount()     { return this.statCount('queued', 'processing'); },
+        // Jobs que hoy se pueden despachar/encolar manualmente. `load()` los
+        // usa para podar la selección cuando un job cambió de estado.
+        //
+        // NOTA: estos dos helpers quedaron huérfanos al retirarse la pestaña
+        // Trabajos (remove-api-transcriptor-orphan-files-modal), pero `load()`
+        // los seguía invocando: la consola del navegador registraba
+        // "this.dispatchableJobs is not a function" en cada carga del módulo.
+        // Se restauran como contrato mínimo hasta que se retire también la
+        // selección de jobs del estado Alpine.
+        dispatchableJobs() {
+            return (this.jobs || []).filter(j => ['pending', 'queued', 'processing'].includes(j.state));
+        },
+        isDispatchable(job) {
+            return job && ['pending', 'queued', 'processing'].includes(job.state);
+        },
         // Estados que ofrece el <select> segun la sub-tab activa.
         scopeStates() {
             if (this.jobsSubTab === 'pending') return ['pending', 'queued', 'processing'];
