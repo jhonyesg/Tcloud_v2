@@ -330,7 +330,9 @@ class StorageSyncService
         }
 
         if ($created > 0 || $deleted > 0) {
-            $this->invalidateFolderCache($storage->id, $parentId);
+            // Antes: invalidaba folder_listing de Mis Archivos.
+            // Mis Archivos ya no cachea listado (consulta BD en tiempo real).
+            // No-op preservado por compat con cualquier caller externo.
         }
 
         return $this->report($this->currentListing($storage->id, $parentId), 'synced', [
@@ -401,10 +403,15 @@ class StorageSyncService
         }
     }
 
+    /**
+     * @deprecated desde el change "mis-archivos-no-cache-data-only". Mis Archivos
+     *   consulta BD directamente sin cache de listado, así que incrementar el
+     *   generation counter ya no tiene efecto. Preservado por compatibilidad con
+     *   cualquier caller externo; el cuerpo queda vacío intencionalmente.
+     */
     public function invalidateFolderCache(int $storageId, ?int $parentId): void
     {
-        $pid = $parentId ?? 'null';
-        Cache::increment("folder_gen:{$storageId}:{$pid}");
+        // No-op. El cache de folder_listing:* ya no existe.
     }
 
     public function syncRootFolder(StorageProvider $storage, int $userId): array

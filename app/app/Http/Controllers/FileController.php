@@ -185,15 +185,9 @@ class FileController extends Controller
                 }
             }
 
-            // cache key includes a generation counter so invalidation is O(1)
-            $pid = $parentId ?? 'null';
-            $gen = Cache::get("folder_gen:{$storageId}:{$pid}", 0);
-            $cacheKey = "folder_listing:{$storageId}:{$pid}:{$gen}:{$page}";
-
-            if ($cached = Cache::get($cacheKey)) {
-                return response()->json($cached);
-            }
-
+            // Listado sin cache: cada request consulta BD directamente para que
+            // mutaciones (sync, upload, delete, restore) se vean al instante.
+            // El mutex anti-saturacion sigue en Cache::add('autoscan_attempted:...').
             $query = File::query();
 
             // Papelera: el browser NO debe listar items trashed (parent_id=NULL
@@ -293,19 +287,6 @@ class FileController extends Controller
                 if ($searchTerm !== null) {
                     $responseData['search_unreliable'] = !$storageAccess['storage_accessible'];
                 }
-            }
-
-            // TTL: root=60s, today's folder=300s, past folder=86400s
-            if ($parentId === null) {
-                $ttl = 60;
-            } else {
-                $folderModified = DB::selectOne('SELECT file_modified_at FROM files WHERE id = ?', [$parentId])?->file_modified_at;
-                $ttl = ($folderModified && \Carbon\Carbon::parse($folderModified)->isToday()) ? 300 : 86400;
-            }
-
-            // Skip caching empty auto-scan results to prevent poisoning Redis with transient failures
-            if (!($isAutoScan && empty($responseData['files']))) {
-                Cache::put($cacheKey, $responseData, $ttl);
             }
 
             return response()->json($responseData);
