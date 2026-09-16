@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Models\Transcription;
+use App\Services\Ia\BogotaTime;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;

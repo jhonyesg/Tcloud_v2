@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Models\Transcription;
+use App\Services\Ia\BogotaTime;
 use App\Services\Ia\TranscriptionBulkDispatchService;
 use App\Services\Ia\TranscriptorSettings;
 use Illuminate\Console\Command;

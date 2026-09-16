@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Models\StorageProvider;
 use App\Models\Transcription;
+use App\Services\Ia\BogotaTime;
 use App\Services\Ia\TranscriptorApiClient;
 use App\Services\Ia\TranscriptorSettings;
 use App\Services\Ia\UpstreamCircuitBreaker;
