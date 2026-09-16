@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Capability `jobs-pending-bulk-dispatch`: consolida los requisitos y comportamientos de bulk "procesar ahora" action in the pendientes sub-tab en TCloud. (Purpose derivado automáticamente al normalizar el formato legacy del spec.)
+
+## Requirements
 
 ### Requirement: Bulk "Procesar ahora" action in the Pendientes sub-tab
 The system SHALL expose a bulk dispatch action in the Trabajos → Pendientes view that fans out per-row requests in parallel: `POST /jobs/{id}/dispatch-now` for rows without a `job_id`, and `POST /jobs/{id}/refresh-status` for rows that already have a `job_id` (see capability `jobs-stuck-refresh-bulk`).

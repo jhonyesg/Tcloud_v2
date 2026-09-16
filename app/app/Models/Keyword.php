@@ -5,17 +5,51 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
 class Keyword extends Model
 {
     protected $fillable = ['text', 'normalized'];
 
+    /**
+     * avisos-scan-coverage-reconciler: al crear una keyword, asegura los
+     * watermarks NULL para cada storage donde cualquier usuario con acceso
+     * la tiene habilitada. Delega al servicio central.
+     */
+    protected static function booted(): void
+    {
+        static::created(function (Keyword $k) {
+            try {
+                app(\App\Services\Ia\WatermarkReconciler::class)->ensureForKeyword((int) $k->id);
+            } catch (\Throwable $e) {
+                Log::warning('keyword.watermark_seed_failed', [
+                    'keyword_id' => $k->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        });
+
+        static::deleted(function (Keyword $k) {
+            Log::info('keyword.deleted', [
+                'keyword_id' => $k->id,
+                'text' => $k->text,
+                'note' => 'FK cascadeOnDelete limpia keyword_scan_watermarks',
+            ]);
+        });
+    }
+
     public function users(): BelongsToMany
     {
         return $this->belongsToMany(User::class, 'user_keyword')
             ->withPivot('created_at')
             ->withTimestamps();
+    }
+
+    public function userKeywordEntries(): \Illuminate\Database\Eloquent\Relations\HasMany
+    {
+        return $this->hasMany(UserKeyword::class, 'keyword_id');
     }
 
     public function getNormalizedAttribute(): string

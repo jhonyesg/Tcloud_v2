@@ -29,12 +29,14 @@
                 <div>
                     <label class="block text-sm font-medium text-slate-700 mb-1.5">Grabador</label>
                     <select name="grabador_id" required id="grabadorSelect"
-                            class="w-full border border-slate-300 rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-sky-400 focus:border-sky-400 outline-none transition-all">
-                        <option value="">Seleccionar grabador...</option>
+                            class="w-full border-2 border-slate-300 rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-sky-400 focus:border-sky-400 outline-none transition-all"
+                            data-tipo="">
+                        <option value="" data-tipo="">Seleccionar grabador...</option>
                         @foreach($grabadores as $grabador)
-                            <option value="{{ $grabador->id }}">{{ $grabador->nombre }} ({{ $grabador->ip }})</option>
+                            <option value="{{ $grabador->id }}" data-tipo="{{ $grabador->tipo }}">{{ ($grabador->tipo === 'tv' ? '📺' : '📻') }} {{ $grabador->nombre }} ({{ $grabador->ip }})</option>
                         @endforeach
                     </select>
+                    <p id="grabadorTipoAviso" class="mt-2 text-xs hidden"></p>
                 </div>
 
                 <div>
@@ -78,6 +80,22 @@ document.getElementById('grabadorSelect').addEventListener('change', function() 
     } else {
         el.textContent = '—';
         el.className = 'font-medium text-slate-700';
+    }
+
+    // Señal de tipo del grabador elegido (TV=púrpura, Radio=esmeralda)
+    const tipo = this.value ? this.selectedOptions[0].dataset.tipo : '';
+    const aviso = document.getElementById('grabadorTipoAviso');
+    if (tipo === 'tv' || tipo === 'radio') {
+        const esTv = tipo === 'tv';
+        this.classList.remove('border-purple-400', 'ring-purple-300', 'border-emerald-400', 'ring-emerald-300', 'border-slate-300');
+        this.classList.add(esTv ? 'border-purple-400' : 'border-emerald-400');
+        aviso.classList.remove('hidden', 'text-purple-600', 'text-emerald-600');
+        aviso.classList.add(esTv ? 'text-purple-600' : 'text-emerald-600');
+        aviso.textContent = esTv ? '📺 Este grabador es de TV: el canal grabará un canal de televisión.' : '📻 Este grabador es de Radio: el canal grabará una emisora de radio.';
+    } else {
+        this.classList.remove('border-purple-400', 'border-emerald-400');
+        this.classList.add('border-slate-300');
+        aviso.classList.add('hidden');
     }
 });
 </script>

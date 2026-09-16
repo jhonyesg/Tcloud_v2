@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Capability `sidebar-storage-widget`: consolida los requisitos y comportamientos de widget de almacenamiento muestra datos reales del usuario en TCloud. (Purpose derivado automáticamente al normalizar el formato legacy del spec.)
+
+## Requirements
 
 ### Requirement: Widget de almacenamiento muestra datos reales del usuario
 

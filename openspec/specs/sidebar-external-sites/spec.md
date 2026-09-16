@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Capability `sidebar-external-sites`: consolida los requisitos y comportamientos de sección "sites externos" visible solo para usuarios con sites asignados en TCloud. (Purpose derivado automáticamente al normalizar el formato legacy del spec.)
+
+## Requirements
 
 ### Requirement: Sección "Sites Externos" visible solo para usuarios con sites asignados
 El sistema SHALL mostrar la sección "Sites Externos" en el sidebar únicamente si el usuario autenticado tiene al menos un site externo activo asignado.

@@ -5,17 +5,47 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class File extends Model
 {
-    protected $fillable = ['name', 'path', 'size', 'mime_type', 'storage_provider_id', 'owner_id', 'parent_id', 'is_folder', 'is_personal', 'file_modified_at'];
+    protected $fillable = [
+        'name',
+        'path',
+        'size',
+        'mime_type',
+        'storage_provider_id',
+        'owner_id',
+        'parent_id',
+        'original_parent_id',
+        'is_folder',
+        'file_modified_at',
+        'availability_state',
+        'last_verified_at',
+        'missing_since_at',
+        'is_trashed',
+        'deleted_at',
+    ];
 
     protected $casts = [
         'size' => 'integer',
         'is_folder' => 'boolean',
-        'is_personal' => 'boolean',
+        'is_trashed' => 'boolean',
         'file_modified_at' => 'datetime',
+        'last_verified_at' => 'datetime',
+        'missing_since_at' => 'datetime',
+        'deleted_at' => 'datetime',
     ];
+
+    public function scopeTrashed($query)
+    {
+        return $query->where('is_trashed', true);
+    }
+
+    public function scopeNotTrashed($query)
+    {
+        return $query->where('is_trashed', false);
+    }
 
     public function owner(): BelongsTo
     {
@@ -40,5 +70,10 @@ class File extends Model
     public function shares(): HasMany
     {
         return $this->hasMany(Share::class);
+    }
+
+    public function transcription(): HasOne
+    {
+        return $this->hasOne(Transcription::class, 'file_id');
     }
 }

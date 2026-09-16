@@ -123,6 +123,26 @@
     options = options || {};
     var init = Object.assign({}, options);
     if (init.credentials === undefined) init.credentials = 'same-origin';
+
+    // Auto-inject CSRF token si no se pasó en headers. Sin esto, Laravel
+    // rechaza los POST / PUT / DELETE con 422 antes de que la lógica del
+    // controller corra. El token viene de <meta name="csrf-token"> o de
+    // la cookie XSRF-TOKEN que Laravel rota automáticamente.
+    init.headers = init.headers || {};
+    var alreadyHasCsrf = false;
+    for (var k in init.headers) {
+      if (k && k.toLowerCase() === 'x-csrf-token') { alreadyHasCsrf = true; break; }
+    }
+    if (!alreadyHasCsrf) {
+      var csrf = getCsrfToken();
+      if (csrf) {
+        if (typeof Headers !== 'undefined' && !init.headers instanceof Headers) {
+          // ok
+        }
+        init.headers['X-CSRF-TOKEN'] = csrf;
+      }
+    }
+
     return fetch(url, init).then(function (res) {
       if (isSessionExpiredResponse(res)) {
         triggerSessionExpiredRedirect();

@@ -13,10 +13,14 @@ class UserSessionController extends Controller
 
     public function index(Request $request)
     {
-        $userId = Session::get('user_id');
+        $user = \App\Models\User::find(Session::get('user_id'));
+        if (!$user) {
+            return response()->json(['sessions' => []]);
+        }
+
         $currentSessionId = Session::getId();
 
-        $sessions = UserSession::where('user_id', $userId)
+        $sessions = $user->sessions()
             ->where(function ($q) {
                 $q->whereNull('expires_at')->orWhere('expires_at', '>', now());
             })

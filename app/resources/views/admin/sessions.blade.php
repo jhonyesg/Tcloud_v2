@@ -10,6 +10,8 @@
     globalLifetime: 120,
     loading: true,
     savingSettings: false,
+    killingSessionId: null,
+    killingUserSessionsId: null,
     toast: null,
 
     async init() {
@@ -45,42 +47,58 @@
         );
     },
 
-    async killSession(id) {
-        if (!confirm('¿Cerrar esta sesión?')) return;
-        const isCurrentSession = this.sessions.some(s => s.id === id && s.is_current);
-        const res = await apiFetch('/admin/sessions/' + id, {
-            method: 'DELETE',
-            credentials: 'include',
-            headers: { 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content }
-        });
-        if (res.ok) {
-            this.showToast('Sesión cerrada correctamente', 'success');
-            if (isCurrentSession) {
-                setTimeout(() => window.location.href = '/login', 1200);
-            } else {
-                await this.loadSessions();
+        async killSession(id) {
+            if (!confirm('¿Cerrar esta sesión?')) return;
+            const isCurrentSession = this.sessions.some(s => s.id === id && s.is_current);
+            this.killingSessionId = id;
+            try {
+                const res = await apiFetch('/admin/sessions/' + id, {
+                    method: 'DELETE',
+                    credentials: 'include',
+                    headers: { 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content }
+                });
+                if (res.ok) {
+                    this.showToast('Sesión cerrada correctamente', 'success');
+                    if (isCurrentSession) {
+                        setTimeout(() => window.location.href = '/login', 1200);
+                    } else {
+                        await this.loadSessions();
+                    }
+                } else {
+                    const err = await res.json().catch(() => ({}));
+                    this.showToast(err.error || err.message || 'Error al cerrar la sesión', 'error');
+                }
+            } finally {
+                this.killingSessionId = null;
             }
-        }
-    },
+        },
 
-    async killUserSessions(userId, userEmail) {
-        if (!confirm('¿Cerrar TODAS las sesiones de ' + userEmail + '?')) return;
-        const killingOwnSession = this.sessions.some(s => s.user_id === userId && s.is_current);
-        const res = await apiFetch('/admin/sessions/user/' + userId, {
-            method: 'DELETE',
-            credentials: 'include',
-            headers: { 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content }
-        });
-        if (res.ok) {
-            const data = await res.json();
-            this.showToast(data.message, 'success');
-            if (killingOwnSession) {
-                setTimeout(() => window.location.href = '/login', 1200);
-            } else {
-                await this.loadSessions();
+        async killUserSessions(userId, userEmail) {
+            if (!confirm('¿Cerrar TODAS las sesiones de ' + userEmail + '?')) return;
+            const killingOwnSession = this.sessions.some(s => s.user_id === userId && s.is_current);
+            this.killingUserSessionsId = userId;
+            try {
+                const res = await apiFetch('/admin/sessions/user/' + userId, {
+                    method: 'DELETE',
+                    credentials: 'include',
+                    headers: { 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content }
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    this.showToast(data.message, 'success');
+                    if (killingOwnSession) {
+                        setTimeout(() => window.location.href = '/login', 1200);
+                    } else {
+                        await this.loadSessions();
+                    }
+                } else {
+                    const err = await res.json().catch(() => ({}));
+                    this.showToast(err.error || err.message || 'Error al cerrar las sesiones', 'error');
+                }
+            } finally {
+                this.killingUserSessionsId = null;
             }
-        }
-    },
+        },
 
     async saveGlobalSettings() {
         this.savingSettings = true;
@@ -145,10 +163,16 @@
             <h1 class="text-lg sm:text-2xl font-bold text-slate-800">Sesiones Activas</h1>
             <p class="text-xs sm:text-sm text-slate-500 mt-1">Gestiona las sesiones de todos los usuarios</p>
         </div>
-        <button @click="loadSessions()" class="flex items-center gap-2 px-3 sm:px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-xl text-sm font-medium transition-colors">
-            <i class="fas fa-sync-alt"></i>
-            <span class="hidden sm:inline">Actualizar</span>
-        </button>
+        <div class="flex items-center gap-2">
+            <button onclick="startSessionsTour()" class="flex items-center gap-2 bg-purple-600 hover:bg-purple-700 text-white px-3 py-2 rounded-xl text-sm font-medium transition-colors" title="Guía interactiva">
+                <i class="fas fa-map-marked-alt"></i>
+                <span class="hidden sm:inline">Guía</span>
+            </button>
+            <button @click="loadSessions()" class="flex items-center gap-2 px-3 sm:px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-xl text-sm font-medium transition-colors">
+                <i class="fas fa-sync-alt"></i>
+                <span class="hidden sm:inline">Actualizar</span>
+            </button>
+        </div>
     </div>
 
     <!-- Global Settings -->
@@ -214,9 +238,19 @@
                             <span class="flex-shrink-0 px-2 py-0.5 bg-brand-100 text-brand-700 rounded-full text-xs font-medium" x-text="group.sessions.length + ' sesión(es)'"></span>
                         </div>
                         <button @click="killUserSessions(group.userId, group.email)"
-                                class="flex-shrink-0 flex items-center gap-1 px-2 sm:px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-600 text-xs font-medium rounded-lg transition-colors">
-                            <i class="fas fa-ban"></i>
-                            <span class="hidden sm:inline">Cerrar todas</span>
+                                :disabled="killingUserSessionsId === group.userId"
+                                class="flex-shrink-0 flex items-center gap-1 px-2 sm:px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-600 text-xs font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                            <span x-show="killingUserSessionsId !== group.userId" class="inline-flex items-center gap-1">
+                                <i class="fas fa-ban"></i>
+                                <span class="hidden sm:inline">Cerrar todas</span>
+                            </span>
+                            <span x-show="killingUserSessionsId === group.userId" class="inline-flex items-center gap-1">
+                                <svg class="animate-spin h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                </svg>
+                                <span class="hidden sm:inline">Cerrando...</span>
+                            </span>
                         </button>
                     </div>
 
@@ -234,8 +268,13 @@
                                             <i class="fas fa-circle text-[6px]"></i> Actual
                                         </span>
                                         <button @click="killSession(s.id)"
-                                                class="w-7 h-7 flex items-center justify-center bg-red-50 hover:bg-red-100 text-red-600 rounded-lg transition-colors">
-                                            <i class="fas fa-times text-xs"></i>
+                                                :disabled="killingSessionId === s.id"
+                                                class="w-7 h-7 flex items-center justify-center bg-red-50 hover:bg-red-100 text-red-600 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                                            <i x-show="killingSessionId !== s.id" class="fas fa-times text-xs"></i>
+                                            <svg x-show="killingSessionId === s.id" class="animate-spin h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                            </svg>
                                         </button>
                                     </div>
                                 </div>
@@ -278,8 +317,13 @@
                                                 <i class="fas fa-circle text-[6px]"></i> Esta sesión
                                             </span>
                                             <button @click="killSession(s.id)"
-                                                    class="px-2 py-1 bg-red-50 hover:bg-red-100 text-red-600 text-xs rounded-lg transition-colors">
-                                                <i class="fas fa-times"></i>
+                                                    :disabled="killingSessionId === s.id"
+                                                    class="px-2 py-1 bg-red-50 hover:bg-red-100 text-red-600 text-xs rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                                                <i x-show="killingSessionId !== s.id" class="fas fa-times"></i>
+                                                <svg x-show="killingSessionId === s.id" class="animate-spin h-3 w-3 inline" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                                </svg>
                                             </button>
                                         </td>
                                     </tr>
@@ -292,4 +336,62 @@
         </div>
     </div>
 </div>
+
+<script src="/js/interactive-tour.js?v=20"></script>
+<script>
+function startSessionsTour() {
+    TcloudTour.start({
+        steps: [
+            {
+                title: 'Sesiones Activas',
+                content: 'Desde aquí puedes monitorear todas las sesiones abiertas en la plataforma, cerrar sesiones individuales o masivas, y configurar límites globales de seguridad.',
+                icon: 'fa-user-shield',
+                color: '#6366f1',
+                selector: null,
+                position: 'center'
+            },
+            {
+                title: 'Configuración Global',
+                content: 'Define el máximo de sesiones simultáneas por usuario y la duración global de las sesiones en minutos. 0 significa sin límite o sin expiración.',
+                icon: 'fa-cog',
+                color: '#3b82f6',
+                selector: '.bg-white.rounded-2xl.border.shadow-sm.p-6',
+                position: 'bottom'
+            },
+            {
+                title: 'Búsqueda',
+                content: 'Filtra rápidamente sesiones por email, nombre de usuario o dirección IP para encontrar actividad específica.',
+                icon: 'fa-search',
+                color: '#2563eb',
+                selector: '.p-4.border-b',
+                position: 'bottom'
+            },
+            {
+                title: 'Grupo por Usuario',
+                content: 'Las sesiones se agrupan por usuario. Cada grupo muestra IP, dispositivo, inicio de sesión, última actividad y expiración.',
+                icon: 'fa-users',
+                color: '#4654a8',
+                selector: '.divide-y .p-4:first-of-type',
+                position: 'bottom'
+            },
+            {
+                title: 'Cerrar Sesión',
+                content: 'Usa el botón rojo <strong>×</strong> para cerrar una sesión individual. Si cierras tu propia sesión actual, serás redirigido al login.',
+                icon: 'fa-times-circle',
+                color: '#dc2626',
+                selector: '.divide-y .p-4:first-of-type table tbody tr:first-child td:last-child button',
+                position: 'left'
+            },
+            {
+                title: 'Cerrar Todas',
+                content: 'El botón <strong>Cerrar todas</strong> revoca de inmediato todas las sesiones de ese usuario en todos sus dispositivos.',
+                icon: 'fa-ban',
+                color: '#b91c1c',
+                selector: '.divide-y .p-4:first-of-type .flex.items-center.justify-between button',
+                position: 'left'
+            }
+        ]
+    });
+}
+</script>
 @endsection

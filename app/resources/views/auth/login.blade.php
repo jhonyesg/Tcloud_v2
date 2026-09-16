@@ -398,6 +398,12 @@
                 </div>
             </div>
 
+            <div class="flex justify-end">
+                <a href="{{ route('forgot-password') }}" class="text-xs font-medium transition-colors hover:underline" style="color: var(--color-brand-300);">
+                    ¿Olvidaste tu contraseña?
+                </a>
+            </div>
+
             <button type="submit" id="submitBtn"
                     class="btn-primary relative flex items-center justify-center w-full py-3.5 text-white rounded-xl font-semibold text-sm shadow-lg transition-all duration-200 hover:-translate-y-0.5 hover:shadow-xl overflow-hidden">
                 <span id="btnText">Iniciar Sesión</span>

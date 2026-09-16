@@ -19,10 +19,17 @@ document.addEventListener('alpine:init', () => {
     storageSortDirection: 'asc',
     currentFolder: null,
     currentFolderName: null,
+    highlightFileId: null,
+    cameFromAvisos: false,
     currentStorage: null,
     currentStorageName: null,
     currentStoragePermission: 'read',
     currentStorageCanShare: false,
+    currentStorageTranscriptionAccess: false,
+    storageAccessible: true,
+    storageKind: 'local',
+    storageBannerMessage: '',
+    searchUnreliable: false,
     viewMode: 'storages',
     filesViewMode: localStorage.getItem('files_view_mode') || 'grid',
     selectedFiles: [],
@@ -127,6 +134,7 @@ deleteConfirmFile: null,
         hasMore: false,
         _fetchController: null,
         _fetchMoreController: null,
+        _navGen: 0,
         _prevFolder: null,
         _prevFolderName: null,
         _prevBreadcrumbs: [],
@@ -134,6 +142,14 @@ deleteConfirmFile: null,
         showEmptyState: false,
 
         async init() {
+            // Alpine ejecuta init() dos veces (auto por el objeto + x-init):
+            // la segunda pasada, con availableStorages aún en carrera, caía en
+            // restoreNavState y pizotaba la carpeta del deep-link de mis-avisos.
+            if (this._initDone) return;
+            this._initDone = true;
+            // Mis Archivos ya no persiste nav state en localStorage.
+            // Limpiamos cualquier dato legacy de sesiones anteriores.
+            try { localStorage.removeItem('tcloud_files_nav'); } catch (e) {}
             await Promise.all([
                 this.loadStorages(),
                 apiFetch('/auth/me', { credentials: 'include', headers: { 'Accept': 'application/json' } })
@@ -142,11 +158,34 @@ deleteConfirmFile: null,
             ]);
             const urlParams = new URLSearchParams(window.location.search);
             const urlStorageId = urlParams.get('storage_id');
+            // Deep-link desde /mis-avisos: ?storage_id=X&clip_file=Y&clip_start=S&clip_end=E
+            const deepClip = {
+                fileId: urlParams.get('clip_file') ? parseInt(urlParams.get('clip_file'), 10) : null,
+                start:  urlParams.get('clip_start') !== null ? parseFloat(urlParams.get('clip_start')) : null,
+                end:    urlParams.get('clip_end') !== null ? parseFloat(urlParams.get('clip_end')) : null,
+            };
             if (urlStorageId) {
                 const sid = parseInt(urlStorageId);
                 const storage = this.availableStorages.find(s => s.id === sid);
                 if (storage) {
+                    // El deep-link manda: restoreNavState no debe pisarlo.
+                    this._deepLinkActive = true;
                     this.enterStorage(storage.id, storage.name);
+                    // Deep-link extendido desde mis-avisos: caer en la carpeta
+                    // del medio y resaltar el archivo de la mención.
+                    const urlFolder = urlParams.get('folder') ? parseInt(urlParams.get('folder'), 10) : null;
+                    if (urlFolder) {
+                        this.currentFolder = urlFolder;
+                        this.currentFolderName = urlParams.get('folder_name') || null;
+                        this.loadFiles(false, false, true);
+                    }
+                    const urlHighlight = urlParams.get('highlight_file') ? parseInt(urlParams.get('highlight_file'), 10) : null;
+                    if (urlHighlight) {
+                        this.highlightFileId = urlHighlight;
+                        // Origen mis-avisos (deep-link de Archivos): el editor
+                        // de corte ofrecerá volver al módulo.
+                        this.cameFromAvisos = true;
+                    }
                     history.replaceState(null, '', '/files');
                 } else {
                     await this.restoreNavState();
@@ -155,6 +194,12 @@ deleteConfirmFile: null,
                 await this.restoreNavState();
             }
             this.ready = true;
+            // Si hay deep-link, esperar a que carguen los archivos y abrir editor
+            if (deepClip.fileId) {
+                // Origen mis-avisos (deep-link legacy de corte).
+                this.cameFromAvisos = true;
+                this.$nextTick(() => this.applyDeepClipLink(deepClip));
+            }
             this.$watch('searchQuery', (val) => {
                 clearTimeout(this.searchTimer);
                 if (val.length >= 2) {
@@ -193,6 +238,14 @@ deleteConfirmFile: null,
 
     canCopyMove() {
         return this.currentStoragePermission === 'full';
+    },
+
+    // change mis-archivos-transcript-viewer: feature flag operacional. Default ON.
+    // Si está apagado (env: FEATURE_MIS_ARCHIVOS_TRANSCRIPT_VIEWER=false), el botón
+    // "Ver transcripción" en Mis Archivos se oculta aunque haya transcripción.
+    // El visor en Mis Avisos NO se ve afectado — sigue funcionando siempre.
+    transcriptViewerFeatureEnabled() {
+        return (typeof window !== 'undefined' && window.tcloudFeatures && window.tcloudFeatures.mis_archivos_transcript_viewer_enabled === false) ? false : true;
     },
 
     isSelected(file) {
@@ -234,15 +287,9 @@ deleteConfirmFile: null,
     },
 
     saveNavState() {
-        localStorage.setItem('tcloud_files_nav', JSON.stringify({
-            storageId: this.currentStorage,
-            storageName: this.currentStorageName,
-            storagePermission: this.currentStoragePermission,
-            folderId: this.currentFolder,
-            folderName: this.currentFolderName,
-            breadcrumbs: this.breadcrumbs,
-            viewMode: this.viewMode
-        }));
+        // Mis Archivos ya no persiste nav state en localStorage:
+        // cada carga lee de BD en tiempo real. No-op para mantener
+        // compatibilidad con callers existentes.
     },
 
     clearNavState() {
@@ -250,24 +297,9 @@ deleteConfirmFile: null,
     },
 
     async restoreNavState() {
-        try {
-            const saved = localStorage.getItem('tcloud_files_nav');
-            if (!saved) return;
-            const state = JSON.parse(saved);
-            if (!state.storageId) return;
-            this.currentStorage = state.storageId;
-            this.currentStorageName = state.storageName;
-            const storage = this.availableStorages.find(s => s.id === state.storageId);
-            this.currentStoragePermission = storage ? storage.permissions : 'read';
-            this.currentStorageCanShare = storage ? !!storage.can_create_shares : false;
-            this.currentFolder = state.folderId || null;
-            this.currentFolderName = state.folderName || null;
-            this.breadcrumbs = state.breadcrumbs || [];
-            this.viewMode = 'files';
-            this.loadFiles(false, true, true);
-        } catch (e) {
-            this.clearNavState();
-        }
+        // Mis Archivos no restaura nav state: arranca siempre en raíz
+        // salvo deep-link explícito en la URL (chequeado en init()).
+        return;
     },
 
     setFilesViewMode(mode) {
@@ -334,24 +366,42 @@ deleteConfirmFile: null,
     },
 
     enterStorage(storageId, storageName) {
+        this._navGen++;
         this.currentStorage = storageId;
         this.currentStorageName = storageName;
         const storage = this.availableStorages.find(s => s.id === storageId);
         this.currentStoragePermission = storage ? storage.permissions : 'read';
         this.currentStorageCanShare = storage ? !!storage.can_create_shares : false;
+        this.currentStorageTranscriptionAccess = storage ? !!storage.transcription_access : false;
         this.currentFolder = null;
         this.currentFolderName = null;
         this.breadcrumbs = [];
         this.currentPage = 1;
         this.hasMore = false;
         this.viewMode = 'files';
+        this.highlightFileId = null;
         this.loadFiles(false, false, true);
         this.saveNavState();
     },
 
+    // Deep-link de mis-avisos: localiza la fila resaltada aunque el render
+    // tarde (reintenta); deja de intentarlo cuando el usuario navega solo.
+    scrollToHighlightedFile() {
+        if (!this.highlightFileId) return;
+        const tryScroll = (attempt) => {
+            if (!this.highlightFileId) return;
+            const el = document.getElementById('file-row-' + this.highlightFileId);
+            if (el) { el.scrollIntoView({ block: 'center' }); return; }
+            if (attempt < 8) setTimeout(() => tryScroll(attempt + 1), 250);
+        };
+        tryScroll(0);
+    },
+
     navigateToRoot() {
+        this._navGen++;
         this.currentStorage = null;
         this.currentStorageName = null;
+        this.highlightFileId = null;
         this.currentFolder = null;
         this.currentFolderName = null;
         this.breadcrumbs = [];
@@ -373,8 +423,21 @@ deleteConfirmFile: null,
         let url = '/files?page=1';
         if (this.currentFolder) url += '&parent_id=' + this.currentFolder;
         if (this.currentStorage) url += '&storage_id=' + this.currentStorage;
-        if (forceSync) url += '&sync=1';
+        // prune=1 marca "esto lo pidio una persona": el servidor solo se salta las
+        // guardas de borrado masivo en ese caso. silentSync manda sync=1 a secas.
+        if (forceSync) url += '&sync=1&prune=1';
         if (skipBreadcrumbs) url += '&nb=1';
+        const myGen = this._navGen;
+        const capturedFolder = this.currentFolder;
+        const capturedStorage = this.currentStorage;
+        const staleCleanup = () => {
+            this.isNavigating = false;
+            this.navigatingToId = null;
+            this.isLoadingFiles = false;
+            this.showEmptyState = false;
+            if (this._emptyStateTimer) { clearTimeout(this._emptyStateTimer); this._emptyStateTimer = null; }
+        };
+        const isStale = () => this._navGen !== myGen || this.currentFolder !== capturedFolder || this.currentStorage !== capturedStorage;
 
         apiFetch(url, {
             credentials: 'include',
@@ -388,17 +451,17 @@ deleteConfirmFile: null,
                 this.currentFolder = this._prevFolder;
                 this.currentFolderName = this._prevFolderName;
                 this.breadcrumbs = [...this._prevBreadcrumbs];
-                this.isNavigating = false;
-                this.navigatingToId = null;
-                this.isLoadingFiles = false;
-                this.showEmptyState = false;
-                if (this._emptyStateTimer) { clearTimeout(this._emptyStateTimer); this._emptyStateTimer = null; }
+                staleCleanup();
                 this.showToast('No se pudo cargar la carpeta (' + res.status + '). Intenta de nuevo.', 'error');
                 return null;
             }
             return res.json();
         }).then(data => {
             if (data === null) return;
+            if (isStale()) {
+                staleCleanup();
+                return;
+            }
             const serverData = Array.isArray(data?.files) ? data.files : (Array.isArray(data) ? data : []);
             const serverBreadcrumbs = data?.breadcrumbs ?? [];
             this.files = serverData;
@@ -408,14 +471,30 @@ deleteConfirmFile: null,
                 this.breadcrumbs = serverBreadcrumbs;
             }
             if (forceSync) {
-                const total = data?.pagination?.total ?? serverData.length;
-                const folders = serverData.filter(f => f.is_folder).length;
-                const files = serverData.filter(f => !f.is_folder).length;
-                this.showToast('Directorio actualizado — ' + folders + ' carpetas, ' + files + ' archivos (total: ' + total + ')', 'success');
+                this.reportSync(data?.stats, serverData);
             }
+
+            // Banner de accesibilidad del storage activo.
+            // El backend inyecta storage_accessible + storage_kind en cada
+            // respuesta. El banner se actualiza reactivamente al navegar, sin
+            // recarga completa.
+            if ('storage_accessible' in (data ?? {})) {
+                const accessible = data.storage_accessible !== false;
+                this.storageAccessible = accessible;
+                this.storageKind = data.storage_kind || 'local';
+                this.searchUnreliable = data.search_unreliable === true;
+                this.storageBannerMessage = accessible
+                    ? ''
+                    : `Disco "${data.storage_name || ''}" no disponible — los datos pueden estar desactualizados.`;
+            }
+
             this.isNavigating = false;
             this.navigatingToId = null;
             this.isLoadingFiles = false;
+            // Deep-link de mis-avisos: llevar la vista al archivo de la
+            // mención. Reintenta: el silentSync y los re-renders pueden
+            // llegar después de la primera pasada.
+            if (this.highlightFileId) this.scrollToHighlightedFile();
             if (serverData.length === 0) {
                 this._emptyStateTimer = setTimeout(() => { this.showEmptyState = true; }, 1500);
             } else {
@@ -432,6 +511,7 @@ deleteConfirmFile: null,
             this.isLoadingFiles = false;
             this.showEmptyState = false;
             if (this._emptyStateTimer) { clearTimeout(this._emptyStateTimer); this._emptyStateTimer = null; }
+            if (isStale()) return;
             this.showToast('Error de red al navegar. Intenta de nuevo.', 'error');
         });
     },
@@ -446,6 +526,9 @@ deleteConfirmFile: null,
         if (this.currentFolder) url += '&parent_id=' + this.currentFolder;
         if (this.currentStorage) url += '&storage_id=' + this.currentStorage;
         url += '&nb=1';
+        const myGen = this._navGen;
+        const capturedFolder = this.currentFolder;
+        const capturedStorage = this.currentStorage;
         apiFetch(url, {
             credentials: 'include',
             signal: this._fetchMoreController.signal,
@@ -453,6 +536,10 @@ deleteConfirmFile: null,
         }).then(r => r.ok ? r.json() : null)
         .then(data => {
             if (!data) { this.isLoadingMore = false; return; }
+            if (this._navGen !== myGen || this.currentFolder !== capturedFolder || this.currentStorage !== capturedStorage) {
+                this.isLoadingMore = false;
+                return;
+            }
             const newFiles = Array.isArray(data?.files) ? data.files : [];
             this.files = [...this.files, ...newFiles];
             this.currentPage = data?.pagination?.page ?? nextPage;
@@ -468,11 +555,75 @@ deleteConfirmFile: null,
         this.loadFiles(true);
     },
 
+    /**
+     * Traduce el resultado real del sync a un aviso.
+     *
+     * Antes esto contaba la lista devuelta y siempre salia en verde, incluso
+     * cuando el servidor no habia llegado a escanear — montaje caido, escaneo no
+     * fiable o carpeta tomada por otro proceso devuelven el ultimo estado
+     * conocido de la BD, que es indistinguible de un sync limpio si solo miras
+     * los archivos.
+     */
+    reportSync(stats, serverData) {
+        const folders = serverData.filter(f => f.is_folder).length;
+        const files = serverData.filter(f => !f.is_folder).length;
+        const contenido = folders + ' carpetas, ' + files + ' archivos';
+
+        if (!stats) {
+            this.showToast('Directorio actualizado — ' + contenido, 'success');
+            return;
+        }
+
+        const noEscaneado = {
+            locked: 'otro proceso esta escaneando esta carpeta ahora mismo',
+            mount_detached: 'el disco no esta montado',
+            scan_untrusted: 'el disco no respondio de forma fiable',
+            sync_disabled: 'la sincronizacion esta desactivada',
+            path_missing: 'la ruta ya no existe en disco',
+            path_outside_base: 'la ruta queda fuera del storage',
+            unknown_folder: 'la carpeta ya no existe en la base de datos',
+        }[stats.status];
+
+        if (noEscaneado) {
+            this.showToast('No se pudo actualizar: ' + noEscaneado + '. Se muestra lo ultimo conocido.', 'warning', 7000);
+            return;
+        }
+
+        const cambios = [];
+        if (stats.created) cambios.push(stats.created + ' nuevos');
+        if (stats.updated) cambios.push(stats.updated + ' actualizados');
+        if (stats.deleted) cambios.push(stats.deleted + ' eliminados');
+
+        // Se escaneo bien pero la purga se nego. Con prune=1 el unico motivo
+        // posible es un escaneo parcial; sin permiso, es que no se pidio.
+        if (!stats.pruned && stats.orphans > 0) {
+            const motivo = stats.allowed_to_prune === false
+                ? 'no tienes permiso para eliminarlos'
+                : 'el escaneo fue parcial y no es fiable para borrar';
+            this.showToast(
+                'Sincronizado (' + (cambios.join(', ') || 'sin cambios') + '). Quedan ' +
+                stats.orphans + ' registros que ya no estan en disco: ' + motivo + '.',
+                'warning', 7000
+            );
+            return;
+        }
+
+        this.showToast(
+            cambios.length
+                ? 'Directorio actualizado — ' + cambios.join(', ')
+                : 'Directorio actualizado — sin cambios (' + contenido + ')',
+            'success'
+        );
+    },
+
     async silentSync() {
         if (this.currentPage > 1 || this.viewMode !== 'files' || !this.currentStorage) return;
         let url = '/files?page=1&sync=1&nb=1';
         if (this.currentFolder) url += '&parent_id=' + this.currentFolder;
         if (this.currentStorage) url += '&storage_id=' + this.currentStorage;
+        const myGen = this._navGen;
+        const capturedFolder = this.currentFolder;
+        const capturedStorage = this.currentStorage;
         try {
             const res = await apiFetch(url, {
                 credentials: 'include',
@@ -480,6 +631,7 @@ deleteConfirmFile: null,
             });
             if (!res.ok) return;
             const data = await res.json();
+            if (this._navGen !== myGen || this.currentFolder !== capturedFolder || this.currentStorage !== capturedStorage) return;
             const newFiles = Array.isArray(data?.files) ? data.files : [];
             const fingerprint = (files) =>
                 files.map(f => f.id + ':' + f.name + ':' + (f.size ?? 0) + ':' + (f.updated_at ?? '')).join('|');
@@ -493,6 +645,8 @@ deleteConfirmFile: null,
 
     navigateToFolder(folderId, folderName) {
         if (this.isNavigating || folderId === this.currentFolder) return;
+        this.highlightFileId = null;
+        this._navGen++;
         this._prevFolder = this.currentFolder;
         this._prevFolderName = this.currentFolderName;
         this._prevBreadcrumbs = [...this.breadcrumbs];
@@ -514,6 +668,7 @@ deleteConfirmFile: null,
     },
 
     goToStorageRoot() {
+        this._navGen++;
         this.currentFolder = null;
         this.currentFolderName = null;
         this.breadcrumbs = [];
@@ -525,6 +680,7 @@ deleteConfirmFile: null,
 
     navigateToBreadcrumb(breadcrumb, index) {
         if (this.isNavigating) return;
+        this._navGen++;
         this.breadcrumbs = this.breadcrumbs.slice(0, index);
         this.currentFolder = breadcrumb.id;
         this.currentFolderName = breadcrumb.id === null ? null : breadcrumb.name;
@@ -815,7 +971,7 @@ deleteConfirmFile: null,
         this.selectedShareIds = [];
         this.bulkDeleteLoading = false;
         this.editingShareId = null;
-        this.shareForm = { permissions: 'read', password: '', expires_at: '' };
+        this.shareForm = { permissions: 'read', password: '', expires_at: '', never_expires: false };
         this.shareFeedback = { type: '', message: '' };
         await this.loadFileShares(file.id);
     },
@@ -956,9 +1112,10 @@ deleteConfirmFile: null,
         }
     },
 
-    showToast(msg, type = 'error') {
+    showToast(msg, type = 'error', ms = 4000) {
         this.toast = { msg, type };
-        setTimeout(() => this.toast = null, 4000);
+        if (this._toastTimer) clearTimeout(this._toastTimer);
+        this._toastTimer = setTimeout(() => this.toast = null, ms);
     },
 
     async downloadSelected() {
@@ -1131,7 +1288,9 @@ deleteConfirmFile: null,
             }
         }
         if (errors > 0) {
-            this.showToast(errors + ' elemento(s) no se pudieron eliminar.');
+            this.showToast(errors + ' elemento(s) no se pudieron mover a la papelera.');
+        } else if (toDelete.length > 1) {
+            this.showToast(toDelete.length + ' elementos movidos a la papelera.', 'success', 3500);
         }
     },
 
@@ -1157,7 +1316,7 @@ deleteConfirmFile: null,
         });
         if (res.ok) {
             const data = await res.json();
-            this.fileShares = Array.isArray(data) ? data : (data.shares || []);
+            this.fileShares = Array.isArray(data) ? data : (data.data || data.shares || []);
         }
     },
 
@@ -1176,14 +1335,15 @@ deleteConfirmFile: null,
                 file_id: this.selectedFile.id,
                 permissions: this.shareForm.permissions,
                 password: this.shareForm.password || null,
-                expires_at: this.shareForm.expires_at || null
+                expires_at: this.shareForm.expires_at || null,
+                never_expires: !!this.shareForm.never_expires
             })
         });
 
         if (res.ok) {
             const newShare = await res.json();
             this.fileShares.push(newShare);
-            this.shareForm = { permissions: 'read', password: '', expires_at: '' };
+            this.shareForm = { permissions: 'read', password: '', expires_at: '', never_expires: false };
             this.shareFeedback = { type: 'success', message: 'Enlace generado correctamente' };
             setTimeout(() => this.shareFeedback = { type: '', message: '' }, 3000);
         } else {
@@ -1239,22 +1399,30 @@ deleteConfirmFile: null,
         if (!this.selectedShareIds.length) return;
         this.bulkDeleteLoading = true;
         const ids = [...this.selectedShareIds];
-        const results = await Promise.all(ids.map(id =>
-            apiFetch('/shares/' + id, {
-                method: 'DELETE',
-                credentials: 'include',
-                headers: { 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content, 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
-            }).then(r => ({ id, ok: r.ok }))
-        ));
-        const succeeded = results.filter(r => r.ok).map(r => r.id);
-        const failed = results.filter(r => !r.ok).length;
-        this.fileShares = this.fileShares.filter(s => !succeeded.includes(s.id));
-        this.selectedShareIds = this.selectedShareIds.filter(id => !succeeded.includes(id));
-        this.bulkDeleteLoading = false;
-        if (failed > 0) {
-            this.showToast(succeeded.length + ' eliminados, ' + failed + ' fallaron', 'error');
-        } else {
-            this.showToast(succeeded.length + ' enlace(s) eliminado(s)', 'success');
+        try {
+            const headers = { 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content, 'Accept': 'application/json', 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' };
+            const previewRes = await apiFetch('/shares/bulk-preview', {
+                method: 'POST', credentials: 'include', headers,
+                body: JSON.stringify({ ids })
+            });
+            const preview = await previewRes.json().catch(() => ({}));
+            if (!previewRes.ok) throw new Error(preview.error || 'No se pudo previsualizar la eliminación');
+            if (!confirm('Se eliminarán definitivamente ' + preview.count + ' enlace(s). Los archivos no serán eliminados. ¿Continuar?')) return;
+
+            const res = await apiFetch('/shares/bulk-delete', {
+                method: 'POST', credentials: 'include', headers,
+                body: JSON.stringify({ ids, confirm_count: preview.count })
+            });
+            const result = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(result.error || 'No se pudo completar la depuración');
+            const succeeded = ids.filter(id => !(result.omitted_ids || []).includes(id));
+            this.fileShares = this.fileShares.filter(s => !succeeded.includes(s.id));
+            this.selectedShareIds = this.selectedShareIds.filter(id => !succeeded.includes(id));
+            this.showToast((result.deleted_count || 0) + ' enlace(s) eliminado(s)', 'success');
+        } catch (e) {
+            this.showToast(e.message, 'error');
+        } finally {
+            this.bulkDeleteLoading = false;
         }
     },
 
@@ -1282,7 +1450,8 @@ deleteConfirmFile: null,
         this.editingShareId = share.id;
         this.editingShareData = {
             permissions: share.permissions,
-            expires_at: share.expires_at ? share.expires_at.slice(0, 16) : ''
+            expires_at: share.expires_at ? share.expires_at.slice(0, 16) : '',
+            never_expires: !share.expires_at
         };
     },
 
@@ -1298,7 +1467,8 @@ deleteConfirmFile: null,
             },
             body: JSON.stringify({
                 permissions: this.editingShareData.permissions,
-                expires_at: this.editingShareData.expires_at || null
+                expires_at: this.editingShareData.expires_at || null,
+                never_expires: !!this.editingShareData.never_expires
             })
         });
 
@@ -1467,6 +1637,67 @@ deleteConfirmFile: null,
         this.clipOutTimeInput = '';
         this.showClipModal = true;
         this.$nextTick(() => this.initClipPlayer(file));
+    },
+
+    /**
+     * Deep-link desde /mis-avisos: dado {fileId, start, end}, abre el
+     * MISMO editor que "openClipEditor" (un solo lugar para mantenerlo)
+     * con los puntos de inicio/fin pre-llenados. Si el archivo está en
+     * una subcarpeta, navega al padre y luego lo busca en this.files.
+     */
+    async applyDeepClipLink(deepClip) {
+        if (!this.canUseMediaEditor) return;
+        try {
+            const resp = await apiFetch('/files/' + deepClip.fileId, {
+                headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+                credentials: 'include',
+            });
+            if (!resp.ok) { console.warn('deep-clip: file fetch failed', resp.status); return; }
+            const fileData = await resp.json();
+            const parentId = fileData.parent_id || null;
+            // Si está en una subcarpeta, navega al padre (alpine state) y
+            // refresca this.files; si está en la raíz, los archivos ya están
+            // cargados y podemos abrir directo.
+            const openFromCurrent = () => {
+                this.$nextTick(() => {
+                    let filesDone = false;
+                    let readyDone = false;
+                    this.$watch('files', (files) => {
+                        if (filesDone) return;
+                        const f = (files || []).find(x => !x.is_folder && x.id === deepClip.fileId);
+                        if (!f) return;
+                        filesDone = true;
+                        this.openClipEditor(f);
+                        this.$watch('clipReady', (ready) => {
+                            if (readyDone || !ready) return;
+                            readyDone = true;
+                            if (deepClip.start !== null && !Number.isNaN(deepClip.start)) {
+                                this.clipSelStart = deepClip.start;
+                                this.clipInTimeInput = this.formatClipTime(deepClip.start);
+                            }
+                            if (deepClip.end !== null && !Number.isNaN(deepClip.end)) {
+                                this.clipSelEnd = deepClip.end;
+                                this.clipOutTimeInput = this.formatClipTime(deepClip.end);
+                            }
+                        });
+                    });
+                    // Seguridad: si el archivo no aparece, soltamos el flag
+                    setTimeout(() => { filesDone = true; }, 15000);
+                });
+            };
+            if (parentId && parentId !== this.currentFolder) {
+                // Navega al padre. setCurrentFolder/setBreadcrumb internos
+                // pueden variar; lo más portable es llamar loadFiles con el
+                // parent y reconstruir breadcrumb manualmente.
+                this.currentFolder = parentId;
+                this.currentFolderName = fileData.name ? '(padre)' : '';
+                this.breadcrumbs = [{ id: parentId, name: this.currentFolderName }];
+                await this.loadFiles(false, false, true);
+            }
+            openFromCurrent();
+        } catch (e) {
+            console.warn('deep-clip: error', e);
+        }
     },
 
     closeClipModal() {
@@ -2199,14 +2430,39 @@ deleteConfirmFile: null,
                     </svg>
                     <span class="hidden sm:inline">Subir Archivo</span>
                 </button>
-                <button onclick="startFilesTour()" class="flex items-center gap-1 sm:gap-2 bg-purple-600 hover:bg-purple-700 text-white px-2 sm:px-4 py-2 rounded-lg transition-colors" title="Tour interactivo">
+                <button onclick="startFilesTour()" class="flex items-center gap-1 sm:gap-2 bg-purple-600 hover:bg-purple-700 text-white px-2 sm:px-4 py-2 rounded-lg transition-colors" title="Guía interactiva">
                     <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-1.447-.894L15 9m0 8V9m0 0L9 7"/>
                     </svg>
-                    <span class="hidden sm:inline">Tour</span>
+                    <span class="hidden sm:inline">Guía</span>
                 </button>
             </div>
         </div>
+
+        {{-- Banner de accesibilidad del storage activo. Visible solo cuando
+             el storage existe, está en viewMode 'files' y NO está accesible.
+             kind='external' (NFS/SMB) colorea ámbar; kind='local' colorea rojo. --}}
+        <div class="px-3 py-2 sm:px-6 sm:py-3"
+             x-show="viewMode === 'files' && !storageAccessible && storageBannerMessage"
+             x-transition>
+            <div :class="storageKind === 'external'
+                          ? 'bg-amber-50 border border-amber-300 text-amber-900'
+                          : 'bg-red-50 border border-red-300 text-red-900'"
+                 class="flex items-start gap-3 rounded-lg p-3 text-sm">
+                <svg class="w-5 h-5 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                          d="M12 9v2m0 4h.01M4.93 19h14.14c1.54 0 2.5-1.67 1.73-3L13.73 4a2 2 0 00-3.46 0L3.2 16c-.77 1.33.19 3 1.73 3z"/>
+                </svg>
+                <div class="flex-1">
+                    <p class="font-medium" x-text="storageBannerMessage"></p>
+                    <p class="text-xs mt-1 opacity-80"
+                       x-show="searchUnreliable">
+                        Los resultados de búsqueda pueden no corresponderse con el disco actual.
+                    </p>
+                </div>
+            </div>
+        </div>
+
         <div class="px-3 py-2 sm:px-6 sm:py-3 bg-slate-50 border-t border-slate-100" x-show="viewMode === 'files'">
             <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-4">
                 <!-- Breadcrumb normal -->
@@ -2460,8 +2716,9 @@ deleteConfirmFile: null,
                 <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2 sm:gap-4" x-show="viewMode === 'files' && files.length > 0 && filesViewMode === 'grid'"
                      @click.self="clearSelection()">
                     <template x-for="file in sortedFiles()" :key="file.id">
-                        <div class="group relative bg-slate-50 hover:bg-blue-50 border border-slate-200 hover:border-blue-300 rounded-xl p-2 sm:p-4 cursor-pointer transition-all"
-                             :class="[isSelected(file) ? 'ring-2 ring-blue-500 bg-blue-50 border-blue-300' : '', navigatingToId === file.id ? 'opacity-60 pointer-events-none' : '']"
+                        <div :id="'file-row-' + file.id"
+                             class="group relative bg-slate-50 hover:bg-blue-50 border border-slate-200 hover:border-blue-300 rounded-xl p-2 sm:p-4 cursor-pointer transition-all"
+                             :class="[isSelected(file) ? 'ring-2 ring-blue-500 bg-blue-50 border-blue-300' : '', highlightFileId === file.id ? 'ring-2 ring-amber-400 bg-amber-50 border-amber-300' : '', navigatingToId === file.id ? 'opacity-60 pointer-events-none' : '']"
                              @click.ctrl.prevent.stop="toggleSelect(file)">
                             <div class="absolute top-1.5 left-1.5 z-10 opacity-0 group-hover:opacity-100 transition-opacity"
                                  :class="isSelected(file) ? 'opacity-100' : ''"
@@ -2622,8 +2879,9 @@ deleteConfirmFile: null,
                         </thead>
                         <tbody class="divide-y divide-slate-200">
                             <template x-for="file in sortedFiles()" :key="file.id">
-                                <tr class="cursor-pointer transition-colors"
-                                    :class="[isSelected(file) ? 'bg-blue-50' : 'hover:bg-slate-50', navigatingToId === file.id ? 'opacity-60 pointer-events-none' : '']"
+                                <tr :id="'file-row-' + file.id"
+                                    class="cursor-pointer transition-colors"
+                                    :class="[isSelected(file) ? 'bg-blue-50' : 'hover:bg-slate-50', highlightFileId === file.id ? 'bg-amber-50 ring-1 ring-inset ring-amber-400' : '', navigatingToId === file.id ? 'opacity-60 pointer-events-none' : '']"
                                     @click="file.is_folder ? navigateToFolder(file.id, file.name) : openViewer(file)"
                                     @click.ctrl.prevent.stop="toggleSelect(file)">
                                     <td class="px-2 sm:px-3 py-2 sm:py-3 text-center w-8" @click.stop>
@@ -2714,6 +2972,18 @@ deleteConfirmFile: null,
                                             <button x-show="currentStorageCanShare" @click.stop="openDetailModal(file)" class="p-1.5 sm:p-2 hover:bg-slate-200 rounded-lg transition-colors" title="Compartir">
                                                 <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z"/>
+                                                </svg>
+                                            </button>
+                                            {{-- Botón "Ver transcripción" (change mis-archivos-transcript-viewer):
+                                                 aparece solo si el cliente tiene acceso a la transcripción
+                                                 del storage activo, el archivo es video/audio y existe una
+                                                 transcripción done. --}}
+                                            <button x-show="transcriptViewerFeatureEnabled() && !file.is_folder && (isVideo(file.mime_type) || isAudio(file.mime_type)) && file.transcription_id && currentStorageTranscriptionAccess"
+                                                    @click.stop="Alpine.store('transcriptViewer').openFor({ file_id: file.id, transcription_id: file.transcription_id })"
+                                                    class="p-1.5 sm:p-2 bg-amber-100 hover:bg-amber-200 text-amber-700 rounded-lg transition-colors"
+                                                    title="Ver transcripción">
+                                                <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2zM12 8v4m0 0v4m0-4h4m-4 0H8"/>
                                                 </svg>
                                             </button>
                                             <button x-show="isClippable(file)" @click.stop="openClipEditor(file)" class="p-1.5 sm:p-2 bg-violet-100 hover:bg-violet-200 text-violet-600 rounded-lg transition-colors" title="Editor de corte">
@@ -2990,7 +3260,10 @@ deleteConfirmFile: null,
                                     <option value="upload">Subida</option>
                                     <option value="full">Completo</option>
                                 </select>
-                                <input type="datetime-local" x-model="shareForm.expires_at" class="w-full border border-purple-200 px-3 py-1.5 rounded-lg text-sm focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none" placeholder="Expira (opcional)">
+                                 <div class="flex items-center gap-2">
+                                     <input type="datetime-local" x-model="shareForm.expires_at" :disabled="shareForm.never_expires" class="w-full border border-purple-200 px-3 py-1.5 rounded-lg text-sm focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none" placeholder="Expira">
+                                     <label class="flex items-center gap-1 text-[11px] text-purple-700 whitespace-nowrap"><input type="checkbox" x-model="shareForm.never_expires" class="rounded text-purple-600"> Nunca</label>
+                                 </div>
                             </div>
                             <input type="password" x-model="shareForm.password" autocomplete="new-password" class="w-full border border-purple-200 px-3 py-1.5 rounded-lg text-sm mb-2 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none" placeholder="Contraseña (opcional)">
                             <button @click="generateShareLink()" class="w-full bg-purple-600 hover:bg-purple-700 text-white px-3 py-1.5 rounded-lg text-sm transition-colors flex items-center justify-center gap-2">
@@ -3071,11 +3344,14 @@ deleteConfirmFile: null,
                                                         'bg-yellow-100 text-yellow-800': share.permissions === 'upload',
                                                         'bg-green-100 text-green-800': share.permissions === 'full'
                                                     }" x-text="share.permissions"></span>
-                                                    <span class="text-xs text-slate-500" x-text="formatDate(share.created_at)"></span>
+                                                     <span class="text-xs text-slate-500" x-text="share.expiry_status === 'expired' ? 'Expirado' : (share.expires_at ? formatDate(share.expires_at) : 'Sin vencimiento')"></span>
                                                 </div>
                                             </div>
                                             <p class="text-sm text-slate-600 mb-2 truncate" :title="window.location.origin + '/s/' + share.token" x-text="truncateUrl(window.location.origin + '/s/' + share.token, 40)"></p>
-                                            <div class="flex gap-2">
+                                             <div class="flex items-center gap-2 mb-2 text-xs">
+                                                 <span :class="share.file?.availability_state === 'missing' ? 'text-orange-600' : (share.file?.availability_state === 'available' ? 'text-green-600' : 'text-slate-400')" x-text="share.file?.availability_state === 'missing' ? 'Archivo no disponible' : (share.file?.availability_state === 'available' ? 'Archivo disponible' : 'Archivo no verificado')"></span>
+                                             </div>
+                                             <div class="flex gap-2">
                                                 <button @click="copyShareLink(share.token)" class="flex-1 flex items-center justify-center gap-1 bg-blue-100 hover:bg-blue-200 text-blue-700 px-2 py-1 rounded text-xs transition-colors">
                                                     <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
@@ -3105,7 +3381,10 @@ deleteConfirmFile: null,
                                                     <option value="upload">Subida</option>
                                                     <option value="full">Completo</option>
                                                 </select>
-                                                <input type="datetime-local" x-model="editingShareData.expires_at" class="w-full border border-slate-300 px-2 py-1 rounded text-sm">
+                                                 <div class="flex items-center gap-2">
+                                                     <input type="datetime-local" x-model="editingShareData.expires_at" :disabled="editingShareData.never_expires" class="w-full border border-slate-300 px-2 py-1 rounded text-sm">
+                                                     <label class="flex items-center gap-1 text-[11px] whitespace-nowrap"><input type="checkbox" x-model="editingShareData.never_expires" class="rounded text-blue-600"> Nunca</label>
+                                                 </div>
                                             </div>
                                             <div class="flex gap-2">
                                                 <button @click="saveShareLink(share.id)" class="flex-1 bg-green-600 hover:bg-green-700 text-white px-2 py-1 rounded text-xs transition-colors">
@@ -3499,6 +3778,15 @@ deleteConfirmFile: null,
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
                 </svg>
                 Salir
+            </button>
+            <!-- Volver al módulo de avisos: solo si la sesión entró desde allí -->
+            <button x-show="cameFromAvisos" @click="window.location.href = '/mis-avisos'"
+                    class="flex items-center gap-1.5 text-xs sm:text-sm font-medium text-brand-700 hover:text-brand-900 transition-colors px-2.5 sm:px-4 py-1.5 sm:py-2 rounded-lg hover:bg-brand-50 border border-brand-300 flex-shrink-0"
+                    title="Volver al módulo de Mis Avisos">
+                <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+                </svg>
+                Volver a Mis Avisos
             </button>
             <div class="w-px h-5 bg-slate-200 hidden sm:block"></div>
             <svg class="w-4 h-4 text-violet-600 flex-shrink-0 hidden sm:block" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -4277,7 +4565,7 @@ deleteConfirmFile: null,
     <!-- Toast global -->
     <div x-cloak x-show="toast" x-transition
          class="fixed bottom-6 left-1/2 -translate-x-1/2 z-[9999] flex items-center gap-3 px-5 py-3 rounded-xl shadow-xl text-white text-sm font-medium pointer-events-none"
-         :class="toast?.type === 'success' ? 'bg-green-600' : 'bg-red-600'">
+         :class="toast?.type === 'success' ? 'bg-green-600' : (toast?.type === 'warning' ? 'bg-amber-600' : 'bg-red-600')">
         <svg x-show="toast?.type !== 'success'" class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.293 4.293a1 1 0 011.414 0L21 13.586V19a2 2 0 01-2 2H5a2 2 0 01-2-2v-5.414L10.293 4.293z"/>
         </svg>
@@ -4294,25 +4582,122 @@ deleteConfirmFile: null,
     100% { transform: scale(1); box-shadow: 0 0 8px rgba(124,58,237,0.3); }
 }
 </style>
-<script src="/js/interactive-tour.js"></script>
+<script src="/js/interactive-tour.js?v=20"></script>
 <script>
 function startFilesTour() {
+    // Obtener Alpine dinámicamente cada vez que se necesite
+    function getAlpine() {
+        // Buscar todos los elementos con x-data y encontrar el que tiene fileManager (viewMode)
+        var allData = document.querySelectorAll('[x-data]');
+        for (var i = 0; i < allData.length; i++) {
+            var el = allData[i];
+            if (el._x_dataStack && el._x_dataStack[0]) {
+                var data = el._x_dataStack[0];
+                if (data.viewMode !== undefined || (data.availableStorages && data.availableStorages.length > 0)) {
+                    return data;
+                }
+            }
+        }
+        // Fallback al primero
+        var first = document.querySelector('[x-data]');
+        return first ? (first._x_dataStack ? first._x_dataStack[0] : null) : null;
+    }
+
+    // Helper: entrar al storage personal y esperar a que cargue
+    function enterPersonalStorage(callback) {
+        var alpine = getAlpine();
+        if (!alpine) { if (callback) callback(); return; }
+
+        // Esperar a que Alpine cargue los storages si aún no están listos
+        var waitForStorages = function () {
+            var a = getAlpine();
+            if (!a) { if (callback) callback(); return; }
+
+            // Si aún no hay storages, esperar un poco más
+            if (!a.availableStorages || a.availableStorages.length === 0) {
+                setTimeout(waitForStorages, 300);
+                return;
+            }
+
+            // Si no estamos en vista de storages, ir al root
+            if (a.viewMode !== 'storages') {
+                if (typeof a.navigateToRoot === 'function') {
+                    a.navigateToRoot();
+                }
+            }
+
+            // Re-obtener alpine fresco después de navigateToRoot
+            a = getAlpine();
+            if (!a || !a.availableStorages || a.availableStorages.length === 0) {
+                if (callback) callback();
+                return;
+            }
+
+            var personal = a.availableStorages.find(s => s.is_personal);
+            if (personal) {
+                a.enterStorage(personal.id, personal.name);
+                // Esperar a que termine de cargar archivos
+                var attempts = 0;
+                var interval = setInterval(function () {
+                    attempts++;
+                    var currentAlpine = getAlpine();
+                    if (!currentAlpine) {
+                        clearInterval(interval);
+                        if (callback) callback();
+                        return;
+                    }
+                    if (currentAlpine.viewMode === 'files' || attempts > 30) {
+                        clearInterval(interval);
+                        // Esperar extra para que Alpine renderice los archivos en el DOM
+                        setTimeout(function () { if (callback) callback(); }, 800);
+                    }
+                }, 200);
+                return;
+            }
+
+            if (callback) callback();
+        };
+
+        waitForStorages();
+    }
+
+    // Helper: forzar visibilidad de botones de acción durante el tour
+    var tourStyleId = 'tour-force-actions-visible';
+    function forceActionButtonsVisible() {
+        if (document.getElementById(tourStyleId)) return;
+        var style = document.createElement('style');
+        style.id = tourStyleId;
+        style.textContent = '.group button[style*="opacity"], .group .opacity-0, .group .sm\\:opacity-0 { opacity: 1 !important; }';
+        document.head.appendChild(style);
+    }
+    function clearForceActionButtons() {
+        var s = document.getElementById(tourStyleId);
+        if (s) s.remove();
+    }
+    // Limpiar estilo al cerrar tour
+    var origDismiss = TcloudTour.dismiss;
+    TcloudTour.dismiss = function() {
+        clearForceActionButtons();
+        origDismiss.call(TcloudTour);
+    };
+
     TcloudTour.start({
         steps: [
             {
-                title: 'Bienvenido a Mis Archivos',
-                content: 'Aqui puedes explorar todos tus storages, subir archivos, organizarlos en carpetas y editarlos. ' +
-                         'Este tour te guia por todas las funciones disponibles.',
+                title: 'Primeros pasos: Mis Archivos',
+                content: 'Bienvenido a tu espacio de archivos. Aquí puedes gestionar tus storages personales, acceder a storages compartidos, subir archivos, crear carpetas y organizar tu contenido. ' +
+                         'Esta guía te muestra paso a paso cómo funciona todo.',
                 icon: 'fa-hand-wave',
                 color: '#6366f1',
                 selector: null,
                 position: 'center',
             },
             {
-                title: 'Storages',
-                content: 'Cada storage es un espacio de almacenamiento asignado a tu usuario. ' +
-                         'Los storages personales (icono amarillo) son solo para ti. Los compartidos (icono azul) pueden ser usados por varios usuarios. ' +
-                         '<strong>Click en un storage</strong> para ver sus archivos.',
+                title: 'Tus Storages',
+                content: 'Estos son tus espacios de almacenamiento. ' +
+                         '<strong>Storages personales</strong> (icono ámbar) son tuyos exclusivamente. ' +
+                         '<strong>Storages compartidos</strong> (icono azul) son gestionados por un administrador y te asignan permisos según tu rol. ' +
+                         'Si no ves storages de gestores, es porque aún no te han sido asignados.',
                 icon: 'fa-database',
                 color: '#3b82f6',
                 selector: function () {
@@ -4320,95 +4705,410 @@ function startFilesTour() {
                 },
                 position: 'bottom',
                 onShow: function () {
-                    var alpine = document.querySelector('[x-data]')._x_dataStack[0];
-                    if (alpine.viewMode !== 'storages') alpine.navigateToRoot();
+                    var alpine = getAlpine();
+                    if (alpine && alpine.viewMode !== 'storages' && typeof alpine.navigateToRoot === 'function') {
+                        alpine.navigateToRoot();
+                    }
+                },
+            },
+            {
+                title: 'Tu Storage Personal',
+                content: 'Aquí se muestran los archivos y carpetas de tu <strong>storage personal</strong>. ' +
+                         'Las <strong>carpetas</strong> se abren con doble click. Los <strong>archivos</strong> se abren con un click para verlos o reproducirlos. ' +
+                         'Si tu storage está vacío, usa el botón azul <strong>Subir Archivo</strong> o crea una carpeta.',
+                icon: 'fa-folder-open',
+                color: '#f59e0b',
+                selector: function () {
+                    var el = document.querySelector('.group.relative.bg-slate-50');
+                    if (el) return el;
+                    var area = document.querySelector('[x-show="viewMode === \'files\' && files.length > 0"]') ||
+                               document.querySelector('.grid.grid-cols-2.sm\\:grid-cols-3.md\\:grid-cols-4');
+                    if (area && area.offsetParent !== null) return area;
+                    return document.querySelector('[x-show="viewMode === \'files\'"]') || null;
+                },
+                position: 'bottom',
+                async: true,
+                onShow: function (done) {
+                    // Navegar automáticamente al storage personal antes de que el tooltip aparezca
+                    enterPersonalStorage(function () {
+                        // Después de cargar, llamar done() para que el tour renderice el paso con el target correcto
+                        if (done) done();
+                    });
                 },
             },
             {
                 title: 'Subir Archivos',
-                content: 'Una vez dentro de un storage, usa este boton para <strong>subir archivos</strong>. ' +
-                         'Tambien puedes arrastrar y soltar archivos directamente en el area de contenido.',
+                content: 'Usa este botón para <strong>subir archivos</strong> desde tu computadora. ' +
+                         'También puedes <strong>arrastrar y soltar</strong> archivos directamente sobre el área de contenido. ' +
+                         'Nota: esta acción requiere permiso de escritura. Si no lo ves, tu storage es de solo lectura.',
                 icon: 'fa-upload',
                 color: '#2563eb',
                 selector: 'button[title="Subir archivo"]',
                 position: 'bottom',
                 onShow: function () {
-                    var alpine = document.querySelector('[x-data]')._x_dataStack[0];
-                    if (alpine.viewMode === 'storages' && alpine.availableStorages.length > 0) {
-                        alpine.enterStorage(alpine.availableStorages[0].id, alpine.availableStorages[0].name);
-                    }
+                    enterPersonalStorage();
                 },
             },
             {
-                title: 'Recortar (Editor de Corte)',
-                content: 'Para archivos de audio o video, este boton abre el <strong>Editor de Corte</strong>. ' +
-                         'Puedes seleccionar un segmento del video/audio, recortarlo, crear secuencias de multiples segmentos ' +
-                         'y exportar el resultado. El editor incluye linea de tiempo, miniaturas y preview.',
-                icon: 'fa-cut',
-                color: '#8b5cf6',
-                selector: 'button[title="Editor de corte"]',
-                position: 'bottom',
-            },
-            {
-                title: 'Descargar',
-                content: 'Descarga archivos individuales o carpetas completas (como ZIP). ' +
-                         'Si seleccionas multiples archivos, aparece una barra con la opcion de descargar todo en un solo ZIP.',
-                icon: 'fa-download',
-                color: '#16a34a',
-                selector: 'button[title="Descargar"]',
-                position: 'bottom',
-            },
-            {
-                title: 'Copiar',
-                content: '<strong>Copiar</strong> duplica el archivo en otra carpeta dentro del mismo storage. ' +
-                         'El archivo original se mantiene en su ubicacion. Se abre un navegador de carpetas para elegir el destino.',
-                icon: 'fa-copy',
+                title: 'Crear Carpeta',
+                content: 'Organiza tus archivos creando carpetas dentro de tu storage. ' +
+                         'Usa el botón <strong>+ Nueva Carpeta</strong> y asigna un nombre. ' +
+                         'Esta acción requiere permiso de escritura.',
+                icon: 'fa-folder-plus',
                 color: '#3b82f6',
-                selector: 'button[title="Copiar"]',
+                selector: 'button[title="Nueva carpeta"]',
                 position: 'bottom',
+                onShow: function () {
+                    enterPersonalStorage();
+                },
             },
             {
-                title: 'Mover',
-                content: '<strong>Mover</strong> transfiere el archivo a otra carpeta dentro del storage. ' +
-                         'El archivo desaparece de su ubicacion original y aparece en la carpeta destino. ' +
-                         'Se abre un navegador de carpetas para elegir el destino.',
-                icon: 'fa-arrows-alt',
-                color: '#6366f1',
-                selector: 'button[title="Mover"]',
+                title: 'Vista de Lista: encabezados',
+                content: 'Estás en <strong>vista de lista</strong>. La tabla muestra cuatro columnas: ' +
+                         '<strong>Nombre</strong>, <strong>Tamaño</strong>, <strong>Fecha</strong> y <strong>Acciones</strong>. ' +
+                         '<span style="color:#3b82f6"><strong>Cada encabezado es clicable y ordena la lista</strong></span>: ' +
+                         'por nombre alfabético (A→Z o Z→A), por tamaño (más pequeño→más grande) o por fecha (más antiguo→más reciente). ' +
+                         'A continuación verás cada encabezado en detalle.',
+                icon: 'fa-table',
+                color: '#3b82f6',
+                selector: function () {
+                    // El primer th ordenable (Nombre) es el target
+                    var ths = document.querySelectorAll('thead th');
+                    for (var i = 0; i < ths.length; i++) {
+                        if (ths[i].textContent.indexOf('Nombre') !== -1) {
+                            return ths[i];
+                        }
+                    }
+                    return null;
+                },
                 position: 'bottom',
+                async: true,
+                onShow: function (done) {
+                    enterPersonalStorage(function () {
+                        forceActionButtonsVisible();
+                        var a = getAlpine();
+                        if (a && a.filesViewMode !== 'list') {
+                            a.setFilesViewMode('list');
+                        }
+                        setTimeout(function () {
+                            var ths = document.querySelectorAll('thead th');
+                            for (var i = 0; i < ths.length; i++) {
+                                if (ths[i].textContent.indexOf('Nombre') !== -1) {
+                                    ths[i].scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+                                    break;
+                                }
+                            }
+                            setTimeout(function () { if (done) done(); }, 350);
+                        }, 400);
+                    });
+                },
             },
             {
-                title: 'Renombrar',
-                content: 'Cambia el nombre del archivo o carpeta. Solo haz click y escribe el nuevo nombre. ' +
-                         'Presiona Enter para guardar o Escape para cancelar.',
-                icon: 'fa-pen',
+                title: 'Ordenar por Nombre',
+                content: 'Haz clic en <strong>Nombre</strong> para ordenar alfabéticamente. ' +
+                         '<strong>↑</strong> = A → Z, <strong>↓</strong> = Z → A. ' +
+                         'La flecha azul indica la columna activa. Vuelve a hacer clic para invertir el orden.',
+                icon: 'fa-sort-alpha-down',
+                color: '#3b82f6',
+                selector: 'th[\\@click="sortFiles(\'name\')"]',
+                position: 'bottom',
+                async: true,
+                onShow: function (done) {
+                    enterPersonalStorage(function () {
+                        var a = getAlpine();
+                        if (a && a.filesViewMode !== 'list') {
+                            a.setFilesViewMode('list');
+                        }
+                        setTimeout(function () {
+                            var th = document.querySelector('th[\\@click="sortFiles(\'name\')"]');
+                            if (th) {
+                                th.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+                                setTimeout(function () { if (done) done(); }, 250);
+                            } else {
+                                if (done) done();
+                            }
+                        }, 400);
+                    });
+                },
+            },
+            {
+                title: 'Ordenar por Tamaño',
+                content: 'Haz clic en <strong>Tamaño</strong> (oculto en móvil) para ordenar por tamaño de archivo. ' +
+                         '<strong>↑</strong> = más pequeño primero, <strong>↓</strong> = más grande primero. ' +
+                         'Útil para encontrar los archivos más pesados.',
+                icon: 'fa-sort-amount-down',
                 color: '#f59e0b',
-                selector: 'button[title="Renombrar"]',
+                selector: 'th[\\@click="sortFiles(\'size\')"]',
                 position: 'bottom',
+                async: true,
+                onShow: function (done) {
+                    enterPersonalStorage(function () {
+                        var a = getAlpine();
+                        if (a && a.filesViewMode !== 'list') {
+                            a.setFilesViewMode('list');
+                        }
+                        setTimeout(function () {
+                            var th = document.querySelector('th[\\@click="sortFiles(\'size\')"]');
+                            if (th) {
+                                th.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+                                setTimeout(function () { if (done) done(); }, 250);
+                            } else {
+                                if (done) done();
+                            }
+                        }, 400);
+                    });
+                },
             },
             {
-                title: 'Eliminar',
-                content: '<strong>Elimina</strong> el archivo o carpeta permanentemente. ' +
-                         'Te pedira confirmacion antes de borrar. ' +
-                         'Tambien puedes seleccionar multiples archivos y eliminarlos en lote.',
-                icon: 'fa-trash',
-                color: '#dc2626',
-                selector: 'button[title="Eliminar"]',
+                title: 'Ordenar por Fecha',
+                content: 'Haz clic en <strong>Fecha</strong> (oculto en móvil) para ordenar por fecha de modificación. ' +
+                         '<strong>↓</strong> (descendente) muestra los más recientes arriba, que es el orden por defecto. ' +
+                         '<strong>↑</strong> (ascendente) lleva los más antiguos al inicio. ' +
+                         'Útil para ver el historial cronológico.',
+                icon: 'fa-calendar-alt',
+                color: '#7c3aed',
+                selector: 'th[\\@click="sortFiles(\'date\')"]',
                 position: 'bottom',
+                async: true,
+                onShow: function (done) {
+                    enterPersonalStorage(function () {
+                        var a = getAlpine();
+                        if (a && a.filesViewMode !== 'list') {
+                            a.setFilesViewMode('list');
+                        }
+                        setTimeout(function () {
+                            var th = document.querySelector('th[\\@click="sortFiles(\'date\')"]');
+                            if (th) {
+                                th.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+                                setTimeout(function () { if (done) done(); }, 250);
+                            } else {
+                                if (done) done();
+                            }
+                        }, 400);
+                    });
+                },
             },
             {
-                title: 'Compartir',
-                content: 'Genera un enlace publico para compartir archivos con cualquier persona, sin necesidad de que tenga cuenta. ' +
-                         'Puedes configurar permisos (lectura/escritura), contrasena y fecha de expiracion.',
+                title: 'Acciones: Compartir',
+                content: 'Haz clic en el botón <strong style="color:#6366f1">Compartir</strong> para generar un enlace público de este archivo o carpeta. ' +
+                         'Puedes configurar fecha de expiración y contraseña. Esta acción requiere permiso de compartir.',
                 icon: 'fa-share-alt',
                 color: '#6366f1',
-                selector: 'button[title="Compartir"]',
+                selector: function () {
+                    // Buscar el primer archivo con el botón compartir visible
+                    var firstFile = document.querySelector('.group.relative.bg-slate-50');
+                    if (firstFile) {
+                        var btn = firstFile.querySelector('button[title="Compartir"]');
+                        if (btn) return btn;
+                    }
+                    return document.querySelector('button[title="Compartir"]') || null;
+                },
                 position: 'bottom',
+                async: true,
+                onShow: function (done) {
+                    enterPersonalStorage(function () {
+                        // Asegurar vista grid
+                        var a = getAlpine();
+                        if (a && a.filesViewMode !== 'grid') {
+                            a.setFilesViewMode('grid');
+                        }
+                        forceActionButtonsVisible();
+                        setTimeout(function () {
+                            var firstFile = document.querySelector('.group.relative.bg-slate-50');
+                            if (firstFile) {
+                                var btn = firstFile.querySelector('button[title="Compartir"]');
+                                if (btn) {
+                                    btn.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+                                }
+                            }
+                            setTimeout(function () { if (done) done(); }, 400);
+                        }, 600);
+                    });
+                },
             },
             {
-                title: 'Seleccion Multiple',
-                content: 'Mantén <strong>Ctrl+Click</strong> para seleccionar varios archivos a la vez. ' +
-                         'Aparecera una barra con opciones para descargar como ZIP o eliminar en lote.',
+                title: 'Acciones: Descargar',
+                content: 'Usa el botón <strong style="color:#16a34a">Descargar</strong> para guardar el archivo en tu computadora. ' +
+                         'Si es una carpeta, se descargará como un archivo ZIP comprimido.',
+                icon: 'fa-download',
+                color: '#16a34a',
+                selector: function () {
+                    var firstFile = document.querySelector('.group.relative.bg-slate-50');
+                    if (firstFile) {
+                        var btn = firstFile.querySelector('button[title="Descargar"], button[title="Descargar carpeta como ZIP"]');
+                        if (btn) return btn;
+                    }
+                    return document.querySelector('button[title="Descargar"]') || null;
+                },
+                position: 'bottom',
+                async: true,
+                onShow: function (done) {
+                    enterPersonalStorage(function () {
+                        var a = getAlpine();
+                        if (a && a.filesViewMode !== 'grid') {
+                            a.setFilesViewMode('grid');
+                        }
+                        forceActionButtonsVisible();
+                        setTimeout(function () {
+                            var firstFile = document.querySelector('.group.relative.bg-slate-50');
+                            if (firstFile) {
+                                var btn = firstFile.querySelector('button[title="Descargar"], button[title="Descargar carpeta como ZIP"]');
+                                if (btn) {
+                                    btn.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+                                }
+                            }
+                            setTimeout(function () { if (done) done(); }, 400);
+                        }, 600);
+                    });
+                },
+            },
+            {
+                title: 'Acciones: Copiar',
+                content: 'El botón <strong style="color:#3b82f6">Copiar</strong> te permite duplicar este archivo o carpeta dentro del mismo storage o en otro storage donde tengas permisos.',
+                icon: 'fa-copy',
+                color: '#3b82f6',
+                selector: function () {
+                    var firstFile = document.querySelector('.group.relative.bg-slate-50');
+                    if (firstFile) {
+                        var btn = firstFile.querySelector('button[title="Copiar"]');
+                        if (btn) return btn;
+                    }
+                    return document.querySelector('button[title="Copiar"]') || null;
+                },
+                position: 'bottom',
+                async: true,
+                onShow: function (done) {
+                    enterPersonalStorage(function () {
+                        var a = getAlpine();
+                        if (a && a.filesViewMode !== 'grid') {
+                            a.setFilesViewMode('grid');
+                        }
+                        forceActionButtonsVisible();
+                        setTimeout(function () {
+                            var firstFile = document.querySelector('.group.relative.bg-slate-50');
+                            if (firstFile) {
+                                var btn = firstFile.querySelector('button[title="Copiar"]');
+                                if (btn) {
+                                    btn.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+                                }
+                            }
+                            setTimeout(function () { if (done) done(); }, 400);
+                        }, 600);
+                    });
+                },
+            },
+            {
+                title: 'Acciones: Mover',
+                content: 'Usa <strong style="color:#6366f1">Mover</strong> para cambiar la ubicación de este archivo o carpeta dentro de tu storage o a otro storage. ' +
+                         'Mantendrá el mismo nombre y contenido.',
+                icon: 'fa-arrows-alt',
+                color: '#6366f1',
+                selector: function () {
+                    var firstFile = document.querySelector('.group.relative.bg-slate-50');
+                    if (firstFile) {
+                        var btn = firstFile.querySelector('button[title="Mover"]');
+                        if (btn) return btn;
+                    }
+                    return document.querySelector('button[title="Mover"]') || null;
+                },
+                position: 'bottom',
+                async: true,
+                onShow: function (done) {
+                    enterPersonalStorage(function () {
+                        var a = getAlpine();
+                        if (a && a.filesViewMode !== 'grid') {
+                            a.setFilesViewMode('grid');
+                        }
+                        forceActionButtonsVisible();
+                        setTimeout(function () {
+                            var firstFile = document.querySelector('.group.relative.bg-slate-50');
+                            if (firstFile) {
+                                var btn = firstFile.querySelector('button[title="Mover"]');
+                                if (btn) {
+                                    btn.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+                                }
+                            }
+                            setTimeout(function () { if (done) done(); }, 400);
+                        }, 600);
+                    });
+                },
+            },
+            {
+                title: 'Acciones: Renombrar',
+                content: 'Haz clic en <strong style="color:#f59e0b">Renombrar</strong> para cambiar el nombre del archivo o carpeta. ' +
+                         'Se abrirá un campo de edición inline; presiona Enter para guardar.',
+                icon: 'fa-edit',
+                color: '#f59e0b',
+                selector: function () {
+                    var firstFile = document.querySelector('.group.relative.bg-slate-50');
+                    if (firstFile) {
+                        var btn = firstFile.querySelector('button[title="Renombrar"]');
+                        if (btn) return btn;
+                    }
+                    return document.querySelector('button[title="Renombrar"]') || null;
+                },
+                position: 'bottom',
+                async: true,
+                onShow: function (done) {
+                    enterPersonalStorage(function () {
+                        var a = getAlpine();
+                        if (a && a.filesViewMode !== 'grid') {
+                            a.setFilesViewMode('grid');
+                        }
+                        forceActionButtonsVisible();
+                        setTimeout(function () {
+                            var firstFile = document.querySelector('.group.relative.bg-slate-50');
+                            if (firstFile) {
+                                var btn = firstFile.querySelector('button[title="Renombrar"]');
+                                if (btn) {
+                                    btn.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+                                }
+                            }
+                            setTimeout(function () { if (done) done(); }, 400);
+                        }, 600);
+                    });
+                },
+            },
+            {
+                title: 'Acciones: Eliminar',
+                content: '<strong style="color:#dc2626">Eliminar</strong> mueve el archivo o carpeta a la papelera. ' +
+                         '<span style="color:#dc2626"><strong>Atención:</strong> esta acción no se puede deshacer desde la interfaz. Solo un administrador puede restaurar archivos eliminados.</span>',
+                icon: 'fa-trash-alt',
+                color: '#dc2626',
+                selector: function () {
+                    var firstFile = document.querySelector('.group.relative.bg-slate-50');
+                    if (firstFile) {
+                        var btn = firstFile.querySelector('button[title="Eliminar"]');
+                        if (btn) return btn;
+                    }
+                    return document.querySelector('button[title="Eliminar"]') || null;
+                },
+                position: 'bottom',
+                async: true,
+                onShow: function (done) {
+                    enterPersonalStorage(function () {
+                        var a = getAlpine();
+                        if (a && a.filesViewMode !== 'grid') {
+                            a.setFilesViewMode('grid');
+                        }
+                        forceActionButtonsVisible();
+                        setTimeout(function () {
+                            var firstFile = document.querySelector('.group.relative.bg-slate-50');
+                            if (firstFile) {
+                                var btn = firstFile.querySelector('button[title="Eliminar"]');
+                                if (btn) {
+                                    btn.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+                                }
+                            }
+                            setTimeout(function () { if (done) done(); }, 400);
+                        }, 600);
+                    });
+                },
+            },
+            {
+                title: 'Selección Múltiple',
+                content: 'Mantén <strong>Ctrl+Click</strong> (o Cmd en Mac) para seleccionar varios archivos a la vez. ' +
+                         'Aparece una barra con opciones para descargar todo como ZIP o eliminar en lote.',
                 icon: 'fa-check-square',
                 color: '#2563eb',
                 selector: null,
@@ -4416,18 +5116,32 @@ function startFilesTour() {
             },
             {
                 title: 'Vista Grid / Lista',
-                content: 'Cambia entre vista de cuadricula (iconos) y vista de lista (tabla). ' +
-                         'Tu preferencia se guarda automaticamente para la proxima visita.',
+                content: 'Cambia entre vista de cuadrícula (iconos grandes) y vista de lista (tabla con detalles). ' +
+                         'Tu preferencia se guarda automáticamente para la próxima visita.',
                 icon: 'fa-th-large',
                 color: '#64748b',
                 selector: '.flex.items-center.gap-1.bg-slate-100.p-1.rounded-lg',
                 position: 'bottom',
+                onShow: function () {
+                    enterPersonalStorage();
+                },
             },
             {
-                title: 'Tour Completado',
-                content: 'Ya conoces todas las funciones de Mis Archivos. ' +
-                         'Recuerda: arrastra para subir, click en un archivo para verlo, y usa los botones de accion al pasar el mouse. ' +
-                         'Puedes repetir este tour cuando quieras con el boton morado.',
+                title: '¿Por qué no veo algunos Storages?',
+                content: 'Los storages de gestores (compartidos) solo aparecen cuando un administrador te los asigna con permisos. ' +
+                         'Si no ves un storage esperado, contacta al administrador. ' +
+                         'Tus <strong>storages personales</strong> siempre estarán disponibles mientras tengas quota asignada.',
+                icon: 'fa-info-circle',
+                color: '#06b6d4',
+                selector: null,
+                position: 'center',
+            },
+            {
+                title: 'Guía Completada',
+                content: 'Ahora conoces lo esencial de Mis Archivos. ' +
+                         'Recuerda: entra a tu storage personal para subir y organizar archivos. ' +
+                         'Las acciones disponibles dependen de tus permisos. ' +
+                         'Puedes repetir esta guía cuando quieras con el botón morado.',
                 icon: 'fa-check-circle',
                 color: '#16a34a',
                 selector: null,
@@ -4435,10 +5149,16 @@ function startFilesTour() {
             },
         ],
         onComplete: function () {
-            var alpine = document.querySelector('[x-data]')._x_dataStack[0];
-            if (alpine) alpine.navigateToRoot();
+            var alpine = getAlpine();
+            if (alpine && typeof alpine.navigateToRoot === 'function') {
+                alpine.navigateToRoot();
+            }
         }
     });
 }
 </script>
+
+{{-- Visor de transcripción compartido (change mis-archivos-transcript-viewer).
+     Alpine.store('transcriptViewer') se registra una sola vez en el layout. --}}
+@include('components.transcript-viewer')
 @endsection

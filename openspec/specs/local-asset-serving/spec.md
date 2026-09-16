@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Capability `local-asset-serving`: consolida los requisitos y comportamientos de todos los recursos estáticos se sirven localmente en TCloud. (Purpose derivado automáticamente al normalizar el formato legacy del spec.)
+
+## Requirements
 
 ### Requirement: Todos los recursos estáticos se sirven localmente
 El sistema SHALL cargar todos los recursos JS, CSS y fuentes desde el propio servidor, sin realizar ninguna petición a dominios CDN externos.

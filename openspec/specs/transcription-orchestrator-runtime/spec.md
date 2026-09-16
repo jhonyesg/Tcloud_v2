@@ -1,63 +1,119 @@
 # Spec — Transcription Orchestrator Runtime
 
-> Single source of truth for the runtime behavior of the transcription module: every-2-minutes scan + regulator-bounded dispatch, current-day only.
+## Purpose
 
-## ADDED Requirements
+Fuente unica de verdad del comportamiento en ejecucion del modulo de transcripcion: descubrimiento cada 2 minutos, despacho acotado por el regulador, solo del dia en curso, y la configuracion en caliente que gobierna ese ritmo.
+
+## Requirements
 
 ### 1. Unified Tick Phase
 
-- The system **SHALL** run `transcription:tick` on a fixed `*/2 * * * *` cadence via Laravel Scheduler.
-- Each invocation **MUST** complete both phases within `withoutOverlapping(150)` seconds (a 30s safety margin over the 2-minute cadence).
+- The system **SHALL** invoke `transcription:tick` every minute via Laravel Scheduler, and the command **SHALL** self-throttle against `tick_interval_minutes` (default `2`) using the cache key `transcriptor:tick:last_run`.
+  - The cadence is therefore tunable at runtime without editing `routes/console.php` or reloading cron.
+- Each invocation **MUST** complete both phases within `withoutOverlapping(150)` seconds.
 - The tick **MUST** be the only scheduled entry point for transcription work. There is no separate "discovery" or "enqueue" schedule; both phases live inside `TranscriptionTickCommand::handle()`.
 
+#### Scenario: Tick fuera de intervalo no hace nada
+- **WHEN** el tick corre y no han transcurrido `tick_interval_minutes` desde el último tick exitoso
+- **THEN** el comando termina SUCCESS sin descubrir ni despachar, respetando el self-throttle del cache
 ### 2. Phase 1 — Discovery (current-day only)
 
 - The tick **SHALL** invoke `transcription:scan-and-submit --no-dispatch` programmatically in Phase 1.
 - The scanner **MUST** only consider files whose `mtime` falls within `now()->startOfDay()` to `now()`. This is enforced by `--days=0` in `ScanAndSubmitCommand` and verified by reading L24.
 - The discovery phase **MUST NOT** push jobs to the Redis queue `queues:transcription`. Its sole responsibility is to keep the `transcriptions` table populated with `state=pending, job_id=null` rows for newly-discovered media files of the current day.
 
+#### Scenario: Descubrimiento solo del día en curso
+- **WHEN** el scanner Phase 1 corre y encuentra medios con mtime de hoy y de ayer
+- **THEN** solo los de hoy se insertan como transcripciones pending; los de ayer se ignoran
 ### 3. Phase 2 — Regulator dispatch (current-day only)
 
-- After Phase 1, the tick **MUST** compute its dispatch batch via the regulator formula:
-  ```
-  target = (int) config('transcriptor.target_redis_queue')          # default 140
-  min    = (int) config('transcriptor.min_batch')                   # default 10
-  max    = (int) config('transcriptor.max_batch')                   # default 200
-  current = (int) Redis::llen('queues:transcription')
-  batch = max($min, min($max, $target - $current + 5));
-  ```
-- If the regulator computes `batch <= 0`, the tick **SHALL** log "queue at target, skip dispatch" and return `Command::SUCCESS` **without** touching Redis.
-- Otherwise, the tick **SHALL** dispatch `ConvertAndTranscribeJob` for up to `batch` rows where:
+- After Phase 1, the tick **MUST** decide whether to dispatch using the `regulator_mode` configured (`local_only` | `remote_aware` | `hybrid`, default `local_only`) via `TranscriptorSettings::str('regulator_mode')`.
+- The decision tree **SHALL** be (in this priority order):
+  1. If `dispatch_paused=true` → `decision=skipped`, `reason=dispatch_paused`, no tocar Redis.
+  2. Compute each signal selected by `regulator_mode`:
+     - `redis_queue_depth = (int) Redis::llen('queues:transcription')` (siempre disponible).
+     - `remote_gpu_usage = remote_processing / remote_capacity` con cache `transcriptor:remote_stats` TTL `TRANSCRIPTOR_REGULATOR_REMOTE_CACHE_SECONDS` (default 15s), solo en `remote_aware` y `hybrid`.
+     - `shm_free_bytes = (int) disk_free_space('/dev/shm')` cuando existe, en cualquier modo.
+     - `inflight_active = (int) Cache::get('transcriptor:inflight:active', 0)` solo si `inflight_max > 0`, en `hybrid` (y opcional en `local_only`).
+  3. If `regulator_mode == local_only`: aplica la formula historica `batch = max(min, min(max, target - current + runway))`; si `batch <= 0` → `decision=skipped`, `reason=queue_at_target`. Adicionalmente, si `shm_free_bytes < min_shm_free_bytes` → `reason=shm_low`.
+  4. If `regulator_mode == remote_aware`: la formula anterior corre, pero el freno se evalua con `remote_gpu_usage >= TRANSCRIPTOR_REGULATOR_REMOTE_SATURATION_PCT` antes que la cola local. Si la API remota reporta saturacion → `reason=remote_gpu_saturated`.
+  5. If `regulator_mode == hybrid`: dispara freno si CUALQUIERA de `redis_queue_depth >= target_redis_queue`, `remote_gpu_usage >= umbral`, `shm_free_bytes < min_shm_free_bytes`, `inflight_active >= inflight_max` se cumple. La razon reportada es la primera en orden de prioridad que se evaluo como saturada.
+- Si el regulador computa `batch > 0` (sea del modo que sea), el tick **SHALL** dispatch `ConvertAndTranscribeJob` para hasta `batch` filas donde:
   ```
   state = 'pending' AND job_id IS NULL AND created_at >= now()->startOfDay()
+    AND (requeue_after_at IS NULL OR requeue_after_at <= now())
   ORDER BY created_at ASC
   ```
-  ordered oldest-first within the day for fairness.
+  ordered oldest-first within the day for fairness. En el momento del `dispatch()`, el tick **SHALL** setear `dispatched_at = now()` y persistir en BD como parte de la misma operacion (antes o atomico con el encolado).
+- Cuando el tick decide `skipped`, **SHALL** poblar `transcriptions.regulator_skip_reason` con la razon dominante en TODAS las filas pendientes del almacenamiento actual sin `dispatched_at`.
+- El tick **SHALL** persistir el resultado del calculo del regulador (incluyendo `signals_evaluated`, `values`, `decision`, `reason`, `batch_computed`, `fired_at`) en una clave de cache `transcriptor:tick:last_decision` con TTL de 1h para que el endpoint `GET /ia/api-transcriptor/regulator-cause` lo sirva sin recomputar.
 - The dispatch **MUST** use the existing `ConvertAndTranscribeJob::dispatch($fileId, true)` producer; no new job class is introduced.
 
+#### Scenario: Cola en objetivo omite el despacho (modo local_only)
+- **WHEN** `regulator_mode=local_only`, la longitud de `queues:transcription` alcanza `target_redis_queue`
+- **THEN** el tick registra "queue at target, skip dispatch" y no encola nada
+- **AND** el endpoint `/regulator-cause` reporta `decision=skipped`, `reason=queue_at_target`, `values.remote_gpu_usage=null`
+
+#### Scenario: Modo remote_aware evita freno con GPU ociosa
+- **WHEN** `regulator_mode=remote_aware`, la cola local esta al 90% del target PERO la API remota reporta `processing/capacity < 0.5`
+- **THEN** el tick encola hasta el batch calculado
+- **AND** `/regulator-cause` reporta `decision=dispatched` y `values.remote_gpu_usage` menor a 50%
+
+#### Scenario: Modo hybrid frena por cualquiera
+- **WHEN** `regulator_mode=hybrid` y DOS o mas senales indican saturacion simultaneas (cola llena + GPU>80%)
+- **THEN** el tick registra la primera senal que disparo (en orden: redis > remote > shm > inflight)
+- **AND** `/regulator-cause` lista tanto la razon dominante como las secundarias
+
+#### Scenario: Despacho oldest-first acotado por el regulador
+- **WHEN** hay 500 pendientes del día y el regulador computa batch=140
+- **THEN** se despachan exactamente 140 ConvertAndTranscribeJob, los más viejos primero
+- **AND** las 140 filas tienen `dispatched_at` poblado tras el ciclo
+
+#### Scenario: Skip persiste `regulator_skip_reason`
+- **WHEN** el tick decide `skipped` por `reason=remote_gpu_saturated`
+- **THEN** todas las filas `pending` del almacenamiento actual sin `dispatched_at` reciben `regulator_skip_reason='remote_gpu_saturated'`
+- **AND** al volver a encolar en un tick posterior, el valor no se borra hasta que la fila obtenga `dispatched_at`
 ### 4. Same-day scope — explicit non-goal
 
 - The tick **SHALL NOT** dispatch files whose `created_at` predates `now()->startOfDay()`.
 - Previous-day pending rows **MUST** remain queryable via `transcriptor:diagnose-pending` and re-dispatchable via the existing `POST /api-transcriptor/jobs/bulk-dispatch` UI endpoint.
 - This scope is encoded as `TRANSCRIPTOR_SCOPE=current_day` in `.env`. Future expansion to `current_day_plus_one` or `unbounded` is permitted by changing that env, but **MUST** be documented in a new OpenSpec change before touching code.
 
+#### Scenario: Pendiente de ayer no se despacha por el tick
+- **WHEN** existe una transcripción pending creada ayer y el tick corre
+- **THEN** no se le genera job; queda disponible para bulk-dispatch manual desde la UI
 ### 5. Polling Phase (independent of the tick)
 
 - The system **SHALL** run `transcription:poll-results` every minute via Laravel Scheduler, independent of the tick cadence.
 - This phase is **NOT** merged into the tick. Polling concerns (re-dispatch stuck rows, fetch SRT) are separate from discovery/dispatch.
 
+#### Scenario: Polling recupera SRT de un job processing
+- **WHEN** un job en estado processing tiene resultado en el transcriptor y el polling corre
+- **THEN** el SRT se descarga, se persiste y la transcripción pasa a done independientemente del tick
 ### 6. Auto-tuner Phase
 
 - The system **SHALL** run `transcription:tune --apply` every 5 minutes via Laravel Scheduler.
 - The tuner **MUST**:
   - Count `StorageProvider::transcriptionEnabled()` rows split by `folder_layout` (`flat` vs `grouped_by_subfolder`).
   - For grouped storages, count the **immediate subdirectories** of `base_path` and add to the mean count.
-  - Compute `workers = clamp(medios_total / 6, 3, 12)`.
+  - Compute `workers = clamp(medios_total / worker_ratio, worker_min, worker_max)`, con los tres limites leidos de `TranscriptorSettings` (defaults `6`, `3`, `12` — los antiguos `private const`).
+  - Acotar el `worker_max` efectivo al numero de units `tcloud-transcription-batch-*.service` realmente instaladas, y exponer ese tope a la API de settings para que la UI no pueda pedir workers inexistentes.
+  - Con `worker_override` distinto de 0, usarlo tal cual en lugar de la formula. Es la palanca directa del operador durante una saturacion.
+
+#### Scenario: Tuner ajusta workers según carga
+- **WHEN** la carga de medios equivalentes crece y el tuner corre
+- **THEN** el número de workers systemd se recalcula con clamp y se aplica idempotentemente
   - `systemctl enable --now` exactly that number of `tcloud-transcription-batch-N.service` units, and `systemctl stop` the rest.
 - The tuner **MUST** be idempotent: a back-to-back run with the same storage count must NOT issue start/stop shell calls for already-correctly-stated services.
-- The tuner **SHALL** emit a JSON line per run to `storage/logs/transcription-tune.log` containing `{ts, storages_total, medios_total, workers_target, started[], stopped[]}`.
+- The tuner **MUST** run `reconcileForbiddenPools()` on every `--apply`: enumerar instancias activas de `tcloud-transcription-worker@*.service`, hacer `systemctl disable --now` de cada una, reportarlas bajo `stopped_orphans[]` y emitir `Log::warning`.
+  - §7 ya las prohibia pero nada lo hacia cumplir. Verificado el 2026-07-26: 10 instancias `worker@` activas junto a 11 `batch-N`, es decir **21 workers reales** frente a los 11 que el tuner creia gestionar, alimentando una API con 2 workers GPU. El contrato pasa de declarativo a autoaplicado.
+- The tuner **SHALL** emit a JSON line per run to `storage/logs/transcription-tune.log` containing `{ts, storages_total, medios_total, workers_target, started[], stopped[], stopped_orphans[], worker_min, worker_max, worker_ratio, worker_override, units_installed}`.
 
 ### 7. Worker Pool Contract
+
+#### Scenario: retry_after supera timeout del job
+- **WHEN** un worker muere con un job en ejecución que dura más de `retry_after`
+- **THEN** el job no se re-entrega a otro worker antes de que `retry_after > $timeout` garantice que el original ya no está en ffmpeg
 
 - The system's only worker pool is the set of systemd services `tcloud-transcription-batch-{1..12}.service`, all of which:
   - `ExecStart=/usr/bin/php -d memory_limit=512M artisan queue:work --queue=transcription --tries=3 --timeout=600 --sleep=1`
@@ -65,8 +121,15 @@
   - Logs appended to `storage/logs/worker-batch-N.log`.
 - **No other worker pool** is permitted: no `nohup`-ed manual workers, no `supervisord`-managed workers, no additional systemd templates. Any future pool must add itself as a new capability spec.
 - **`tcloud-transcription-batch.service` (legacy singular)** **SHALL** remain `inactive` and its template-style units (`tcloud-transcription-worker@.service`) **SHALL NOT** have enabled instances.
+- Este contrato **MUST** hacerse cumplir automaticamente por `transcription:tune --apply` (§6), no por convencion.
+- `queue.connections.redis.retry_after` **MUST** superar `ConvertAndTranscribeJob::$timeout`. Default elevado de `90` a `900`.
+  - Con `retry_after=90` y `$timeout=600`, Redis devolvia a la cola todo job de mas de 90s mientras el worker original seguia en ffmpeg, produciendo dos ffmpeg y dos POST del mismo archivo. La guarda de idempotencia por `job_id` no cubre esa ventana: solo actua una vez la primera copia ha escrito `job_id`. `transcription:config` valida la relacion y falla ruidosamente si se rompe.
 
 ### 8. Single OS Cron, No Transcription Entries
+
+#### Scenario: Solo schedule:run en crontab
+- **WHEN** se inspecciona el crontab del sistema
+- **THEN** existe exactamente un `* * * * *` para `schedule:run` y ninguna entrada directa de transcripción
 
 - `/var/spool/cron/crontabs/root` **MUST** contain exactly:
   - One `* * * * *` for `schedule:run` (the Laravel scheduler entry point).
@@ -75,22 +138,81 @@
 
 ### 9. Configuration Surface
 
-- The keys added or extended in `app/config/transcriptor.php` (with env defaults):
-  - `target_redis_queue`   ← `TRANSCRIPTOR_TARGET_REDIS_QUEUE`  (default `140`)
-  - `min_batch`            ← `TRANSCRIPTOR_MIN_BATCH`           (default `10`)
-  - `max_batch`            ← `TRANSCRIPTOR_MAX_BATCH`           (default `200`)
-  - `scan_batch` (existing) ← `TRANSCRIPTOR_SCAN_BATCH`           (default `100`)
-  - `scan_days_back` (existing) ← `TRANSCRIPTOR_SCAN_DAYS_BACK` (default `0`)
-  - `scope` (new)         ← `TRANSCRIPTOR_SCOPE`                (default `current_day`)
-- The system **SHALL NOT** introduce a `TRANSCRIPTOR_WEBHOOK_*` runtime path; the transcriptor is **push-free** and any env vars present in `.env` referencing webhooks are **legacy documentation** only and **MUST NOT** be wired.
+#### Scenario: Valor de settings acotado y refrescado en caliente
+- **WHEN** el admin cambia `tick_interval_minutes` fuera de rango o dentro de rango
+- **THEN** el valor se clampa a min/max y los procesos lo leen tras el TTL de 60s sin reinicio
 
-## MODIFIED Requirements
+- La configuracion de runtime **SHALL** resolverse en `App\Services\Ia\TranscriptorSettings` con esta precedencia:
+  1. Fila en `system_settings` con clave `transcriptor.<key>`
+  2. `config("transcriptor.<key>")` (capa env, como hasta ahora)
+  3. Default del esquema
+- Los valores **MUST** acotarse a `min`/`max` **tanto en lectura como en escritura**, para que una fila corrupta no pueda producir un valor invalido en runtime.
+- El servicio **MUST** refrescar su mapa por TTL (cache 60s, memo en proceso 30s) en vez de memoizar una sola vez: los procesos `queue:work` viven horas y una lectura en constructor congelaria la configuracion hasta reiniciar systemd.
+- Ningun ServiceProvider **SHALL** volcar los valores de BD sobre el repositorio de config: añadiria un hit a BD en cada boot, rompería `artisan` con la base caida, y ocultaria el origen del valor.
+- Borrar una fila `transcriptor.*` **SHALL** restaurar el valor de `config/transcriptor.php`. Esa distincion de tres estados (`bd` / `env` / `archivo`) **MUST** reportarse en `effective()` y mostrarse en la UI.
+- Claves nuevas sobre las ya listadas: `dispatch_paused`, `tick_interval_minutes`, `dispatch_stagger_ms`, `inflight_max`, `scan_max_dispatch_per_cycle`, `stale_resend_limit`, `poll_limit`, `submit_max_attempts`, `submit_retry_base_ms`, `worker_min`, `worker_max`, `worker_ratio`, `worker_override`, `ui_max_parallel_sends`, `ui_batch_max`, `corrections_chunk` (existia y no la leia nadie), `scan_days_back` (idem).
+- `callback_host` **eliminado** (2026-08-12). Se mapeaba a `TRANSCRIPTOR_CALLBACK_HOST` "solo para mostrar", pero pintarlo en el panel de ayuda daba cuerpo a un mecanismo de callback inexistente: los operadores leian que el resultado volvia solo y no miraban el polling. La prohibicion de cablear una ruta de webhook `TRANSCRIPTOR_WEBHOOK_*` **sigue vigente**, y ahora nada en la UI sugiere lo contrario.
+- `poll_max_age_hours` (grupo `confiabilidad`, default 48): plazo tras el cual una fila en `queued`/`processing` se cierra como `dead` en vez de sondearse indefinidamente.
 
-None. This change only documents existing operational behavior.
+### 10. Semaforo de concurrencia
 
-## REMOVED Requirements
+#### Scenario: Semaforo acota ffmpeg+POST concurrentes
+- **WHEN** más de `inflight_max` jobs intentan ejecutar ffmpeg simultáneamente
+- **THEN** los excedentes se liberan con `releaseAfter(650)` y reintentan sin fallar permanentemente
 
-None. No existing capability is dropped.
+- El sistema **SHALL** proveer un job middleware que acote la **ejecucion concurrente de ffmpeg + POST**, independiente del numero de workers, via `Redis::funnel('transcriptor:inflight')->limit(inflight_max)->releaseAfter(650)`.
+- Con `inflight_max <= 0` el middleware **MUST** dejar pasar sin coste (desactivado por defecto).
+- `releaseAfter` **MUST** superar el `$timeout` del job para que un worker muerto libere su cupo en vez de retenerlo.
+- `ConvertAndTranscribeJob` **MUST** usar `$tries = 0` mas `retryUntil(now()->addHours(2))`. `release()` incrementa `attempts()`, asi que el anterior `$tries = 1` haria fallar de forma permanente al primer job que el semaforo bloqueara.
+- Motivo: el objetivo de cola regula el **ritmo de encolado**, no la **concurrencia real**. La evidencia del 2026-07-24 11:35:32-36 (15 `ffmpeg falló` en 4 segundos, stderr truncado a offsets distintos, cero HTTP 429) es contencion local de CPU/IO, no rechazo de la API.
+
+### 11. Prevencion de despacho duplicado
+
+#### Scenario: Doble despacho del mismo archivo se deduplica
+- **WHEN** el tick y un envío manual encolan el mismo `file_id` en la ventana de 900s
+- **THEN** solo una instancia del job se procesa (ShouldBeUnique por `file_id`)
+
+- `ConvertAndTranscribeJob` **MUST** implementar `ShouldBeUnique` con `uniqueId() = fileId` y `uniqueFor = 900` (pareado con `retry_after`).
+- El mismo `file_id` llega a `queues:transcription` por cuatro caminos: el tick, `scan-and-submit`, `bulk-dispatch` y el envio manual.
+
+### 12. Encolado manual acotado
+
+- `ScanAndSubmitCommand` **MUST NOT** calcular su tope como `scan_batch x numero_de_storages`.
+  - Con 31 storages y `scan_batch=100` eso eran 3100 jobs en un bucle apretado sin pasar por el regulador. Es ademas la ruta del boton "Escanear storages" de la UI, asi que tambien inundaba con disparo manual.
+- El tope **MUST** ser `min(scan_max_dispatch_per_cycle, computeDispatchBatch(Redis::llen('queues:transcription')))`.
+
+#### Scenario: Escaneo de storages respeta el regulador
+- **WHEN** el admin dispara "Escanear storages" con 31 storages y scan_batch=100
+- **THEN** el despacho manual se acota a `scan_max_dispatch_per_cycle` y el régimen del regulador, no a 3100 jobs- El envio multiple del navegador **MUST** acotar sus peticiones paralelas a `ui_max_parallel_sends`, y `POST /ia/api-transcriptor/transcribe/{fileId}` **MUST** llevar `throttle` como defensa en profundidad. Ese endpoint corre ffmpeg + POST sincronos dentro de php-fpm.
+
+### 13. Superficie de observacion y control
+
+#### Scenario: Diagnóstico visible del pipeline
+- **WHEN** el admin abre la superficie de observación del módulo
+- **THEN** puede ver estado de jobs, pendientes y re-despachar acotadamente sin acceso al servidor
+
+- El sistema **SHALL** exponer, bajo el grupo de rutas existente `['auth','admin']` + `prefix('ia')`:
+  - `GET  /ia/api-transcriptor/settings` — valores efectivos con su origen, mas contexto en vivo (profundidad de cola vs objetivo, workers activos y huerfanos, conteos por estado, y el lote que el regulador calcularia ahora mismo)
+  - `POST /ia/api-transcriptor/settings` y `POST /ia/api-transcriptor/settings/reset`
+  - `GET  /ia/api-transcriptor/latency` — percentiles p50/p95 por etapa del pipeline (mtime→BD, BD→Redis, Redis→API, API→resultado) + `count_by_state` para la ventana solicitada.
+  - `GET  /ia/api-transcriptor/regulator-cause` — devuelve `{fired_at, signals_evaluated, values, decision, reason, batch_computed}` de la decision del ultimo tick, cacheado en Redis (`transcriptor:tick:last_decision`, TTL 1h). Permite ver al operador POR QUE freno el regulador en lenguaje humano, sin tener que correlacionar logs.
+- Las escrituras **MUST** validarse desde la misma constante de esquema que renderiza el formulario, y **MUST** registrarse en log con el id del admin tomado de `session('user')` (este proyecto usa auth por sesion, nunca `auth()->user()`).
+- Invariantes cruzadas **MUST** aplicarse en escritura sobre el estado RESULTANTE: `min_batch <= max_batch`, `worker_min <= worker_max`, `runway <= target_redis_queue`, `submit_timeout < ConvertAndTranscribeJob::$timeout`.
+- Un comando `transcription:config {--json} {--set=*} {--reset=*}` **SHALL** ofrecer la misma superficie por CLI, como salida de emergencia cuando la UI no este disponible.
+
+### 14. Persistencia de la decision del regulador en cache
+- El tick **SHALL** escribir la estructura `{fired_at, signals_evaluated, values, decision, reason, batch_computed}` en `Cache::put('transcriptor:tick:last_decision', ...) ` con TTL de 1h.
+- Si la escritura en cache falla, el tick **MUST NOT** fallar; simplemente loguea `warning` y continua.
+
+#### Scenario: Endpoint sirve la cache caliente
+- **WHEN** el admin llama `GET /ia/api-transcriptor/regulator-cause` antes del siguiente tick
+- **THEN** la respuesta refleja la última decision cacheada aunque el tick no haya vuelto a correr
+- **AND** el campo `fired_at` es el timestamp exacto del tick que produjo esa decision
+
+#### Scenario: Tick frio sin decision previa
+- **WHEN** el sistema arranca y nunca ha corrido un tick
+- **THEN** el endpoint devuelve `fired_at=null`, `signals_evaluated=[]`, `decision=none`, `reason=none`
+- **AND** el frontend muestra "Sin datos del regulador" en lugar de error
 
 ---
 
@@ -105,3 +227,18 @@ After this change is in production for 30 minutes with steady traffic (~20 files
 5. `/var/log/syslog` shows NO invocation of `transcription_enqueue_batch.php` (the script is no longer scheduled). The only transcription-related entries are `php artisan schedule:run` running every minute.
 6. No job is dispatched directly to `queues:transcription` from anywhere except `transcription:tick`. A `redis-cli MONITOR` run over 10 minutes **MUST NOT** show `LPUSH queues:transcription` from any source other than that command.
 7. `Transcription` rows dispatched by `transcription:tick` are limited to `created_at >= now()->startOfDay()`. A previous-day stale pending row remains in the table but **MUST NOT** appear in dispatched IDs over a 30-minute observation.
+
+### Criterios añadidos por la regulacion en caliente (2026-07-26)
+
+8. Con la cola por encima del objetivo, `transcription:tick --dry-run` imprime `DISPATCH: skip`. Antes imprimia `batch_computed=10` y seguia encolando. Cubierto ademas por `tests/Unit/TranscriptorSettingsTest.php` sobre `computeDispatchBatch()`.
+9. `systemctl list-units 'tcloud-transcription-*' --all` muestra exactamente `workers_target` units `tcloud-transcription-batch-N` activas y **cero** instancias `tcloud-transcription-worker@N` — hecho cumplir automaticamente por el tuner, no por convencion.
+10. Dos corridas seguidas de `transcription:tune --apply --json` emiten `started`, `stopped` y `stopped_orphans` vacios.
+11. Cambiar `target_redis_queue` desde la UI se refleja en el contexto del **siguiente tick programado**, sin reiniciar systemd. Esto prueba que el proceso CLI de larga vida observa el cambio.
+12. Con `dispatch_paused` activo, el tick registra descubrimiento-completado + dispatch-omitido, y los endpoints de envio de la UI devuelven HTTP 423.
+13. Con `inflight_max=2` y 11 workers, `ps aux | grep -c ffmpeg` nunca supera 2 mientras drena un backlog de 50 jobs, y ningun job agota `retryUntil`.
+14. Despachar el mismo `file_id` por dos caminos en menos de 900s hace crecer `queues:transcription` en 1, no en 2.
+15. `transcription:scan-and-submit` sin `--no-dispatch` hace crecer la cola como maximo en `scan_max_dispatch_per_cycle`, no en `scan_batch x numero_de_storages`.
+16. Seleccionar 50 archivos en el envio multiple de la UI mantiene los ffmpeg concurrentes en torno a `ui_max_parallel_sends`, no en 50.
+17. `DELETE FROM system_settings WHERE key LIKE 'transcriptor.%'` restaura exactamente el comportamiento previo al cambio.
+
+> **Requisito de despliegue**: las Fases 1 y 5 solo surten efecto tras `systemctl restart 'tcloud-transcription-batch-*'`. Los workers son procesos de larga vida que mantienen en memoria tanto la config de colas (`retry_after`) como la definicion de `ConvertAndTranscribeJob` (middleware, `ShouldBeUnique`, `$tries`). Desplegar sin reiniciar deja el despachador y los workers en versiones distintas de la clase.

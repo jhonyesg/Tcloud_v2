@@ -7,7 +7,7 @@ use Illuminate\Console\Command;
 class CleanupTmpfsCommand extends Command
 {
     protected $signature = 'transcription:cleanup-tmpfs';
-    protected $description = 'Borra archivos temporales de conversion Opus y progreso en /dev/shm con mas de 1 hora de antiguedad.';
+    protected $description = 'Borra archivos temporales de conversion de audio y progreso en /dev/shm con mas de 1 hora de antiguedad.';
 
     public function handle(): int
     {

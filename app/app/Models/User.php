@@ -7,12 +7,51 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
+use Illuminate\Database\Eloquent\Builder;
 
 class User extends Model
 {
     protected $table = 'users';
-    protected $fillable = ['email', 'username', 'password_hash', 'role', 'personal_quota_bytes', 'personal_used_bytes', 'media_editor_enabled', 'media_editor_clip_limit', 'max_sessions', 'session_lifetime_minutes'];
+    protected $fillable = ['email', 'username', 'password_hash', 'role', 'status', 'personal_quota_bytes', 'personal_used_bytes', 'media_editor_enabled', 'media_editor_clip_limit', 'max_sessions', 'session_lifetime_minutes'];
     protected $hidden = ['password_hash'];
+
+    public const STATUS_PENDING  = 'pending';
+    public const STATUS_ACTIVE   = 'active';
+    public const STATUS_DISABLED = 'disabled';
+
+    protected static function booted(): void
+    {
+        static::creating(function (User $user) {
+            if (empty($user->status)) {
+                $user->status = self::STATUS_PENDING;
+            }
+        });
+    }
+
+    public function isActive(): bool
+    {
+        return $this->status === self::STATUS_ACTIVE;
+    }
+
+    public function isPending(): bool
+    {
+        return $this->status === self::STATUS_PENDING;
+    }
+
+    public function scopePending(Builder $query): Builder
+    {
+        return $query->where('status', self::STATUS_PENDING);
+    }
+
+    public function scopeActive(Builder $query): Builder
+    {
+        return $query->where('status', self::STATUS_ACTIVE);
+    }
+
+    public function passwordTokens(): HasMany
+    {
+        return $this->hasMany(PasswordToken::class);
+    }
 
     private ?Collection $cachedStorages = null;
 
@@ -34,7 +73,7 @@ class User extends Model
     public function storageProviders(): BelongsToMany
     {
         return $this->belongsToMany(StorageProvider::class, 'user_storages')
-            ->withPivot('permissions', 'can_create_shares', 'assigned_at');
+            ->withPivot('permissions', 'can_create_shares', 'transcription_access', 'assigned_at');
     }
 
     private function loadedStorages(): Collection
@@ -145,5 +184,10 @@ class User extends Model
     public function correctionsApproved(): HasMany
     {
         return $this->hasMany(Correction::class, 'approved_by');
+    }
+
+    public function sessions(): HasMany
+    {
+        return $this->hasMany(UserSession::class);
     }
 }

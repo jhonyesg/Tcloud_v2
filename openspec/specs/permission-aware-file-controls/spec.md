@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Capability `permission-aware-file-controls`: consolida los requisitos y comportamientos de ocultar controles de escritura en storages de solo lectura en TCloud. (Purpose derivado automáticamente al normalizar el formato legacy del spec.)
+
+## Requirements
 
 ### Requirement: Ocultar controles de escritura en storages de solo lectura
 El sistema SHALL ocultar los botones "Subir Archivo" y "Nueva Carpeta" en el módulo "Mis Archivos" cuando el usuario tiene permisos de solo lectura (`read`) en el storage activo.

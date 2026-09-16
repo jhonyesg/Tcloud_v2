@@ -57,30 +57,46 @@ class NotificationService
 
     private function attemptSend(CorreoConfig $config, string $subject, string $body, string $to): array
     {
-        try {
-            $dsn = sprintf(
-                'smtp://%s:%s@%s:%d',
-                urlencode($config->username),
-                urlencode($config->password_decrypted),
-                $config->host,
-                $config->port
-            );
+        $schemes = $this->buildSchemes($config);
 
-            $transport = Transport::fromDsn($dsn);
-            $mailer = new Mailer($transport);
+        foreach ($schemes as $scheme) {
+            try {
+                $dsn = sprintf(
+                    '%s://%s:%s@%s:%d',
+                    $scheme,
+                    urlencode($config->username),
+                    urlencode($config->password_decrypted),
+                    $config->host,
+                    $config->port
+                );
 
-            $email = (new Email())
-                ->from(new Address($config->from_email, $config->from_name))
-                ->to($to)
-                ->subject($subject)
-                ->html($body);
+                $transport = Transport::fromDsn($dsn);
+                $mailer = new Mailer($transport);
 
-            $mailer->send($email);
+                $email = (new Email())
+                    ->from(new Address($config->from_email, $config->from_name))
+                    ->to($to)
+                    ->subject($subject)
+                    ->html($body);
 
-            return ['success' => true, 'message' => 'Correo enviado exitosamente'];
-        } catch (\Exception $e) {
-            return ['success' => false, 'message' => $e->getMessage()];
+                $mailer->send($email);
+
+                return ['success' => true, 'message' => 'Correo enviado exitosamente'];
+            } catch (\Exception $e) {
+                $lastError = $e->getMessage();
+                continue;
+            }
         }
+
+        return ['success' => false, 'message' => $lastError ?? 'Error desconocido al enviar correo'];
+    }
+
+    private function buildSchemes(CorreoConfig $config): array
+    {
+        if ($config->secure) {
+            return ['smtps', 'smtp'];
+        }
+        return ['smtp'];
     }
 
     private function logSuccess(string $to, string $templateName, string $subject, string $body): void

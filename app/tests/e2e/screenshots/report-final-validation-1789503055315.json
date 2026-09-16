@@ -1,0 +1,80 @@
+{
+  "timestamp": "2026-09-15T20:10:55.315Z",
+  "app_url": "https://cloud.mediaserver.com.co",
+  "admin_login": "js***",
+  "passed": 11,
+  "failed": 0,
+  "results": [
+    {
+      "name": "A.0 Login",
+      "status": "PASS",
+      "detail": "/dashboard"
+    },
+    {
+      "name": "B.0 Dashboard cargado",
+      "status": "PASS",
+      "detail": "/dashboard"
+    },
+    {
+      "name": "C.0 Render Configuracion",
+      "status": "PASS",
+      "detail": "10 grupos, 67 knobs"
+    },
+    {
+      "name": "D.1 Abrir 6 acordiones",
+      "status": "PASS",
+      "detail": "6/6 knobs"
+    },
+    {
+      "name": "D.2 Toggle bidireccional",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "D.3 Input numerico responde",
+      "status": "PASS",
+      "detail": "tick_interval_minutes=5"
+    },
+    {
+      "name": "D.4 Toggle booleano responde",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "D.5 Enum select responde",
+      "status": "PASS",
+      "detail": "scope=unbounded"
+    },
+    {
+      "name": "E.0 Refrescar mantiene UI",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "F.0 Dashboard post-validation",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "G.0 Consola y red limpias",
+      "status": "PASS",
+      "detail": "console y red 100% libres de warnings/errors"
+    }
+  ],
+  "counts": {
+    "console_errors": 0,
+    "console_warnings": 0,
+    "console_infos": 0,
+    "console_logs": 0,
+    "page_errors": 0,
+    "request_failed": 0,
+    "http_4xx": 0,
+    "http_5xx": 0
+  },
+  "errors": [],
+  "warnings": [],
+  "page_errors": [],
+  "failed_requests": [],
+  "http_4xx": [],
+  "http_5xx": []
+}

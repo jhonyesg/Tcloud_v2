@@ -3,100 +3,229 @@
 namespace App\Services\Ia;
 
 use App\Models\Keyword;
-use App\Models\KeywordMatch;
 use App\Models\Transcription;
-use App\Models\User;
-use App\Models\UserAlertsInteligente;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Matching de keywords contra los segmentos (text corregido) de una
- * transcripción recién completada. Implementa coalescing (1 email por
- * usuario con todos sus matches) e idempotencia (no duplica matches si
- * se re-ejecuta para la misma transcripción).
+ * Motor de matching de menciones (mis-avisos-menciones Fase 1).
+ *
+ * Scan universal: escanea los segmentos de UNA transcripción UNA sola vez
+ * contra el conjunto de keywords DISTINCT de todos los usuarios habilitados
+ * con transcription_access sobre el storage de la transcripción. Los hits se
+ * persisten compartidos en segment_keyword_hits (UNIQUE por transcripción +
+ * segmento + keyword) y el reparto por usuario se deriva relacionalmente en
+ * alert_deliveries (con cadencia, techo y rate limiter del lado de entrega).
+ *
+ * Diferencias clave con el motor anterior:
+ *  - Nada de queries dentro del loop de matches (mapa normalized→id precargado).
+ *  - Nada de una fila por usuario: el hit es compartido.
+ *  - Nada de correo durante el scan (la entrega la gestiona el scheduler).
+ *
+ * Firma pública run(Transcription): int sin cambios — TranscriptionProcessor
+ * no se toca. Idempotente por diseño (UNIQUE triple + insertOrIgnore).
  */
 class KeywordMatcher
 {
-    public function __construct(private AlertDispatcher $dispatcher) {}
-
     /**
-     * Ejecuta el matching para una Transcription y envía alertas.
-     * Devuelve el número de usuarios a los que se les envió alerta.
+     * Ejecuta el scan para una Transcription. Devuelve el número de hits
+     * nuevos persistidos.
+     *
+     * $scopedKeywordIds (opcional): si viene, acota el conjunto de keywords
+     * candidatas a esa lista (modo "estos son los pares pendientes, escanéalos
+     * solo a ellos"). Usado por AvisosScanService cuando viene del barrido por
+     * pares (transc, keyword).
      */
-    public function run(Transcription $transcription): int
+    public function run(Transcription $transcription, ?array $scopedKeywordIds = null): int
     {
-        // Idempotencia: si ya hay matches para esta transcripción, no reprocesar.
-        $alreadyMatched = KeywordMatch::where('transcription_id', $transcription->id)->exists();
-        if ($alreadyMatched) {
+        // change admin-matches-and-backfill (Fase 2): idempotencia PER-(transcription,
+        // keyword), no per-transcription. Antes, si la transcripción ya tenía hits
+        // de cualquier keyword, se saltaba el escaneo completo — esto impedía
+        // que nuevas keywords vieran hits retroactivos de esa transcripción.
+        //
+        // Ahora: cargamos las keywords candidatas y leemos qué pares
+        // (transcription_id, keyword_id) YA tienen hits. Sólo saltamos los
+        // pares ya indexados; los nuevos los procesamos normalmente.
+        $alreadyIndexedKwIds = DB::table('segment_keyword_hits')
+            ->where('transcription_id', $transcription->id)
+            ->pluck('keyword_id')
+            ->all();
+        $alreadyIndexedKwIds = array_flip(array_map('intval', $alreadyIndexedKwIds));
+
+        // Fail-safe: sin file/storage no hay de quién inferir acceso.
+        $storageId = $transcription->file?->storage_provider_id;
+        if (!$storageId) {
             return 0;
         }
 
         $segments = $transcription->segments()
             ->orderBy('segment_index')
             ->get(['id', 'segment_index', 'text', 'start_seconds']);
-
         if ($segments->isEmpty()) {
             return 0;
         }
 
-        // Usuarios con el módulo activo.
-        $users = User::whereHas('alertsInteligente', function ($q) {
-            $q->where('enabled', true);
-        })->with(['userKeywords:id,normalized', 'alertsInteligente'])->get();
-
-        if ($users->isEmpty()) {
+        // Conjunto de keywords DISTINCT de usuarios habilitados con
+        // transcription_access a ESTE storage, acotado por el alcance
+        // keyword→store (user_keyword_storage: sin filas = todos).
+        $keywords = $this->candidateKeywords((int) $storageId);
+        if ($scopedKeywordIds !== null) {
+            $keywords = $keywords->whereIn('id', array_map('intval', $scopedKeywordIds));
+        }
+        if ($keywords->isEmpty()) {
             return 0;
         }
 
-        $alertsSent = 0;
+        // Filtrar las keywords que YA tienen hits en esta transcripción
+        // (no re-procesamos redundante). Las nuevas sí.
+        $keywordsToScan = $keywords->filter(fn ($k) => !isset($alreadyIndexedKwIds[(int) $k->id]));
+        if ($keywordsToScan->isEmpty()) {
+            return 0;
+        }
 
-        foreach ($users as $user) {
-            $keywords = $user->userKeywords->pluck('normalized')->filter()->unique()->values();
-            if ($keywords->isEmpty()) {
+        $keywordIdByNorm = $keywordsToScan
+            ->mapWithKeys(fn ($k) => [$k->normalized => $k->id]);
+
+        $now = now();
+        $hits = [];
+
+        foreach ($segments as $segment) {
+            $segmentText = Keyword::asciiLower((string) $segment->text);
+            if ($segmentText === '') {
                 continue;
             }
 
-            $matchesForUser = [];
-            $now = now();
-
-            foreach ($segments as $segment) {
-                $segmentText = Keyword::asciiLower((string) $segment->text);
-                foreach ($keywords as $keywordNorm) {
-                    if ($keywordNorm !== '' && str_contains($segmentText, $keywordNorm)) {
-                        $snippet = $this->buildSnippet($segment->text, $keywordNorm);
-                        $minuteLabel = $this->secondsToHms((float) $segment->start_seconds);
-
-                        KeywordMatch::create([
-                            'transcription_id' => $transcription->id,
-                            'keyword_id' => Keyword::where('normalized', $keywordNorm)->value('id'),
-                            'segment_id' => $segment->id,
-                            'user_id' => $user->id,
-                            'snippet' => $snippet,
-                            'matched_at' => $now,
-                        ]);
-
-                        $matchesForUser[] = [
-                            'keyword' => $keywordNorm,
-                            'segment_index' => $segment->segment_index,
-                            'minute_label' => $minuteLabel,
-                            'snippet' => $snippet,
-                        ];
-                    }
+            foreach ($keywordIdByNorm as $keywordNorm => $keywordId) {
+                // avisos-keyword-word-boundary: matching por palabra completa.
+                // El str_contains solo es pre-filtro rápido; la aceptación
+                // exige frontera de palabra (descarta "petro" ∈ "petróleo").
+                $occurrences = KeywordBoundaryMatcher::countOccurrences($segmentText, $keywordNorm);
+                if ($keywordNorm !== '' && $occurrences > 0) {
+                    $hits[] = [
+                        'transcription_id' => $transcription->id,
+                        'segment_id' => $segment->id,
+                        'keyword_id' => $keywordId,
+                        'snippet' => $this->buildSnippet((string) $segment->text, $keywordNorm),
+                        // Apariciones CON frontera de palabra del segmento
+                        // (mention-occurrence-detail + avisos-keyword-word-boundary).
+                        'occurrences' => $occurrences,
+                        'matched_at' => $now,
+                    ];
                 }
-            }
-
-            if (!empty($matchesForUser)) {
-                $this->dispatcher->send($user, $transcription, $matchesForUser);
-                $alertsSent++;
             }
         }
 
-        return $alertsSent;
+        if (empty($hits)) {
+            return 0;
+        }
+
+        // Insert masivo idempotente (UNIQUE triple). Nada de N inserts.
+        $inserted = 0;
+        foreach (array_chunk($hits, 500) as $chunk) {
+            $inserted += DB::table('segment_keyword_hits')->insertOrIgnore($chunk);
+        }
+
+        // Reparto relacional: una fila de alert_deliveries por (usuario que
+        // califica, hit), respetando intersección de acceso + scope, con
+        // due_at según la cadencia del usuario. Todo en SQL de conjunto.
+        $delivered = $this->fanOut($transcription->id, (int) $storageId, $keywordIdByNorm->values()->all());
+
+        Log::info('mentions.scan_completed', [
+            'transcription_id' => $transcription->id,
+            'storage_id' => $storageId,
+            'keywords_scanned' => $keywordIdByNorm->count(),
+            'hits_persisted' => $inserted,
+            'deliveries_queued' => $delivered,
+        ]);
+
+        return $inserted;
     }
 
     /**
-     * Construye un snippet de ~200 chars alrededor del match.
+     * Keywords distintas (id + normalized) que deben escanearse para un
+     * storage: de usuarios enabled con transcription_access=true sobre él,
+     * intersectando el alcance keyword→store.
+     */
+    private function candidateKeywords(int $storageId)
+    {
+        return DB::table('keywords as k')
+            ->distinct()
+            ->select('k.id', 'k.normalized')
+            ->join('user_keyword as uk', 'uk.keyword_id', '=', 'k.id')
+            ->join('users as u', 'u.id', '=', 'uk.user_id')
+            ->join('user_alerts_inteligentes as uai', 'uai.user_id', '=', 'u.id')
+            ->join('user_storages as us', function ($join) use ($storageId) {
+                $join->on('us.user_id', '=', 'u.id')
+                    ->where('us.storage_provider_id', $storageId)
+                    ->where('us.transcription_access', true);
+            })
+            ->leftJoin('user_keyword_storage as uks', function ($join) {
+                $join->on('uks.user_id', '=', 'uk.user_id')
+                    ->on('uks.keyword_id', '=', 'uk.keyword_id');
+            })
+            // Sin filas de scope → rastrea en todos sus storages con acceso.
+            // Con filas → solo si este storage está entre ellas.
+            ->where(function ($q) use ($storageId) {
+                $q->whereNull('uks.user_id')
+                    ->orWhere('uks.storage_provider_id', $storageId);
+            })
+            ->whereNotNull('k.normalized')
+            ->where('k.normalized', '!=', '')
+            ->where('uai.enabled', true)
+            ->get(['k.id', 'k.normalized']);
+    }
+
+    /**
+     * Deriva alert_deliveries para los hits recién insertados de una
+     * transcripción: por cada hit, todos los usuarios calificados (módulo
+     * activo + acceso al storage + keyword suya + scope de la keyword incluye
+     * este storage), con due_at según la cadencia del usuario. Un solo
+     * INSERT...SELECT de conjunto.
+     *
+     * Sólo procesa los hits cuyo keyword_id esté en $scannedKeywordIds —
+     * permite acotar al subset que realmente se acaba de escanear (para no
+     * re-encolar deliveries de hits pre-existentes con cada pasada).
+     */
+    private function fanOut(int $transcriptionId, int $storageId, array $scannedKeywordIds = []): int
+    {
+        // Si no se pasa filtro, se procesan todos (compatibilidad inversa).
+        $params = [$storageId, $transcriptionId, $storageId];
+
+        $keywordFilterSql = '';
+        if (!empty($scannedKeywordIds)) {
+            $placeholders = implode(',', array_fill(0, count($scannedKeywordIds), '?'));
+            $keywordFilterSql = " AND h.keyword_id IN ({$placeholders})";
+            $params = array_merge($params, array_map('intval', $scannedKeywordIds));
+        }
+
+        return DB::affectingStatement("
+            INSERT INTO alert_deliveries (user_id, hit_id, due_at, created_at, updated_at)
+            SELECT uk.user_id,
+                   h.id,
+                   NOW() + (uai.alert_frequency_minutes || ' minutes')::interval,
+                   NOW(),
+                   NOW()
+            FROM segment_keyword_hits h
+            JOIN keywords k ON k.id = h.keyword_id
+            JOIN user_keyword uk ON uk.keyword_id = k.id
+            JOIN user_alerts_inteligentes uai
+                 ON uai.user_id = uk.user_id AND uai.enabled = true
+            JOIN user_storages us
+                 ON us.user_id = uk.user_id
+                AND us.storage_provider_id = ?
+                AND us.transcription_access = true
+            LEFT JOIN user_keyword_storage uks
+                 ON uks.user_id = uk.user_id AND uks.keyword_id = k.id
+            WHERE h.transcription_id = ?
+              AND (uks.user_id IS NULL OR uks.storage_provider_id = ?)
+              {$keywordFilterSql}
+            ON CONFLICT DO NOTHING
+        ", $params);
+    }
+
+    /**
+     * Construye un snippet de ~200 chars alrededor del match (primera
+     * aparición CON frontera de palabra; avisos-keyword-word-boundary).
      */
     private function buildSnippet(string $text, string $keyword): string
     {
@@ -106,10 +235,13 @@ class KeywordMatcher
             return $text;
         }
 
-        $pos = mb_stripos($text, $keyword);
-        if ($pos === false) {
+        $posNorm = KeywordBoundaryMatcher::firstPosition(Keyword::asciiLower($text), Keyword::asciiLower($keyword));
+        if ($posNorm === null) {
             return mb_substr($text, 0, 200);
         }
+        // La posición es en bytes sobre el texto normalizado (ASCII), lo que
+        // coincide 1:1 con la posición en bytes del texto original.
+        $pos = (int) $posNorm;
 
         $start = max(0, $pos - 80);
         $snippet = mb_substr($text, $start, 200);
@@ -124,7 +256,7 @@ class KeywordMatcher
 
     private function secondsToHms(float $seconds): string
     {
-        $total = (int) floor($seconds);
+        $total = (int) $seconds;
         return sprintf('%02d:%02d:%02d', intdiv($total, 3600), intdiv($total % 3600, 60), $total % 60);
     }
 }

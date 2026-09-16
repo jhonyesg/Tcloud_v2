@@ -39,11 +39,12 @@ Toda respuesta de error del endpoint `POST /s/{token}/upload` SHALL ser JSON con
 - **THEN** la respuesta NO es JSON sino HTML 413 — el contrato aquí NO garantiza JSON para este caso. Documentado como dependencia operativa: mantener `client_max_body_size` alineado con el tamaño máximo de archivo que la app acepta.
 
 ### Requirement: Archivos subidos conservan metadatos básicos
-Cada `File` creado vía share upload SHALL persistir al menos: `name` (nombre original), `path` (relativo al `storage.base_path`), `size` (bytes en disco), `mime_type`, `storage_provider_id`, `owner_id`, `parent_id`, `is_folder = false`, `is_personal = false`.
+Cada `File` creado vía share upload SHALL persistir al menos: `name` (nombre original), `path` (relativo al `storage.base_path`), `size` (bytes en disco), `mime_type`, `storage_provider_id`, `owner_id`, `parent_id`, `is_folder = false`.
 
 #### Scenario: Metadata consistente
 - **WHEN** se crea el `File` desde el endpoint de share
 - **THEN** los campos anteriores están poblados y `mime_type` se obtiene del UploadedFile de Laravel (no se infiere del nombre)
+- **AND** la fila no requiere la columna `is_personal` (eliminada en la normalización del esquema)
 
 ### Requirement: Auditoría registra cada subida
 Cada subida por share que complete (201) SHALL generar un `ShareAccessLog` con `accessed_at = now()` y `ip_address` del cliente. Los errores antes de crear el archivo NO están obligados a generar log de auditoría (puede existir log de error separado).

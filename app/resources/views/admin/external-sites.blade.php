@@ -10,11 +10,17 @@
             <h1 class="text-2xl font-bold text-slate-800">Sites Externos</h1>
             <p class="text-slate-500 mt-0.5">Gestiona sitios web embebidos y sus asignaciones</p>
         </div>
-        <button @click="openCreate()"
-                class="flex items-center gap-2 px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-xl text-sm font-medium transition-colors">
-            <i class="fas fa-plus"></i>
-            <span x-show="true">Nuevo Site</span>
-        </button>
+        <div class="flex items-center gap-2">
+            <button onclick="startExternalSitesTour()" class="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-sm font-medium transition-colors" title="Guía interactiva">
+                <i class="fas fa-map-marked-alt"></i>
+                <span class="hidden sm:inline">Guía</span>
+            </button>
+            <button @click="openCreate()"
+                    class="flex items-center gap-2 px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-xl text-sm font-medium transition-colors">
+                <i class="fas fa-plus"></i>
+                <span x-show="true">Nuevo Site</span>
+            </button>
+        </div>
     </div>
 
     <!-- Toast -->
@@ -84,8 +90,13 @@
                                         <i class="fas fa-edit text-xs"></i>
                                     </button>
                                     <button @click="deleteSite(site)"
-                                            class="w-8 h-8 flex items-center justify-center bg-slate-100 hover:bg-red-50 text-slate-500 hover:text-red-600 rounded-lg transition-colors">
-                                        <i class="fas fa-trash text-xs"></i>
+                                            :disabled="deletingSiteId === site.id"
+                                            class="w-8 h-8 flex items-center justify-center bg-slate-100 hover:bg-red-50 text-slate-500 hover:text-red-600 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                                        <i x-show="deletingSiteId !== site.id" class="fas fa-trash text-xs"></i>
+                                        <svg x-show="deletingSiteId === site.id" class="animate-spin h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                        </svg>
                                     </button>
                                 </div>
                             </td>
@@ -117,15 +128,30 @@
 
                     <div>
                         <label class="block text-xs font-semibold text-slate-600 mb-2 uppercase tracking-wide">Icono</label>
-                        <div class="grid grid-cols-10 gap-1.5">
-                            <template x-for="ico in icons" :key="ico">
-                                <button type="button" @click="form.icon = ico"
-                                        :class="form.icon === ico ? 'bg-brand-100 border-brand-400 text-brand-700' : 'bg-slate-50 border-slate-200 text-slate-500 hover:bg-slate-100'"
-                                        class="w-9 h-9 flex items-center justify-center rounded-lg border text-sm transition-all"
-                                        :title="ico">
-                                    <i :class="'fas ' + ico"></i>
-                                </button>
+                        <div class="relative mb-2">
+                            <input type="text" x-model="iconSearch" placeholder="Buscar icono... (ej. chart, lock)"
+                                   class="w-full border border-slate-300 rounded-lg pl-9 pr-3 py-2 text-sm focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none">
+                            <i class="fas fa-search absolute left-3 top-2.5 text-slate-400 text-sm"></i>
+                        </div>
+                        <div class="border border-slate-200 rounded-lg p-2 max-h-56 overflow-y-auto bg-slate-50/50">
+                            <template x-for="group in filteredIconCats" :key="group.cat">
+                                <div class="mb-2 last:mb-0">
+                                    <p class="text-[10px] font-bold text-slate-400 uppercase tracking-wider px-1 py-1" x-text="group.cat"></p>
+                                    <div class="grid grid-cols-10 gap-1.5">
+                                        <template x-for="ico in group.items" :key="group.cat + ico">
+                                            <button type="button" @click="form.icon = ico"
+                                                    :class="form.icon === ico ? 'bg-brand-100 border-brand-400 text-brand-700' : 'bg-white border-slate-200 text-slate-500 hover:bg-brand-50'"
+                                                    class="w-9 h-9 flex items-center justify-center rounded-lg border text-sm transition-all"
+                                                    :title="ico">
+                                                <i :class="'fas ' + ico"></i>
+                                            </button>
+                                        </template>
+                                    </div>
+                                </div>
                             </template>
+                            <div x-show="filteredIconCats.length === 0" class="py-6 text-center text-xs text-slate-400">
+                                Sin iconos que coincidan con la búsqueda
+                            </div>
                         </div>
                     </div>
 
@@ -153,13 +179,13 @@
                     </div>
 
                     <!-- Preview -->
-                    <div class="p-3 rounded-lg border border-slate-200 bg-slate-50 flex items-center gap-3">
-                        <div class="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0"
+                    <div class="p-4 rounded-lg border border-slate-200 bg-slate-50 flex items-center gap-4">
+                        <div class="w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0"
                              :style="'background-color:' + colorBg(form.color)">
-                            <i :class="'fas ' + form.icon" :style="'color:' + colorText(form.color)"></i>
+                            <i :class="'fas ' + form.icon" class="text-xl" :style="'color:' + colorText(form.color)"></i>
                         </div>
-                        <div>
-                            <p class="text-sm font-medium text-slate-700" x-text="form.name || 'Nombre del site'"></p>
+                        <div class="min-w-0">
+                            <p class="text-sm font-semibold text-slate-700" x-text="form.name || 'Nombre del site'"></p>
                             <p class="text-xs text-slate-400 truncate max-w-[250px]" x-text="form.url || 'https://...'"></p>
                         </div>
                     </div>
@@ -228,8 +254,13 @@
                                 </div>
                             </div>
                             <button @click="removeUser(u)"
-                                    class="w-7 h-7 flex items-center justify-center bg-red-50 hover:bg-red-100 text-red-500 rounded-lg transition-colors">
-                                <i class="fas fa-times text-xs"></i>
+                                    :disabled="removingSiteUserKey === currentSite.id + '-' + u.id"
+                                    class="w-7 h-7 flex items-center justify-center bg-red-50 hover:bg-red-100 text-red-500 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                                <i x-show="removingSiteUserKey !== currentSite.id + '-' + u.id" class="fas fa-times text-xs"></i>
+                                <svg x-show="removingSiteUserKey === currentSite.id + '-' + u.id" class="animate-spin h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                </svg>
                             </button>
                         </div>
                     </template>
@@ -257,6 +288,8 @@ function externalSitesAdmin() {
         userSearch: '',
         userResults: [],
         assignedUsers: [],
+        deletingSiteId: null,
+        removingSiteUserKey: null,
         form: { name: '', url: '', icon: 'fa-globe', color: 'blue', enabled: true },
 
         availableUsers() {
@@ -265,28 +298,67 @@ function externalSitesAdmin() {
         },
 
         icons: [
-            'fa-globe','fa-tv','fa-chart-bar','fa-chart-line','fa-video',
-            'fa-newspaper','fa-broadcast-tower','fa-satellite-dish','fa-camera',
-            'fa-film','fa-music','fa-microphone','fa-rss','fa-link',
-            'fa-desktop','fa-server','fa-database','fa-cloud','fa-cog',
-            'fa-shield-alt','fa-lock','fa-users','fa-bullhorn','fa-tools',
+            { cat: 'Media', items: [
+                'fa-tv','fa-video','fa-film','fa-music','fa-microphone','fa-camera',
+                'fa-broadcast-tower','fa-satellite-dish','fa-podcast','fa-headphones',
+                'fa-play-circle','fa-photo-video','fa-clapperboard','fa-image',
+            ]},
+            { cat: 'Datos', items: [
+                'fa-chart-bar','fa-chart-line','fa-chart-pie','fa-database',
+                'fa-server','fa-desktop','fa-cloud','fa-table','fa-file-alt',
+                'fa-folder','fa-search','fa-gauge','fa-tachometer-alt',
+            ]},
+            { cat: 'Comunicación', items: [
+                'fa-globe','fa-rss','fa-link','fa-newspaper','fa-bullhorn',
+                'fa-envelope','fa-comment','fa-phone','fa-paper-plane','fa-wifi',
+            ]},
+            { cat: 'Seguridad', items: [
+                'fa-shield-alt','fa-lock','fa-user-shield','fa-key','fa-eye',
+                'fa-fingerprint','fa-users',
+            ]},
+            { cat: 'Herramientas', items: [
+                'fa-cog','fa-tools','fa-sliders-h','fa-plug','fa-cubes',
+                'fa-rocket','fa-lightbulb','fa-calendar','fa-ticket-alt','fa-bolt',
+            ]},
+            { cat: 'General', items: [
+                'fa-home','fa-book','fa-shopping-cart','fa-credit-card','fa-gavel',
+                'fa-flask','fa-briefcase','fa-graduation-cap','fa-heartbeat',
+                'fa-store','fa-map-marked-alt',
+            ]},
         ],
+        iconSearch: '',
+
+        get filteredIconCats() {
+            const q = this.iconSearch.trim().toLowerCase();
+            if (!q) return this.icons;
+            return this.icons
+                .map(c => ({ cat: c.cat, items: c.items.filter(i => i.replace('fa-', '').includes(q)) }))
+                .filter(c => c.items.length > 0);
+        },
         colors: [
-            { name: 'blue',   hex: '#2563eb' },
-            { name: 'green',  hex: '#16a34a' },
-            { name: 'red',    hex: '#dc2626' },
-            { name: 'purple', hex: '#9333ea' },
-            { name: 'amber',  hex: '#d97706' },
-            { name: 'cyan',   hex: '#0891b2' },
-            { name: 'rose',   hex: '#e11d48' },
-            { name: 'slate',  hex: '#64748b' },
+            { name: 'blue',    hex: '#2563eb' },
+            { name: 'sky',     hex: '#0284c7' },
+            { name: 'cyan',    hex: '#0891b2' },
+            { name: 'teal',    hex: '#0d9488' },
+            { name: 'green',   hex: '#16a34a' },
+            { name: 'lime',    hex: '#65a30d' },
+            { name: 'yellow',  hex: '#ca8a04' },
+            { name: 'amber',   hex: '#d97706' },
+            { name: 'orange',  hex: '#ea580c' },
+            { name: 'red',     hex: '#dc2626' },
+            { name: 'rose',    hex: '#e11d48' },
+            { name: 'pink',    hex: '#db2777' },
+            { name: 'fuchsia', hex: '#c026d3' },
+            { name: 'purple',  hex: '#9333ea' },
+            { name: 'indigo',  hex: '#4f46e5' },
+            { name: 'slate',   hex: '#64748b' },
         ],
         colorBg(c) {
-            const m = { blue:'#dbeafe', green:'#dcfce7', red:'#fee2e2', purple:'#f3e8ff', amber:'#fef3c7', cyan:'#cffafe', rose:'#ffe4e6', slate:'#f1f5f9' };
+            const m = { blue:'#dbeafe', sky:'#e0f2fe', cyan:'#cffafe', teal:'#ccfbf1', green:'#dcfce7', lime:'#ecfccb', yellow:'#fef9c3', amber:'#fef3c7', orange:'#ffedd5', red:'#fee2e2', rose:'#ffe4e6', pink:'#fce7f3', fuchsia:'#fae8ff', purple:'#f3e8ff', indigo:'#e0e7ff', slate:'#f1f5f9' };
             return m[c] || '#f1f5f9';
         },
         colorText(c) {
-            const m = { blue:'#2563eb', green:'#16a34a', red:'#dc2626', purple:'#9333ea', amber:'#d97706', cyan:'#0891b2', rose:'#e11d48', slate:'#64748b' };
+            const m = { blue:'#2563eb', sky:'#0284c7', cyan:'#0891b2', teal:'#0d9488', green:'#16a34a', lime:'#65a30d', yellow:'#ca8a04', amber:'#d97706', orange:'#ea580c', red:'#dc2626', rose:'#e11d48', pink:'#db2777', fuchsia:'#c026d3', purple:'#9333ea', indigo:'#4f46e5', slate:'#64748b' };
             return m[c] || '#64748b';
         },
 
@@ -338,13 +410,18 @@ function externalSitesAdmin() {
 
         async deleteSite(site) {
             if (!confirm(`¿Eliminar el site "${site.name}"? Se quitará de todos los usuarios.`)) return;
-            const res = await apiFetch(`/admin/external-sites/${site.id}`, {
-                method: 'DELETE',
-                credentials: 'include',
-                headers: { 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content, 'Accept': 'application/json' },
-            });
-            if (res.ok) { await this.load(); this.showToast('Site eliminado', 'success'); }
-            else this.showToast('Error al eliminar', 'error');
+            this.deletingSiteId = site.id;
+            try {
+                const res = await apiFetch(`/admin/external-sites/${site.id}`, {
+                    method: 'DELETE',
+                    credentials: 'include',
+                    headers: { 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content, 'Accept': 'application/json' },
+                });
+                if (res.ok) { await this.load(); this.showToast('Site eliminado', 'success'); }
+                else this.showToast('Error al eliminar', 'error');
+            } finally {
+                this.deletingSiteId = null;
+            }
         },
 
         async openUsers(site) {
@@ -386,13 +463,19 @@ function externalSitesAdmin() {
         },
 
         async removeUser(u) {
-            const res = await apiFetch(`/admin/external-sites/${this.currentSite.id}/users/${u.id}`, {
-                method: 'DELETE',
-                credentials: 'include',
-                headers: { 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content, 'Accept': 'application/json' },
-            });
-            if (res.ok) { await this.loadAssigned(); this.showToast('Asignación eliminada', 'success'); }
-            else this.showToast('Error', 'error');
+            const key = this.currentSite.id + '-' + u.id;
+            this.removingSiteUserKey = key;
+            try {
+                const res = await apiFetch(`/admin/external-sites/${this.currentSite.id}/users/${u.id}`, {
+                    method: 'DELETE',
+                    credentials: 'include',
+                    headers: { 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content, 'Accept': 'application/json' },
+                });
+                if (res.ok) { await this.loadAssigned(); this.showToast('Asignación eliminada', 'success'); }
+                else this.showToast('Error', 'error');
+            } finally {
+                this.removingSiteUserKey = null;
+            }
         },
 
         showToast(msg, type) {
@@ -400,6 +483,61 @@ function externalSitesAdmin() {
             setTimeout(() => this.toast = null, 3500);
         },
     };
+}
+</script>
+<script src="/js/interactive-tour.js?v=20"></script>
+<script>
+function startExternalSitesTour() {
+    const alpine = document.querySelector('[x-data]')?._x_dataStack?.[0];
+    if (alpine) {
+        alpine.showForm = false;
+        alpine.showUsersModal = false;
+    }
+
+    TcloudTour.start({
+        steps: [
+            {
+                title: 'Sites Externos',
+                content: 'Aquí configuras sitios web embebidos que aparecerán como accesos directos en el menú lateral de los usuarios. Puedes asignar visibilidad por usuario y personalizar el icono y color.',
+                icon: 'fa-globe',
+                color: '#6366f1',
+                selector: null,
+                position: 'center'
+            },
+            {
+                title: 'Tabla de Sites',
+                content: 'Cada fila muestra el nombre, URL, estado (activo/inactivo) y usuarios asignados. Los sites inactivos no aparecen en el menú lateral.',
+                icon: 'fa-table',
+                color: '#3b82f6',
+                selector: 'table',
+                position: 'bottom'
+            },
+            {
+                title: 'Usuarios Asignados',
+                content: 'El botón <strong>Usuarios</strong> te permite controlar quién ve cada site en su menú lateral. Sin usuarios asignados, el site no aparece para nadie.',
+                icon: 'fa-users',
+                color: '#2563eb',
+                selector: 'table tbody tr:first-child td:nth-child(4) button',
+                position: 'left'
+            },
+            {
+                title: 'Editar y Eliminar',
+                content: 'Edita el nombre, URL, icono y color de un site, o elimínalo permanentemente. Los cambios se reflejan inmediatamente en el menú lateral.',
+                icon: 'fa-edit',
+                color: '#4654a8',
+                selector: 'table tbody tr:first-child td:last-child',
+                position: 'left'
+            },
+            {
+                title: 'Crear Site',
+                content: 'Crea un nuevo site definiendo nombre, URL completa, icono de Font Awesome y color de fondo. Actívalo para que aparezca en los menús correspondientes.',
+                icon: 'fa-plus-circle',
+                color: '#4654a8',
+                selector: 'button[onclick="startExternalSitesTour()"] + button',
+                position: 'bottom'
+            }
+        ]
+    });
 }
 </script>
 @endsection

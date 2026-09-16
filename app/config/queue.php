@@ -23,7 +23,12 @@ return [
             'driver' => 'redis',
             'connection' => 'default',
             'queue' => env('REDIS_QUEUE', 'default'),
-            'retry_after' => (int) env('QUEUE_RETRY_AFTER', 90),
+            // Post-transcriptor-pg-native-queue: el transcriptor ya NO usa esta
+            // cola (consume directo de `transcriptions` con FOR UPDATE SKIP LOCKED).
+            // Otras colas (SendAlertDigest, MentionsExportJob, BackfillKeywordMatches)
+            // siguen usando el driver redis. retry_after=900 es el techo seguro
+            // para jobs de hasta 600s de ffmpeg + margen.
+            'retry_after' => (int) env('QUEUE_RETRY_AFTER', 900),
             'block_for' => null,
             'after_commit' => true,
         ],

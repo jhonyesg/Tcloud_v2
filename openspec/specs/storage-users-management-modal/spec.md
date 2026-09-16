@@ -4,7 +4,7 @@
 Define the in-place modal for managing users assigned to a storage, using a chip-based display with permission badges instead of a table, and a typeahead form for assigning new users.
 ## Requirements
 ### Requirement: Modal de gestión de usuarios desde lista de storages
-El sistema SHALL abrir un modal in-place al hacer clic en "Usuarios" en la lista de storages, mostrando los usuarios asignados como chips visuales con badges de permisos y un formulario de asignación con typeahead, sin navegar a una página separada.
+El sistema SHALL abrir un modal in-place al hacer clic en "Usuarios" en la lista de storages, mostrando los usuarios asignados como chips visuales con badges de permisos y un formulario de asignación con typeahead, sin navegar a una página separada. El modal SHALL usar el house style de contenedor (rounded-2xl, shadow-2xl, overlay con blur), labels en mayúsculas pequeñas y footer de acciones con primaria de marca.
 
 #### Scenario: Abrir modal de usuarios
 - **WHEN** el admin hace clic en "Usuarios" en la columna de acciones de un storage
@@ -25,6 +25,10 @@ El sistema SHALL abrir un modal in-place al hacer clic en "Usuarios" en la lista
 #### Scenario: Cerrar modal
 - **WHEN** el admin hace clic fuera del modal, en el botón X, o en "Cerrar"
 - **THEN** el modal se cierra y el admin permanece en la lista de storages
+
+#### Scenario: Contenedor en house style
+- **WHEN** el admin compara el modal de gestión de usuarios con los demás modales de la familia storage
+- **THEN** comparten contenedor `rounded-2xl shadow-2xl`, overlay con blur, labels uppercase y footer con primaria de marca
 
 ### Requirement: Chips de usuarios asignados muestran username y permisos como badges
 El sistema SHALL mostrar el username del usuario como identificador principal en cada chip, con el email visible en tooltip o texto secundario, y los permisos activos representados como badges de color diferenciado dentro del mismo chip.

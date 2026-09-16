@@ -12,6 +12,7 @@ class SyncStorage extends Command
                             {storage_id? : ID del storage a sincronizar}
                             {--all : Sincronizar todos los storages locales habilitados}
                             {--force : Ignorar mtime y escanear todas las carpetas sin excepcion}
+                            {--force-prune : Saltar las guardas de borrado masivo (usar solo si el borrado en disco es real)}
                             {--user=1 : User ID para asignar archivos nuevos}';
 
     protected $description = 'Synchronize files from local storage directories to database';
@@ -20,9 +21,14 @@ class SyncStorage extends Command
     {
         $userId = (int) $this->option('user');
         $force  = (bool) $this->option('force');
+        $forcePrune = (bool) $this->option('force-prune');
+
+        if ($forcePrune) {
+            $this->warn('--force-prune activo: se saltaran las guardas de borrado masivo. La guarda de escaneo no fiable SIGUE vigente.');
+        }
 
         if ($this->option('all')) {
-            return $this->syncAll($syncService, $userId, $force);
+            return $this->syncAll($syncService, $userId, $force, $forcePrune);
         }
 
         $storageId = $this->argument('storage_id');
@@ -31,10 +37,10 @@ class SyncStorage extends Command
             return Command::FAILURE;
         }
 
-        return $this->syncOne((int) $storageId, $syncService, $userId, force: $force);
+        return $this->syncOne((int) $storageId, $syncService, $userId, force: $force, forcePrune: $forcePrune);
     }
 
-    private function syncAll(StorageSyncService $syncService, int $userId, bool $force = false): int
+    private function syncAll(StorageSyncService $syncService, int $userId, bool $force = false, bool $forcePrune = false): int
     {
         $storages = StorageProvider::where('type', 'local')->where('enabled', true)->get();
         $label = $force ? ' (force — mtime skip disabled)' : '';
@@ -45,7 +51,7 @@ class SyncStorage extends Command
         $failed = 0;
 
         foreach ($storages as $storage) {
-            $result = $this->syncOne($storage->id, $syncService, $userId, silent: true, force: $force);
+            $result = $this->syncOne($storage->id, $syncService, $userId, silent: true, force: $force, forcePrune: $forcePrune);
             if ($result === Command::SUCCESS) {
                 $ok++;
             } elseif ($result === 2) { // inaccessible — not a real failure
@@ -59,7 +65,7 @@ class SyncStorage extends Command
         return $failed > 0 ? Command::FAILURE : Command::SUCCESS;
     }
 
-    private function syncOne(int $storageId, StorageSyncService $syncService, int $userId, bool $silent = false, bool $force = false): int
+    private function syncOne(int $storageId, StorageSyncService $syncService, int $userId, bool $silent = false, bool $force = false, bool $forcePrune = false): int
     {
         $storage = StorageProvider::find($storageId);
 
@@ -73,7 +79,12 @@ class SyncStorage extends Command
             return Command::FAILURE;
         }
 
-        $accessible = is_dir($storage->base_path) && is_readable($storage->base_path);
+        // is_dir + is_readable PASAN con un montaje NFS caido: el punto de
+        // montaje sigue siendo un directorio local vacio y legible. Por eso se
+        // consulta ademas a MountGuard.
+        $accessible = is_dir($storage->base_path)
+            && is_readable($storage->base_path)
+            && app(\App\Services\MountGuard::class)->detachedAncestor($storage->base_path) === null;
 
         $storage->update([
             'is_accessible' => $accessible,
@@ -92,7 +103,7 @@ class SyncStorage extends Command
 
         try {
             $start = microtime(true);
-            $stats = $syncService->fullSync($storage, $userId, $force);
+            $stats = $syncService->fullSync($storage, $userId, $force, $forcePrune);
             $duration = round(microtime(true) - $start, 2);
 
             $skippedNote = $stats['skipped'] > 0 ? ", skipped: {$stats['skipped']}" : '';

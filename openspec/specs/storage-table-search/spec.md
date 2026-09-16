@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Capability `storage-table-search`: consolida los requisitos y comportamientos de cuadro de búsqueda global en tiempo real en TCloud. (Purpose derivado automáticamente al normalizar el formato legacy del spec.)
+
+## Requirements
 
 ### Requirement: Cuadro de búsqueda global en tiempo real
 La tabla de storages SHALL incluir un cuadro de texto de búsqueda que filtre los registros visibles en tiempo real conforme el usuario escribe, sin requerir presionar Enter ni botón de búsqueda.

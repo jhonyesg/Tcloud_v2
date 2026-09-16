@@ -49,6 +49,19 @@ class SessionTracker
             return redirect('/login')->with('error', 'Tu sesión ha expirado. Inicia sesión nuevamente.');
         }
 
+        $user = User::find($record->user_id);
+        if (!$user || !$user->isActive()) {
+            $this->sessionService->killSession($record);
+            Session::flush();
+
+            if ($request->expectsJson()) {
+                return response()
+                    ->json(['error' => 'Sesión inválida o cerrada'], 401)
+                    ->header('X-Session-Expired', '1');
+            }
+            return redirect('/login')->with('error', 'Tu sesión fue cerrada. Inicia sesión nuevamente.');
+        }
+
         // Sesión válida — cachear por 30 s para evitar queries repetidas
         Cache::put($cacheKey, '1', 30);
 

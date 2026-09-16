@@ -2,10 +2,10 @@
 
 namespace Tests\Unit;
 
-use Tests\TestCase;
+use Tests\LaravelTestCase;
 use App\Models\Share;
 
-class ShareCreationRulesTest extends TestCase
+class ShareCreationRulesTest extends LaravelTestCase
 {
     public function test_token_is_32_characters(): void
     {

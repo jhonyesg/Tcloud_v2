@@ -36,30 +36,38 @@ class ConfigService
 
     public function testConnection(CorreoConfig $config): array
     {
-        try {
-            $dsn = sprintf(
-                'smtp://%s:%s@%s:%d',
-                urlencode($config->username),
-                urlencode($config->password_decrypted),
-                $config->host,
-                $config->port
-            );
+        $schemes = $config->secure ? ['smtps', 'smtp'] : ['smtp'];
 
-            $transport = Transport::fromDsn($dsn);
-            $mailer = new Mailer($transport);
+        foreach ($schemes as $scheme) {
+            try {
+                $dsn = sprintf(
+                    '%s://%s:%s@%s:%d',
+                    $scheme,
+                    urlencode($config->username),
+                    urlencode($config->password_decrypted),
+                    $config->host,
+                    $config->port
+                );
 
-            $email = (new Email())
-                ->from(new Address($config->from_email, $config->from_name))
-                ->to('test@example.com')
-                ->subject('Test Connection')
-                ->text('Test');
+                $transport = Transport::fromDsn($dsn);
+                $mailer = new Mailer($transport);
 
-            $mailer->send($email);
+                $email = (new Email())
+                    ->from(new Address($config->from_email, $config->from_name))
+                    ->to('test@example.com')
+                    ->subject('Test Connection')
+                    ->text('Test');
 
-            return ['success' => true, 'message' => 'Conexión exitosa'];
-        } catch (\Exception $e) {
-            return ['success' => false, 'message' => 'Error: ' . $e->getMessage()];
+                $mailer->send($email);
+
+                return ['success' => true, 'message' => 'Conexion exitosa (' . $scheme . ')'];
+            } catch (\Exception $e) {
+                $lastError = $e->getMessage();
+                continue;
+            }
         }
+
+        return ['success' => false, 'message' => 'Error: ' . ($lastError ?? 'No se pudo conectar')];
     }
 
     public function getConfigForDisplay(): ?array

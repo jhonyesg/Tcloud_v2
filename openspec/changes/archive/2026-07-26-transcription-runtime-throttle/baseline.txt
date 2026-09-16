@@ -1,0 +1,44 @@
+=== BASELINE 2026-07-26 (pre-change) ===
+
+--- redis llen queues:transcription ---
+0
+--- workers reales (procesos queue:work) ---
+23
+
+--- systemd units ---
+tcloud-transcription-batch-1.service active running
+tcloud-transcription-batch-10.service active running
+tcloud-transcription-batch-11.service active running
+tcloud-transcription-batch-2.service active running
+tcloud-transcription-batch-3.service active running
+tcloud-transcription-batch-4.service active running
+tcloud-transcription-batch-5.service active running
+tcloud-transcription-batch-6.service active running
+tcloud-transcription-batch-7.service active running
+tcloud-transcription-batch-8.service active running
+tcloud-transcription-batch-9.service active running
+tcloud-transcription-batch.service inactive dead
+tcloud-transcription-worker@1.service active running
+tcloud-transcription-worker@10.service active running
+tcloud-transcription-worker@2.service active running
+tcloud-transcription-worker@3.service active running
+tcloud-transcription-worker@4.service active running
+tcloud-transcription-worker@5.service active running
+tcloud-transcription-worker@6.service active running
+tcloud-transcription-worker@7.service active running
+tcloud-transcription-worker@8.service active running
+tcloud-transcription-worker@9.service active running
+
+--- ffmpeg fallo count in laravel.log ---
+364
+
+--- transcriptions by state ---
+done|53537
+dead|737
+error|43
+
+--- config pre-change ---
+queue.connections.redis.retry_after = 90 (config/queue.php:26)
+ConvertAndTranscribeJob::$timeout   = 600 (app/Jobs/ConvertAndTranscribeJob.php:28)
+ConvertAndTranscribeJob::$tries     = 1
+TranscriptionTune MIN/MAX/RATIO     = 3/12/6 (private const)

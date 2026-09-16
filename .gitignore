@@ -10,10 +10,24 @@ app/storage/framework/cache/*
 app/storage/logs/*
 !app/storage/logs/.gitignore
 app/bootstrap/cache/*.php
+
+# Volcados de base de datos. `backups/` son varios GB de dumps nocturnos y
+# algunos superan los 100 MB, el limite duro de GitHub: sin esto el push falla y
+# el historial queda inflado de forma permanente.
+backups/
 *.sql
+*.sql.gz
+*.sql.bz2
+*.dump
 backup_*.sql
 
 # Dotfiles and dotdirectories (except .git and .env.example)
 .*
 !.gitignore
 !.env.example
+
+# Artefactos de tooling/QA en la raiz (Playwright + screenshots). No son codigo
+# del proyecto; los tests reales viven en app/tests/.
+/tests/
+playwright_*.py
+app/tmp/

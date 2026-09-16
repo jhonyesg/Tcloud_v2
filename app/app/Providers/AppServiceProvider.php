@@ -2,6 +2,7 @@
 
 namespace App\Providers;
 
+use App\Models\Transcription;
 use App\Models\User;
 use App\Models\ExternalSite;
 use App\Models\Correction;
@@ -13,6 +14,12 @@ use App\Services\Ia\KeywordMatcher;
 use App\Services\Ia\SrtParser;
 use App\Services\Ia\TranscriptionProcessor;
 use App\Services\Ia\TranscriptorApiClient;
+use App\Services\Ia\TranscriptorSettings;
+use App\Modules\Correo\Services\EmailValidationService;
+use App\Modules\Papelera\Services\PapeleraService;
+use App\Observers\TranscriptionObserver;
+use App\Observers\UserObserver;
+use App\Services\Auth\PasswordTokenService;
 use Illuminate\Support\Facades\Session;
 use Illuminate\Support\ServiceProvider;
 
@@ -21,28 +28,53 @@ class AppServiceProvider extends ServiceProvider
     public function register(): void
     {
         // Modulo IA — bindings del transcriptor
+        // TranscriptorSettings es singleton pero refresca su memo por TTL: los
+        // procesos queue:work viven horas y una memo permanente congelaria la
+        // configuracion hasta reiniciar systemd.
+        $this->app->singleton(TranscriptorSettings::class);
         $this->app->singleton(TranscriptorApiClient::class);
         $this->app->singleton(AudioConverter::class);
         $this->app->singleton(SrtParser::class);
         $this->app->singleton(CorrectionService::class);
         $this->app->singleton(TranscriptionProcessor::class);
-        $this->app->singleton(KeywordMatcher::class);
         $this->app->singleton(AlertDispatcher::class);
+        $this->app->singleton(EmailValidationService::class);
+        $this->app->singleton(PasswordTokenService::class);
+        $this->app->singleton(PapeleraService::class);
+
+        // Motor de menciones seleccionable (mis-avisos-menciones): universal
+        // por defecto; legacy preservado como fallback de rollback. La costura
+        // que consume TranscriptionProcessor sigue siendo KeywordMatcher::run().
+        $this->app->singleton(KeywordMatcher::class, function ($app) {
+            if (config('avisos.engine') === 'legacy') {
+                return $app->make(\App\Services\Ia\LegacyKeywordMatcher::class);
+            }
+
+            // build(): instancia sin pasar de nuevo por este binding (evita recursión).
+            return $app->build(KeywordMatcher::class);
+        });
     }
 
     public function boot(): void
     {
+        User::observe(UserObserver::class);
+        // change 2026-09-10-mis-avisos-program-date-filter: calcula recorded_at
+        // automáticamente al crear y la hace inmutable después.
+        Transcription::observe(TranscriptionObserver::class);
+
         view()->composer('layouts.app', function ($view) {
             $userId = Session::get('user_id');
 
             $misAvisosEnabled = false;
             $correctionsPendingCount = 0;
+            $trashCounts = ['total' => 0, 'urgent' => 0];
 
             if (!$userId) {
                 $view->with('sidebarQuota', $this->emptyQuota());
                 $view->with('userExternalSites', collect());
                 $view->with('misAvisosEnabled', $misAvisosEnabled);
                 $view->with('correctionsPendingCount', $correctionsPendingCount);
+                $view->with('trashCounts', $trashCounts);
                 return;
             }
 
@@ -52,6 +84,7 @@ class AppServiceProvider extends ServiceProvider
                 $view->with('userExternalSites', collect());
                 $view->with('misAvisosEnabled', $misAvisosEnabled);
                 $view->with('correctionsPendingCount', $correctionsPendingCount);
+                $view->with('trashCounts', $trashCounts);
                 return;
             }
 
@@ -68,6 +101,15 @@ class AppServiceProvider extends ServiceProvider
 
             $view->with('misAvisosEnabled', $misAvisosEnabled);
             $view->with('correctionsPendingCount', $correctionsPendingCount);
+
+            // Papelera: conteos para el badge del sidebar. Cacheado 60s en
+            // PapeleraService::countFor(); aqui solo delegamos.
+            try {
+                $trashCounts = app(PapeleraService::class)->countFor((int) $userId);
+            } catch (\Throwable $e) {
+                $trashCounts = ['total' => 0, 'urgent' => 0];
+            }
+            $view->with('trashCounts', $trashCounts);
 
             $used  = (int) $user->personal_used_bytes;
             $limit = (int) $user->personal_quota_bytes;

@@ -16,19 +16,9 @@ class PublicShareController extends Controller
 {
     public function show(Request $request, string $token)
     {
-        $cacheKey = "share:meta:{$token}";
-
-        $share = Cache::remember($cacheKey, 3600, function () use ($token) {
-            return Share::where('token', $token)->with(['file', 'creator'])->first();
-        });
-
-        if ($share && !Share::where('id', $share->id)->exists()) {
-            Cache::forget($cacheKey);
-            $share = Share::where('token', $token)->with(['file', 'creator'])->first();
-            if ($share) {
-                Cache::put($cacheKey, $share, 3600);
-            }
-        }
+        // Always load current metadata. Caching the serialized File graph allowed
+        // renamed or revoked resources to remain visible for up to an hour.
+        $share = Share::where('token', $token)->with(['file', 'creator'])->first();
 
         if (!$share) {
             if ($request->ajax() || $request->wantsJson()) {
@@ -64,13 +54,35 @@ class PublicShareController extends Controller
             }
         }
 
-        $this->logAccess($share->id, $request->ip());
-
         $file = $share->file;
+
+        // Papelera: si el archivo del share esta trashado, respondemos 410 Gone
+        // con mensaje claro. 410 (no 404) porque el recurso existio y el share
+        // token es valido: solo el archivo se movio a papelera por su dueno.
+        $trashResp = $this->rejectIfTrashed($file, $request);
+        if ($trashResp !== null) {
+            return $trashResp;
+        }
+
+        if (!$file || $file->availability_state === 'missing') {
+            if ($request->ajax() || $request->wantsJson()) {
+                return response()->json(['error' => 'File not found'], 404);
+            }
+
+            return view('shares.public-not-found');
+        }
+
+        $this->logAccess($share->id, $request->ip());
 
         if ($file->is_folder) {
             $this->autoSyncFolder($file, $request->boolean('refresh'));
-            $folderContents = $file->children()->orderBy('is_folder', 'desc')->orderBy('name')->get();
+            $folderContents = $file->children()
+                ->where(function ($query) {
+                    $query->whereNull('availability_state')->orWhere('availability_state', '!=', 'missing');
+                })
+                ->orderBy('is_folder', 'desc')
+                ->orderBy('name')
+                ->get();
             $mimeType = 'folder';
             $isPreviewable = false;
             $fileUrl = null;
@@ -111,6 +123,40 @@ class PublicShareController extends Controller
         ]);
     }
 
+    public function authenticate(Request $request, string $token)
+    {
+        $share = Share::where('token', $token)->with('file')->first();
+
+        if (!$share) {
+            return $this->publicError($request, 'Share not found', 404);
+        }
+
+        if ($share->expires_at && $share->expires_at->isPast()) {
+            return $this->publicError($request, 'Share has expired', 410, 'shares.public-expired');
+        }
+
+        if (!$share->password_hash) {
+            return redirect('/s/' . $token);
+        }
+
+        $request->validate(['password' => 'required|string']);
+
+        if (!Hash::check($request->input('password'), $share->password_hash)) {
+            if ($request->ajax() || $request->wantsJson()) {
+                return response()->json(['error' => 'Invalid password'], 401);
+            }
+
+            return response()->view('shares.public-password', [
+                'token' => $token,
+                'error' => 'Contraseña incorrecta',
+            ], 401);
+        }
+
+        $request->session()->put("share_auth_{$token}", true);
+
+        return redirect('/s/' . $token);
+    }
+
     public function folder(Request $request, string $token, int $folder_id)
     {
         $share = Share::where('token', $token)->first();
@@ -123,17 +169,17 @@ class PublicShareController extends Controller
             return view('shares.public-expired');
         }
 
-        if ($share->password_hash && !$request->session()->has("share_auth_{$token}")) {
+        if ($share->password_hash && !$this->passwordAuthorized($request, $share, $token)) {
             return view('shares.public-password', ['token' => $token]);
         }
 
         $rootFolder = File::find($share->file_id);
-        if (!$rootFolder) {
+        if (!$rootFolder || $rootFolder->availability_state === 'missing') {
             return view('shares.public-not-found');
         }
 
         $currentFolder = File::find($folder_id);
-        if (!$currentFolder || !$currentFolder->is_folder) {
+        if (!$currentFolder || !$currentFolder->is_folder || $currentFolder->availability_state === 'missing') {
             return view('shares.public-not-found');
         }
 
@@ -142,7 +188,13 @@ class PublicShareController extends Controller
         }
 
         $this->autoSyncFolder($currentFolder, $request->boolean('refresh'));
-        $folderContents = $currentFolder->children()->orderBy('is_folder', 'desc')->orderBy('name')->get();
+        $folderContents = $currentFolder->children()
+            ->where(function ($query) {
+                $query->whereNull('availability_state')->orWhere('availability_state', '!=', 'missing');
+            })
+            ->orderBy('is_folder', 'desc')
+            ->orderBy('name')
+            ->get();
 
         $breadcrumbs = [];
         $crumb = $currentFolder;
@@ -175,19 +227,24 @@ class PublicShareController extends Controller
             return response()->json(['error' => 'Share has expired'], 410);
         }
 
-        if ($share->password_hash && !$request->session()->has("share_auth_{$token}")) {
+        if ($share->password_hash && !$this->passwordAuthorized($request, $share, $token)) {
             return response()->json(['error' => 'Password required'], 401);
         }
 
         $rootFolder = File::find($share->file_id);
         $file = File::find($file_id);
 
-        if (!$file) {
+        if (!$file || $file->availability_state === 'missing') {
             return response()->json(['error' => 'File not found'], 404);
         }
 
         if (!$this->isDescendantOf($file, $rootFolder)) {
             return response()->json(['error' => 'File not in shared folder'], 403);
+        }
+
+        $trashResp = $this->rejectIfTrashed($file, $request);
+        if ($trashResp !== null) {
+            return $trashResp;
         }
 
         $mimeType = $file->mime_type ?? 'application/octet-stream';
@@ -219,19 +276,24 @@ class PublicShareController extends Controller
             return response()->json(['error' => 'Share has expired'], 410);
         }
 
-        if ($share->password_hash && !$request->session()->has("share_auth_{$token}")) {
+        if ($share->password_hash && !$this->passwordAuthorized($request, $share, $token)) {
             return response()->json(['error' => 'Password required'], 401);
         }
 
         $rootFolder = File::find($share->file_id);
         $file = File::find($file_id);
 
-        if (!$file) {
+        if (!$file || $file->availability_state === 'missing') {
             return response()->json(['error' => 'File not found'], 404);
         }
 
         if (!$this->isDescendantOf($file, $rootFolder)) {
             return response()->json(['error' => 'File not in shared folder'], 403);
+        }
+
+        $trashResp = $this->rejectIfTrashed($file, $request);
+        if ($trashResp !== null) {
+            return $trashResp;
         }
 
         $mimeType = $file->mime_type ?? 'application/octet-stream';
@@ -328,6 +390,32 @@ class PublicShareController extends Controller
         return false;
     }
 
+    /**
+     * Papelera: si el File esta trashado, devuelve una respuesta 410 Gone
+     * para JSON o HTML. Devuelve null si NO esta trashado (sigue el flujo).
+     * Centraliza la regla para no duplicar la misma respuesta en cada metodo.
+     * Return type: cualquier subclase de Symfony Response (JsonResponse o
+     * view response). JsonResponse NO extiende Illuminate\Http\Response
+     * directamente, asi que usamos el ancestro comun.
+     */
+    private function rejectIfTrashed(?File $file, Request $request): ?\Symfony\Component\HttpFoundation\Response
+    {
+        if (!$file || !$file->is_trashed) {
+            return null;
+        }
+
+        if ($request->ajax() || $request->wantsJson()) {
+            return response()->json([
+                'error' => 'file_in_trash',
+                'message' => 'El archivo fue movido a la papelera por su propietario.',
+            ], 410);
+        }
+
+        return response()->view('shares.public-not-found', [
+            'message' => 'El archivo fue movido a la papelera por su propietario.',
+        ], 410);
+    }
+
     public function download(Request $request, string $token, ?int $fileId = null)
     {
         $share = Share::where('token', $token)->first();
@@ -344,7 +432,7 @@ class PublicShareController extends Controller
             return response()->json(['error' => 'Download not allowed'], 403);
         }
 
-        if ($share->password_hash && !$request->session()->has("share_auth_{$token}")) {
+        if ($share->password_hash && !$this->passwordAuthorized($request, $share, $token)) {
             return response()->json(['error' => 'Password required'], 401);
         }
 
@@ -356,6 +444,15 @@ class PublicShareController extends Controller
             }
         } else {
             $file = File::findOrFail($share->file_id);
+        }
+
+        $trashResp = $this->rejectIfTrashed($file, $request);
+        if ($trashResp !== null) {
+            return $trashResp;
+        }
+
+        if ($file->availability_state === 'missing') {
+            return response()->json(['error' => 'File not found on storage'], 404);
         }
 
         if ($file->is_folder) {
@@ -399,7 +496,7 @@ class PublicShareController extends Controller
             return response()->json(['error' => 'Upload not allowed'], 403);
         }
 
-        if ($share->password_hash && !$request->session()->has("share_auth_{$token}")) {
+        if ($share->password_hash && !$this->passwordAuthorized($request, $share, $token)) {
             return response()->json(['error' => 'Password required'], 401);
         }
 
@@ -456,7 +553,9 @@ class PublicShareController extends Controller
             'owner_id' => $targetFolder->owner_id,
             'parent_id' => $targetFolder->id,
             'is_folder' => false,
-            'is_personal' => false,
+            'availability_state' => 'available',
+            'last_verified_at' => now(),
+            'missing_since_at' => null,
         ]);
 
         $this->logAccess($share->id, $request->ip());
@@ -480,7 +579,7 @@ class PublicShareController extends Controller
             return response()->json(['error' => 'Create folder not allowed'], 403);
         }
 
-        if ($share->password_hash && !$request->session()->has("share_auth_{$token}")) {
+        if ($share->password_hash && !$this->passwordAuthorized($request, $share, $token)) {
             return response()->json(['error' => 'Password required'], 401);
         }
 
@@ -534,7 +633,9 @@ class PublicShareController extends Controller
             'owner_id' => $targetFolder->owner_id,
             'parent_id' => $targetFolder->id,
             'is_folder' => true,
-            'is_personal' => false,
+            'availability_state' => 'available',
+            'last_verified_at' => now(),
+            'missing_since_at' => null,
         ]);
 
         $this->logAccess($share->id, $request->ip());
@@ -558,7 +659,7 @@ class PublicShareController extends Controller
             return response()->json(['error' => 'Rename not allowed'], 403);
         }
 
-        if ($share->password_hash && !$request->session()->has("share_auth_{$token}")) {
+        if ($share->password_hash && !$this->passwordAuthorized($request, $share, $token)) {
             return response()->json(['error' => 'Password required'], 401);
         }
 
@@ -624,7 +725,7 @@ class PublicShareController extends Controller
             return response()->json(['error' => 'Delete not allowed'], 403);
         }
 
-        if ($share->password_hash && !$request->session()->has("share_auth_{$token}")) {
+        if ($share->password_hash && !$this->passwordAuthorized($request, $share, $token)) {
             return response()->json(['error' => 'Password required'], 401);
         }
 
@@ -633,6 +734,14 @@ class PublicShareController extends Controller
 
         if (!$this->isDescendantOf($file, $rootFolder)) {
             return response()->json(['error' => 'File not in shared folder'], 403);
+        }
+
+        // Papelera: si el archivo esta trashado no permitimos operaciones de
+        // mutacion desde un share publico. El dueno tendria que restaurarlo
+        // primero desde su papelera.
+        $trashResp = $this->rejectIfTrashed($file, $request);
+        if ($trashResp !== null) {
+            return $trashResp;
         }
 
         $fullPath = $file->storageProvider->base_path . '/' . $file->path;
@@ -727,6 +836,33 @@ class PublicShareController extends Controller
         } catch (\Exception $e) {
             // Never let sync crash the share view
         }
+    }
+
+    private function publicError(Request $request, string $message, int $status, ?string $view = null)
+    {
+        if ($request->ajax() || $request->wantsJson()) {
+            return response()->json(['error' => $message], $status);
+        }
+
+        return $view
+            ? response()->view($view, [], $status)
+            : response()->view('shares.public-not-found', [], $status);
+    }
+
+    private function passwordAuthorized(Request $request, Share $share, string $token): bool
+    {
+        if ($request->session()->has("share_auth_{$token}")) {
+            return true;
+        }
+
+        $headerPassword = $request->header('X-Share-Password');
+        if (!$headerPassword || !Hash::check($headerPassword, $share->password_hash)) {
+            return false;
+        }
+
+        $request->session()->put("share_auth_{$token}", true);
+
+        return true;
     }
 
     private function logAccess(int $shareId, ?string $ip): void

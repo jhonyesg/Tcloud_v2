@@ -9,12 +9,46 @@ Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');
 
-Schedule::command('storage:sync --all')->everyFifteenMinutes()->withoutOverlapping();
+// withoutOverlapping(30): el TTL por defecto es de 1440 minutos. Un SIGKILL
+// durante un cuelgue de NFS (donde el proceso queda bloqueado en IO
+// ininterrumpible) dejaba el lock muerto y paraba TODOS los syncs 24 horas sin
+// avisar. 30 min deja margen holgado sobre los ~4 min de ejecucion real.
+Schedule::command('storage:sync --all')->everyFifteenMinutes()->withoutOverlapping(30);
 
+// Watchdog de accesibilidad: detecta remontajes de discos externos y dispara
+// storage:reconcile paced. withoutOverlapping TTL 4 min: si el tick se cuelga,
+// el siguiente cae y libera el lock antes de los 5 min del schedule.
+Schedule::command('storage:health')->everyFiveMinutes()->withoutOverlapping(4);
+
+// Limpieza de sesiones huérfanas y expiradas. La frecuencia (default 30 min)
+// es la del scheduler; el setting `sessions_cleanup_interval_minutes` se
+// consulta DENTRO del closure solo para emitir un warning si es demasiado
+// agresivo. Cambiar la frecuencia real requiere editar este archivo (Laravel
+// cachea la expresión cron al boot, así que no es seguro componerla
+// dinámicamente desde system_settings).
+//
+// Guardarraíles:
+//  - cleanOrphans aborta si would_delete/scanned > sessions_cleanup_max_ratio.
+//  - Cualquier excepción no manejada se loguea con sessions.cleanup.unhandled_exception.
 Schedule::call(function () {
-    $service = app(SessionService::class);
-    $service->cleanOrphans();
-    $service->cleanExpired();
+    $intervalMinutes = (int) \App\Models\SystemSetting::get('sessions_cleanup_interval_minutes', 30);
+
+    if ($intervalMinutes < 5) {
+        \Illuminate\Support\Facades\Log::warning('sessions.cleanup.interval_too_aggressive', [
+            'interval_minutes' => $intervalMinutes,
+        ]);
+    }
+
+    try {
+        $service = app(SessionService::class);
+        $service->cleanOrphans();
+        $service->cleanExpired();
+    } catch (\Throwable $e) {
+        \Illuminate\Support\Facades\Log::error('sessions.cleanup.unhandled_exception', [
+            'error' => $e->getMessage(),
+            'trace' => $e->getTraceAsString(),
+        ]);
+    }
 })->everyThirtyMinutes()->name('sessions:cleanup')->withoutOverlapping();
 
 // Limpieza de logs de acceso a shares más antiguos de 90 días (corre 1 vez/semana)
@@ -26,17 +60,35 @@ Schedule::command('correo:cleanup-logs --days=90')->weekly()->sundays()->at('03:
 // Corrección de cuotas personales — detecta y corrige drift (corre 1 vez/semana)
 Schedule::command('files:recalc-personal-quota')->weekly()->sundays()->at('03:30');
 
+// Papelera — purga diaria de items trashados que superaron retention_days.
+// Hora rara (03:17) para no coincidir con shares/correo/quota. withoutOverlapping
+// con TTL 30 min: si la purga se cuelga en NFS caido, el siguiente tick cae
+// y libera el lock antes de las 24h. runInBackground: la salida del comando
+// no bloquea el scheduler mientras dura.
+Schedule::command('trash:purge')->dailyAt('03:17')->withoutOverlapping(30)->runInBackground();
+
 // Modulo IA — transcripción
 //
 // Tick unificado: corre cada 2 minutos. Phase 1 (discovery) escanea los archivos
 // del día actual en storages habilitados; Phase 2 (regulator dispatch) encola
-// hasta `target_redis_queue - current + runway` (clamped 10..200) jobs a Redis.
+// hasta `target_pg_queue - current + runway` (clamped 10..200) jobs al worker PG.
 // Solo procesa archivos de `created_at >= today` (scope=current_day en .env).
 // Documentado en openspec/changes/2026-07-22-transcription-operational-autotuning.
 Schedule::command('transcription:tick')
     ->everyTwoMinutes()
     ->withoutOverlapping(150)
     ->appendOutputTo(storage_path('logs/transcription-tick.log'));
+
+// Staging local (fase 1 del pipeline, transcriptor-two-phase-staging): convierte
+// con ffmpeg en goteo y deja los audios listos en /dev/shm. Cada minuto avanza
+// solo hasta el inventario objetivo, asi el host local nunca tiene un pico de
+// CPU y el worker PG solo hace el POST barato de lo ya convertido.
+// withoutOverlapping(5): una corrida con `staging_pace_seconds` alto puede durar
+// mas de un minuto, y no queremos dos stagers compitiendo por el presupuesto.
+Schedule::command('transcription:stage')
+    ->everyMinute()
+    ->withoutOverlapping(5)
+    ->appendOutputTo(storage_path('logs/transcription-stage.log'));
 
 // Auto-ajuste del pool de workers systemd basado en # de medios equivalentes.
 // Cada 5 min recalcula storages planos + subcarpetas de grouped_by_subfolder.
@@ -48,10 +100,196 @@ Schedule::command('transcription:tune --apply')
 
 // Polling de resultados: cada 1 min recupera SRT de transcriptor para jobs queued/processing.
 // Reenvia stuck (sin job_id > stale_after_minutes). Independiente del tick (fase 2).
-Schedule::command('transcription:poll-results')->everyMinute()->withoutOverlapping();
+//
+// TTL explicito: withoutOverlapping() sin argumento usa 1440 minutos. El mutex
+// solo lo libera el proceso que lo tomo, asi que un SIGKILL a mitad de ciclo
+// dejaba el polling parado 24h en silencio — y el polling es el UNICO camino
+// de retorno de resultados (no hay webhook entrante). 10 min cubre de sobra un
+// ciclo normal.
+// Centinela de flujo: cada hora comprueba que sigan naciendo transcripciones.
+//
+// Es la pieza que faltó el 2026-08-18: el pipeline estuvo 44 horas parado (el
+Schedule::command('transcription:poll-results')
+    ->everyMinute()
+    ->withoutOverlapping(10);
+
+// Purga de alcance: cierra los `pending` que NO son de hoy. La regla operativa
+// del modulo es "solo se procesa el dia actual" (el worker PG filtra
+// `recorded_at >= today`), asi que cualquier pending anterior a hoy es basura
+// que nunca se reclamara y que inflaba las metricas de la UI.
+//
+// A las 03:00 Bogota, cuando el dia anterior ya no puede crecer. withoutOverlapping(120)
+// porque un backlog grande (miles de filas) tarda varios minutos en chunkById.
+// El comando respeta el guardarrail max-ratio=0.5: si el universo a purgar
+// parece anormalmente grande, aborta y lo deja al operador.
+Schedule::command('transcription:purge-stale-pending')
+    ->dailyAt('03:00')
+    ->timezone('America/Bogota')
+    ->withoutOverlapping(120)
+    ->appendOutputTo(storage_path('logs/transcription-purge.log'));
+
+// Cambio transcriptor-api-surface-completeness: recuperación masiva semanal.
+// Lunes 04:00 hora local. Re-encola en bloque los jobs error/dead de los últimos
+// 7 días en el upstream via POST /v1/jobs/retry-batch. Complementa al tick diario:
+// el tick solo encola del día, este absorbe los fallos viejos antes del fin de
+// semana para arrancar la semana con cola limpia. Sin --apply: el operador decide
+// la primera vez correrlo a mano.
+Schedule::command('transcription:retry-batch-upstream --max-age-hours=168')
+    ->weeklyOn(1, '04:00')
+    ->withoutOverlapping(120)
+    ->appendOutputTo(storage_path('logs/transcription-retry-batch.log'));
+
+// Cambio transcriptor-api-surface-completeness Fase E: audit semanal de `corrected`.
+// Martes 03:00 — corre --dry-run primero para que el operador vea en el log
+// cuántos jobs done hay sin auditar, sin tocar el upstream. Si decide
+// aplicarlo, lo corre a mano sin la flag.
+Schedule::command('transcription:backfill-corrected-audit --days=30 --dry-run')
+    ->weeklyOn(2, '03:00')
+    ->withoutOverlapping(60)
+    ->appendOutputTo(storage_path('logs/transcription-backfill-corrected.log'));
+
+// Centinela de flujo: cada hora comprueba que sigan naciendo transcripciones.
+//
+// Es la pieza que faltó el 2026-08-18: el pipeline estuvo 44 horas parado (el
+// pivote user_storages.transcription_enabled quedó vacío tras una migración) y
+// ninguna pieza avisó, porque cada una reportaba su propio estado como normal.
+// Este no mira componentes, mira el resultado. Sin
+// TRANSCRIPTOR_HEALTH_ALERT_EMAIL solo escribe WARNING en laravel.log.
+Schedule::command('transcription:health-check')
+    ->hourly()
+    ->withoutOverlapping(30);
 
 // Limpieza de archivos temporales en /dev/shm (tmpfs) cada hora.
 Schedule::command('transcription:cleanup-tmpfs')->hourly();
+
+// Limpieza defensiva de WAVs huérfanos (>30 min, sin fd abierto) en /dev/shm.
+// Red de seguridad tras el fix del fd leak (2026-08-12): no debería encontrar
+// nada que limpiar, pero si un crash/kill -9 deja archivos sin cerrar, los
+// libera sin afectar jobs en curso.
+Schedule::command('transcription:cleanup-orphan-wav')
+    ->everyFifteenMinutes()
+    ->withoutOverlapping(60);
+
+// Centinela de /dev/shm: cada 10 min verifica uso y emite WARNING si supera
+// el umbral (default 80%). Cache del estado para el endpoint shm-status.
+Schedule::command('transcription:check-shm-health')
+    ->everyTenMinutes()
+    ->withoutOverlapping(30);
+
+// Watchdog del transcriptor (transcriptor-pg-native-queue): cada minuto busca
+// filas en 'processing' que llevan mas de processing_timeout_seconds sin
+// submission_committed_at y las re-encola a 'pending'. sinOverlapping para
+// evitar carreras entre corridas concurrentes.
+Schedule::command('transcriptor:watchdog-processing')
+    ->everyMinute()
+    ->withoutOverlapping(60);
+
+// Snapshot por storage cada 15 minutos (alimenta la tarjeta del tab Storages).
+Schedule::command('transcriptor:storage-snapshot')
+    ->everyFifteenMinutes()
+    ->withoutOverlapping(60);
+
+// Purga diaria de snapshots >7 dias (transcription_storage_snapshots retention).
+Schedule::command('transcriptor:prune-storage-snapshots')
+    ->dailyAt('03:00')
+    ->withoutOverlapping(120);
+
+// (Eliminado el 2026-09-15 — change simplify-api-transcriptor-to-storage-and-config:
+// el snapshot por minuto de la serie temporal de consumo solo alimentaba el
+// tab Consumo del módulo API Transcriptor, retirado en este change.
+
+// Limpieza diaria del log de undo de bulk actions (corrections-bulk-moderation).
+// Borra entries con expires_at < now() - retention (default 7d).
+Schedule::command('corrections:cleanup-undo-log')->daily()->at('04:00')->withoutOverlapping(60);
+
+// === Entrega de avisos de menciones (mis-avisos-menciones Fase 1) ===
+//
+// El scan de keywords NO envía correo: deja pendientes en alert_deliveries
+// con due_at según la cadencia elegida por cada cliente. Este ciclo por
+// minuto agrupa vencidos, respeta el techo diario (emails_quota) y encola
+// el digest en Redis con rate limiter global del relay. withoutOverlapping:
+// si un minuto se atrasa, el siguiente no duplica.
+Schedule::command('avisos:deliver-alerts')
+    ->everyMinute()
+    ->withoutOverlapping(5);
+
+// === Escaneo de menciones (avisos-scan-configuration) ===
+//
+// El matching por transcripción también lo dispara el pipeline al terminar
+// (TranscriptionProcessor). Este cron cubre lo que el pipeline no escaneó:
+// backfill de lo terminado sin hits, fallos previos, terminadas por vías
+// alternas. Tick fijo cada 5 min: el comando decide internamente si toca
+// correr consultando SystemSetting (avisos_scan_enabled, avisos_scan_
+// interval_minutes) y la última corrida exitosa — MISMO patrón que
+// sessions_cleanup_interval_minutes: la expresión cron no puede componerse
+// dinámicamente porque Laravel la cachea al boot. withoutOverlapping(15):
+// corrida de escaneo puede tardar minutos; si un tick se solapa, cae.
+// El escaneo JAMÁS envía correos: la entrega sigue siendo
+// avisos:deliver-alerts.
+Schedule::command('avisos:scan')
+    ->everyFiveMinutes()
+    ->withoutOverlapping(15);
+
+// Reporte semanal de triage (cambios/2026-08-18-corrections-coherence-learn-fix-and-pending-triage).
+// Solo dry-run: el admin revisa el log y decide si aplicar desde la UI.
+Schedule::command('corrections:triage-pending --dry-run')
+    ->weekly()
+    ->saturdays()
+    ->at('04:30')
+    ->withoutOverlapping(60)
+    ->appendOutputTo(storage_path('logs/corrections-triage.log'));
+
+// === Auto-cycle de detección y sugerencias EN→ES: DESPROGRAMADOS el 2026-09-05 ===
+//
+// (change: corrections-manual-only-and-context-search) Aquí corrían dos tareas
+// automáticas sin LLM que alimentaban pendientes y marcas de revisión sin que
+// nadie las pidiera:
+//
+//   Schedule::command('corrections:cycle-suggestions --hours=4 --threshold=0.7 --min-freq=15 --max-rules=5')
+//       ->everyFourHours()->withoutOverlapping(120)->appendOutputTo(...cycle.log);
+//   Schedule::command('corrections:detect-english-residual --hours=4 --threshold=0.5 --apply')
+//       ->everyFourHours()->withoutOverlapping(120)->appendOutputTo(...detect.log);
+//
+// El ASR sigue devolviendo inglés residual en audio español (caída de la causa
+// raíz en el transcriptor), así que el detector marcaba ~4.500 transcripciones
+// needs_review/día (pila acumulada: 119.405) y el cycle insertaba 2-5 reglas
+// pending/día. La decisión manual-only del 2026-08-21 (ratificada 2026-09-05)
+// cierra el ciclo: todo el flujo detectar → sugerir → moderar ocurre bajo
+// demanda explícita del admin.
+//
+// Los comandos siguen existiendo para corrida manual (con guardrail --confirm
+// para ventanas > 24 h). El miner/ai-suggest siguen desprogramados desde el
+// bloque del 2026-08-11.
+
+// transcription:apply-corrections queda SOLO manual (no se agenda).
+// transcription-tick es el unico scheduled de descubrimiento+encolado.
+
+// === Minería EN->ES: DESPROGRAMADA el 2026-08-11 ===
+//
+// Aquí corrían dos tareas que alimentaban el diccionario con traducciones
+// inglés->español:
+//
+//   Schedule::command('corrections:mine-en-es --days=14 --min-freq=5')->weekly()...
+//   Schedule::command('corrections:ai-suggest --days=1 --sample=200')->everyTwoHours()...
+//
+// El encargo original (2026-08-01) fue "hay mucho texto en inglés y necesito
+// que eso se corrija", y con 12 corridas/día auto-aprobando en risk_level='low'
+// el resultado fueron 2.465 reglas de traducción palabra por palabra con 205.000
+// aplicaciones: the->la (84.011), in->en (41.104), and->y (38.281), are->están.
+//
+// Un motor de find/replace no puede traducir: no tiene contexto ni concordancia.
+// Lo que producía era espanglish PEOR que el original —
+//   "The cooperativas are dotadas of two motors."
+//     -> "la cooperativas están dotadas of two motors."
+// y además degradaba español correcto ("al diseño" -> "al deño").
+//
+// La causa real es que el ASR devuelve inglés (e italiano) en audio español;
+// eso se arregla en el transcriptor, no traduciendo a posteriori. Ver
+// EnEsRuleClassifier y `corrections:quarantine-en-es`.
+//
+// Los comandos siguen existiendo para uso manual y ahora pasan por el guardrail
+// (rechazan pares EN->ES y entran como pending, sin auto-aprobar), pero no se
+// agendan: sin nada que aportar, solo gastarían tokens de LLM cada 2 horas.
 
 // transcription:apply-corrections queda SOLO manual (no se agenda).
 // transcription-tick es el unico scheduled de descubrimiento+encolado.

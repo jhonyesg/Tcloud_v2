@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Capability `storage-table-sortable`: consolida los requisitos y comportamientos de encabezados de columna con ordenamiento clicable en TCloud. (Purpose derivado automáticamente al normalizar el formato legacy del spec.)
+
+## Requirements
 
 ### Requirement: Encabezados de columna con ordenamiento clicable
 Los encabezados de las columnas ID, Nombre, Tipo, Archivos y Estado de la tabla de storages SHALL ser clicables para ordenar los registros de forma ascendente o descendente.

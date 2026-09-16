@@ -2,15 +2,30 @@
 
 namespace App\Http\Controllers\Ia;
 
+use App\Http\Controllers\Concerns\RunsBackgroundCommands;
 use App\Http\Controllers\Controller;
 use App\Models\Correction;
+use App\Models\Transcription;
+use App\Services\Ia\ContextShiftAuditor;
+use App\Services\Ia\CorrectionContextFinder;
 use App\Services\Ia\CorrectionService;
+use App\Services\Ia\DictionaryAudit;
+use App\Services\Ia\TranscriptionReviewService;
+use App\Services\Ia\TranscriptorSettings;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Session;
 
 class CorreccionesController extends Controller
 {
-    public function index()
+    use RunsBackgroundCommands;
+
+    private const CACHE_TTL_HOURS = 4;
+
+    public function index(TranscriptorSettings $transcriptorSettings)
     {
         $approved = Correction::approved()
             ->with('proposedBy', 'approvedBy')
@@ -18,21 +33,298 @@ class CorreccionesController extends Controller
             ->get();
 
         $pendingCount = Correction::pending()->count();
+        $approvedCount = Correction::approved()->count();
+        $rejectedCount = Correction::where('status', 'rejected')->count();
+        $totalCount = $pendingCount + $approvedCount + $rejectedCount;
+
+        // (changes/2026-08-25 llm-coherence-manual-only-defaults-off) Exponer el
+        // estado del toggle maestro del pase de coherencia IA al panel AI
+        // Settings para renderizar el badge Modo seguro/Modo activo sin
+        // agregar un endpoint nuevo (constraint del change: sin routes nuevas).
+        $aiCoherenceEnabled = $transcriptorSettings->bool('ai_coherence_enabled');
 
         return view('ia.correcciones.index', [
             'approved' => $approved,
             'pendingCount' => $pendingCount,
+            'approvedCount' => $approvedCount,
+            'rejectedCount' => $rejectedCount,
+            'totalCount' => $totalCount,
+            'aiCoherenceEnabled' => $aiCoherenceEnabled,
+        ]);
+    }
+
+    /**
+     * Lista una muestra pequeña de transcripciones terminadas para auditoría
+     * humana, sin cargar el histórico completo en el navegador.
+     */
+    public function transcriptionReviewList(Request $request, TranscriptionReviewService $service)
+    {
+        $mode = $service->normalizeMode((string) $request->input('mode', TranscriptionReviewService::MODE_LATEST));
+
+        return response()->json([
+            'mode' => $mode,
+            'items' => $service->list($mode),
+        ]);
+    }
+
+    /**
+     * Devuelve el detalle raw vs corregido de una transcripción terminada.
+     */
+    public function transcriptionReviewDetail(int $id, TranscriptionReviewService $service)
+    {
+        return response()->json($service->detail($id));
+    }
+
+    /**
+     * Guarda la decisión humana sobre una transcripción. Este endpoint no
+     * modifica reglas del diccionario.
+     */
+    public function transcriptionReviewUpdate(Request $request, int $id, TranscriptionReviewService $service)
+    {
+        $validated = $request->validate([
+            'status' => 'required|string|in:pending,correct,needs_review,ignored',
+            'notes' => 'nullable|string|max:5000',
+        ]);
+
+        $transcription = Transcription::where('state', Transcription::STATE_DONE)->findOrFail($id);
+        $review = $service->updateReview(
+            $transcription,
+            $validated['status'],
+            $validated['notes'] ?? null,
+            (int) $this->adminUser()->id,
+        );
+
+        return response()->json([
+            'ok' => true,
+            'review' => [
+                'status' => $review->status,
+                'reviewed_at' => $review->reviewed_at?->toIso8601String(),
+                'notes' => $review->notes,
+            ],
         ]);
     }
 
     public function pending()
     {
         $pending = Correction::pending()
-            ->with('proposedBy', 'sourceSegment')
+            ->with('proposedBy', 'sourceSegment.transcription')
             ->latest()
             ->get();
 
         return response()->json($pending);
+    }
+
+    /**
+     * Ejemplos reales de dónde dispara una corrección, para moderarla con
+     * evidencia en vez de a ciegas.
+     *
+     * Se resuelve bajo demanda (al abrir el modal), nunca al pintar la tabla: la
+     * búsqueda va contra transcription_segments y cuesta entre 0,4 s y 7 s según
+     * lo frecuente que sea el término. CorrectionContextFinder la cachea y le
+     * pone statement_timeout, así que este método no necesita guardas propias.
+     *
+     * Path: GET /ia/correcciones/{id}/contexto
+     */
+    public function contextExamples(int $id, CorrectionContextFinder $finder)
+    {
+        $correction = Correction::findOrFail($id);
+
+        return response()->json($finder->examples($correction));
+    }
+
+    /**
+     * Devuelve el segmento de transcripción origen de una corrección
+     * (changes/2026-08-12-corrections-pending-segment-context). El admin
+     * hace click en el snippet de la tabla y abre el modal "Contexto del
+     * segmento" con el text_raw + text corregido del segmento, más el
+     * timecode y link al detalle de la transcripción.
+     *
+     * Si la corrección no tiene `source_segment_id` (legacy o segmento
+     * purgado) devuelve 404 con `{error: "no_segment"}`. La UI muestra un
+     * mensaje explicativo sin cerrar el modal.
+     *
+     * Path: GET /ia/correcciones/{id}/source-segment
+     */
+    public function sourceSegment(int $id)
+    {
+        $correction = Correction::with('sourceSegment.transcription')->findOrFail($id);
+        $segment = $correction->sourceSegment;
+
+        if (!$segment) {
+            return response()->json(['error' => 'no_segment'], 404);
+        }
+
+        return response()->json([
+            'segment' => [
+                'id' => $segment->id,
+                'segment_index' => $segment->segment_index,
+                'start_seconds' => $segment->start_seconds,
+                'end_seconds' => $segment->end_seconds,
+                'text_raw' => $segment->text_raw,
+                'text' => $segment->text,
+            ],
+            'transcription' => $segment->transcription ? [
+                'id' => $segment->transcription->id,
+                'file_name' => $segment->transcription->file_name ?? basename((string) ($segment->transcription->path ?? '')),
+            ] : null,
+        ]);
+    }
+
+    /**
+     * Devuelve las correcciones approved con relaciones, paginadas server-side.
+     * Alimenta la pestaña "Aprobadas" vía AJAX. Acepta:
+     *   page (default 1), per_page (default 50, clamp 1..500),
+     *   search (ILIKE case-insensitive sobre wrong_text/correct_text),
+     *   source (filtro exacto).
+     *
+     * Path: GET /ia/correcciones/approved
+     */
+    public function approved(Request $request)
+    {
+        $page = max(1, (int) $request->input('page', 1));
+        $perPage = min(500, max(1, (int) $request->input('per_page', 50)));
+
+        $query = Correction::approved()
+            ->with('proposedBy:id,username', 'approvedBy:id,username', 'sourceSegment.transcription')
+            ->orderByDesc('applies_count')
+            ->orderByDesc('id');
+
+        $search = trim((string) $request->input('search', ''));
+        if ($search !== '') {
+            $like = '%' . str_replace(['%', '_'], ['\\%', '\\_'], $search) . '%';
+            $query->where(function ($w) use ($like) {
+                $w->where('wrong_text', 'ilike', $like)
+                    ->orWhere('correct_text', 'ilike', $like);
+            });
+        }
+
+        $source = trim((string) $request->input('source', ''));
+        if ($source !== '' && $source !== 'all') {
+            $query->where('source', $source);
+        }
+
+        $sources = Correction::approved()
+            ->whereNotNull('source')
+            ->where('source', '!=', '')
+            ->selectRaw('source, count(*) as source_count')
+            ->groupBy('source')
+            ->orderByDesc('source_count')
+            ->get()
+            ->map(fn ($s) => ['source' => $s->source, 'count' => (int) $s->source_count])
+            ->values()
+            ->all();
+
+        $approved = $query->paginate($perPage, ['*'], 'page', $page);
+
+        // Si la página pedida excede el total (ej: filtro que reduce resultados),
+        // servir la última página real en vez de una página vacía.
+        if ($approved->lastPage() > 0 && $approved->currentPage() > $approved->lastPage()) {
+            $approved = $query->paginate($perPage, ['*'], 'page', $approved->lastPage());
+        }
+
+        return response()->json([
+            'items' => $approved->items(),
+            'total' => $approved->total(),
+            'page' => $approved->currentPage(),
+            'last_page' => $approved->lastPage(),
+            'sources' => $sources,
+        ]);
+    }
+
+    /**
+     * Endpoint consolidado para la sub-tab "AI Suggest Results":
+     * resumen de las últimas 5 corridas AI suggest + lista de auto-aprobadas
+     * con source=ai-suggest-% + lista de pendientes que quedaron del suggester
+     * (ej: porque admin apagó auto_approve, o por rollback).
+     *
+     * Path: GET /ia/correcciones/ai-suggest-results
+     */
+    public function aiSuggestResults(Request $request)
+    {
+        $page = max(1, (int) $request->input('page', 1));
+        $perPage = min(500, max(1, (int) $request->input('per_page', 50)));
+
+        $search = trim((string) $request->input('search', ''));
+        $source = trim((string) $request->input('source', ''));
+
+        $like = '';
+        if ($search !== '') {
+            $like = '%' . str_replace(['%', '_'], ['\\%', '\\_'], $search) . '%';
+        }
+
+        // Última auto-aprobación por source (correlaciona created_at today y Y-day).
+        $approvedQuery = Correction::where('status', Correction::STATUS_APPROVED)
+            ->where('source', 'LIKE', 'ai-suggest-%')
+            ->with('proposedBy:id,username', 'approvedBy:id,username')
+            ->orderByDesc('id');
+
+        // Pendientes cuya source es AI Suggest (caso: auto_approve=false temporal).
+        $pendingQuery = Correction::where('status', Correction::STATUS_PENDING)
+            ->where('source', 'LIKE', 'ai-suggest-%')
+            ->with('proposedBy:id,username')
+            ->orderByDesc('id');
+
+        if ($source !== '' && $source !== 'all') {
+            $approvedQuery->where('source', $source);
+            $pendingQuery->where('source', $source);
+        }
+        if ($like !== '') {
+            $approvedQuery->where(function ($w) use ($like) {
+                $w->where('wrong_text', 'ilike', $like)
+                    ->orWhere('correct_text', 'ilike', $like);
+            });
+            $pendingQuery->where(function ($w) use ($like) {
+                $w->where('wrong_text', 'ilike', $like)
+                    ->orWhere('correct_text', 'ilike', $like);
+            });
+        }
+
+        $approved = $approvedQuery->paginate($perPage, ['*'], 'approved_page', $page);
+        $pending = $pendingQuery->paginate($perPage, ['*'], 'pending_page', $page);
+
+        if ($approved->lastPage() > 0 && $approved->currentPage() > $approved->lastPage()) {
+            $approved = $approvedQuery->paginate($perPage, ['*'], 'approved_page', $approved->lastPage());
+        }
+        if ($pending->lastPage() > 0 && $pending->currentPage() > $pending->lastPage()) {
+            $pending = $pendingQuery->paginate($perPage, ['*'], 'pending_page', $pending->lastPage());
+        }
+
+        // Resumen por source: agrupa auto-aprobadas de las últimas corridas.
+        $runsQuery = Correction::where('source', 'LIKE', 'ai-suggest-%');
+        if ($source !== '' && $source !== 'all') {
+            $runsQuery->where('source', $source);
+        }
+        $runs = $runsQuery
+            ->selectRaw('source, count(*) as total, max(created_at) as last_run_at, sum(case when status = ? then 1 else 0 end) as approved_count, sum(case when status = ? then 1 else 0 end) as pending_count, sum(case when status = ? then 1 else 0 end) as rejected_count',
+                [Correction::STATUS_APPROVED, Correction::STATUS_PENDING, Correction::STATUS_REJECTED])
+            ->groupBy('source')
+            ->orderByRaw('max(created_at) desc')
+            ->limit(5)
+            ->get();
+
+        $sources = Correction::where('source', 'LIKE', 'ai-suggest-%')
+            ->whereNotNull('source')
+            ->where('source', '!=', '')
+            ->selectRaw('source, count(*) as total')
+            ->groupBy('source')
+            ->orderByDesc('total')
+            ->get()
+            ->map(fn ($s) => ['source' => $s->source, 'count' => (int) $s->total])
+            ->values()
+            ->all();
+
+        return response()->json([
+            'runs' => $runs,
+            'approved_items' => $approved->items(),
+            'approved_total' => $approved->total(),
+            'approved_page' => $approved->currentPage(),
+            'approved_last_page' => $approved->lastPage(),
+            'pending_items' => $pending->items(),
+            'pending_total' => $pending->total(),
+            'pending_page' => $pending->currentPage(),
+            'pending_last_page' => $pending->lastPage(),
+            'sources' => $sources,
+        ]);
     }
 
     public function approve(int $id, CorrectionService $service)
@@ -41,7 +333,195 @@ class CorreccionesController extends Controller
         $admin = $this->adminUser();
         $updated = $service->approve($correction, $admin);
 
-        return response()->json($updated->load('proposedBy', 'approvedBy'));
+        $response = $updated->load('proposedBy', 'approvedBy');
+        $payload = ['correction' => $response];
+        $warning = $this->buildContextWarning($updated);
+        if ($warning !== null) {
+            $payload['context_warning'] = $warning;
+        }
+        return response()->json($payload);
+    }
+
+    /**
+     * Lista exclusiones dinámicas (activas + archivadas) para la UI.
+     *
+     * Path: GET /ia/correcciones/protected-terms
+     */
+    public function protectedTermsIndex(\App\Services\Ia\CorrectionProtectedTermsService $svc)
+    {
+        return response()->json([
+            'items' => $svc->listAll(),
+        ]);
+    }
+
+    /**
+     * Agrega una exclusión dinámica. Body JSON: {term, category?, notes?}.
+     * Valida unicidad entre activos (constraint UNIQUE parcial + check de app).
+     *
+     * Modo bulk (corrections-protected-terms-shortcut): body = {terms: [{term, category?, notes?, correction_id?}, ...]}.
+     * Devuelve 201 si todos los términos se crearon, 207 si algunos fueron
+     * omitidos por duplicado, 422 si todos fueron duplicados o vinieron vacíos.
+     *
+     * Side-effect: cuando un ítem se crea OK y trae `correction_id`, la corrección
+     * asociada se archiva con motivo `moved_to_exclusion: <term>` (corrections-archive-on-exclude).
+     * Esto se ejecuta SOLO si la exclusión se creó (no en duplicados/inválidos)
+     * para evitar side-effects no deseados.
+     *
+     * Path: POST /ia/correcciones/protected-terms
+     */
+    public function protectedTermsStore(
+        Request $request,
+        \App\Services\Ia\CorrectionProtectedTermsService $svc,
+        \App\Services\Ia\CorrectionService $correctionService
+    ) {
+        $admin = $this->adminUser();
+        $archived = [];
+
+        // Modo bulk.
+        $bulkInput = $request->input('terms');
+        if (is_array($bulkInput) && !empty($bulkInput)) {
+            $created = [];
+            $skipped = [];
+            foreach ($bulkInput as $idx => $item) {
+                if (!is_array($item)) continue;
+                $term = trim((string) ($item['term'] ?? ''));
+                if ($term === '') {
+                    $skipped[] = ['term' => '', 'reason' => 'empty'];
+                    continue;
+                }
+                $category = $item['category'] ?? null;
+                $notes = $item['notes'] ?? null;
+                try {
+                    $row = $svc->add($term, $category, $notes, $admin);
+                    $created[] = [
+                        'id' => $row->id,
+                        'term' => $row->term,
+                        'category' => $row->category,
+                    ];
+
+                    // Archivado colateral: si la exclusión se creó OK y el
+                    // body la asocia con una corrección, archivamos la corrección.
+                    $correctionId = $item['correction_id'] ?? null;
+                    if ($correctionId !== null && is_int($correctionId)) {
+                        try {
+                            $correction = \App\Models\Correction::find($correctionId);
+                            if ($correction && $correction->status !== \App\Models\Correction::STATUS_REJECTED) {
+                                $correctionService->reject($correction, $admin, 'moved_to_exclusion: ' . $row->term);
+                                $archived[] = [
+                                    'correction_id' => $correction->id,
+                                    'term' => $row->term,
+                                ];
+                            }
+                        } catch (\Throwable $e) {
+                            // No rompemos el lote si una falla; logueamos.
+                            \Illuminate\Support\Facades\Log::warning('Excluir+archive: fallo archivando corrección', [
+                                'correction_id' => $correctionId,
+                                'term' => $row->term,
+                                'error' => $e->getMessage(),
+                            ]);
+                        }
+                    }
+                } catch (\InvalidArgumentException $e) {
+                    if (str_contains($e->getMessage(), 'ya existe')) {
+                        $skipped[] = ['term' => mb_strtolower($term), 'reason' => 'duplicate'];
+                    } else {
+                        $skipped[] = ['term' => mb_strtolower($term), 'reason' => 'invalid'];
+                    }
+                }
+            }
+
+            if (empty($created)) {
+                return response()->json([
+                    'error' => 'No se creó ninguna exclusión (todas duplicadas o inválidas).',
+                    'created' => $created,
+                    'skipped' => $skipped,
+                    'archived' => $archived,
+                ], 422);
+            }
+
+            $status = empty($skipped) ? 201 : 207;
+            return response()->json([
+                'ok' => true,
+                'created' => $created,
+                'skipped' => $skipped,
+                'archived' => $archived,
+            ], $status);
+        }
+
+        // Modo single (compatibilidad con caller del subpanel Exclusiones).
+        $term = (string) $request->input('term', '');
+        $category = $request->input('category');
+        $notes = $request->input('notes');
+        $correctionId = $request->input('correction_id');
+
+        try {
+            $row = $svc->add($term, $category, $notes, $admin);
+
+            // Archivado colateral (single shortcut): si la exclusión se creó OK
+            // y hay correction_id, archivamos la corrección en la misma respuesta.
+            if ($correctionId !== null && is_int($correctionId)) {
+                try {
+                    $correction = \App\Models\Correction::find($correctionId);
+                    if ($correction && $correction->status !== \App\Models\Correction::STATUS_REJECTED) {
+                        $correctionService->reject($correction, $admin, 'moved_to_exclusion: ' . $row->term);
+                        $archived[] = [
+                            'correction_id' => $correction->id,
+                            'term' => $row->term,
+                        ];
+                    }
+                } catch (\Throwable $e) {
+                    \Illuminate\Support\Facades\Log::warning('Excluir+archive (single): fallo archivando', [
+                        'correction_id' => $correctionId,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+
+            return response()->json([
+                'ok' => true,
+                'item' => [
+                    'id' => $row->id,
+                    'term' => $row->term,
+                    'category' => $row->category,
+                    'notes' => $row->notes,
+                    'created_by_username' => $admin->username,
+                    'created_at' => $row->created_at?->toIso8601String(),
+                    'archived_at' => null,
+                ],
+                'archived' => $archived,
+            ], 201);
+        } catch (\InvalidArgumentException $e) {
+            return response()->json([
+                'error' => $e->getMessage(),
+                'errors' => ['term' => [$e->getMessage()]],
+            ], 422);
+        }
+    }
+
+    /**
+     * Soft-archive de un término.
+     *
+     * Path: DELETE /ia/correcciones/protected-terms/{id}
+     */
+    public function protectedTermsArchive(
+        int $id,
+        \App\Services\Ia\CorrectionProtectedTermsService $svc
+    ) {
+        $ok = $svc->archive($id);
+        return $ok ? response()->noContent() : response()->json(['error' => 'No encontrado'], 404);
+    }
+
+    /**
+     * Restaurar un término archivado.
+     *
+     * Path: POST /ia/correcciones/protected-terms/{id}/restore
+     */
+    public function protectedTermsRestore(
+        int $id,
+        \App\Services\Ia\CorrectionProtectedTermsService $svc
+    ) {
+        $ok = $svc->restore($id);
+        return $ok ? response()->noContent() : response()->json(['error' => 'No encontrado'], 404);
     }
 
     public function reject(Request $request, int $id, CorrectionService $service)
@@ -65,7 +545,12 @@ class CorreccionesController extends Controller
         $admin = $this->adminUser();
         $correction = $service->upsertApproved($request->wrong, $request->correct, $admin);
 
-        return response()->json($correction->load('proposedBy', 'approvedBy'), 201);
+        $payload = ['correction' => $correction->load('proposedBy', 'approvedBy')];
+        $warning = $this->buildContextWarning($correction);
+        if ($warning !== null) {
+            $payload['context_warning'] = $warning;
+        }
+        return response()->json($payload, 201);
     }
 
     public function destroy(int $id)
@@ -74,30 +559,1631 @@ class CorreccionesController extends Controller
         return response()->json(['message' => 'Corrección eliminada']);
     }
 
-    public function applyRetroactive(Request $request, CorrectionService $service)
+    /**
+     * Edita una corrección pendiente. Permite corregir `wrong_text` y/o
+     * `correct_text` antes de aprobar. Re-normaliza `wrong_normalized` y
+     * resuelve colisiones con approved/pending del mismo normalized
+     * siguiendo la misma semántica de propose() (merged/upsert).
+     *
+     * Solo aplica a status='pending'. Devuelve 409 si la corrección ya
+     * fue aprobada, rechazada o mergeada.
+     *
+     * Path: PATCH /ia/correcciones/{id}
+     */
+    public function update(Request $request, int $id, CorrectionService $service)
+    {
+        $data = $request->validate([
+            'wrong_text' => 'required|string|max:500',
+            'correct_text' => 'required|string|max:500',
+        ]);
+
+        $correction = Correction::findOrFail($id);
+        if ($correction->status !== Correction::STATUS_PENDING) {
+            return response()->json([
+                'error' => 'Solo se pueden editar correcciones pendientes.',
+            ], 409);
+        }
+
+        $updated = $service->updatePending(
+            $correction,
+            $data['wrong_text'],
+            $data['correct_text'],
+        );
+
+        return response()->json(['correction' => $updated->load('proposedBy')]);
+    }
+
+    /**
+     * Resuelve el scope de un apply-retroactive desde el request.
+     * Soporta:
+     *   - `since` (ISO 8601, recomendado) — unidad-agnóstico (puede ser horas o días)
+     *   - `days_back` (legacy, int 1-365 o 'all') — backward-compat
+     *   - `correction_ids` (int[], opcional) — filtra el diccionario a un subset
+     *
+     * Retorna [Carbon|null $since, int|null $daysBack, int[] $correctionIds, ?JsonResponse $error].
+     * Si hay error de validación, $error viene poblado con la respuesta 422 y los
+     * callers deben devolverla inmediatamente sin continuar.
+     *
+     * Ver openspec/changes/corrections-apply-retroactive-scope-controls/.
+     */
+    private function resolveScope(Request $request): array
+    {
+        $sinceInput = $request->input('since');
+        $daysBackInput = $request->input('days_back');
+        $correctionIdsInput = $request->input('correction_ids', []);
+
+        $since = null;
+        $daysBack = null;
+
+        if ($sinceInput !== null && $sinceInput !== '') {
+            try {
+                $since = Carbon::parse((string) $sinceInput);
+            } catch (\Throwable $e) {
+                return [null, null, [], response()->json([
+                    'error' => '`since` debe ser un timestamp ISO 8601 válido (ej. 2026-09-06T20:00:00Z).',
+                ], 422)];
+            }
+        } elseif ($daysBackInput !== null && $daysBackInput !== '' && $daysBackInput !== 'all') {
+            $daysBack = (int) $daysBackInput;
+            if ($daysBack <= 0) {
+                return [null, null, [], response()->json([
+                    'error' => 'days_back debe ser entero positivo o "all".',
+                ], 422)];
+            }
+            if ($daysBack > 365) {
+                return [null, null, [], response()->json([
+                    'error' => 'days_back no puede ser > 365 (use --days en CLI para más).',
+                ], 422)];
+            }
+        }
+
+        $correctionIds = [];
+        if (is_array($correctionIdsInput) && !empty($correctionIdsInput)) {
+            $correctionIds = array_values(array_unique(array_filter(array_map(
+                fn ($v) => is_numeric($v) ? (int) $v : null,
+                $correctionIdsInput
+            ))));
+            if (count($correctionIds) > 2495) {
+                return [$since, $daysBack, [], response()->json([
+                    'error' => 'correction_ids no puede tener más de 2495 entradas.',
+                ], 422)];
+            }
+            // Validar que todos existan y estén approved. Devolvemos la lista exacta
+            // de ids problemáticos para que el admin sepa cuáles corregir.
+            // Wrap en try/catch: si la BD no responde (test sin schema, BD caída),
+            // devolvemos 503 en vez de 500 confuso.
+            try {
+                $approvedIds = Correction::approved()
+                    ->whereIn('id', $correctionIds)
+                    ->pluck('id')
+                    ->map(fn ($v) => (int) $v)
+                    ->all();
+            } catch (\Throwable $e) {
+                return [$since, $daysBack, [], response()->json([
+                    'error' => 'No se pudo validar correction_ids contra la BD: ' . $e->getMessage(),
+                ], 503)];
+            }
+            $missing = array_values(array_diff($correctionIds, $approvedIds));
+            if (!empty($missing)) {
+                return [$since, $daysBack, [], response()->json([
+                    'error' => 'correction_ids contiene ids inexistentes o no aprobados: ' . implode(',', $missing),
+                    'missing_ids' => $missing,
+                ], 422)];
+            }
+        }
+
+        return [$since, $daysBack, $correctionIds, null];
+    }
+
+    /**
+     * Cuenta cuántos segments caen en un scope (helper compartido por
+     * applyRetroactive y previewApplyRetroactive para no duplicar la query).
+     * Si $correctionIds está vacío retorna el total de segments en el rango;
+     * si no, retorna el mismo total (la cantidad de correcciones no afecta
+     * el universo de segmentos a tocar).
+     */
+    private function countSegmentsInScope($since, ?int $daysBack): int
+    {
+        try {
+            return \App\Models\TranscriptionSegment::query()
+                ->when($since !== null, fn ($q) => $q->where('created_at', '>=', $since))
+                ->when($since === null && $daysBack !== null && $daysBack > 0,
+                    fn ($q) => $q->where('created_at', '>=', now()->subDays($daysBack)))
+                ->count();
+        } catch (\Throwable $e) {
+            return 0;
+        }
+    }
+
+    /**
+     * Estimación conservadora de minutos para el preview. 5000 segments/min
+     * es un piso realista para 2495 reglas; con menos reglas es más rápido,
+     * pero preferimos sobre-estimar para no engañar al admin.
+     */
+    private function estimateMinutes(int $segments, int $corrections): int
+    {
+        if ($segments === 0) return 0;
+        // Más reglas = más lento. Factor lineal sobre la base de 2495 reglas.
+        $ruleFactor = max(1.0, $corrections / 100.0); // 100 reglas = factor 1x
+        $effective = (int) ceil(($segments / 5000) * $ruleFactor);
+        return max(1, $effective);
+    }
+
+    /**
+     * Lanza una corrida async de re-aplicación retroactiva del diccionario.
+     * Retorna {runId} para que la UI haga polling.
+     *
+     * Parámetros:
+     *   - dry_run (bool, default false): solo reporta, no escribe
+     *   - chunk (int, default 500): tamaño del chunk de segments
+     *   - days_back (int|null, legacy): si != null, filtra segments a los
+     *     creados en los últimos N días. Mantenido por compat.
+     *   - since (ISO 8601, recomendado): unit-agnostic, ignora days_back si llega.
+     *     Permite scopes horarios sin tener que expresar en días.
+     *   - correction_ids (int[], opcional): si != [], aplica sólo esas correcciones
+     *     aprobadas en vez de las 2495 del diccionario completo. Ver
+     *     openspec/changes/corrections-apply-retroactive-scope-controls/.
+     *   - include_high_risk (bool, default false): incluye correcciones risk_level='high'.
+     */
+    public function applyRetroactive(Request $request)
     {
         $dryRun = (bool) $request->input('dry_run', false);
-        $chunk = (int) $request->input('chunk', 500);
-        $start = microtime(true);
+        $chunk = max(50, (int) $request->input('chunk', 500));
+        $includeHighRisk = (bool) $request->input('include_high_risk', false);
 
-        $updated = $service->applyRetroactively(null, $chunk, $dryRun);
-        $elapsed = round(microtime(true) - $start, 2);
+        [$since, $daysBack, $correctionIds, $error] = $this->resolveScope($request);
+        if ($error !== null) {
+            return $error;
+        }
+        if (empty($correctionIds) && $request->has('correction_ids')) {
+            // Admin envió correction_ids pero quedó vacío → selector inválido
+            return response()->json([
+                'error' => 'correction_ids llegó vacío. Si querés aplicar todo, no mandes el parámetro; si querés un subset, seleccioná al menos una corrección aprobada.',
+            ], 422);
+        }
+
+        $runId = $this->generateRunId('correction_apply');
+        $cacheKey = "corrections_apply:{$runId}";
+
+        // Anti-duplicado: si ya hay un run sano (queued/running) apuntado
+        // por el puntero `corrections_apply:active`, rechazamos con 409
+        // devolviendo el runId vigente para que la UI se re-adjunte en vez
+        // de lanzar un proceso paralelo. Huérfanos (run terminado, run
+        // inexistente, o run en queued >5min sin started_at) se LIMPIAN
+        // activamente y dejamos continuar (no retornamos 409).
+        // (BEFORE-FIX: el primer check aceptaba huérfanos pero NO borraba el
+        // puntero, y un segundo Cache::add atómico fallaba dando 409 fantasma.
+        // Ref: sesión admin 2026-08-01 10:09 donde quedó un run queued
+        // huérfano a las 10:04 del día anterior por muerte silenciosa del
+        // proceso setsid.)
+        $activePointer = Cache::get('corrections_apply:active');
+        if (is_array($activePointer) && !empty($activePointer['runId'])) {
+            $activeId = (string) $activePointer['runId'];
+            $activeState = Cache::get("corrections_apply:{$activeId}");
+            $orphan = !$activeState
+                || in_array($activeState['status'] ?? null, ['done', 'error'], true)
+                || (
+                    ($activeState['status'] ?? null) === 'queued'
+                    && empty($activeState['started_at'])
+                    && Carbon::parse($activeState['queued_at'] ?? $activeState['updated_at'] ?? now())->lt(now()->subMinutes(5))
+                );
+            if ($orphan) {
+                // Limpiar activamente el puntero huérfano + el state key
+                // (este último expira solo pero lo borramos YA para que
+                // 'running' del response al UI no mienta sobre el estado).
+                Cache::forget('corrections_apply:active');
+                if ($activeState && is_array($activeState)) {
+                    Cache::forget("corrections_apply:{$activeId}");
+                }
+                Log::info('CorreccionesController: puntero huérfano limpiado', [
+                    'old_run_id' => $activeId,
+                    'orphan' => true,
+                ]);
+            } else {
+                return response()->json([
+                    'error'  => 'Ya hay una corrida en curso.',
+                    'runId'  => $activeId,
+                    'status' => $activeState['status'] ?? 'running',
+                ], 409);
+            }
+        }
+
+        // Pre-computar total en la UI para que el primer poll no muestre
+        // "0 segmentos" engañoso. Si el pre-conteo falla, el comando async
+        // sobreescribe el valor desde su callback de progreso.
+        $preTotal = $this->countSegmentsInScope($since, $daysBack);
+
+        // Estado inicial con TTL generoso para una corrida real.
+        // since / correction_ids / days_back se persisten en cache para que
+        // el comando async los lea aunque viajen por CLI sólo via runId.
+        $correctionsTotal = 0;
+        try {
+            $correctionsTotal = empty($correctionIds)
+                ? Correction::approved()->count()
+                : count($correctionIds);
+        } catch (\Throwable $e) {
+            // En tests sin BD el conteo puede fallar; seguimos con 0 y el
+            // comando async sobreescribirá desde su callback de progreso.
+        }
+        Cache::put($cacheKey, [
+            'status' => 'queued',
+            'progress' => 0,
+            'total' => $preTotal,
+            'updated' => 0,
+            'processed' => 0,
+            'last_progress_at' => null,
+            'started_at' => null,
+            'queued_at' => now()->toIso8601String(),
+            'finished_at' => null,
+            'error_message' => null,
+            'dry_run' => $dryRun,
+            'chunk' => $chunk,
+            'days_back' => $daysBack,
+            'since' => $since?->toIso8601String(),
+            'correction_ids' => $correctionIds,
+            'corrections_total' => $correctionsTotal,
+            'include_high_risk' => $includeHighRisk,
+        ], now()->addHours(self::CACHE_TTL_HOURS));
+
+        // Crear el puntero "active" de forma ATÓMICA (SET NX). Si Cache::add
+        // falla es porque otro proceso lanzó una corrida entre nuestro check
+        // de arriba y este put — en ese caso volvemos a leer el puntero y
+        // rechazamos con 409 igual que arriba.
+        $pointerCreated = Cache::add('corrections_apply:active', ['runId' => $runId], now()->addHours(self::CACHE_TTL_HOURS));
+        if (!$pointerCreated) {
+            $raced = Cache::get('corrections_apply:active');
+            $racedId = is_array($raced) ? ($raced['runId'] ?? null) : null;
+            if ($racedId && $racedId !== $runId) {
+                Cache::forget($cacheKey); // limpiar el estado inicial que escribimos: nunca se usara
+                return response()->json([
+                    'error'  => 'Ya hay una corrida en curso.',
+                    'runId'  => $racedId,
+                    'status' => 'running',
+                ], 409);
+            }
+        }
+
+        // PATH ABSOLUTOS para que funcione bajo php-fpm (cuyo CWD no es
+        // necesariamente el del proyecto). El bug histórico era que
+        // `php artisan` relativo fallaba porque 'artisan' no se encuentra
+        // en el CWD del worker.
+        //
+        // El binario se resuelve vía RunsBackgroundCommands::resolvePhpCli(),
+        // que detecta SAPI fpm y fuerza /usr/bin/php. Antes este controller
+        // sólo verificaba is_executable($phpBin), que pasaba con php-fpm
+        // (también tiene +x) — el comando moría al instante y la UI quedaba
+        // en "queued" para siempre. Ver change
+        // openspec/changes/corrections-apply-retroactive-bg-launcher/.
+        //
+        // NOTA: NO redirigimos dentro del $cmd — el wrapper
+        // RunsBackgroundCommands::execBackground() ya redirige toda la salida
+        // a /tmp/kilo_artisan_bg.log (con marcadores [corrections:apply]).
+        $artisanPath = base_path('artisan');
+        $correctionIdFlags = '';
+        foreach ($correctionIds as $cid) {
+            $correctionIdFlags .= ' --correction-id=' . escapeshellarg((string) $cid);
+        }
+        $sinceFlag = $since !== null
+            ? ' --since=' . escapeshellarg($since->toIso8601String())
+            : '';
+        $cmd = sprintf(
+            '%s %s corrections:apply-run --run-id=%s --chunk=%d%s%s%s%s',
+            $this->resolvePhpCli(),
+            escapeshellarg($artisanPath),
+            escapeshellarg($runId),
+            $chunk,
+            $dryRun ? ' --dry-run' : '',
+            $daysBack !== null ? ' --days=' . escapeshellarg((string) $daysBack) : '',
+            $sinceFlag,
+            $includeHighRisk ? ' --include-high-risk' : ''
+        );
+        $cmd .= $correctionIdFlags;
+        $this->execBackground($cmd, 'corrections:apply');
+
+        // Liveness ping: tras dispatchar, esperamos 2s y verificamos que el
+        // worker haya transicionado el cache de queued → running. Si no lo
+        // hizo, el worker murió al arrancar (binario incorrecto, artisan no
+        // encontrado, error fatal). Marcamos el run como error y devolvemos
+        // 500 con la ruta al log para que el admin sepa qué pasó — antes la
+        // barra quedaba inmóvil durante 4h sin señal alguna.
+        usleep(2_000_000);
+        $postState = Cache::get($cacheKey);
+        $postStatus = is_array($postState) ? ($postState['status'] ?? null) : null;
+        if ($postStatus === null || $postStatus === 'queued') {
+            if (is_array($postState)) {
+                $postState['status'] = 'error';
+                $postState['error_message'] = 'El worker no arrancó — revisá /tmp/kilo_artisan_bg.log (filtro: [corrections:apply])';
+                $postState['finished_at'] = now()->toIso8601String();
+                Cache::put($cacheKey, $postState, now()->addHours(self::CACHE_TTL_HOURS));
+            }
+            Cache::forget('corrections_apply:active');
+            Log::warning('CorreccionesController: worker de apply-retroactive no pasó a running', [
+                'run_id' => $runId,
+                'observed_status' => $postStatus,
+                'cache_key' => $cacheKey,
+            ]);
+            return response()->json([
+                'error' => 'El proceso de re-aplicación no arrancó. Revisá el log en /tmp/kilo_artisan_bg.log (filtrá por [corrections:apply]).',
+                'log' => '/tmp/kilo_artisan_bg.log',
+                'runId' => $runId,
+            ], 500);
+        }
 
         return response()->json([
-            'updated' => $updated,
-            'elapsed_seconds' => $elapsed,
-            'dry_run' => $dryRun,
+            'runId' => $runId,
+            'days_back' => $daysBack,
+            'since' => $since?->toIso8601String(),
+            'correction_ids' => $correctionIds,
+            'corrections_total' => $correctionsTotal,
+            'include_high_risk' => $includeHighRisk,
+        ], 202);
+    }
+
+    /**
+     * Preview no-destructivo del impacto de un apply-retroactive.
+     * Retorna conteos sin lanzar worker ni escribir cache de run.
+     * Path: POST /ia/correcciones/apply-retroactive/preview
+     * Body: mismos parámetros que applyRetroactive (since / days_back / correction_ids / dry_run).
+     */
+    public function previewApplyRetroactive(Request $request)
+    {
+        [$since, $daysBack, $correctionIds, $error] = $this->resolveScope($request);
+        if ($error !== null) {
+            return $error;
+        }
+        if ($request->has('correction_ids') && empty($correctionIds)) {
+            return response()->json([
+                'error' => 'correction_ids llegó vacío. Si querés aplicar todo, no mandes el parámetro.',
+            ], 422);
+        }
+        $segmentsTotal = $this->countSegmentsInScope($since, $daysBack);
+        $correctionsTotal = empty($correctionIds)
+            ? Correction::approved()->count()
+            : count($correctionIds);
+        return response()->json([
+            'segments_total' => $segmentsTotal,
+            'corrections_total' => $correctionsTotal,
+            'estimated_minutes' => $this->estimateMinutes($segmentsTotal, $correctionsTotal),
+            'scope' => [
+                'since' => $since?->toIso8601String(),
+                'days_back' => $daysBack,
+                'correction_ids' => $correctionIds,
+            ],
         ]);
     }
 
-    public function previewRetroactive(CorrectionService $service)
+    /**
+     * Variation Finder — devuelve las variantes literales de una palabra/frase
+     * en los segments del scope temporal. 100% SQL, sin IA.
+     *
+     * Path: POST /ia/correcciones/variations/find
+     * Body: { word: string, since: ISO8601|null, limit?: int (default 100, max 500), context_window?: int (default 25) }
+     * Salida: { matches: [{ variant, count, example_segment_id, example_text,
+     *                        is_approved_rule, is_pending_rule, existing_rule_id }],
+     *           total_scanned: int, truncated: bool, next_since: ISO8601|null }
+     *
+     * Ver openspec/changes/corrections-variation-finder/.
+     */
+    public function findVariations(Request $request)
     {
-        return response()->json(['would_update' => $service->previewRetroactive()]);
+        $request->validate([
+            'word' => 'required|string|min:1|max:200',
+            'since' => 'nullable|date',
+            'limit' => 'nullable|integer|min:1|max:500',
+            'context_window' => 'nullable|integer|min:5|max:100',
+        ]);
+
+        $word = trim((string) $request->input('word'));
+        if ($word === '') {
+            return response()->json(['error' => 'word no puede estar vacío'], 422);
+        }
+        $wordLower = mb_strtolower($word);
+        $since = $request->input('since') ? Carbon::parse($request->input('since')) : null;
+        $limit = (int) ($request->input('limit') ?? 100);
+        $contextWindow = (int) ($request->input('context_window') ?? 25);
+        $maxScan = 10000;
+
+        // Query acotada: full-scan en 'all' está cappeado a $maxScan rows.
+        $query = \App\Models\TranscriptionSegment::query()
+            ->select(['id', 'text', 'created_at'])
+            ->whereRaw('LOWER(text) LIKE ?', ['%' . $this->escapeLike($wordLower) . '%']);
+        if ($since) {
+            $query->where('created_at', '>=', $since);
+        }
+        $rows = $query->orderBy('id', 'asc')->limit($maxScan)->get();
+
+        $truncated = $rows->count() === $maxScan;
+        $oldestCreatedAt = null;
+        $grouped = [];
+
+        foreach ($rows as $row) {
+            $textLower = mb_strtolower($row->text);
+            $pos = mb_strpos($textLower, $wordLower);
+            if ($pos === false) continue;
+
+            // Variante = ventana corta (0 palabras antes, 3 después, recortada a
+            // word boundaries) alrededor del match. Esto captura el "wrong_text"
+            // candidato que matcheará exactamente `corrections.wrong_normalized`.
+            // Si el usuario busca "abelardo" y el segmento contiene
+            // "Abelardo de la Espriella", la variante corta será
+            // "Abelardo de la Espriella" → matchea rule 10497.
+            $variantRaw = $this->extractVariant($row->text, $pos, mb_strlen($word), 0, 3);
+
+            // example_text = ventana más grande (±contextWindow) para dar
+            // contexto al admin sin que afecte el matching.
+            $exampleStart = max(0, $pos - $contextWindow);
+            $exampleEnd = min(mb_strlen($row->text), $pos + mb_strlen($word) + $contextWindow);
+            $exampleText = mb_substr($row->text, $exampleStart, $exampleEnd - $exampleStart);
+
+            $key = $this->normalizeVariant($variantRaw);
+            if ($key === '') continue; // variants sin letras no son útiles
+            if (!isset($grouped[$key])) {
+                $grouped[$key] = [
+                    'variant' => $variantRaw,
+                    'count' => 0,
+                    'example_segment_id' => $row->id,
+                    'example_text' => $exampleText,
+                ];
+            }
+            $grouped[$key]['count']++;
+            if ($oldestCreatedAt === null || $row->created_at < $oldestCreatedAt) {
+                $oldestCreatedAt = $row->created_at;
+            }
+        }
+
+        // Cross-reference con rules existentes.
+        // Estrategia: cargar TODAS las reglas approved/pending (son ~2500) y
+        // hacer el matching en PHP. Es ~100ms pero garantiza cobertura correcta
+        // sin importar la dirección de substring. Iterar en SQL con LIKE '%x%'
+        // al inicio no usa índice, sería full-scan y peor performance.
+        $allRules = Correction::query()
+            ->whereIn('status', ['approved', 'pending'])
+            ->get(['id', 'wrong_normalized', 'status']);
+        // Indexar por normalized para lookup.
+        $rulesByNorm = [];
+        foreach ($allRules as $rule) {
+            $norm = mb_strtolower(trim((string) $rule->wrong_normalized));
+            if ($norm !== '') $rulesByNorm[$norm] = $rule;
+        }
+
+        foreach ($grouped as $key => &$row) {
+            $rule = $rulesByNorm[$key] ?? null;
+            // Fallback: la regla es substring de la variante o viceversa.
+            // Sólo reglas con ≥4 chars (evita falsos positivos con "a", "de").
+            if (!$rule && mb_strlen($key) >= 4) {
+                foreach ($rulesByNorm as $norm => $r) {
+                    if (mb_strlen($norm) < 4) continue;
+                    if (mb_strpos($key, $norm) !== false || mb_strpos($norm, $key) !== false) {
+                        $rule = $r;
+                        break;
+                    }
+                }
+            }
+            $row['is_approved_rule'] = $rule && $rule->status === 'approved';
+            $row['is_pending_rule'] = $rule && $rule->status === 'pending';
+            $row['existing_rule_id'] = $rule?->id;
+        }
+        unset($row);
+
+        // Ordenar por frecuencia DESC, slice por limit.
+        uasort($grouped, fn ($a, $b) => $b['count'] <=> $a['count']);
+        $matches = array_values(array_slice($grouped, 0, $limit, true));
+
+        // Renormalizar keys a índices numéricos.
+        foreach ($matches as $i => $m) {
+            unset($matches[$i]['variant_normalized']); // placeholder si lo agregamos en el futuro
+        }
+
+        return response()->json([
+            'matches' => $matches,
+            'total_scanned' => $rows->count(),
+            'unique_variants' => count($grouped),
+            'truncated' => $truncated,
+            'next_since' => $truncated && $oldestCreatedAt
+                ? $oldestCreatedAt->copy()->subSecond()->toIso8601String()
+                : null,
+        ]);
+    }
+
+    /**
+     * Crea N reglas pending en bulk desde Variation Finder.
+     * Si alguna variante ya existe, aborta toda la transacción con 422.
+     *
+     * Path: POST /ia/correcciones/variations/bulk-create
+     * Body: { variants: string[1..100], correct: string }
+     * Salida: 201 { created: int, correction_ids: int[] }
+     */
+    public function bulkCreateFromVariations(Request $request)
+    {
+        $request->validate([
+            'variants' => 'required|array|min:1|max:100',
+            'variants.*' => 'required|string|min:1|max:500',
+            'correct' => 'required|string|min:1|max:500',
+        ]);
+
+        $variants = $request->input('variants');
+        $correct = trim((string) $request->input('correct'));
+        // adminUser() devuelve el modelo User completo; necesitamos sólo el id (bigint)
+        // para la columna proposed_by, sino Eloquent intenta serializar a JSON.
+        $adminId = (int) $this->adminUser()->id;
+
+        // Pre-normalizar todas y chequear duplicados contra BD y entre sí.
+        $seen = [];
+        $toCreate = [];
+        foreach ($variants as $v) {
+            $v = trim((string) $v);
+            if ($v === '') continue;
+            $norm = $this->normalizeVariant($v);
+            if (!$norm) continue;
+            if (isset($seen[$norm])) continue;
+            $seen[$norm] = true;
+            $toCreate[] = ['raw' => $v, 'norm' => $norm];
+        }
+
+        if (empty($toCreate)) {
+            return response()->json(['error' => 'Ninguna variante válida para crear'], 422);
+        }
+
+        $existing = Correction::whereIn('wrong_normalized', array_column($toCreate, 'norm'))
+            ->pluck('wrong_normalized')
+            ->all();
+        if (!empty($existing)) {
+            $conflict = $toCreate[array_search($existing[0], array_column($toCreate, 'norm'))]['raw'] ?? $existing[0];
+            return response()->json([
+                'error' => "Ya existe una regla para la variante normalizada: '{$conflict}'",
+                'conflicting_normalized' => $existing,
+            ], 422);
+        }
+
+        $source = 'variation-finder-' . now()->format('Y-m-d');
+        $created = [];
+        DB::transaction(function () use ($toCreate, $correct, $adminId, $source, &$created) {
+            foreach ($toCreate as $entry) {
+                $c = Correction::create([
+                    'wrong_text' => $entry['raw'],
+                    'correct_text' => $correct,
+                    'wrong_normalized' => $entry['norm'],
+                    'status' => 'pending',
+                    'proposed_by' => $adminId,
+                    'source' => $source,
+                    'risk_level' => 'low',
+                    'applies_count' => 0,
+                ]);
+                $created[] = $c->id;
+            }
+        });
+
+        return response()->json([
+            'created' => count($created),
+            'correction_ids' => $created,
+            'source' => $source,
+        ], 201);
+    }
+
+    /**
+     * Normaliza una variante para grouping/lookup:
+     * lowercase + trim + collapse whitespace + collapse internal punctuation.
+     * Devuelve string vacío si el resultado no tiene al menos una letra.
+     */
+    private function normalizeVariant(string $variant): string
+    {
+        $v = mb_strtolower(trim($variant));
+        $v = preg_replace('/\s+/u', ' ', $v);
+        $v = preg_replace('/[^\p{L}\p{N}\s]/u', '', $v); // letras/números/espacio
+        return trim((string) $v);
+    }
+
+    /**
+     * Extrae la variante "corta" alrededor del match de la palabra buscada.
+     * Default: 0 palabras antes + 3 después, así la variante ES el `wrong_text`
+     * candidato (ej: "Abelardo de la Esprella") sin contexto lejano. Esto
+     * matchea exactamente `corrections.wrong_normalized` y agrupa correctamente
+     * todas las apariciones del mismo typo sin importar el contexto donde
+     * aparecen.
+     *
+     * Ejemplo: "El presidente Abelardo de la Esprella hizo el anuncio" → "Abelardo de la Esprella"
+     * Ejemplo: "Diego... entre el gobierno del presidente Abelardo de la Esprella" → "Abelardo de la Esprella"
+     * Ambos se agrupan en UNA sola fila con el mismo `wrong_text`.
+     *
+     * @param string $text Texto completo del segmento.
+     * @param int $matchPos Posición (en chars) donde inicia el match.
+     * @param int $matchLen Largo del match en chars.
+     * @param int $wordsBefore Max palabras antes del match a incluir (default 0).
+     * @param int $wordsAfter Max palabras después del match a incluir (default 3).
+     * @return string Variante extraída, trimmed, sin puntuación colgante.
+     */
+    private function extractVariant(string $text, int $matchPos, int $matchLen, int $wordsBefore = 0, int $wordsAfter = 3): string
+    {
+        $len = mb_strlen($text);
+        $matchPos = max(0, min($matchPos, $len - 1));
+        $matchLen = max(1, min($matchLen, $len - $matchPos));
+        $matchedText = mb_substr($text, $matchPos, $matchLen);
+
+        $before = mb_substr($text, 0, $matchPos);
+        $beforeTrimmed = rtrim($before);
+        $beforeWords = preg_split('/\s+/u', $beforeTrimmed);
+        // NB: array_slice($arr, -0) en PHP === array_slice($arr, 0) === full array.
+        // Hay que chequear $wordsBefore > 0 antes de slice, sino conservar el array completo.
+        if ($wordsBefore > 0 && count($beforeWords) > $wordsBefore) {
+            $beforeWords = array_slice($beforeWords, -$wordsBefore);
+        } elseif ($wordsBefore === 0) {
+            $beforeWords = [];
+        }
+        $beforeText = trim(implode(' ', $beforeWords));
+
+        $after = mb_substr($text, $matchPos + $matchLen);
+        $afterWords = preg_split('/\s+/u', trim($after));
+        if ($wordsAfter > 0 && count($afterWords) > $wordsAfter) {
+            $afterWords = array_slice($afterWords, 0, $wordsAfter);
+        } elseif ($wordsAfter === 0) {
+            $afterWords = [];
+        }
+        $afterText = trim(implode(' ', $afterWords));
+
+        $variant = trim("$beforeText $matchedText $afterText");
+        // Trim de puntuación y palabras conectoras comunes al final (y, a, de, el, la).
+        $variant = trim($variant, " \t\n\r\0\x0B.,;:!?\"'()[]{}");
+        $variant = preg_replace('/\s+(y|a|de|en|con|para|por|el|la|los|las|del|al|un|una|unos|unas)$/iu', '', $variant);
+        $variant = trim($variant, " \t\n\r\0\x0B.,;:!?\"'()[]{}");
+        return $variant;
+    }
+
+    private function escapeLike(string $s): string
+    {
+        return str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], $s);
+    }
+
+    /**
+     * AI Suggest en Variation Finder: agrupa las variantes "Sin regla"
+     * devueltas por findVariations y propone una canonical_correct por
+     * grupo vía LLM. NO crea reglas — sólo sugiere.
+     *
+     * Path: POST /ia/correcciones/variations/ai-suggest
+     * Body: { word: string, since: ISO8601|null, limit?: int, provider?: string, confirm_cost?: bool }
+     *
+     * Si `confirm_cost=true` retorna sólo `{ estimate: { variants_count, estimated_input_tokens, estimated_cost_usd } }`
+     * sin llamar al LLM. Si `confirm_cost=false` (o ausente) llama al LLM.
+     *
+     * Ver openspec/changes/corrections-variation-finder-ai-suggest/.
+     */
+    public function variationsAiSuggest(Request $request)
+    {
+        try {
+            $request->validate([
+                'word' => 'required|string|min:1|max:200',
+                'since' => 'nullable|date',
+                'limit' => 'nullable|integer|min:1|max:500',
+                'provider' => 'nullable|string|max:32',
+                'confirm_cost' => 'nullable|boolean',
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json(['error' => collect($e->errors())->flatten()->first() ?? 'validation'], 422);
+        }
+
+        $word = trim((string) $request->input('word'));
+        if ($word === '') {
+            return response()->json(['error' => 'word no puede estar vacío'], 422);
+        }
+        $since = $request->input('since') ? Carbon::parse($request->input('since')) : null;
+        $limit = (int) ($request->input('limit') ?? 100);
+        $provider = (string) ($request->input('provider') ?? 'primary');
+        $confirmCost = (bool) $request->input('confirm_cost', false);
+
+        // Reusar findVariations para traer las variantes "Sin regla" — el
+        // admin ya hizo la búsqueda, esto garantiza el mismo scope.
+        $findRequest = Request::create('/internal/find-variations', 'POST', [
+            'word' => $word,
+            'since' => $since?->toIso8601String(),
+            'limit' => $limit,
+        ]);
+        $findResponse = $this->findVariations($findRequest);
+        if ($findResponse->getStatusCode() !== 200) {
+            return $findResponse; // propaga errores 422/etc
+        }
+        $findPayload = $findResponse->getData(true);
+        $uncoveredVariants = [];
+        foreach (($findPayload['matches'] ?? []) as $m) {
+            if (!$m['is_approved_rule'] && !$m['is_pending_rule']) {
+                $uncoveredVariants[] = [
+                    'wrong' => $m['variant'],
+                    'count' => (int) $m['count'],
+                ];
+            }
+        }
+
+        if (empty($uncoveredVariants)) {
+            return response()->json([
+                'ok' => true,
+                'groups' => [],
+                'message' => 'No hay variantes "Sin regla" para sugerir. Todas están cubiertas.',
+                'tokens_used' => 0,
+                'latency_ms' => 0,
+            ]);
+        }
+
+        /** @var \App\Services\Ia\AiVariationGrouperService $grouper */
+        $grouper = app(\App\Services\Ia\AiVariationGrouperService::class);
+
+        if ($confirmCost) {
+            $tokens = $grouper->estimateTokens($uncoveredVariants);
+            return response()->json([
+                'estimate' => [
+                    'variants_count' => count($uncoveredVariants),
+                    'estimated_input_tokens' => $tokens,
+                    'estimated_cost_usd' => $grouper->estimateCostUsd($tokens, $provider),
+                    'provider' => $provider,
+                ],
+            ]);
+        }
+
+        $result = $grouper->groupVariants($word, $uncoveredVariants, $since?->toIso8601String(), $limit, $provider);
+
+        if (!$result['ok']) {
+            $status = in_array($result['reason'] ?? '', ['switch_off', 'no_api_key', 'timeout_or_network', 'parse_failed'], true)
+                ? 503 : 422;
+            return response()->json($result, $status);
+        }
+
+        return response()->json($result);
+    }
+
+    /**
+     * Polling de estado para una corrida async.
+     */
+    public function runStatus(string $runId)
+    {
+        $cacheKey = "corrections_apply:{$runId}";
+        $state = Cache::get($cacheKey);
+
+        if (!$state) {
+            return response()->json(['error' => 'Run no encontrado o expirado'], 404);
+        }
+
+        return response()->json($state);
+    }
+
+    /**
+     * Indica si hay una corrida vigente para que la UI se re-adjunte al
+     * recargar la página. Devuelve 204 si no hay corrida activa o si la
+     * que apunta el puntero ya terminó (done/error) — la UI limpia el
+     * estado local en ambos casos y no muestra banner.
+     */
+    public function activeApplyRun()
+    {
+        $pointer = Cache::get('corrections_apply:active');
+        if (!is_array($pointer) || empty($pointer['runId'])) {
+            return response()->noContent();
+        }
+        $state = Cache::get("corrections_apply:{$pointer['runId']}");
+        if (!$state || in_array($state['status'] ?? null, ['done', 'error'], true)) {
+            return response()->noContent();
+        }
+        return response()->json(array_merge(
+            ['runId' => (string) $pointer['runId']],
+            $state
+        ));
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // Dictionary atomicity + context-shift protection
+    // (changes/2026-08-02-corrections-dictionary-atomicity)
+    // ─────────────────────────────────────────────────────────────────
+
+    /**
+     * Devuelve las sugerencias atómicas (unigramas + bigramas) extraídas
+     * del wrong_text de una corrección aprobada, deduplicadas contra el
+     * diccionario existente, con traducción tentativa basada en consenso.
+     *
+     * Path: GET /ia/correcciones/{id}/atomicity-suggestions
+     */
+    public function atomicitySuggestions(int $id, CorrectionService $service)
+    {
+        $correction = Correction::findOrFail($id);
+        $suggestions = $service->extractAtomicitySuggestions($correction, 20);
+        return response()->json([
+            'correction_id' => $correction->id,
+            'wrong_text' => $correction->wrong_text,
+            'suggestions' => $suggestions,
+        ]);
+    }
+
+    /**
+     * Crea correcciones nuevas a partir de un batch de sugerencias atómicas
+     * seleccionadas por el admin. source='atomicity-from-{parentId}' para
+     * trazabilidad.
+     *
+     * Path: POST /ia/correcciones/{id}/atomicity-suggestions/bulk-add
+     */
+    public function bulkCreateAtomicityFromCorrection(Request $request, int $id, CorrectionService $service)
+    {
+        $request->validate([
+            'items' => 'required|array|min:1|max:50',
+            'items.*.wrong' => 'required|string|max:100',
+            'items.*.correct' => 'required|string|max:500',
+        ]);
+
+        $parent = Correction::findOrFail($id);
+        $admin = $this->adminUser();
+        $created = [];
+        $skipped = [];
+
+        foreach ($request->input('items') as $item) {
+            $wrong = trim((string) $item['wrong']);
+            $correct = trim((string) $item['correct']);
+            if ($wrong === '' || $correct === '') {
+                $skipped[] = ['wrong' => $wrong, 'reason' => 'empty'];
+                continue;
+            }
+            try {
+                $correction = $service->upsertApproved($wrong, $correct, $admin);
+                // Tag source con referencia al parent (no pisar si ya tenía source custom)
+                if (empty($correction->source) || str_starts_with($correction->source, 'atomicity-from-')) {
+                    $correction->source = 'atomicity-from-' . $parent->id;
+                    $correction->save();
+                }
+                $created[] = ['id' => $correction->id, 'wrong' => $wrong, 'correct' => $correct];
+            } catch (\Throwable $e) {
+                $skipped[] = ['wrong' => $wrong, 'reason' => $e->getMessage()];
+            }
+        }
+
+        return response()->json([
+            'created' => $created,
+            'skipped' => $skipped,
+            'parent_id' => $parent->id,
+        ], empty($created) ? 422 : 201);
+    }
+
+    /**
+     * Elimina en bulk las reglas inactivas (applies_count=0) creadas hace más de N días.
+     * Cambios/2026-08-02-corrections-dictionary-atomicity.
+     *
+     * Body: { min_age_days?: int=30, max_count?: int=500 }
+     * Path: POST /ia/correcciones/bulk-destroy-inactive
+     */
+    public function bulkDestroyInactive(Request $request, CorrectionService $service)
+    {
+        $data = $request->validate([
+            'min_age_days' => 'nullable|integer|min:0|max:3650',
+            'max_count' => 'nullable|integer|min:1|max:5000',
+        ]);
+
+        $admin = $this->adminUser();
+        $result = $service->bulkDestroyInactive(
+            (int) ($data['min_age_days'] ?? 30),
+            (int) ($data['max_count'] ?? 500),
+            $admin
+        );
+
+        return response()->json($result);
+    }
+
+    /**
+     * Reporte del diccionario (totales, effectiveness, top n-gramas, dups, clusters).
+     * Cambios/2026-08-02-corrections-dictionary-atomicity.
+     *
+     * Path: GET /ia/correcciones/dictionary-audit
+     */
+    public function auditReport(DictionaryAudit $audit)
+    {
+        return response()->json($audit->run());
+    }
+
+    /**
+     * Override manual de risk_level por parte del admin.
+     * Cambios/2026-08-02-corrections-dictionary-atomicity (legado).
+     *
+     * Body: { risk_level: 'low'|'medium'|'high' }
+     * Path: PATCH /ia/correcciones/{id}/risk-level
+     *
+     * Nota 2026-08-18: la vista bulk de "Contexto Sensible" se eliminó por
+     * redundante (las reglas wc>=4 ya están protegidas por el guard wc>=4
+     * + scopeSafe()). Este endpoint sigue disponible para overrides
+     * puntuales desde las filas individuales de Revisar transcripciones.
+     */
+    public function setRiskLevel(Request $request, int $id)
+    {
+        $data = $request->validate([
+            'risk_level' => 'required|string|in:low,medium,high',
+        ]);
+
+        $correction = Correction::findOrFail($id);
+        $correction->risk_level = $data['risk_level'];
+        $correction->save();
+
+        return response()->json([
+            'ok' => true,
+            'id' => $correction->id,
+            'risk_level' => $correction->risk_level,
+        ]);
+    }
+
+    /**
+     * Helper compartido: evalúa una corrección contra el ContextShiftAuditor
+     * y devuelve un array serializable si hay warning, o null.
+     *
+     * @return ?array{risk: string, matched: ?string, type: string, reason: string, safe_translations: array}
+     */
+    private function buildContextWarning(Correction $c): ?array
+    {
+        $warning = app(ContextShiftAuditor::class)->evaluateOne(
+            (object) [
+                'id' => $c->id,
+                'wrong_text' => $c->wrong_text,
+                'correct_text' => $c->correct_text,
+                'risk_level' => $c->risk_level,
+            ],
+            config('corrections.context_sensitive')
+        );
+        if ($warning === null) {
+            return null;
+        }
+        return [
+            'risk' => $warning['risk'],
+            'matched' => $warning['matched'] ?? null,
+            'type' => $warning['type'] ?? 'unknown',
+            'reason' => $warning['reason'],
+            'safe_translations' => $warning['safe_translations'] ?? [],
+        ];
     }
 
     private function adminUser()
     {
         $id = (int) Session::get('user_id');
         return \App\Models\User::findOrFail($id);
+    }
+
+    /**
+     * Aprobación masiva de correcciones pendientes.
+     * Body: { ids: [1,2,3,...] } (max config('corrections.bulk_max_ids'))
+     * Respuesta: { approved, merged, errors, bulk_action_id, undo_expires_at }
+     */
+    public function bulkApprove(Request $request, CorrectionService $service)
+    {
+        $max = (int) config('corrections.bulk_max_ids', 500);
+        $data = $request->validate([
+            'ids' => "required|array|min:1|max:$max",
+            'ids.*' => 'integer|min:1',
+        ]);
+
+        $admin = $this->adminUser();
+        $result = $service->bulkApprove($data['ids'], $admin);
+
+        return response()->json($result);
+    }
+
+    /**
+     * Rechazo masivo con motivo común.
+     * Body: { ids: [...], rejected_reason?: "..." }
+     */
+    public function bulkReject(Request $request, CorrectionService $service)
+    {
+        $max = (int) config('corrections.bulk_max_ids', 500);
+        $data = $request->validate([
+            'ids' => "required|array|min:1|max:$max",
+            'ids.*' => 'integer|min:1',
+            'rejected_reason' => 'nullable|string|max:1000',
+        ]);
+
+        $admin = $this->adminUser();
+        $result = $service->bulkReject(
+            $data['ids'],
+            $data['rejected_reason'] ?? null,
+            $admin
+        );
+
+        return response()->json($result);
+    }
+
+    /**
+     * Eliminación masiva de correcciones aprobadas. NO reversible.
+     * Body: { ids: [...] }
+     */
+    public function bulkDestroy(Request $request, CorrectionService $service)
+    {
+        $max = (int) config('corrections.bulk_max_ids', 500);
+        $data = $request->validate([
+            'ids' => "required|array|min:1|max:$max",
+            'ids.*' => 'integer|min:1',
+        ]);
+
+        $admin = $this->adminUser();
+        $result = $service->bulkDestroy($data['ids'], $admin);
+
+        return response()->json($result);
+    }
+
+    /**
+     * Eliminación masiva de correcciones PENDIENTES (ruido del miner/AI Suggest).
+     * A diferencia de bulkDestroy (que solo acepta approved), este endpoint
+     * acepta solo pending y borra sin snapshot (no es reversible, no hay undo).
+     *
+     * Body: { ids: [...] }
+     * Path: POST /ia/correcciones/bulk-destroy-pending
+     */
+    public function bulkDestroyPending(Request $request, CorrectionService $service)
+    {
+        $max = (int) config('corrections.bulk_max_ids', 500);
+        $data = $request->validate([
+            'ids' => "required|array|min:1|max:$max",
+            'ids.*' => 'integer|min:1',
+        ]);
+
+        $admin = $this->adminUser();
+        $result = $service->bulkDestroyPending($data['ids'], $admin);
+
+        return response()->json($result);
+    }
+
+    /**
+     * Revierte una acción masiva dentro de la ventana de undo.
+     * Path: POST /correcciones/undo/{bulkActionId}
+     * Códigos de error:
+     *   410: ventana expirada
+     *   409: ya revertida, superseded, o bulk_destroy (no reversible)
+     *   404: no encontrada
+     */
+    public function undoBulkAction(string $bulkActionId, CorrectionService $service)
+    {
+        try {
+            $admin = $this->adminUser();
+            $result = $service->undoBulkAction($bulkActionId, $admin);
+            return response()->json($result);
+        } catch (\RuntimeException $e) {
+            $msg = $e->getMessage();
+            if (str_contains($msg, 'expiró')) {
+                return response()->json(['error' => $msg], 410);
+            }
+            if (str_contains($msg, 'ya fue') || str_contains($msg, 'superada') || str_contains($msg, 'no es reversible')) {
+                return response()->json(['error' => $msg], 409);
+            }
+            return response()->json(['error' => $msg], 404);
+        }
+    }
+
+    /**
+     * Triage en capas de correcciones pending. POST /ia/correcciones/triage-pending.
+     * Cambios/2026-08-18-corrections-coherence-learn-fix-and-pending-triage.
+     *
+     * Body:
+     *   dry_run             (bool, default true)  — solo reporte, no escribe
+     *   auto_approve_keep   (bool, default false) — auto-aprueba las KEEP vía bulkApprove
+     *   max                 (int,  default 10000) — tope de candidatas por corrida
+     *   days_back           (int?, optional)      — filtrar a últimos N días
+     *
+     * Retorna el estado del run (incluye run_id para polling) o el resultado
+     * final si la corrida ya terminó sincrónicamente (corrida muy corta).
+     */
+    public function triagePending(Request $request, \App\Services\Ia\CorrectionTriageService $service)
+    {
+        $data = $request->validate([
+            'dry_run' => 'sometimes|boolean',
+            'auto_approve_keep' => 'sometimes|boolean',
+            'max' => 'sometimes|integer|min:1|max:50000',
+            'days_back' => 'sometimes|integer|min:1|max:365',
+        ]);
+
+        $admin = $this->adminUser();
+        $dryRun = (bool) ($data['dry_run'] ?? true);
+        $autoApproveKeep = !$dryRun && (bool) ($data['auto_approve_keep'] ?? false);
+
+        try {
+            $result = $service->run(
+                dryRun: $dryRun,
+                autoApproveKeep: $autoApproveKeep,
+                max: (int) ($data['max'] ?? 10000),
+                daysBack: $data['days_back'] ?? null,
+                by: $admin,
+            );
+
+            return response()->json($result);
+        } catch (\RuntimeException $e) {
+            $msg = $e->getMessage();
+            if (str_contains($msg, 'Ya hay un triage activo')) {
+                return response()->json(['error' => $msg], 409);
+            }
+            return response()->json(['error' => $msg], 422);
+        }
+    }
+
+    /**
+     * Estado del run de triage (polling desde la UI). GET /ia/correcciones/triage-pending/{runId}.
+     */
+    public function triageRunStatus(string $runId, \App\Services\Ia\CorrectionTriageService $service)
+    {
+        $state = $service->getStatus($runId);
+        if (!$state) {
+            return response()->json(['error' => 'run_not_found', 'run_id' => $runId], 404);
+        }
+        return response()->json($state);
+    }
+
+    /**
+     * Estado del miner EN↔ES para el badge del header. Retorna la fecha
+     * del último lote minado (created_at más reciente entre pending con
+     * source='mining-%') y el conteo de pendientes aún sin revisar.
+     *
+     * Path: GET /ia/correcciones/mining-status
+     */
+    public function miningStatus()
+    {
+        // Cache 30s (change 2026-09-13-perf-audit-and-improve).
+        // Mide ultimo mining + count de pending. Cambia solo cuando se crea
+        // o resuelve una correccion desde 'mining-%'.
+        $payload = Cache::remember('correcciones:mining_status', 30, function () {
+            $lastMining = Correction::query()
+                ->where('source', 'LIKE', 'mining-%')
+                ->orderByDesc('created_at')
+                ->first(['created_at']);
+
+            $pendingFromMining = Correction::pending()
+                ->where('source', 'LIKE', 'mining-%')
+                ->count();
+
+            return [
+                'last_mining_at' => $lastMining?->created_at?->toIso8601String(),
+                'pending_from_mining' => $pendingFromMining,
+            ];
+        });
+
+        return response()->json($payload);
+    }
+
+    /**
+     * Estado del suggester LLM-powered EN↔ES para el segundo badge del
+     * header. Análogo a miningStatus pero para source='ai-suggest-%'.
+     *
+     * Path: GET /ia/correcciones/ai-suggest-status
+     */
+    public function aiSuggestStatus()
+    {
+        // Cache 30s (change 2026-09-13-perf-audit-and-improve).
+        // Igual patron que miningStatus pero para source='ai-suggest-%'.
+        $payload = Cache::remember('correcciones:ai_suggest_status', 30, function () {
+            $lastAi = Correction::query()
+                ->where('source', 'LIKE', 'ai-suggest-%')
+                ->orderByDesc('created_at')
+                ->first(['created_at']);
+
+            $pendingFromAi = Correction::pending()
+                ->where('source', 'LIKE', 'ai-suggest-%')
+                ->count();
+
+            return [
+                'last_ai_suggest_at' => $lastAi?->created_at?->toIso8601String(),
+                'pending_from_ai_suggest' => $pendingFromAi,
+            ];
+        });
+
+        return response()->json($payload);
+    }
+
+    /**
+     * Exporta todas las correcciones a CSV (original + corrección + metadatos)
+     * para que el admin pueda validarlas fuera del navegador con más detenimiento.
+     *
+     * Query params (todos opcionales):
+     *   - status: 'all' | 'pending' | 'approved' | 'rejected' (default 'all')
+     *   - source: filtra por source exacto (ej: 'mining-2026-08-01')
+     *   - q: búsqueda libre (case-insensitive) sobre wrong_text y correct_text
+     *
+     * El archivo se sirve como text/csv con nombre
+     * `correcciones-<status>-<YYYYMMDD-HHMMSS>.csv`. Usa streaming
+     * (streamDownload + fputcsv) para no agotar memoria con miles de filas.
+     *
+     * Path: GET /ia/correcciones/export
+     */
+    public function export(Request $request)
+    {
+        $statusFilter = (string) $request->input('status', 'all');
+        if (!in_array($statusFilter, ['all', Correction::STATUS_PENDING, Correction::STATUS_APPROVED, Correction::STATUS_REJECTED], true)) {
+            $statusFilter = 'all';
+        }
+
+        $source = trim((string) $request->input('source', ''));
+        $q = trim((string) $request->input('q', ''));
+
+        $query = Correction::query()
+            ->with(['proposedBy:id,username', 'approvedBy:id,username'])
+            ->orderByDesc('id');
+
+        if ($statusFilter !== 'all') {
+            $query->where('status', $statusFilter);
+        }
+        if ($source !== '') {
+            $query->where('source', $source);
+        }
+        if ($q !== '') {
+            $like = '%' . str_replace(['%', '_'], ['\\%', '\\_'], $q) . '%';
+            $query->where(function ($w) use ($like) {
+                $w->where('wrong_text', 'like', $like)
+                    ->orWhere('correct_text', 'like', $like);
+            });
+        }
+
+        $headers = [
+            'Content-Type' => 'text/csv; charset=UTF-8',
+            'Content-Disposition' => 'attachment; filename="correcciones-' . $statusFilter . '-' . now()->format('Ymd-His') . '.csv"',
+            'Cache-Control' => 'no-store, no-cache, must-revalidate',
+            'Pragma' => 'no-cache',
+        ];
+
+        return response()->stream(function () use ($query) {
+            $out = fopen('php://output', 'w');
+            // BOM UTF-8 para que Excel detecte acentos/ñ correctamente.
+            fwrite($out, "\xEF\xBB\xBF");
+
+            fputcsv($out, [
+                'id',
+                'status',
+                'source',
+                'original',
+                'correccion',
+                'wrong_normalized',
+                'applies_count',
+                'proposed_by',
+                'approved_by',
+                'rejected_reason',
+                'created_at',
+                'approved_at',
+            ]);
+
+            $query->chunk(500, function ($rows) use ($out) {
+                foreach ($rows as $r) {
+                    fputcsv($out, [
+                        $r->id,
+                        $r->status,
+                        $r->source ?? '',
+                        $r->wrong_text,
+                        $r->correct_text,
+                        $r->wrong_normalized ?? '',
+                        (int) $r->applies_count,
+                        $r->proposedBy?->username ?? '',
+                        $r->approvedBy?->username ?? '',
+                        $r->rejected_reason ?? '',
+                        $r->created_at?->toIso8601String() ?? '',
+                        $r->approved_at?->toIso8601String() ?? '',
+                    ]);
+                }
+            });
+
+            fclose($out);
+        }, 200, $headers);
+    }
+
+    /**
+     * Configuración del suggester: lee valores efectivos (BD > env > archivo)
+     * junto con origen y schema para que la UI pueda pintar el formulario.
+     *
+     * La `api_key` se reporta solo como `has_key: true|false` — nunca el valor
+     * (credencial sellada en .env).
+     *
+     * Path: GET /ia/correcciones/ai-suggest-settings
+     */
+    public function aiSuggestSettings(\App\Services\Ia\LlmCorrectionSettings $settings)
+    {
+        // Cache 60s (change 2026-09-13-perf-audit-and-improve).
+        // Los settings cambian muy raramente; 60s es aceptable para una UI
+        // que solo muestra valores booleanos / numericos.
+        $payload = Cache::remember('correcciones:ai_suggest_settings', 60, function () use ($settings) {
+            return [
+                'settings' => $settings->effective(),
+                'has_api_key' => $settings->apiKey() !== '',
+                'api_key_source' => $settings->apiKeySource(),
+                'available_models' => $settings->availableModels(),
+                'quick_action_windows' => $settings->quickActionWindows(),
+            ];
+        });
+
+        return response()->json($payload);
+    }
+
+    /**
+     * Fuerza un refetch de la lista de modelos del gateway. Útil cuando
+     * el admin sospecha que hay modelos nuevos y el cache aún no expira.
+     *
+     * Path: POST /ia/correcciones/ai-suggest-settings/refresh-models
+     */
+    public function aiSuggestSettingsRefreshModels(\App\Services\Ia\LlmCorrectionSettings $settings)
+    {
+        $models = $settings->refreshModels();
+        // Change 2026-09-13-perf-audit-and-improve: refetch invalida la cache.
+        Cache::forget('correcciones:ai_suggest_settings');
+        return response()->json([
+            'available_models' => $models,
+            'count' => count($models),
+        ]);
+    }
+
+    /**
+     * Actualiza uno o más valores de configuración del suggester.
+     * Valida con el schema del servicio y persiste; el cambio aplica en el
+     * siguiente request (cache TTL 60s + memo 30s).
+     *
+     * Cuerpo JSON:
+     *   - values: { enabled: bool, model: str, days_back: int, ... }
+     *
+     * Path: POST /ia/correcciones/ai-suggest-settings
+     */
+    public function aiSuggestSettingsUpdate(Request $request, \App\Services\Ia\LlmCorrectionSettings $settings)
+    {
+        $values = $request->input('values', []);
+        if (!is_array($values) || $values === []) {
+            return response()->json(['error' => 'No se recibieron valores.'], 422);
+        }
+
+        [$clean, $errors] = $settings->validate($values);
+        if ($errors) {
+            return response()->json([
+                'error' => 'Hay valores inválidos.',
+                'errors' => $errors,
+            ], 422);
+        }
+
+        $settings->set($clean);
+
+        \Illuminate\Support\Facades\Log::info('LlmCorrectionSettings: configuración modificada', [
+            'user_id' => \Illuminate\Support\Facades\Session::get('user_id'),
+            'keys' => array_keys($clean),
+            'values' => array_map(fn($v) => is_scalar($v) ? $v : '<non-scalar>', $clean),
+        ]);
+
+        // Change 2026-09-13-perf-audit-and-improve: el cache de settings cubre
+        // este endpoint; el update debe invalidarlo.
+        Cache::forget('correcciones:ai_suggest_settings');
+
+        return response()->json([
+            'ok' => true,
+            'settings' => $settings->effective(),
+        ]);
+    }
+
+    /**
+     * Restaura valores a los defaults de .env (o al literal de config).
+     * Borra las filas en system_settings para las claves indicadas.
+     *
+     * Cuerpo JSON:
+     *   - keys: [str] (vacio = todas)
+     *
+     * Path: DELETE /ia/correcciones/ai-suggest-settings
+     */
+    public function aiSuggestSettingsReset(Request $request, \App\Services\Ia\LlmCorrectionSettings $settings)
+    {
+        $keys = $request->input('keys', []);
+        if (!is_array($keys)) {
+            $keys = [];
+        }
+        $values = $settings->reset(array_values($keys));
+        // Change 2026-09-13-perf-audit-and-improve: reset invalida el cache.
+        Cache::forget('correcciones:ai_suggest_settings');
+        return response()->json([
+            'ok' => true,
+            'settings' => $settings->effective(),
+        ]);
+    }
+
+    /**
+     * Setea la API key cifrada en SystemSetting (alternativa a .env).
+     *
+     * Body: { "api_key": "sk-..." }
+     *
+     * Vacío = borra la fila (vuelve a .env).
+     *
+     * Nunca se loguea el valor. Devuelve solo el origen post-save.
+     *
+     * Path: POST /ia/correcciones/ai-suggest-settings/api-key
+     */
+    public function aiSuggestSettingsApiKey(Request $request, \App\Services\Ia\LlmCorrectionSettings $settings)
+    {
+        $validated = $request->validate([
+            'api_key' => 'required|string|max:500',
+        ]);
+        $trimmed = trim($validated['api_key']);
+
+        $stored = $settings->setApiKey($trimmed);
+
+        \Illuminate\Support\Facades\Log::info('LlmCorrectionSettings: API key actualizada', [
+            'user_id' => \Illuminate\Support\Facades\Session::get('user_id'),
+            'cleared' => !$stored,
+        ]);
+
+        // Change 2026-09-13-perf-audit-and-improve: cambio de api key invalida cache.
+        Cache::forget('correcciones:ai_suggest_settings');
+
+        return response()->json([
+            'ok' => true,
+            'cleared' => !$stored,
+            'api_key_source' => $settings->apiKeySource(),
+            'has_api_key' => $settings->apiKey() !== '',
+        ]);
+    }
+
+    /**
+     * Invoca el suggester LLM-powered EN↔ES de forma SÍNCRONA desde el
+     * botón "AI Suggest" del admin. Retorna JSON con los candidatos
+     * detectados. Si `insert=true`, los persiste como pending antes de
+     * retornar.
+     *
+     * Cuerpo JSON:
+     *   - days (int, default 1): ventana de análisis
+     *   - sample (int, default 200): tamaño de muestra
+     *   - insert (bool, default false): si true, persiste los candidatos
+     *     aceptados como pending (corrección típica del flow admin).
+     *
+     * Path: POST /ia/correcciones/ai-suggest-now
+     *
+     * Diseñado para control de gasto: el admin decide cuándo correr el
+     * LLM. El endpoint es síncrono porque el suggester típicamente
+     * completa en 5-30 segundos; no necesita runId async como el
+     * retroactivo.
+     */
+    public function aiSuggestNow(Request $request, CorrectionService $service, \App\Services\Ia\LlmCorrectionSettings $settings)
+    {
+        if (!$settings->bool('enabled')) {
+            return response()->json([
+                'error' => 'Suggest deshabilitado desde Configuración / IA Suggest.',
+                'hint' => 'Activa el toggle "Habilitado" en el tab IA Suggest.',
+            ], 503);
+        }
+
+        $apiKey = $settings->apiKey();
+        if ($apiKey === '') {
+            return response()->json([
+                'error' => 'LLM_API_KEY no configurada.',
+                'hint' => 'Pegala en el campo "API key" del tab IA Suggest → Guardar key.',
+                'api_key_source' => $settings->apiKeySource(),
+            ], 503);
+        }
+
+        $validated = $request->validate([
+            // Rango alineado con quickActionWindows() y con la lógica de
+            // `days_back` setting (que admite 1-14 por default). El admin
+            // puede setear ventanas de 15d/30d/60d/90d vía Botones rápidos
+            // del header, así que dejamos max más alto aquí.
+            'days' => 'nullable|integer|min:1|max:90',
+            'sample' => 'nullable|integer|min:10|max:1000',
+            'insert' => 'nullable|boolean',
+        ]);
+
+        $days = $validated['days'] ?? $settings->int('days_back');
+        $sample = $validated['sample'] ?? $settings->int('sample_size');
+        $insert = (bool) ($validated['insert'] ?? false);
+
+        try {
+            if ($insert) {
+                $admin = $this->adminUser();
+                $result = $service->aiSuggestEnEsMix($days, $sample, $admin);
+                return response()->json([
+                    'inserted' => true,
+                    'mined' => $result['mined'],
+                    'inserted_count' => $result['inserted'],
+                    'skipped_duplicate' => $result['skipped_duplicate'],
+                    'rejected_by_filter' => $result['rejected_by_filter'],
+                    'segments_processed' => $result['segments_processed'],
+                    'cached_today' => $result['cached_today'],
+                    'source' => $result['source'],
+                ]);
+            }
+
+            // Dry-run path: solo retorna candidatos sin insertar.
+            $suggester = new \App\Services\Ia\LlmCorrectionSuggester();
+            $result = $suggester->suggest($days, $sample);
+
+            if (isset($result['error'])) {
+                return response()->json([
+                    'inserted' => false,
+                    'error' => $result['error'],
+                ], 502);
+            }
+
+            return response()->json([
+                'inserted' => false,
+                'candidates' => $result['candidates'],
+                'rejected_by_filter' => $result['rejected_by_filter'],
+                'segments_processed' => $result['segments_processed'],
+                'cached_today' => $result['cached_today'],
+                'source' => $result['source'],
+            ]);
+        } catch (\Throwable $e) {
+            // Diagnóstico estructurado por tipo de fallo:
+            //   - 401/403 → 503 Service Unavailable: auth/credits son problema del
+            //     setup local (key rota, sin saldo, modelo no disponible en la cuenta).
+            //     NO es culpa del gateway como tal.
+            //   - 5xx / timeout / parse → 502 Bad Gateway: el upstream falló.
+            //   - Otros → 500: bug local.
+            $msg = $e->getMessage();
+            $httpCode = null;
+            if (preg_match('/LLM HTTP (\d{3}):/', $msg, $m)) {
+                $httpCode = (int) $m[1];
+            }
+
+            if ($httpCode === 401 || $httpCode === 403) {
+                $status = 503;
+                $userMsg = 'El gateway rechazó la autenticación o el modelo requiere créditos.';
+                $hint = match (true) {
+                    str_contains($msg, 'PAID_MODEL_AUTH_REQUIRED') => 'La cuenta no tiene créditos o el modelo MiniMax MiniMax requiere plan pago. Probá un modelo :free o agregá saldo en app.kilo.ai.',
+                    str_contains($msg, 'Invalid API Key') || str_contains($msg, 'Invalid api_key') => 'API key inválida. Verificá en app.kilo.ai → Settings → API Keys.',
+                    str_contains($msg, 'Forbidden') => 'Acceso denegado. ¿La organización tiene allow-list para ese modelo?',
+                    default => 'Revisá tu API key y los créditos de la cuenta.',
+                };
+            } elseif ($httpCode !== null && $httpCode >= 500) {
+                $status = 502;
+                $userMsg = 'El gateway de Kilo tuvo un error interno.';
+                $hint = 'Reintentá en unos minutos. Si persiste, abrí un ticket en kilo.ai.';
+            } elseif (str_contains($msg, 'LLM HTTP 408') || str_contains($msg, 'timeout') || str_contains($msg, 'cURL error 28')) {
+                $status = 504;
+                $userMsg = 'Timeout al llamar al gateway.';
+                $hint = 'Subí el timeout en AI Settings o reintentá más tarde.';
+            } else {
+                $status = 500;
+                $userMsg = 'Error inesperado.';
+                $hint = '';
+            }
+
+            return response()->json([
+                'inserted' => false,
+                'error' => $userMsg,
+                'hint' => $hint,
+                'detail' => $msg,
+                'http_code' => $httpCode,
+            ], $status);
+        }
+    }
+
+    /**
+     * Inserta candidatos YA previsualizados sin volver a llamar al LLM.
+     *
+     * Diseñado para el flujo "Insertar como pendiente" del modal del AI
+     * Suggest: el admin corre el suggester en modo preview (5-30s con
+     * LLM), ve la tabla de candidatos, hace click en "Insertar" y este
+     * endpoint persiste los candidatos en O(milisegundos) usando SOLO
+     * la BD — sin re-llamar al LLM ni samplear transcripciones.
+     *
+     * Body JSON:
+     *   candidates: [{wrong: string, correct: string}, ...]
+     *   source: string (opcional; default 'ai-suggest-YYYY-MM-DD')
+     *
+     * Path: POST /ia/correcciones/ai-suggest-save
+     *
+     * Respuesta:
+     *   inserted, skipped_duplicate, skipped_empty, source
+     */
+    public function aiSuggestSave(Request $request, CorrectionService $service, \App\Services\Ia\LlmCorrectionSettings $settings)
+    {
+        if (!$settings->bool('enabled')) {
+            return response()->json([
+                'error' => 'Suggest deshabilitado desde Configuración / IA Suggest.',
+                'hint' => 'Activa el toggle "Habilitado" en el tab IA Suggest.',
+            ], 503);
+        }
+
+        $request->validate([
+            'candidates' => 'required|array|min:1|max:500',
+            'candidates.*.wrong' => 'required|string|max:500',
+            'candidates.*.correct' => 'required|string|max:1000',
+            'source' => 'nullable|string|max:120',
+        ]);
+
+        $candidates = $request->input('candidates', []);
+        $source = $request->input('source', 'ai-suggest-' . now()->toDateString());
+
+        try {
+            $admin = $this->adminUser();
+            $result = $service->saveAiSuggestedCandidates($candidates, $source, $admin);
+
+            return response()->json([
+                'inserted' => true,
+                'inserted_count' => $result['inserted'],
+                'skipped_duplicate' => $result['skipped_duplicate'],
+                'skipped_empty' => $result['skipped_empty'],
+                'source' => $result['source'],
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'inserted' => false,
+                'error' => 'No se pudieron guardar los candidatos previsualizados.',
+                'detail' => $e->getMessage(),
+            ], 500);
+        }
     }
 }

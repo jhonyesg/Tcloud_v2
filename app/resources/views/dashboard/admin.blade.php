@@ -4,9 +4,28 @@
 
 @section('content')
 <div class="p-6">
-    <div class="mb-6">
-        <h1 class="text-2xl font-bold text-slate-800">Panel de Administración</h1>
-        <p class="text-slate-500 mt-0.5">Resumen del sistema y estadísticas</p>
+    <div class="mb-6 flex items-center justify-between flex-wrap gap-3">
+        <div>
+            <h1 class="text-2xl font-bold text-slate-800">Panel de Administración</h1>
+            <p class="text-slate-500 mt-0.5">Resumen del sistema y estadísticas</p>
+            @php
+                $statsFresh = $dashboardFreshness['stats'] ?? null;
+                $statsAt = $statsFresh['generated_at'] ?? null;
+            @endphp
+            @if($statsAt)
+                <p class="text-xs text-slate-400 mt-1 flex items-center gap-1.5" title="Los totales se recalculan cada {{ (int) config('dashboard.cold_ttl') / 60 }} min">
+                    <i class="fas fa-clock text-[10px]"></i>
+                    <span>Datos actualizados {{ \Illuminate\Support\Carbon::parse($statsAt)->diffForHumans(['short' => true, 'syntax' => \Carbon\CarbonInterface::DIFF_RELATIVE_TO_NOW]) }}</span>
+                    @if($statsFresh['stale'] ?? false)
+                        <span class="text-amber-600 font-medium">· revalidando…</span>
+                    @endif
+                </p>
+            @endif
+        </div>
+        <button onclick="startAdminDashboardTour()" class="flex items-center gap-2 bg-purple-600 hover:bg-purple-700 text-white px-3 py-2 rounded text-sm transition-colors" title="Guía interactiva">
+            <i class="fas fa-map-marked-alt"></i>
+            <span class="hidden sm:inline">Guía</span>
+        </button>
     </div>
 
     <!-- Stats row -->
@@ -62,7 +81,7 @@
         <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-5 hover:shadow-md transition-shadow">
             <div class="flex items-center justify-between">
                 <div>
-                    <p class="text-sm text-slate-500">Total Shares</p>
+                        <p class="text-sm text-slate-500">Total enlaces</p>
                     <p class="text-3xl font-bold text-slate-800 mt-1">{{ $stats['total_shares'] }}</p>
                 </div>
                 <div class="w-12 h-12 bg-brand-100 rounded-xl flex items-center justify-center">
@@ -70,7 +89,7 @@
                 </div>
             </div>
             <div class="mt-4 flex items-center text-sm text-slate-400">
-                <i class="fas fa-external-link-alt mr-1 text-brand-300 text-xs"></i> Enlaces activos
+                        <i class="fas fa-external-link-alt mr-1 text-brand-300 text-xs"></i> {{ $stats['active_shares'] ?? $stats['total_shares'] }} activos de {{ $stats['total_shares'] }}
             </div>
         </div>
     </div>
@@ -129,6 +148,30 @@
                     @else
                         <div class="w-full bg-slate-100 rounded-full h-2"></div>
                         <p class="text-xs text-red-400 mt-1">Verificar que tmpfs esté montado en /mnt/cliptemp</p>
+                    @endif
+                </div>
+                <div>
+                    <div class="flex justify-between text-sm mb-2">
+                        <div class="flex items-center gap-1.5">
+                            <i class="fas fa-microchip text-rose-500 text-xs"></i>
+                            <span class="text-slate-600">SHM Transcripción</span>
+                            <span class="text-xs text-slate-400">/dev/shm</span>
+                        </div>
+                        @if($shm['available'])
+                            <span class="font-medium text-slate-800">{{ $shm['used_gb'] }} <span class="font-normal text-slate-400">/ {{ $shm['total_gb'] }} GB</span></span>
+                        @else
+                            <span class="text-xs text-red-500">No montado</span>
+                        @endif
+                    </div>
+                    @if($shm['available'])
+                        <div class="w-full bg-slate-100 rounded-full h-2">
+                            <div class="h-2 rounded-full transition-all"
+                                 style="width: {{ max($shm['percent'], 0.5) }}%; background-color: {{ $shm['percent'] >= 90 ? '#ef4444' : ($shm['percent'] >= 70 ? '#f59e0b' : '#10b981') }}"></div>
+                        </div>
+                        <p class="text-xs text-slate-400 mt-1">{{ $shm['percent'] }}% usado · {{ $shm['free_gb'] }} GB libres</p>
+                    @else
+                        <div class="w-full bg-slate-100 rounded-full h-2"></div>
+                        <p class="text-xs text-red-400 mt-1">Verificar que tmpfs esté montado en /dev/shm</p>
                     @endif
                 </div>
             </div>
@@ -190,6 +233,29 @@
         </div>
     </div>
 
+    <!-- Módulos inteligentes -->
+    <div class="mt-6">
+        <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
+            <div class="flex items-center justify-between mb-5">
+                <div class="flex items-center gap-3">
+                    <div class="w-9 h-9 bg-indigo-100 rounded-lg flex items-center justify-center">
+                        <i class="fas fa-microchip text-indigo-600 text-sm"></i>
+                    </div>
+                    <div>
+                        <h3 class="text-lg font-semibold text-slate-800">Módulos Inteligentes</h3>
+                        <p class="text-xs text-slate-400">Estado agregado de los módulos IA / Editor del sistema</p>
+                    </div>
+                </div>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                @include('dashboard.partials._media-editor', ['context' => 'admin', 'data' => $dashboardData['media_editor']])
+                @include('dashboard.partials._mis-avisos', ['context' => 'admin', 'data' => $dashboardData['mis_avisos']])
+                @include('dashboard.partials._bg-jobs-active', ['context' => 'admin', 'data' => $dashboardData['bg_jobs']])
+                @include('dashboard.partials._active-sessions', ['context' => 'admin', 'data' => $dashboardData['active_sessions']])
+            </div>
+        </div>
+    </div>
+
     <!-- System info -->
     <div class="mt-6 bg-white rounded-xl shadow-sm border border-slate-200 p-6">
         <h3 class="text-lg font-semibold text-slate-800 mb-4">Información del Sistema</h3>
@@ -217,4 +283,222 @@
     </div>
 
 </div>
+
+<script src="/js/interactive-tour.js?v=20"></script>
+<script>
+function startAdminDashboardTour() {
+    function scrollTo(selector) {
+        var el = typeof selector === 'string' ? document.querySelector(selector) : selector;
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+        return el;
+    }
+
+    function getStatsCard(label) {
+        var cards = document.querySelectorAll('.grid.grid-cols-1.md\\:grid-cols-2.lg\\:grid-cols-4 > div');
+        for (var i = 0; i < cards.length; i++) {
+            var p = cards[i].querySelector('p.text-sm.text-slate-500');
+            if (p && p.textContent.trim().toLowerCase().indexOf(label.toLowerCase()) !== -1) return cards[i];
+        }
+        return null;
+    }
+
+    TcloudTour.start({
+        steps: [
+            {
+                title: 'Panel de Administración',
+                content: 'Esta es la vista principal del sistema. Aquí ves <strong>métricas globales</strong> del sistema, ' +
+                         '<strong>estadísticas de uso</strong>, acceso rápido a las funciones administrativas más usadas, ' +
+                         'y la sección de <strong>instructivos</strong> con la documentación oficial.',
+                icon: 'fa-tachometer-alt',
+                color: '#6366f1',
+                selector: null,
+                position: 'center'
+            },
+            {
+                title: 'Total Usuarios',
+                content: 'Cantidad total de usuarios registrados en la plataforma. ' +
+                         'La flecha verde indica crecimiento vs el mes anterior.',
+                icon: 'fa-users',
+                color: '#6366f1',
+                selector: function () { return getStatsCard('Total Usuarios'); },
+                position: 'bottom',
+                onShow: function () {
+                    var c = getStatsCard('Total Usuarios');
+                    if (c) scrollTo(c);
+                }
+            },
+            {
+                title: 'Total Storages',
+                content: 'Cantidad de <strong>storages</strong> (backends de almacenamiento) configurados. ' +
+                         'Si todos están activos, se muestra el mensaje "Todos activos".',
+                icon: 'fa-database',
+                color: '#16a34a',
+                selector: function () { return getStatsCard('Total Storages'); },
+                position: 'bottom',
+                onShow: function () {
+                    var c = getStatsCard('Total Storages');
+                    if (c) scrollTo(c);
+                }
+            },
+            {
+                title: 'Total Archivos',
+                content: 'Cantidad de archivos almacenados en todos los storages. ' +
+                         'Debajo se muestra el espacio total usado en MB.',
+                icon: 'fa-file',
+                color: '#f59e0b',
+                selector: function () { return getStatsCard('Total Archivos'); },
+                position: 'bottom',
+                onShow: function () {
+                    var c = getStatsCard('Total Archivos');
+                    if (c) scrollTo(c);
+                }
+            },
+            {
+                title: 'Total Shares',
+                content: 'Cantidad de <strong>enlaces públicos</strong> activos generados por los usuarios para compartir archivos.',
+                icon: 'fa-link',
+                color: '#6366f1',
+                selector: function () { return getStatsCard('Total Shares'); },
+                position: 'bottom',
+                onShow: function () {
+                    var c = getStatsCard('Total Shares');
+                    if (c) scrollTo(c);
+                }
+            },
+            {
+                title: 'Estadísticas de Uso',
+                content: 'Barras de progreso con indicadores visuales: ' +
+                         '<strong>Usuarios Activos</strong>, <strong>Almacenamiento Utilizado</strong>, ' +
+                         '<strong>Enlaces Compartidos</strong>, el <strong>RAM Disk FFmpeg</strong> (memoria tmpfs para clips) ' +
+                         'y el <strong>SHM Transcripción</strong> (memoria tmpfs para WAVs de transcripción). ' +
+                         'Los colores cambian según el porcentaje para identificar alertas rápidamente.',
+                icon: 'fa-chart-bar',
+                color: '#3b82f6',
+                selector: 'h3.text-lg.font-semibold',
+                position: 'bottom',
+                onShow: function () {
+                    var h = document.querySelector('h3.text-lg.font-semibold');
+                    if (h) scrollTo(h);
+                }
+            },
+            {
+                title: 'RAM Disk FFmpeg',
+                content: 'Monitor del disco temporal en memoria (<code>/mnt/cliptemp</code>) usado por FFmpeg para procesar clips. ' +
+                         'Si supera el 90% los nuevos cortes pueden fallar. ' +
+                         'Si aparece "No montado", el sistema de clips está fuera de servicio.',
+                icon: 'fa-memory',
+                color: '#06b6d4',
+                selector: function () {
+                    var labels = document.querySelectorAll('span.text-slate-600');
+                    for (var i = 0; i < labels.length; i++) {
+                        if (labels[i].textContent.indexOf('RAM Disk FFmpeg') !== -1) {
+                            return labels[i].closest('div') || labels[i];
+                        }
+                    }
+                    return null;
+                },
+                position: 'bottom',
+                onShow: function () {
+                    var labels = document.querySelectorAll('span.text-slate-600');
+                    for (var i = 0; i < labels.length; i++) {
+                        if (labels[i].textContent.indexOf('RAM Disk FFmpeg') !== -1) {
+                            var container = labels[i].closest('div.w-full.bg-slate-50') || labels[i].closest('div.bg-white') || labels[i].parentElement;
+                            if (container) scrollTo(container);
+                            return;
+                        }
+                    }
+                }
+            },
+            {
+                title: 'SHM Transcripción',
+                content: 'Monitor del disco temporal en memoria (<code>/dev/shm</code>) usado por FFmpeg para generar los WAV temporales durante la transcripción. ' +
+                         'Si llega al 100% los workers de transcripción se bloquean. ' +
+                         'Es el indicador más crítico: si aparece en rojo, la cola de transcripción se detiene.',
+                icon: 'fa-microchip',
+                color: '#f43f5e',
+                selector: function () {
+                    var labels = document.querySelectorAll('span.text-slate-600');
+                    for (var i = 0; i < labels.length; i++) {
+                        if (labels[i].textContent.indexOf('SHM Transcripción') !== -1) {
+                            return labels[i].closest('div') || labels[i];
+                        }
+                    }
+                    return null;
+                },
+                position: 'bottom',
+                onShow: function () {
+                    var labels = document.querySelectorAll('span.text-slate-600');
+                    for (var i = 0; i < labels.length; i++) {
+                        if (labels[i].textContent.indexOf('SHM Transcripción') !== -1) {
+                            var container = labels[i].closest('div.w-full.bg-slate-50') || labels[i].closest('div.bg-white') || labels[i].parentElement;
+                            if (container) scrollTo(container);
+                            return;
+                        }
+                    }
+                }
+            },
+            {
+                title: 'Acciones Rápidas',
+                content: 'Atajos a las funciones más usadas: ' +
+                         '<strong>Nuevo Usuario</strong> (admin/users), <strong>Nuevo Storage</strong> (admin/storages) y ' +
+                         '<strong>Subir Archivos</strong> (mi storage personal). Útiles para ahorrar tiempo.',
+                icon: 'fa-bolt',
+                color: '#475569',
+                selector: 'h3.text-lg.font-semibold:nth-of-type(2)',
+                position: 'left',
+                onShow: function () {
+                    var h3s = document.querySelectorAll('h3.text-lg.font-semibold');
+                    if (h3s.length >= 2) scrollTo(h3s[1]);
+                }
+            },
+            {
+                title: 'Instructivos (PDF)',
+                content: 'Documentación oficial en PDF con manuales de uso. ' +
+                         'Haz clic en cualquier PDF para abrirlo en una nueva pestaña. ' +
+                         'Esta sección se irá actualizando conforme evolucione la plataforma.',
+                icon: 'fa-book-open',
+                color: '#dc2626',
+                selector: function () {
+                    var btn = document.querySelector('button[onclick*="openInstructivo"]');
+                    return btn || null;
+                },
+                position: 'left',
+                onShow: function () {
+                    var btn = document.querySelector('button[onclick*="openInstructivo"]');
+                    if (btn) scrollTo(btn);
+                }
+            },
+            {
+                title: 'Información del Sistema',
+                content: 'Datos técnicos del entorno: <strong>Versión Laravel</strong>, <strong>PHP Version</strong>, ' +
+                         '<strong>Base de Datos</strong> (PostgreSQL) y el <strong>Estado</strong> actual del sistema. ' +
+                         'El punto verde "Operativo" indica que todos los servicios están funcionando.',
+                icon: 'fa-server',
+                color: '#64748b',
+                selector: 'h3:has-text("Información del Sistema")',
+                position: 'top',
+                onShow: function () {
+                    var h3s = document.querySelectorAll('h3.text-lg.font-semibold');
+                    for (var i = 0; i < h3s.length; i++) {
+                        if (h3s[i].textContent.indexOf('Información del Sistema') !== -1) {
+                            scrollTo(h3s[i]);
+                            return;
+                        }
+                    }
+                }
+            },
+            {
+                title: 'Guía Completada',
+                content: 'Conoces el Panel de Administración y todas sus secciones. ' +
+                         'Desde aquí accedes a la gestión de usuarios, storages, archivos compartidos y la salud del sistema. ' +
+                         'Repite esta guía cuando quieras con el botón morado.',
+                icon: 'fa-check-circle',
+                color: '#16a34a',
+                selector: null,
+                position: 'center'
+            }
+        ]
+    });
+}
+</script>
 @endsection

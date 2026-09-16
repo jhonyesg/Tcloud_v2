@@ -185,6 +185,10 @@
             <p class="text-xs sm:text-sm text-slate-500 mt-1">Estado y estadísticas del servidor Redis</p>
         </div>
         <div class="flex items-center gap-1.5 sm:gap-2 flex-shrink-0">
+            <button onclick="startRedisTour()" class="flex items-center gap-1.5 px-2.5 sm:px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-sm font-medium transition-colors" title="Guía interactiva">
+                <i class="fas fa-map-marked-alt"></i>
+                <span class="hidden sm:inline">Guía</span>
+            </button>
             <button @click="showInfoModal = true"
                     class="flex items-center gap-1.5 px-2.5 sm:px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl text-sm font-medium transition-colors">
                 <i class="fas fa-info-circle"></i>
@@ -397,4 +401,46 @@
         </div>
     </div>
 </div>
+
+<script src="/js/interactive-tour.js?v=20"></script>
+<script>
+function startRedisTour() {
+    TcloudTour.start({
+        steps: [
+            {
+                title: 'Monitor Redis',
+                content: 'Redis es el backend en memoria que Tcloud usa para sesiones de usuario, cache de la aplicación y control de sesiones activas. Este panel te permite monitorear su estado y realizar tareas de mantenimiento.',
+                icon: 'fa-bolt',
+                color: '#6366f1',
+                selector: null,
+                position: 'center'
+            },
+            {
+                title: 'Estado de Conexión',
+                content: 'Muestra si Redis está conectado, la versión del servidor y el tiempo de actividad (uptime). Si aparece en rojo, verifica que el servicio esté corriendo.',
+                icon: 'fa-check-circle',
+                color: '#3b82f6',
+                selector: '.bg-white.rounded-2xl.border.shadow-sm.p-6',
+                position: 'bottom'
+            },
+            {
+                title: 'Estadísticas Clave',
+                content: 'Memoria usada vs máximo configurado, clientes conectados, cantidad de sesiones en Redis y sesiones en base de datos. Un desfase entre Redis y BD indica sesiones huérfanas.',
+                icon: 'fa-chart-bar',
+                color: '#2563eb',
+                selector: '.grid.grid-cols-1.sm\\:grid-cols-2.lg\\:grid-cols-4',
+                position: 'bottom'
+            },
+            {
+                title: 'Mantenimiento',
+                content: '<strong>Limpiar expiradas</strong>: elimina registros de BD cuya fecha de expiración ya pasó. <strong>Limpiar huérfanas</strong>: borra registros de BD que ya no tienen clave en Redis.',
+                icon: 'fa-broom',
+                color: '#4654a8',
+                selector: '.bg-white.rounded-2xl.border.shadow-sm.p-6:last-of-type',
+                position: 'bottom'
+            }
+        ]
+    });
+}
+</script>
 @endsection

@@ -6,6 +6,10 @@
 <div class="p-3 sm:p-6 pb-24 sm:pb-8" x-data="correoData()" x-init="init()">
     <div class="flex justify-between items-center mb-4 sm:mb-6">
         <h1 class="text-lg sm:text-2xl font-bold text-gray-800">Configuración de Correo</h1>
+        <button onclick="startCorreoTour()" class="flex items-center gap-2 bg-purple-600 hover:bg-purple-700 text-white px-3 py-2 rounded text-sm transition-colors" title="Guía interactiva">
+            <i class="fas fa-map-marked-alt"></i>
+            <span class="hidden sm:inline">Guía</span>
+        </button>
     </div>
 
     <div class="bg-white rounded-lg shadow">
@@ -99,7 +103,10 @@
                     <div class="sm:hidden space-y-3">
                         <template x-for="plantilla in plantillas" :key="plantilla.id">
                             <div class="bg-gray-50 border border-gray-200 rounded-xl p-4">
-                                <p class="font-semibold text-gray-800 text-sm" x-text="plantilla.display_name"></p>
+                                <div class="flex items-center justify-between">
+                                    <p class="font-semibold text-gray-800 text-sm" x-text="plantilla.display_name"></p>
+                                    <span x-show="plantilla.body_html?.includes('<!DOCTYPE') || plantilla.body_html?.includes('<html')" class="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-purple-100 text-purple-700">HTML</span>
+                                </div>
                                 <p class="text-xs text-gray-500 mt-1" x-text="plantilla.subject"></p>
                                 <p x-show="plantilla.variables" class="text-xs text-gray-400 mt-1">
                                     <span class="font-medium text-gray-500">Variables:</span>
@@ -107,6 +114,7 @@
                                 </p>
                                 <div class="flex gap-2 mt-3">
                                     <button @click="openPlantillaModal(plantilla)" class="flex-1 py-1.5 text-xs font-medium rounded-lg bg-blue-50 text-blue-700 active:bg-blue-100">Editar</button>
+                                    <button @click="openPreviewModal(plantilla)" class="flex-1 py-1.5 text-xs font-medium rounded-lg bg-purple-50 text-purple-700 active:bg-purple-100">Vista previa</button>
                                     <button @click="openTestModal(plantilla)" class="flex-1 py-1.5 text-xs font-medium rounded-lg bg-green-50 text-green-700 active:bg-green-100">Probar</button>
                                     <button @click="deletePlantilla(plantilla)" class="flex-1 py-1.5 text-xs font-medium rounded-lg bg-red-50 text-red-600 active:bg-red-100">Eliminar</button>
                                 </div>
@@ -128,12 +136,18 @@
                         <tbody>
                             <template x-for="plantilla in plantillas" :key="plantilla.id">
                                 <tr class="border-b border-gray-100 hover:bg-gray-50">
-                                    <td class="py-3 px-4 text-sm text-gray-800" x-text="plantilla.display_name"></td>
+                                    <td class="py-3 px-4 text-sm text-gray-800">
+                                        <div class="flex items-center gap-2">
+                                            <span x-text="plantilla.display_name"></span>
+                                            <span x-show="plantilla.body_html?.includes('<!DOCTYPE') || plantilla.body_html?.includes('<html')" class="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-purple-100 text-purple-700">HTML</span>
+                                        </div>
+                                    </td>
                                     <td class="py-3 px-4 text-sm text-gray-800" x-text="plantilla.subject"></td>
                                     <td class="py-3 px-4 text-sm text-gray-500" x-text="plantilla.variables || '-'"></td>
                                     <td class="py-3 px-4">
                                         <div class="flex gap-3">
                                             <button @click="openPlantillaModal(plantilla)" class="text-blue-600 hover:text-blue-800 text-sm">Editar</button>
+                                            <button @click="openPreviewModal(plantilla)" class="text-purple-600 hover:text-purple-800 text-sm">Vista previa</button>
                                             <button @click="openTestModal(plantilla)" class="text-green-600 hover:text-green-800 text-sm">Probar</button>
                                             <button @click="deletePlantilla(plantilla)" class="text-red-600 hover:text-red-800 text-sm">Eliminar</button>
                                         </div>
@@ -229,8 +243,27 @@
                     <p x-show="plantillaModal.errors.subject" class="text-red-500 text-xs mt-1" x-text="plantillaModal.errors.subject"></p>
                 </div>
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Contenido HTML <span class="text-red-500">*</span></label>
-                    <textarea x-model="plantillaModal.data.body_html" rows="8" class="w-full border rounded px-3 py-2 font-mono text-sm" :class="{'border-red-500': plantillaModal.errors.body_html}" placeholder="<h1>Hola {{ '{' . '{nombre}' . '}' }}</h1>"></textarea>
+                    <div class="flex items-center justify-between mb-1">
+                        <label class="block text-sm font-medium text-gray-700">Contenido HTML <span class="text-red-500">*</span></label>
+                        <div class="flex gap-2">
+                            <button type="button" @click="plantillaModal.showPreview = !plantillaModal.showPreview" class="text-xs px-2 py-1 rounded border bg-gray-50 hover:bg-gray-100 text-gray-700">
+                                <span x-text="plantillaModal.showPreview ? 'Ocultar vista previa' : 'Ver vista previa'"></span>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-1 gap-3" :class="plantillaModal.showPreview ? 'lg:grid-cols-2' : ''">
+                        <textarea x-model="plantillaModal.data.body_html" rows="10" class="w-full border rounded px-3 py-2 font-mono text-sm" :class="{'border-red-500': plantillaModal.errors.body_html}" placeholder="<h1>Hola {{ '{' . '{nombre}' . '}' }}</h1>"></textarea>
+                        <template x-if="plantillaModal.showPreview">
+                            <div class="border rounded bg-white overflow-hidden flex flex-col">
+                                <div class="bg-gray-50 px-3 py-2 border-b text-xs font-medium text-gray-500 flex items-center gap-2">
+                                    <span class="w-2 h-2 rounded-full bg-green-400"></span> Vista previa en vivo
+                                </div>
+                                <div class="flex-1 p-0 overflow-auto" style="max-height: 280px;">
+                                    <iframe class="w-full" style="min-height: 260px; border: none;" :srcdoc="plantillaModal.data.body_html || '<p style=\\'padding:20px;color:#9ca3af\\'>Escribe HTML para ver la vista previa...</p>'"></iframe>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
                     <p x-show="plantillaModal.errors.body_html" class="text-red-500 text-xs mt-1" x-text="plantillaModal.errors.body_html"></p>
                 </div>
                 <div>
@@ -287,7 +320,9 @@
                     <p class="text-xs font-semibold text-gray-500 uppercase mb-1">Asunto</p>
                     <p class="text-sm text-gray-800 mb-3" x-text="testModal.previewResult?.subject"></p>
                     <p class="text-xs font-semibold text-gray-500 uppercase mb-1">Contenido HTML renderizado</p>
-                    <div class="border rounded bg-white p-3 text-sm" x-html="testModal.previewResult?.body"></div>
+                    <div class="border rounded bg-white overflow-hidden">
+                        <iframe class="w-full" style="min-height: 320px; border: none;" :srcdoc="testModal.previewResult?.body"></iframe>
+                    </div>
                     <p class="text-xs font-semibold text-gray-500 uppercase mb-1 mt-3">Código HTML</p>
                     <pre class="bg-gray-800 text-green-400 text-xs p-3 rounded overflow-x-auto" x-text="testModal.previewResult?.body"></pre>
                 </div>
@@ -297,6 +332,34 @@
             </div>
             <div class="flex justify-end gap-3 p-4 border-t">
                 <button @click="closeTestModal()" class="px-4 py-2 border rounded hover:bg-gray-50 text-sm">Cerrar</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal Vista Previa Visual -->
+    <div x-cloak x-show="previewModal.open" x-transition class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" style="display: none;">
+        <div class="bg-white rounded-lg shadow-lg w-full max-w-4xl mx-4 max-h-[90vh] overflow-y-auto" @click.away="closePreviewModal()">
+            <div class="flex justify-between items-center p-4 border-b">
+                <h3 class="text-lg font-semibold" x-text="'Vista previa: ' + (previewModal.plantilla?.display_name || '')"></h3>
+                <button @click="closePreviewModal()" class="text-gray-500 hover:text-gray-700 text-xl">&times;</button>
+            </div>
+            <div class="p-4 space-y-3">
+                <div x-show="previewModal.loading" class="text-center py-8 text-gray-500">
+                    <p>Generando vista previa...</p>
+                </div>
+                <template x-if="!previewModal.loading && previewModal.result">
+                    <div>
+                        <p class="text-xs font-semibold text-gray-500 uppercase mb-1">Asunto</p>
+                        <p class="text-sm text-gray-800 mb-3 border rounded px-3 py-2 bg-gray-50" x-text="previewModal.result?.subject"></p>
+                        <p class="text-xs font-semibold text-gray-500 uppercase mb-1">Renderizado</p>
+                        <div class="border rounded bg-white overflow-hidden">
+                            <iframe class="w-full" style="min-height: 400px; border: none;" :srcdoc="previewModal.result?.body"></iframe>
+                        </div>
+                    </div>
+                </template>
+            </div>
+            <div class="flex justify-end gap-3 p-4 border-t">
+                <button @click="closePreviewModal()" class="px-4 py-2 border rounded hover:bg-gray-50 text-sm">Cerrar</button>
             </div>
         </div>
     </div>
@@ -348,6 +411,7 @@ function correoData() {
             isEdit: false,
             saving: false,
             errors: {},
+            showPreview: true,
             data: { name: '', display_name: '', subject: '', body_html: '', variables: '' }
         },
         confirmDelete: {
@@ -363,6 +427,12 @@ function correoData() {
             previewLoading: false,
             sending: false,
             previewResult: null,
+            result: null
+        },
+        previewModal: {
+            open: false,
+            plantilla: null,
+            loading: false,
             result: null
         },
 
@@ -483,6 +553,7 @@ function correoData() {
             this.plantillaModal.open = false;
             this.plantillaModal.data = { name: '', display_name: '', subject: '', body_html: '', variables: '' };
             this.plantillaModal.errors = {};
+            this.plantillaModal.showPreview = true;
         },
         
         validatePlantilla() {
@@ -571,6 +642,35 @@ function correoData() {
             this.testModal.result = null;
         },
 
+        openPreviewModal(plantilla) {
+            this.previewModal.plantilla = plantilla;
+            this.previewModal.result = null;
+            this.previewModal.loading = true;
+            this.previewModal.open = true;
+            apiFetch(`/admin/correo/plantillas/${plantilla.id}/preview`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ variables: {} })
+            }).then(async res => {
+                const data = await res.json();
+                if (res.ok) {
+                    this.previewModal.result = data.data;
+                } else {
+                    this.previewModal.result = { subject: 'Error', body: '<p class="p-4 text-red-600">' + (data.message || 'No se pudo generar la vista previa') + '</p>' };
+                }
+            }).catch(e => {
+                this.previewModal.result = { subject: 'Error', body: '<p class="p-4 text-red-600">Error: ' + e.message + '</p>' };
+            }).finally(() => {
+                this.previewModal.loading = false;
+            });
+        },
+
+        closePreviewModal() {
+            this.previewModal.open = false;
+            this.previewModal.plantilla = null;
+            this.previewModal.result = null;
+        },
+
         async previewPlantilla() {
             if (!this.testModal.plantilla) return;
             this.testModal.previewLoading = true;
@@ -614,6 +714,77 @@ function correoData() {
             this.testModal.sending = false;
         }
     }
+}
+</script>
+<script src="/js/interactive-tour.js?v=20"></script>
+<script>
+function startCorreoTour() {
+    const alpine = document.querySelector('[x-data]')?._x_dataStack?.[0];
+
+    TcloudTour.start({
+        steps: [
+            {
+                title: 'Configuración de Correo',
+                content: 'Desde aquí configuras el servidor SMTP para enviar notificaciones, administras plantillas de correo y revisas el historial de envíos. Todo en tres pestañas.',
+                icon: 'fa-envelope',
+                color: '#6366f1',
+                selector: null,
+                position: 'center'
+            },
+            {
+                title: 'Pestañas',
+                content: '<strong>Configuración SMTP</strong>: datos del servidor de correo. <strong>Plantillas</strong>: mensajes personalizables. <strong>Log de Correos</strong>: historial de envíos.',
+                icon: 'fa-folder-open',
+                color: '#3b82f6',
+                selector: 'nav.flex',
+                position: 'bottom'
+            },
+            {
+                title: 'SMTP',
+                content: 'Configura el host, puerto, usuario, contraseña y remitente. Activa SSL/TLS si tu servidor lo requiere. Guarda y prueba la conexión antes de salir.',
+                icon: 'fa-server',
+                color: '#2563eb',
+                selector: '.grid.grid-cols-1.sm\\:grid-cols-2',
+                position: 'bottom',
+                onShow: function () {
+                    if (alpine) alpine.setTab('config');
+                }
+            },
+            {
+                title: 'Probar Conexión',
+                content: 'Este botón envía un correo de prueba para verificar que la configuración SMTP sea correcta. Si falla, revisa credenciales y firewall.',
+                icon: 'fa-vial',
+                color: '#16a34a',
+                selector: 'button[disabled]:not([disabled]) + button, button.bg-green-600',
+                position: 'left',
+                onShow: function () {
+                    if (alpine) alpine.setTab('config');
+                }
+            },
+            {
+                title: 'Plantillas',
+                content: 'Lista de plantillas de correo con variables dinámicas (ej: @{{name}}, @{{url}}). Puedes editar, eliminar, previsualizar y enviar una prueba.',
+                icon: 'fa-file-alt',
+                color: '#4654a8',
+                selector: 'table',
+                position: 'bottom',
+                onShow: function () {
+                    if (alpine) alpine.setTab('plantillas');
+                }
+            },
+            {
+                title: 'Log de Correos',
+                content: 'Historial completo de correos enviados: destinatario, asunto, estado (enviado/fallido) y fecha. Útil para diagnosticar problemas de entrega.',
+                icon: 'fa-history',
+                color: '#7c3aed',
+                selector: 'table',
+                position: 'bottom',
+                onShow: function () {
+                    if (alpine) alpine.setTab('logs');
+                }
+            }
+        ]
+    });
 }
 </script>
 @endpush

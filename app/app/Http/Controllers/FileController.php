@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\File;
 use App\Models\User;
 use App\Models\StorageProvider;
+use App\Services\Ia\MentionsSearchService;
 use App\Services\StorageSyncService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -81,8 +82,29 @@ class FileController extends Controller
                     });
                 }
 
-                $files = $query->orderBy('is_folder', 'desc')->orderBy('created_at', 'desc')->limit(500)->get();
-                return response()->json($files);
+                $files = $query
+                    ->addSelect([
+                        'transcription_id' => DB::table('transcriptions')
+                            ->select('id')
+                            ->whereColumn('file_id', 'files.id')
+                            ->where('state', 'done')
+                            ->limit(1),
+                    ])
+                    ->orderBy('is_folder', 'desc')->orderBy('created_at', 'desc')->limit(500)->get();
+
+                $payload = ['files' => $files];
+
+                if ($storageId !== null) {
+                    $sp = StorageProvider::find((int) $storageId);
+                    if ($sp) {
+                        $payload['storage_accessible'] = (bool) $sp->is_accessible;
+                        $payload['storage_kind'] = $sp->kind ?? 'local';
+                        $payload['storage_name'] = $sp->name;
+                        $payload['search_unreliable'] = !$sp->is_accessible;
+                    }
+                }
+
+                return response()->json($payload);
             }
 
             $parentId  = $request->has('parent_id')  ? (int) $request->parent_id  : null;
@@ -114,24 +136,65 @@ class FileController extends Controller
             if ($storageId !== null && $request->boolean('sync')) {
                 $storage = StorageProvider::find($storageId);
                 if ($storage && $storage->type === 'local') {
+                    // `prune=1` solo lo manda el boton Actualizar; el silentSync que
+                    // se dispara al navegar usa `sync=1` a secas y sigue bajo las
+                    // guardas heuristicas. Es decir: la purga forzada exige un clic
+                    // humano sobre una ruta concreta, nunca ocurre de fondo.
+                    //
+                    // Borrar filas es destructivo (transcriptions y shares cuelgan
+                    // de files con ON DELETE CASCADE), asi que se pide el mismo
+                    // nivel que para administrar el storage, no un simple 'read'.
+                    $forcePrune = $request->boolean('prune')
+                        && ($user->isAdmin() || $user->hasStoragePermission($storageId, 'full'));
+
                     $syncService = app(StorageSyncService::class);
-                    $files = $syncService->syncFolder($storage, $parentId, $user->id);
+                    $report = $syncService->syncFolderWithReport($storage, $parentId, $user->id, $forcePrune);
+                    $files = $report['files'];
                     $syncService->invalidateFolderCache($storageId, $parentId);
+
+                    // Enriquecer los archivos sincronizados con transcription_id para
+                    // que el botón "Ver transcripción" de Mis Archivos tenga el dato.
+                    // (change `mis-archivos-transcript-viewer`)
+                    if (count($files) > 0) {
+                        $fileIds = collect($files)->pluck('id')->all();
+                        $trMap = DB::table('transcriptions')
+                            ->select('file_id', 'id as transcription_id')
+                            ->whereIn('file_id', $fileIds)
+                            ->where('state', 'done')
+                            ->get()
+                            ->keyBy('file_id');
+                        foreach ($files as &$f) {
+                            $f['transcription_id'] = isset($trMap[$f['id']])
+                                ? (int) $trMap[$f['id']]->transcription_id
+                                : null;
+                        }
+                        unset($f);
+                    }
+
                     $pagination = ['page' => 1, 'per_page' => count($files), 'total' => count($files), 'has_more' => false];
-                    return response()->json(['files' => $files, 'breadcrumbs' => $breadcrumbs, 'pagination' => $pagination]);
+
+                    $payload = ['files' => $files, 'breadcrumbs' => $breadcrumbs, 'pagination' => $pagination];
+
+                    // Las estadisticas solo viajan al refresco explicito: es el
+                    // unico que las muestra, y silentSync no debe pagar el peso.
+                    if ($request->boolean('prune')) {
+                        $payload['stats'] = $report['stats'] + ['allowed_to_prune' => $forcePrune];
+                    }
+
+                    return response()->json($payload);
                 }
             }
 
-            // cache key includes a generation counter so invalidation is O(1)
-            $pid = $parentId ?? 'null';
-            $gen = Cache::get("folder_gen:{$storageId}:{$pid}", 0);
-            $cacheKey = "folder_listing:{$storageId}:{$pid}:{$gen}:{$page}";
-
-            if ($cached = Cache::get($cacheKey)) {
-                return response()->json($cached);
-            }
-
+            // Listado sin cache: cada request consulta BD directamente para que
+            // mutaciones (sync, upload, delete, restore) se vean al instante.
+            // El mutex anti-saturacion sigue en Cache::add('autoscan_attempted:...').
             $query = File::query();
+
+            // Papelera: el browser NO debe listar items trashed (parent_id=NULL
+            // + is_trashed=true). Defense in depth: ademas de la cache
+            // invalidation, la query misma filtra para que un eventual fallo
+            // de invalidacion no exponga items trashados como vivos.
+            $query->where('is_trashed', false);
 
             if ($parentId !== null) {
                 $query->where('parent_id', $parentId);
@@ -151,14 +214,48 @@ class FileController extends Controller
                 });
             }
 
-            $paginator = $query->orderBy('is_folder', 'desc')->orderBy('created_at', 'desc')->paginate($perPage, ['*'], 'page', $page);
+            $paginator = $query
+                ->addSelect([
+                    'transcription_id' => DB::table('transcriptions')
+                        ->select('id')
+                        ->whereColumn('file_id', 'files.id')
+                        ->where('state', 'done')
+                        ->limit(1),
+                ])
+                ->orderBy('is_folder', 'desc')->orderBy('created_at', 'desc')->paginate($perPage, ['*'], 'page', $page);
+
+            // Estado del storage activo para que el frontend muestre el banner
+            // "Disco no disponible" cuando el storage está caído. kind indica
+            // si es local o external (NFS/SMB) para colorear el banner.
+            $storageAccess = null;
+            if ($storageId !== null) {
+                $sp = StorageProvider::find($storageId);
+                if ($sp) {
+                    $storageAccess = [
+                        'storage_accessible' => (bool) $sp->is_accessible,
+                        'storage_kind' => $sp->kind ?? 'local',
+                        'storage_name' => $sp->name,
+                        'last_checked_at' => $sp->last_checked_at?->toIso8601String(),
+                    ];
+                }
+            }
 
             $isAutoScan = false;
 
             // auto-scan on first visit if folder is empty in DB (new folder, cron hasn't run yet)
+            //
+            // Este bloque fue el generador de duplicados de mayor volumen el
+            // 2026-07-27: tras un borrado masivo TODA carpeta queda vacia en BD,
+            // asi que cada carga de pagina de cada usuario disparaba un escaneo
+            // concurrente sobre la misma carpeta. Cache::add() es atomico, asi
+            // que solo la primera peticion de la ventana llega a intentarlo; el
+            // lock dentro de syncFolder() es la segunda barrera.
             if ($paginator->total() === 0 && $page === 1 && $storageId !== null) {
                 $storage = StorageProvider::find($storageId);
-                if ($storage && $storage->type === 'local') {
+                $backoff = (int) config('storage_sync.lock.autoscan_backoff', 60);
+                $attemptKey = "autoscan_attempted:{$storageId}:" . ($parentId ?? 'root');
+
+                if ($storage && $storage->type === 'local' && Cache::add($attemptKey, 1, $backoff)) {
                     $isAutoScan = true;
                     $syncService = app(StorageSyncService::class);
                     $files = $syncService->syncFolder($storage, $parentId, $user->id);
@@ -178,17 +275,18 @@ class FileController extends Controller
 
             $responseData = ['files' => $paginator->items(), 'breadcrumbs' => $breadcrumbs, 'pagination' => $pagination];
 
-            // TTL: root=60s, today's folder=300s, past folder=86400s
-            if ($parentId === null) {
-                $ttl = 60;
-            } else {
-                $folderModified = DB::selectOne('SELECT file_modified_at FROM files WHERE id = ?', [$parentId])?->file_modified_at;
-                $ttl = ($folderModified && \Carbon\Carbon::parse($folderModified)->isToday()) ? 300 : 86400;
-            }
+            // Estado del storage activo (si aplica). search_unreliable=true
+            // cuando el storage está caído: la búsqueda puede devolver filas
+            // que el scanner no ha confirmado en el último estado.
+            if ($storageAccess !== null) {
+                $responseData['storage_accessible'] = $storageAccess['storage_accessible'];
+                $responseData['storage_kind'] = $storageAccess['storage_kind'];
+                $responseData['storage_name'] = $storageAccess['storage_name'];
+                $responseData['storage_last_checked_at'] = $storageAccess['last_checked_at'];
 
-            // Skip caching empty auto-scan results to prevent poisoning Redis with transient failures
-            if (!($isAutoScan && empty($responseData['files']))) {
-                Cache::put($cacheKey, $responseData, $ttl);
+                if ($searchTerm !== null) {
+                    $responseData['search_unreliable'] = !$storageAccess['storage_accessible'];
+                }
             }
 
             return response()->json($responseData);
@@ -264,7 +362,9 @@ class FileController extends Controller
             'owner_id' => $user->id,
             'parent_id' => $parentId,
             'is_folder' => true,
-            'is_personal' => false,
+            'availability_state' => 'available',
+            'last_verified_at' => now(),
+            'missing_since_at' => null,
         ]);
 
         return response()->json($file, 201);
@@ -325,13 +425,37 @@ class FileController extends Controller
             return response()->json(['error' => 'Only owner can delete'], 403);
         }
 
-        if ($file->is_folder) {
-            $this->deleteRecursive($file);
-        } else {
-            $this->deleteFile($file);
+        // Papelera de reciclaje (2026-09-06): delete ahora es soft-trash en lugar
+        // de hard-delete. El hard-delete solo lo hace PapeleraService::hardDelete,
+        // llamado desde el cron trash:purge, desde /papelera/{id} DELETE, o
+        // desde /papelera/empty. Esto resuelve el bug de "se borra la fila pero
+        // no el dir de disco y el sync lo recreaba".
+        $originalParentId = $file->parent_id;
+        $originalStorageId = (int) $file->storage_provider_id;
+        $service = app(\App\Modules\Papelera\Services\PapeleraService::class);
+        $service->softTrash($file, (int) Session::get('user_id'));
+
+        // Invalidar la cache de listado del padre (la fila ya no aparece ahi)
+        // y, si el trash movió el archivo a parent_id=NULL (subcarpeta → root),
+        // también la cache del root listing del mismo storage. Sin esta segunda
+        // invalidación, la query whereNull('parent_id') devolvería la fila
+        // trashed durante toda la ventana TTL del root listing (60s).
+        //
+        // Importante: $file->getOriginal('parent_id') después de softTrash()
+        // ya refleja el nuevo valor (NULL) porque la sincronización interna del
+        // modelo ocurre dentro de update(). Por eso capturamos ANTES de llamar
+        // al servicio.
+        //
+        // NOTA: la invalidación del sidebar cache YA ocurre dentro de
+        // PapeleraService::softTrash(); no se repite aquí (además sería 500:
+        // invalidateSidebarCache es protected).
+        $syncService = app(\App\Services\StorageSyncService::class);
+        $syncService->invalidateFolderCache($originalStorageId, $originalParentId);
+        if ($file->parent_id === null && $originalParentId !== null) {
+            $syncService->invalidateFolderCache($originalStorageId, null);
         }
 
-        return response()->json(['message' => 'Deleted']);
+        return response()->json(['message' => 'Moved to trash', 'trashed_id' => $file->id]);
     }
 
     public function upload(Request $request)
@@ -358,7 +482,7 @@ class FileController extends Controller
         $mimeType = $file->getMimeType();
         $size = $file->getSize();
 
-        $isPersonalStorage = str_starts_with($storage->base_path ?? '', '/home/www/Usuarios_tcloud/');
+        $isPersonalStorage = (bool) $storage->is_personal;
         if ($user->personal_quota_bytes > 0 && $isPersonalStorage) {
             if ($user->personal_used_bytes + $size > $user->personal_quota_bytes) {
                 return response()->json(['error' => 'Personal quota exceeded'], 413);
@@ -388,7 +512,10 @@ class FileController extends Controller
         $file->move($destDir, $filename);
 
         $physicalPath = $destDir . '/' . $filename;
-        $modifiedAt = file_exists($physicalPath) ? \Carbon\Carbon::createFromTimestamp(filemtime($physicalPath)) : null;
+        // createFromTimestamp() sin zona devuelve UTC; la sesion PG esta en
+        // America/Bogota (config database), asi que hay que entregar el Carbon
+        // en la zona de la app o el instante queda corrido +5h. Fix 2026-09-16.
+        $modifiedAt = file_exists($physicalPath) ? \Carbon\Carbon::createFromTimestamp(filemtime($physicalPath), config('app.timezone')) : null;
 
         $storedFile = File::create([
             'name' => $filename,
@@ -399,11 +526,13 @@ class FileController extends Controller
             'owner_id' => $user->id,
             'parent_id' => $parentId,
             'is_folder' => false,
-            'is_personal' => $parentId === null,
             'file_modified_at' => $modifiedAt,
+            'availability_state' => 'available',
+            'last_verified_at' => now(),
+            'missing_since_at' => null,
         ]);
 
-        if (str_starts_with($storage->base_path ?? '', '/home/www/Usuarios_tcloud/')) {
+        if ($storage->is_personal) {
             $user->increment('personal_used_bytes', $size);
         }
 
@@ -834,7 +963,7 @@ class FileController extends Controller
         return response()->json(['error' => 'Preview not supported for this file type'], 400);
     }
 
-    public function view(int $id)
+    public function view(int $id, Request $request)
     {
         $file = File::findOrFail($id);
 
@@ -846,6 +975,9 @@ class FileController extends Controller
             'fileId'   => $id,
             'fileMime' => $file->mime_type,
             'fileName' => $file->name,
+            // Deep-link: segundo inicial del reproductor (?t=), usado por los
+            // avisos de menciones para abrir el archivo en el minuto exacto.
+            'startSeconds' => max(0, (int) $request->query('t', 0)),
         ]);
     }
 
@@ -865,13 +997,72 @@ class FileController extends Controller
                 'type' => $us->storageProvider->type,
                 'permissions' => $us->permissions,
                 'can_create_shares' => (bool) $us->can_create_shares,
+                'transcription_access' => (bool) $us->transcription_access,
                 'accessible' => $us->storageProvider->is_accessible,
                 'last_checked' => $us->storageProvider->last_checked_at?->format('d M, H:i'),
-                'is_personal' => str_starts_with($us->storageProvider->base_path ?? '', '/home/www/Usuarios_tcloud/'),
+                'is_personal' => (bool) $us->storageProvider->is_personal,
             ];
         });
 
         return response()->json(['storages' => $storages]);
+    }
+
+    /**
+     * Transcripción completa de un archivo, anclada al inicio (sin mención).
+     *
+     * Mismo shape que `GET /mis-avisos/transcriptions/{id}` para que el visor
+     * unificado funcione desde Mis Archivos. Lookup por `file_id` (índice
+     * UNIQUE) y luego reuso `MentionsSearchService::visibleTranscription` para
+     * garantizar que la intersección de acceso (`transcription_access` ∩
+     * `transcription_enabled`) y las capabilities (`can_view_file`,
+     * `can_clip`) se calculan idénticamente.
+     *
+     * Responde 404 opaco si el archivo no tiene transcripción done o si el
+     * usuario no tiene acceso: no revela existencia.
+     */
+    public function transcription(Request $request, File $file, MentionsSearchService $search)
+    {
+        $user = $this->getUser();
+        if (!$user) {
+            return response()->json(['error' => 'Unauthorized'], 401);
+        }
+
+        $transcriptionId = DB::table('transcriptions')
+            ->where('file_id', $file->id)
+            ->where('state', 'done')
+            ->value('id');
+
+        if (!$transcriptionId) {
+            return response()->json(['error' => 'No encontrada'], 404);
+        }
+
+        $meta = $search->visibleTranscription($user, (int) $transcriptionId);
+        if ($meta === null) {
+            return response()->json(['error' => 'No encontrada'], 404);
+        }
+
+        $anchor = $request->input('anchor_segment_id');
+        $after = $request->input('after_index');
+        $before = $request->input('before_index');
+
+        $window = $search->pageVisibleSegments(
+            $user,
+            (int) $transcriptionId,
+            $anchor !== null ? (int) $anchor : null,
+            $after !== null ? (int) $after : null,
+            $before !== null ? (int) $before : null,
+        );
+        if ($window === null) {
+            return response()->json(['error' => 'No encontrada'], 404);
+        }
+
+        return response()->json([
+            'transcription' => $meta,
+            'segments' => $window['segments'],
+            'first_index' => $window['first_index'],
+            'last_index' => $window['last_index'],
+            'total_segments' => $window['total_segments'],
+        ]);
     }
 
     private function generatePath(?int $parentId, string $name, StorageProvider $storage): string
@@ -911,7 +1102,7 @@ class FileController extends Controller
 
         $user = User::find($file->owner_id);
         if ($user && $file->size > 0) {
-            if ($storage && str_starts_with($storage->base_path ?? '', '/home/www/Usuarios_tcloud/')) {
+            if ($storage && $storage->is_personal) {
                 $user->decrement('personal_used_bytes', $file->size);
             }
         }
@@ -999,7 +1190,7 @@ class FileController extends Controller
             return response()->json(['error' => 'Error al copiar el archivo en disco'], 500);
         }
 
-        $modifiedAt = file_exists($dstPhysical) ? \Carbon\Carbon::createFromTimestamp(filemtime($dstPhysical)) : null;
+        $modifiedAt = file_exists($dstPhysical) ? \Carbon\Carbon::createFromTimestamp(filemtime($dstPhysical), config('app.timezone')) : null;
 
         $newFile = File::create([
             'name' => $file->name,
@@ -1010,8 +1201,10 @@ class FileController extends Controller
             'owner_id' => $user->id,
             'parent_id' => $destParentId,
             'is_folder' => false,
-            'is_personal' => false,
             'file_modified_at' => $modifiedAt,
+            'availability_state' => 'available',
+            'last_verified_at' => now(),
+            'missing_since_at' => null,
         ]);
 
         return response()->json($newFile, 201);
@@ -1117,7 +1310,9 @@ class FileController extends Controller
             'owner_id' => $ownerId,
             'parent_id' => $destParentId,
             'is_folder' => true,
-            'is_personal' => false,
+            'availability_state' => 'available',
+            'last_verified_at' => now(),
+            'missing_since_at' => null,
         ]);
 
         $children = File::where('parent_id', $src->id)->get();
@@ -1135,7 +1330,7 @@ class FileController extends Controller
                 }
 
                 $modifiedAt = file_exists($dstChildPhysical)
-                    ? \Carbon\Carbon::createFromTimestamp(filemtime($dstChildPhysical))
+                    ? \Carbon\Carbon::createFromTimestamp(filemtime($dstChildPhysical), config('app.timezone'))
                     : null;
 
                 File::create([
@@ -1147,8 +1342,10 @@ class FileController extends Controller
                     'owner_id' => $ownerId,
                     'parent_id' => $newFolder->id,
                     'is_folder' => false,
-                    'is_personal' => false,
                     'file_modified_at' => $modifiedAt,
+                    'availability_state' => file_exists($dstChildPhysical) ? 'available' : 'unknown',
+                    'last_verified_at' => file_exists($dstChildPhysical) ? now() : null,
+                    'missing_since_at' => null,
                 ]);
             }
         }
