@@ -3,9 +3,9 @@
 namespace App\Console\Commands;
 
 use App\Models\Transcription;
+use App\Services\Ia\BogotaTime;
 use App\Services\Ia\TranscriptionSubmitService;
 use App\Services\Ia\TranscriptorSettings;
-use Carbon\CarbonImmutable;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -108,7 +108,7 @@ class TranscriptionWorkerCommand extends Command
      */
     private function claimRow(string $storageFilter, int $batch): ?array
     {
-        $todayBogota = CarbonImmutable::today();
+        $todayBogota = BogotaTime::todayStart();
 
         $claimedIds = DB::transaction(function () use ($storageFilter, $batch, $todayBogota) {
             $query = Transcription::query()

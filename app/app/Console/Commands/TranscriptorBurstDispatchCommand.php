@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Models\Transcription;
+use App\Services\Ia\BogotaTime;
 use App\Services\Ia\TranscriptorApiClient;
 use App\Services\Ia\TranscriptorSettings;
 use Carbon\CarbonImmutable;
@@ -166,7 +167,7 @@ class TranscriptorBurstDispatchCommand extends Command
         }
 
         // 3) Tomar lote de pendientes (orden FIFO por recorded_at)
-        $today = CarbonImmutable::today();
+        $today = BogotaTime::todayStart();
         $candidates = DB::table('transcriptions')
             ->join('files', 'files.id', '=', 'transcriptions.file_id')
             ->where('transcriptions.state', Transcription::STATE_PENDING)

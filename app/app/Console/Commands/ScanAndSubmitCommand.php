@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Models\StorageProvider;
 use App\Models\Transcription;
+use App\Services\Ia\BogotaTime;
 use App\Services\Ia\DiskScannerService;
 use App\Services\Ia\TranscriptionBulkDispatchService;
 use App\Services\Ia\TranscriptorSettings;
@@ -58,7 +59,16 @@ class ScanAndSubmitCommand extends Command
                 ], now()->addHours(2));
             }
 
+            // Pase lo que pase (exito, salida temprana o excepcion), el candado
+            // de concurrencia del modal "Procesar historicos" debe liberarse; si
+            // no, el operador queda bloqueado hasta el TTL de 2 h.
+            \Illuminate\Support\Facades\Cache::forget('transcriptor:scan_run:lock');
+
             return Command::FAILURE;
+        } finally {
+            // Cubre TODAS las salidas de runHandle (las tres exitosas y la de
+            // error): el candado se libera siempre al terminar el proceso.
+            \Illuminate\Support\Facades\Cache::forget('transcriptor:scan_run:lock');
         }
     }
 
@@ -386,6 +396,12 @@ class ScanAndSubmitCommand extends Command
             $existingCache = \Illuminate\Support\Facades\Cache::get($cacheKey, []);
             $startedAtIso = $existingCache['started_at'] ?? $finishedAtIso;
 
+            // El candado de concurrencia del modal "Procesar históricos" se
+            // libera AQUI, al terminar la corrida. No se espera al polling de
+            // la UI: si el operador cierra el navegador, el candado debe caer
+            // igual o quedaria bloqueado hasta su TTL de 2 h.
+            \Illuminate\Support\Facades\Cache::forget('transcriptor:scan_run:lock');
+
             // bg-job-indicator-widget (fix-A + bg-job-indicator-hide-completed):
             // Garantizamos que la entrada quede con finishedAt poblado al terminar,
             // sea cual sea el formato inicial (string plano del controller o array
@@ -471,7 +487,7 @@ class ScanAndSubmitCommand extends Command
         return (int) \Illuminate\Support\Facades\DB::table('transcriptions')
             ->where('state', Transcription::STATE_PENDING)
             ->whereNull('dispatched_at')
-            ->where('created_at', '>=', \Carbon\CarbonImmutable::today())
+            ->where('created_at', '>=', BogotaTime::todayStart())
             ->count();
     }
 }

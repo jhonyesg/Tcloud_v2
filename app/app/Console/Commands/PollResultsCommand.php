@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Models\Transcription;
+use App\Services\Ia\BogotaTime;
 use App\Services\Ia\TranscriptionPollingService;
 use App\Services\Ia\TranscriptionSubmitService;
 use App\Services\Ia\TranscriptorSettings;
@@ -33,7 +34,7 @@ class PollResultsCommand extends Command
             ->where('created_at', '<', now()->subMinutes($staleAfter));
 
         if ($pollScope !== 'unbounded') {
-            $stuckQuery->where('created_at', '>=', \Carbon\CarbonImmutable::today());
+            $stuckQuery->where('created_at', '>=', BogotaTime::todayStart());
         }
 
         $stuck = ($resendLimit > 0 && !$dispatchPaused)

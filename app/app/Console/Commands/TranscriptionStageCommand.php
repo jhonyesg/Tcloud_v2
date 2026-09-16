@@ -3,9 +3,9 @@
 namespace App\Console\Commands;
 
 use App\Models\Transcription;
-use App\Services\Ia\TranscriptorSettings;
+use App\Services\Ia\BogotaTime;
 use App\Services\Ia\TranscriptionSubmitService;
-use Carbon\CarbonImmutable;
+use App\Services\Ia\TranscriptorSettings;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -503,7 +503,7 @@ class TranscriptionStageCommand extends Command
      */
     private function candidates(TranscriptorSettings $settings, int $limit)
     {
-        $today = CarbonImmutable::today();
+        $today = BogotaTime::todayStart();
 
         $query = Transcription::query()
             ->where('state', Transcription::STATE_PENDING)

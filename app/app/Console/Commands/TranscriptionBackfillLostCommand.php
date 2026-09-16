@@ -223,7 +223,7 @@ class TranscriptionBackfillLostCommand extends Command
             $current = (int) DB::table('transcriptions')
                 ->where('state', Transcription::STATE_PENDING)
                 ->whereNull('dispatched_at')
-                ->where('created_at', '>=', \Carbon\CarbonImmutable::today())
+                ->where('created_at', '>=', BogotaTime::todayStart())
                 ->count();
         } catch (\Throwable $e) {
             $this->error('No se pudo contar pendientes en PG: ' . $e->getMessage());

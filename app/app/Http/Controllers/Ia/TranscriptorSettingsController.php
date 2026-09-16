@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Ia;
 use App\Http\Controllers\Concerns\RunsBackgroundCommands;
 use App\Http\Controllers\Controller;
 use App\Models\Transcription;
+use App\Services\Ia\BogotaTime;
 use App\Services\Ia\TodayPendingService;
 use App\Services\Ia\TranscriptorSettings;
 use App\Services\Ia\TranscriptionSubmitService;
@@ -381,7 +382,7 @@ class TranscriptorSettingsController extends Controller
             return (int) DB::table('transcriptions')
                 ->where('state', \App\Models\Transcription::STATE_PENDING)
                 ->whereNull('dispatched_at')
-                ->where('created_at', '>=', \Carbon\CarbonImmutable::today())
+                ->where('created_at', '>=', BogotaTime::todayStart())
                 ->count();
         } catch (\Throwable $e) {
             return null;
@@ -423,7 +424,7 @@ class TranscriptorSettingsController extends Controller
     private function stateCountsToday(): array
     {
         try {
-            $todayStart = \Carbon\CarbonImmutable::today();
+            $todayStart = BogotaTime::todayStart();
 
             return Transcription::selectRaw('state, count(*) as count')
                 ->where('created_at', '>=', $todayStart)

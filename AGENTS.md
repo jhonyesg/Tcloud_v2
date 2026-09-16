@@ -1180,3 +1180,48 @@ SKIP LOCKED`.
 
 El cutover fue un procedimiento operativo documentado en `design.md §1.7` del change. Pasos clave: backup pre-cutover (`pg_dump` + `COPY transcriptions TO ...`), drenado del pipeline legacy, `transcriptor:purge-backlog --execute`, migracion de las dos tablas nuevas, deploy del codigo, arranque de `tcloud-transcription-worker-*`.
 
+
+## Helper central `BogotaTime` (change `bogota-end-to-end-timezone`, 2026-09-16)
+
+Todas las queries que preguntan "¿qué es hoy?" en el módulo transcriptor pasan
+por `App\Services\Ia\BogotaTime::todayStart()`. Métodos disponibles:
+
+- `BogotaTime::todayStart(): CarbonImmutable` — inicio del día Bogota actual
+- `BogotaTime::now(): CarbonImmutable` — instante actual en Bogota
+- `BogotaTime::todayAsDateString(): string` — `YYYY-MM-DD` del día Bogota
+- `BogotaTime::TIMEZONE` — constant `'America/Bogota'`
+
+**Regla**: cualquier código nuevo que pregunte por "hoy" usa este helper. Nunca
+`CarbonImmutable::today()` sin argumento, nunca `Carbon::today('UTC')`. Si se
+necesita otra zona en el futuro, el cambio es refactor del helper, no de cada
+call site.
+
+## Backfill de `recorded_at` con desfase Bogota
+
+El comando `transcription:fix-recorded-at-timezone` corrige filas donde
+`recorded_at` quedó desfasado por sesiones PG que interpretaron la hora como UTC
+en vez de Bogota. **No se ejecuta automáticamente** — queda como tarea manual
+del operador:
+
+```bash
+# Auditoría primero (no muta):
+cd /www/wwwroot/cloud.mediaserver.com.co/Tcloud_v2/app
+php artisan transcription:fix-recorded-at-timezone --days=30 --dry-run
+
+# Si el dry-run muestra filas afectadas que parecen razonables, aplicar:
+php artisan transcription:fix-recorded-at-timezone --days=30 --apply
+```
+
+El comando es idempotente: detecta si la fila ya está en Bogota y la salta.
+Ver `design.md` del change para el algoritmo exacto.
+
+## Diagnóstico operacional en Bogota (psqlrc del operador)
+
+`/root/.psqlrc` aplica en cada conexión psql interactiva del usuario root:
+
+- `SET timezone = 'America/Bogota';` — toda query devuelve timestamps Bogota
+- `\set today_bogota \`date +%Y-%m-%d\`` — variable psql con la fecha Bogota
+- `\pset null '[NULL]'` y `\encoding UTF8` — defaults menores
+
+Para escalar a otros usuarios del sistema operativo, mover a `/etc/psqlrc`
+o crear `/etc/profile.d/psql.sh` que lo copie al home de cada usuario.

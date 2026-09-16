@@ -47,6 +47,13 @@
             <h1 class="text-2xl font-bold text-slate-800">API Transcriptor</h1>
             <p class="text-slate-500 mt-0.5">Storages habilitados para transcripción y configuración del regulador</p>
         </div>
+        {{-- Procesamiento personalizado: recupera históricos (sin fila, con
+             error, completados) sin esperar al tick. El envío lo sigue
+             regulando el pipeline. --}}
+        <button @click="openPz()"
+                class="px-4 py-2 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-xl text-sm font-medium transition-colors shadow-sm">
+            <i class="fas fa-clock-rotate-left text-brand-500 mr-1.5"></i> Procesar históricos
+        </button>
     </div>
 
     {{-- Panel de información: cómo funciona la API del transcriptor --}}
@@ -253,7 +260,8 @@
                             <i class="fas text-[10px]" :class="storagesSortIcon('tipo') + ' ' + storagesSortIconClass('tipo')"></i>
                         </button>
                     </th>
-                    <th class="py-2.5 pr-3 font-medium whitespace-nowrap text-right" title="Conteo en vivo del funnel de pendientes por storage (calculado en cada render).">
+                    <th class="py-2.5 pr-3 font-medium whitespace-nowrap text-right"
+                        title="Conteo en vivo del funnel de pendientes por storage. Calculado en zona America/Bogota (helper BogotaTime::todayStart()).">
                         <button type="button" @click="setStoragesSort('pending')"
                                 :class="storagesSortHeaderClass('pending') + ' inline-flex items-center gap-1.5 transition-colors ml-auto'"
                                 title="Ordenar por pendientes">
@@ -658,6 +666,31 @@ function apiTranscriptor(config = {}) {
         },
         // storage cuyo apagado espera confirmación en el modal (null = cerrado)
         storageToDisable: null,
+        // ------------------------------------------------------------------
+        // Procesamiento personalizado ("Procesar históricos")
+        //
+        // Descubrimiento + encolado manual acotado por alcance, para recuperar
+        // históricos sin esperar al tick. El envío sigue regulado por el
+        // pipeline (stager + worker PG + histéresis de cola remota): estos
+        // campos solo controlan el DESCUBRIMIENTO.
+        // ------------------------------------------------------------------
+        pzOpen: false,
+        pzRunning: false,
+        pzScope: 'range',
+        pzFrom: new Date(Date.now() - 86400000).toISOString().slice(0, 10),
+        pzTo: new Date().toISOString().slice(0, 10),
+        pzIncludeMissing: true,
+        pzIncludeFailed: false,
+        pzIncludeDone: false,
+        pzAlerts: true,
+        pzBatch: 0,
+        pzEstimate: null,
+        pzEstimating: false,
+        pzError: null,
+        pzProgress: null,
+        pzResult: null,
+        pzRunId: null,
+        pzPollTimer: null,
         // Tope de POST simultaneos del envio en lote. Cada uno corre ffmpeg +
         // POST sincronos en php-fpm, asi que sin tope 200 archivos = 200 procesos.
         //
@@ -946,6 +979,147 @@ function apiTranscriptor(config = {}) {
             // Propagar a los topes que consume el resto de la interfaz.
             if (next.ui_batch_max) this.uiBatchMax = next.ui_batch_max;
             if (next.ui_max_parallel_sends) this.uiMaxParallelSends = next.ui_max_parallel_sends;
+        },
+
+        // ------------------------------------------------------------------
+        // Procesamiento personalizado
+        // ------------------------------------------------------------------
+
+        openPz() {
+            this.pzOpen = true;
+            this.pzResult = null;
+            this.pzProgress = null;
+            this.pzError = null;
+            this.refreshPzEstimate();
+        },
+
+        closePz() {
+            this.pzOpen = false;
+            // El polling sigue si hay una corrida activa: el operador puede
+            // reabrir el modal y retomar el progreso. Solo se detiene al
+            // terminar (ver pollPz).
+            if (!this.pzRunning && this.pzPollTimer) {
+                clearInterval(this.pzPollTimer);
+                this.pzPollTimer = null;
+            }
+        },
+
+        pzHasWork() {
+            return this.pzIncludeMissing || this.pzIncludeFailed || this.pzIncludeDone;
+        },
+
+        /** Alcance actual en el shape que espera el backend. */
+        pzScopePayload() {
+            const p = { scope: this.pzScope };
+            if (this.pzScope === 'range') {
+                p.from = this.pzFrom;
+                p.to = this.pzTo;
+            }
+            return p;
+        },
+
+        async refreshPzEstimate() {
+            this.pzError = null;
+            if (this.pzScope === 'range' && (!this.pzFrom || !this.pzTo)) {
+                this.pzEstimate = null;
+                return;
+            }
+            this.pzEstimating = true;
+            try {
+                const r = await fetch('/ia/api-transcriptor/scan/estimate', {
+                    method: 'POST', credentials: 'same-origin',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json',
+                        'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content,
+                    },
+                    body: JSON.stringify(this.pzScopePayload()),
+                });
+                const data = await r.json().catch(() => ({}));
+                if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+                this.pzEstimate = data;
+            } catch (e) {
+                this.pzEstimate = null;
+                this.pzError = e.message;
+            } finally {
+                this.pzEstimating = false;
+            }
+        },
+
+        async runPz() {
+            if (!this.pzHasWork()) return;
+            this.pzRunning = true;
+            this.pzResult = null;
+            this.pzProgress = null;
+            this.pzError = null;
+
+            const payload = Object.assign(this.pzScopePayload(), {
+                batch: this.pzBatch || 0,
+                include_failed: this.pzIncludeFailed,
+                include_done: this.pzIncludeDone,
+                generate_alerts: this.pzAlerts,
+            });
+
+            try {
+                const r = await fetch('/ia/api-transcriptor/scan/run', {
+                    method: 'POST', credentials: 'same-origin',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json',
+                        'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content,
+                    },
+                    body: JSON.stringify(payload),
+                });
+                const data = await r.json().catch(() => ({}));
+                if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+                this.pzRunId = data.run_id;
+                this.startPzPoll();
+                showToast('Procesamiento iniciado en background.', 'success');
+            } catch (e) {
+                this.pzRunning = false;
+                this.pzError = e.message;
+                showToast('No se pudo iniciar: ' + e.message, 'error');
+            }
+        },
+
+        startPzPoll() {
+            if (this.pzPollTimer) clearInterval(this.pzPollTimer);
+            this.pzPollTimer = setInterval(() => this.pollPz(), 2000);
+            this.pollPz();
+        },
+
+        async pollPz() {
+            if (!this.pzRunId) return;
+            try {
+                const r = await fetch('/ia/api-transcriptor/scan/status/' + encodeURIComponent(this.pzRunId), {
+                    headers: { 'Accept': 'application/json' }, credentials: 'same-origin',
+                });
+                if (r.status === 404) {
+                    // La corrida expiró de cache sin estado terminal: cerrar.
+                    this.stopPzPoll();
+                    this.pzRunning = false;
+                    this.pzError = 'La corrida expiró o no se encontró.';
+                    return;
+                }
+                if (!r.ok) return;
+                const data = await r.json();
+                this.pzProgress = data;
+
+                if (['done', 'completed', 'error', 'partial', 'queued'].includes(data.status)) {
+                    this.stopPzPoll();
+                    this.pzRunning = false;
+                    this.pzResult = data;
+                    // Refrescar el panel: los contadores cambiaron.
+                    this.refreshConfigRuntime();
+                }
+            } catch (e) { /* red intermitente: el próximo tick reintenta */ }
+        },
+
+        stopPzPoll() {
+            if (this.pzPollTimer) {
+                clearInterval(this.pzPollTimer);
+                this.pzPollTimer = null;
+            }
         },
 
         async loadConfig() {

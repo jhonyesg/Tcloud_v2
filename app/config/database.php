@@ -30,7 +30,12 @@ return [
             //    y el filtro "hoy" del worker (recorded_at >= medianoche local).
             //
             // Override operativo: DB_TIMEZONE=UTC en .env + config:cache.
-            'timezone' => env('DB_TIMEZONE', 'America/Bogota'),
+            //
+            // Change bogota-end-to-end-timezone: blindaje contractual. Bogota
+            // es la unica zona soportada; el .env ya no puede cambiarla por
+            // accidente. Si en el futuro se necesita multi-zona, ese es un
+            // change nuevo (no una variable de entorno).
+            'timezone' => 'America/Bogota',
         ],
     ],
     'migrations' => 'migrations',

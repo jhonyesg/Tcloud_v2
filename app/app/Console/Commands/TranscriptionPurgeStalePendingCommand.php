@@ -3,7 +3,6 @@
 namespace App\Console\Commands;
 
 use App\Models\Transcription;
-use Carbon\CarbonImmutable;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
@@ -37,7 +36,7 @@ class TranscriptionPurgeStalePendingCommand extends Command
         // no estaba programado, asi que no purgaba nada nunca.
         $cutoff = $days !== null
             ? now()->subDays($days)
-            : CarbonImmutable::today();
+            : BogotaTime::todayStart();
 
         $this->info(sprintf(
             "transcription:purge-stale-pending starting (%s=%s, batch=%d, max_ratio=%s%s)",

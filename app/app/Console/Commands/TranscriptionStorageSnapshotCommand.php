@@ -4,9 +4,9 @@ namespace App\Console\Commands;
 
 use App\Models\StorageProvider;
 use App\Models\Transcription;
+use App\Services\Ia\BogotaTime;
 use App\Services\Ia\TranscriptorApiClient;
 use App\Services\Ia\TranscriptorSettings;
-use Carbon\CarbonImmutable;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -35,7 +35,7 @@ class TranscriptionStorageSnapshotCommand extends Command
     {
         $storageId = $this->option('storage');
 
-        $todayBogota = CarbonImmutable::today();
+        $todayBogota = BogotaTime::todayStart();
         $cutoffSentError = now()->subMinutes(15);
 
         // BUG CORREGIDO (2026-09-15): antes se leia

@@ -69,7 +69,7 @@ class TranscriptionTickCommand extends Command
             return Command::SUCCESS;
         }
 
-        $todayStart = CarbonImmutable::today();
+            $todayStart = BogotaTime::todayStart();
 
         // -------- Phase 1: Discovery --------
         // Toda tx del tick entra al matching global de menciones; el filtrado
@@ -547,7 +547,7 @@ class TranscriptionTickCommand extends Command
                 ->where('state', Transcription::STATE_PENDING)
                 ->whereNull('job_id')
                 ->whereNull('dispatched_at')
-                ->where('recorded_at', '>=', CarbonImmutable::today())
+                ->where('recorded_at', '>=', BogotaTime::todayStart())
                 ->where(function ($q) {
                     $q->whereNull('requeue_after_at')
                       ->orWhere('requeue_after_at', '<=', now());
@@ -572,7 +572,7 @@ class TranscriptionTickCommand extends Command
         }
 
         try {
-            $todayStart = CarbonImmutable::today();
+        $todayStart = BogotaTime::todayStart();
             $total = 0;
             do {
                 // `use ($reason)` es obligatorio: sin el, PHP evalua $reason

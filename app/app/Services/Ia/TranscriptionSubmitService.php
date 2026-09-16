@@ -453,7 +453,7 @@ class TranscriptionSubmitService
     public function stagedInventory(): array
     {
         try {
-            $today = \Carbon\CarbonImmutable::today();
+            $today = BogotaTime::todayStart();
             $rows = DB::table('transcriptions')
                 ->whereNotNull('staged_path')
                 ->where('staged_at', '>=', $today)

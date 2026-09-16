@@ -224,7 +224,7 @@ class TodayPendingService
      */
     private function todayStart(): CarbonImmutable
     {
-        return CarbonImmutable::today(config('app.timezone'));
+        return BogotaTime::todayStart();
     }
 
     /**

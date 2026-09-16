@@ -3,7 +3,6 @@
 namespace App\Services\Ia;
 
 use App\Models\Transcription;
-use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -38,7 +37,7 @@ class TranscriptionBulkDispatchService
         if (empty($ids)) {
             $ids = Transcription::where('state', Transcription::STATE_PENDING)
                 ->whereNull('dispatched_at')
-                ->where('recorded_at', '>=', CarbonImmutable::today())
+                ->where('recorded_at', '>=', BogotaTime::todayStart())
                 ->orderBy('recorded_at', 'desc')
                 ->limit(2000)
                 ->pluck('id')
