@@ -531,7 +531,10 @@ class FileController extends Controller
         $file->move($destDir, $filename);
 
         $physicalPath = $destDir . '/' . $filename;
-        $modifiedAt = file_exists($physicalPath) ? \Carbon\Carbon::createFromTimestamp(filemtime($physicalPath)) : null;
+        // createFromTimestamp() sin zona devuelve UTC; la sesion PG esta en
+        // America/Bogota (config database), asi que hay que entregar el Carbon
+        // en la zona de la app o el instante queda corrido +5h. Fix 2026-09-16.
+        $modifiedAt = file_exists($physicalPath) ? \Carbon\Carbon::createFromTimestamp(filemtime($physicalPath), config('app.timezone')) : null;
 
         $storedFile = File::create([
             'name' => $filename,
@@ -1206,7 +1209,7 @@ class FileController extends Controller
             return response()->json(['error' => 'Error al copiar el archivo en disco'], 500);
         }
 
-        $modifiedAt = file_exists($dstPhysical) ? \Carbon\Carbon::createFromTimestamp(filemtime($dstPhysical)) : null;
+        $modifiedAt = file_exists($dstPhysical) ? \Carbon\Carbon::createFromTimestamp(filemtime($dstPhysical), config('app.timezone')) : null;
 
         $newFile = File::create([
             'name' => $file->name,
@@ -1346,7 +1349,7 @@ class FileController extends Controller
                 }
 
                 $modifiedAt = file_exists($dstChildPhysical)
-                    ? \Carbon\Carbon::createFromTimestamp(filemtime($dstChildPhysical))
+                    ? \Carbon\Carbon::createFromTimestamp(filemtime($dstChildPhysical), config('app.timezone'))
                     : null;
 
                 File::create([

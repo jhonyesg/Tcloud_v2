@@ -4,11 +4,14 @@ namespace App\Http\Controllers\Ia;
 
 use App\Http\Controllers\Controller;
 use App\Models\StorageProvider;
+use App\Models\Transcription;
 use App\Services\Ia\CacheEpoch;
 use App\Services\Ia\StorageFunnelService;
+use App\Services\Ia\TranscriptionBulkDispatchService;
 use App\Services\Ia\TranscriptorSettings;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Session;
 
@@ -94,13 +97,24 @@ class ApiTranscriptorController extends Controller
         foreach ($storages as $s) {
             $inheritedScope = StorageProvider::resolveInheritedTranscriptionScope($s->id);
             $descendants = array_values(array_diff($inheritedScope, [$s->id]));
+            $isRoot = !empty($descendants);
             $descendantCounts[$s->id] = count($descendants);
-            $parentScopeByStorage[$s->id] = empty($descendants) ? null : (int) $s->id;
-            if (!empty($descendants)) {
+            if ($isRoot) {
+                $rootScopeId = (int) $s->id;
+                $parentScopeByStorage[$s->id] = $rootScopeId;
+                foreach ($descendants as $descId) {
+                    if (!isset($parentScopeByStorage[$descId])) {
+                        $parentScopeByStorage[$descId] = $rootScopeId;
+                    }
+                }
                 $descendantNames[$s->id] = StorageProvider::whereIn('id', $descendants)
                     ->orderBy('name')
                     ->pluck('name')
                     ->all();
+            } else {
+                if (!isset($parentScopeByStorage[$s->id])) {
+                    $parentScopeByStorage[$s->id] = null;
+                }
             }
             $rootId = $s->transcription_enabled ? $this->funnel->resolveRootIdFor((int) $s->id) : null;
             if ($rootId !== null && !isset($processedRoots[$rootId])) {
@@ -200,6 +214,97 @@ class ApiTranscriptorController extends Controller
         }
 
         return response()->json($storage->only(['id', 'name', 'transcription_enabled']));
+    }
+
+    /**
+     * POST /ia/api-transcriptor/jobs/bulk-dispatch
+     *
+     * Body: { "ids": [int, int, ...] } (opcional). Si vacio, auto-selecciona
+     * hasta 2000 pendientes sin dispatched_at con recorded_at >= hoy.
+     *
+     * Respuesta: { "enqueued": int, "skipped_queued": int, "errors": int }.
+     *
+     * Mantiene la firma externa del spec `transcriptor-bulk-pg-dispatch`
+     * (transcriptor-pg-native-queue).
+     */
+    public function bulkDispatch(Request $request)
+    {
+        $validated = $request->validate([
+            'ids' => 'sometimes|array',
+            'ids.*' => 'integer|min:1',
+        ]);
+
+        $ids = $validated['ids'] ?? [];
+
+        $stats = app(TranscriptionBulkDispatchService::class)->dispatch($ids);
+
+        return response()->json($stats);
+    }
+
+    /**
+     * GET /ia/api-transcriptor/storages/{id}/snapshot
+     *
+     * Devuelve el ultimo snapshot del storage + delta vs el anterior.
+     * Respeta privacidad: cliente solo ve campos propios.
+     */
+    public function storageSnapshot(int $id)
+    {
+        $storage = StorageProvider::find($id);
+        if (!$storage) {
+            return response()->json(['error' => 'storage_not_found'], 404);
+        }
+
+        $isCliente = (Session::get('user')['role'] ?? null) === 'cliente';
+        if ($isCliente && !$this->clientePuedeVer($storage)) {
+            return response()->json(['error' => 'forbidden'], 403);
+        }
+
+        $current = DB::table('transcription_storage_snapshots')
+            ->where('storage_provider_id', $id)
+            ->orderByDesc('captured_at')
+            ->first();
+
+        $previous = DB::table('transcription_storage_snapshots')
+            ->where('storage_provider_id', $id)
+            ->where('captured_at', '<', $current->captured_at ?? '1970-01-01')
+            ->orderByDesc('captured_at')
+            ->first();
+
+        $payload = [
+            'storage_provider_id' => $id,
+            'current' => $current ?: null,
+            'previous' => $previous ?: null,
+            'delta' => ($current && $previous)
+                ? ['pending_count' => (int) ($current->pending_count - $previous->pending_count), 'since' => 'snapshot anterior']
+                : null,
+        ];
+
+        if ($isCliente) {
+            // Privacidad: cliente solo ve campos publicos.
+            $payload = [
+                'storage_provider_id' => $id,
+                'current' => $current ? [
+                    'captured_at' => $current->captured_at,
+                    'pending_count' => (int) $current->pending_count,
+                    'inflight_count' => (int) $current->inflight_count,
+                ] : null,
+            ];
+        }
+
+        return response()->json($payload);
+    }
+
+    private function clientePuedeVer(StorageProvider $storage): bool
+    {
+        $userId = Session::get('user_id');
+        if (!$userId) {
+            return false;
+        }
+
+        return DB::table('user_storages')
+            ->where('user_id', $userId)
+            ->where('storage_provider_id', $storage->id)
+            ->exists();
     }
 
     public static function stateClass(string $state): string

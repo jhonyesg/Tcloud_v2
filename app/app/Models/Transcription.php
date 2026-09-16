@@ -37,6 +37,8 @@ class Transcription extends Model
         'started_at', 'finished_at', 'recorded_at', 'requeue_after_at', 'last_polled_at', 'error_message', 'retries',
         'discovered_at', 'dispatched_at', 'submission_committed_at', 'regulator_skip_reason',
         'srt_truncated_retries',
+        // transcriptor-two-phase-staging: fase local del pipeline.
+        'staged_path', 'staged_bytes', 'staged_at',
     ];
 
     protected $casts = [
@@ -52,6 +54,9 @@ class Transcription extends Model
         'discovered_at' => 'datetime',
         'dispatched_at' => 'datetime',
         'submission_committed_at' => 'datetime',
+        // transcriptor-two-phase-staging
+        'staged_at' => 'datetime',
+        'staged_bytes' => 'integer',
         'duration_seconds' => 'integer',
         'word_count' => 'integer',
         'retries' => 'integer',

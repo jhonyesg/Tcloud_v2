@@ -60,7 +60,7 @@ class TranscriptionHealthCheckCommand extends Command
         // 2026-08-18, asi que se nombra sin rodeos.
         $diagnostico = $storagesHabilitados === 0
             ? 'NINGUN storage tiene la transcripcion habilitada: encender los canales que corresponda en /ia/api-transcriptor.'
-            : 'Hay storages habilitados, asi que el corte esta aguas abajo: revisar los workers (transcription:tune --apply), la cola Redis y la API del transcriptor.';
+            : 'Hay storages habilitados, asi que el corte esta aguas abajo: revisar los workers PG (transcription:tune --apply), la cola nativa PG y la API del transcriptor.';
 
         $desde = $ultima !== null ? (string) $ultima : 'nunca';
 

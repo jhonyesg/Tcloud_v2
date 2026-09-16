@@ -62,34 +62,38 @@
                     {{-- Cola vs objetivo --}}
                     <div data-tour="cfg-queue" class="md:col-span-2">
                         <div class="flex items-baseline justify-between mb-1">
-                            <span class="text-xs text-slate-500">Cola de despacho</span>
+                            <span class="text-xs text-slate-500">Cola de conversión (pendientes de hoy)</span>
                             <span class="text-xs font-mono text-slate-600">
-                                <span x-text="cfgRuntime?.queue_depth ?? '—'"></span> / <span x-text="cfgRuntime?.queue_target"></span>
+                                <span x-text="cfgRuntime?.today?.pending ?? cfgRuntime?.queue_depth ?? '—'"></span>
+                                <span class="text-slate-400">en cola</span>
                             </span>
                         </div>
                         <div class="w-full bg-slate-100 rounded-full h-2 overflow-hidden">
                             <div class="h-2 rounded-full transition-all duration-300"
-                                 :class="queuePct() >= 100 ? 'bg-amber-500' : 'bg-brand-500'"
-                                 :style="'width: ' + Math.min(100, queuePct()) + '%'"></div>
+                                 :class="inventoryPct() >= 100 ? 'bg-sky-500' : 'bg-brand-500'"
+                                 :style="'width: ' + Math.min(100, inventoryPct()) + '%'"></div>
                         </div>
                         <p class="text-[11px] text-slate-400 mt-1.5">
-                            <template x-if="cfgRuntime?.next_batch === 0">
-                                <span class="text-amber-600 font-medium">
-                                    <i class="fas fa-hand-paper"></i> El regulador frenaría: la cola está en/sobre el objetivo.
-                                </span>
-                            </template>
-                            <template x-if="cfgRuntime?.next_batch > 0">
-                                <span>Ahora mismo enviaría <strong x-text="cfgRuntime.next_batch"></strong> trabajos.</span>
-                            </template>
+                            <span>
+                                La lista de pendientes <strong>no tiene tope</strong>: es todo lo del día.
+                                El techo de <strong x-text="cfgRuntime?.target_remote_queue ?? 180"></strong> aplica a la
+                                <strong>cola de la API remota</strong>
+                                (<span x-text="cfgRuntime?.remote_status?.queue_queued ?? '—'"></span> ahora).
+                            </span>
+                            <span class="block mt-0.5">
+                                Inventario listo en RAM disk:
+                                <strong x-text="cfgRuntime?.staging?.files ?? 0"></strong>/<strong x-text="cfgRuntime?.staging?.target ?? 0"></strong>
+                                (<span x-text="cfgRuntime?.staging?.bytes_mb ?? 0"></span> MB).
+                            </span>
                         </p>
                     </div>
 
                     {{-- Workers --}}
                     <div data-tour="cfg-workers">
-                        <p class="text-xs text-slate-500 mb-1">Workers activos</p>
+                        <p class="text-xs text-slate-500 mb-1">Workers (cola nativa PG)</p>
                         <p class="text-2xl font-semibold text-slate-800 leading-none">
-                            <span x-text="cfgRuntime?.workers?.active ?? '—'"></span>
-                            <span class="text-sm text-slate-400 font-normal">/ <span x-text="cfgRuntime?.workers?.installed ?? '—'"></span></span>
+                            <span x-text="cfgRuntime?.workers?.pg_running ?? cfgRuntime?.workers?.active ?? '—'"></span>
+                            <span class="text-sm text-slate-400 font-normal">/ <span x-text="cfgRuntime?.workers?.pg_total ?? cfgRuntime?.workers?.installed ?? '—'"></span></span>
                         </p>
                         <p x-show="cfgRuntime?.workers?.orphans > 0" class="text-[11px] text-red-600 mt-1 font-medium">
                             <i class="fas fa-triangle-exclamation"></i>
@@ -98,11 +102,20 @@
                         <p x-show="cfgRuntime?.workers?.override > 0" class="text-[11px] text-brand-600 mt-1">
                             Forzado a <span x-text="cfgRuntime.workers.override"></span>
                         </p>
+                        {{-- Los workers legacy de Redis siguen vivos pero sin trabajo:
+                             la cola nativa es PG. Se muestra para no confundirlos
+                             con el pool real (antes la UI contaba solo estos). --}}
+                        <p x-show="(cfgRuntime?.workers?.legacy_active ?? 0) > 0"
+                           class="text-[10px] text-slate-400 mt-1"
+                           x-text="'Legacy Redis: ' + cfgRuntime.workers.legacy_active + ' activos, ' + (cfgRuntime?.workers?.legacy_pending_jobs ?? 0) + ' jobs en cola'"></p>
                     </div>
 
                     {{-- Estados --}}
                     <div data-tour="cfg-states">
-                        <p class="text-xs text-slate-500 mb-1">Transcripciones</p>
+                        <p class="text-xs text-slate-500 mb-1">
+                            Transcripciones
+                            <span class="text-[10px] text-slate-400">(histórico)</span>
+                        </p>
                         <div class="space-y-0.5">
                             <template x-for="(count, state) in (cfgRuntime?.states || {})" :key="state">
                                 <div class="flex items-center justify-between text-[11px]">
@@ -113,19 +126,295 @@
                         </div>
                     </div>
                 </div>
+
+                {{-- Pipeline en vivo: fases del drenado -----------------------------------}}
+                <div data-tour="cfg-pipeline" class="mt-4 pt-4 border-t border-slate-100">
+                    <div class="flex items-center justify-between mb-2">
+                        <p class="text-xs text-slate-500">
+                            <i class="fas fa-diagram-project mr-1"></i>
+                            Pipeline en vivo
+                            <span class="text-[10px] text-slate-400 ml-2">audios en cada fase</span>
+                        </p>
+                        <p class="text-xs text-slate-500">
+                            Tasa envío:
+                            <span class="font-mono font-semibold text-slate-700"
+                                  x-text="cfgRuntime?.throughput_per_min ?? '—'"></span>
+                            <span class="text-slate-400">/min</span>
+                        </p>
+                    </div>
+                    <div class="grid grid-cols-2 md:grid-cols-6 gap-2 text-[11px]">
+                        {{-- 1. Cola local (candidatos sin tomar) --}}
+                        <div class="bg-slate-50 rounded-lg p-2.5 border border-slate-200">
+                            <p class="text-slate-500 mb-0.5">Cola local</p>
+                            <p class="text-lg font-semibold text-slate-800 leading-none"
+                               x-text="cfgRuntime?.today?.pending ?? cfgRuntime?.queue_depth ?? '—'"></p>
+                            <p class="text-[10px] text-slate-400 mt-1">sin convertir ni enviar</p>
+                        </div>
+                        {{-- 2. Listos en RAM disk (fase 1 completada) --}}
+                        <div class="rounded-lg p-2.5 border"
+                             :class="(cfgRuntime?.staging?.files ?? 0) > 0 ? 'bg-sky-50 border-sky-200' : 'bg-slate-50 border-slate-200'">
+                            <p class="text-slate-500 mb-0.5">
+                                <i class="fas fa-layer-group mr-0.5"
+                                   :class="(cfgRuntime?.staging?.files ?? 0) > 0 ? 'text-sky-600' : ''"></i>
+                                Listos
+                            </p>
+                            <p class="text-lg font-semibold leading-none"
+                               :class="(cfgRuntime?.staging?.files ?? 0) > 0 ? 'text-sky-700' : 'text-slate-800'"
+                               x-text="cfgRuntime?.staging?.files ?? '0'"></p>
+                            <p class="text-[10px] text-slate-400 mt-1"
+                               x-text="(cfgRuntime?.staging?.bytes_mb ?? 0) + ' MB en RAM disk'"></p>
+                        </div>
+                        {{-- 3. En espera (aplazados: cola remota llena o sin espacio) --}}
+                        <div class="rounded-lg p-2.5 border"
+                             :class="(cfgRuntime?.requeueable_count ?? 0) > 0 ? 'bg-amber-50 border-amber-200' : 'bg-slate-50 border-slate-200'">
+                            <p class="text-slate-500 mb-0.5">
+                                <i class="fas fa-hourglass-half mr-0.5"
+                                   :class="(cfgRuntime?.requeueable_count ?? 0) > 0 ? 'text-amber-600' : ''"></i>
+                                En espera
+                            </p>
+                            <p class="text-lg font-semibold leading-none"
+                               :class="(cfgRuntime?.requeueable_count ?? 0) > 0 ? 'text-amber-700' : 'text-slate-800'"
+                               x-text="cfgRuntime?.requeueable_count ?? '—'"></p>
+                            <p class="text-[10px] text-slate-400 mt-1">aplazados por freno</p>
+                        </div>
+                        {{-- 4. Convirtiendo ffmpeg local --}}
+                        <div class="bg-slate-50 rounded-lg p-2.5 border border-slate-200">
+                            <p class="text-slate-500 mb-0.5">
+                                <i class="fas fa-gears mr-0.5"></i>
+                                Procesando
+                            </p>
+                            <p class="text-lg font-semibold text-slate-800 leading-none"
+                               x-text="cfgRuntime?.states?.processing ?? '—'"></p>
+                            <p class="text-[10px] text-slate-400 mt-1">ffmpeg local</p>
+                        </div>
+                        {{-- 5. En GPU remota --}}
+                        <div class="bg-slate-50 rounded-lg p-2.5 border border-slate-200">
+                            <p class="text-slate-500 mb-0.5">
+                                <i class="fas fa-microchip mr-0.5"></i>
+                                En remota
+                            </p>
+                            <p class="text-lg font-semibold text-slate-800 leading-none"
+                               x-text="cfgRuntime?.remote_status?.queue_queued ?? cfgRuntime?.states?.queued ?? '—'"></p>
+                            <p class="text-[10px] text-slate-400 mt-1">en la cola del nodo</p>
+                        </div>
+                        {{-- 6. Hechos hoy (real: por finished_at del dia) --}}
+                        <div class="bg-emerald-50 rounded-lg p-2.5 border border-emerald-200">
+                            <p class="text-slate-500 mb-0.5">
+                                <i class="fas fa-circle-check text-emerald-600 mr-0.5"></i>
+                                Hechos hoy
+                            </p>
+                            <p class="text-lg font-semibold text-emerald-700 leading-none"
+                               x-text="cfgRuntime?.today?.done ?? cfgRuntime?.states_today?.done ?? '—'"></p>
+                            <p class="text-[10px] text-slate-400 mt-1">transcripciones listas</p>
+                        </div>
+                    </div>
+
+                    {{-- Desglose de pendientes de HOY: lo que realmente falta.
+                         "missing" son archivos de hoy en storages habilitados SIN
+                         fila de transcripcion (huecos de discovery). Antes eran
+                         invisibles en todos los paneles. --}}
+                    <div class="mt-3 p-3 bg-slate-50 rounded-lg border border-slate-200">
+                        <div class="flex items-center justify-between mb-2">
+                            <p class="text-xs text-slate-600">
+                                <i class="fas fa-list-check mr-1 text-brand-500"></i>
+                                <span class="font-medium">Pendientes de hoy</span>
+                                <span class="text-[10px] text-slate-400 ml-1">archivos del día en storages habilitados sin transcripción lista</span>
+                            </p>
+                            <p class="text-xs text-slate-500">
+                                total
+                                <span class="font-mono font-semibold text-slate-700"
+                                      x-text="cfgRuntime?.today?.total ?? '—'"></span>
+                            </p>
+                        </div>
+                        <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2 text-[11px]">
+                            <div class="bg-white rounded border border-slate-200 p-2">
+                                <p class="text-slate-700 font-medium">Sin fila</p>
+                                <p class="font-mono font-semibold text-slate-700 text-base" x-text="cfgRuntime?.today?.missing ?? '0'"></p>
+                                <p class="text-slate-400 text-[10px] leading-tight mt-1">El scanner aún no los indexó. Pulsa "Escanear storages".</p>
+                            </div>
+                            <div class="bg-white rounded border border-slate-200 p-2">
+                                <p class="text-slate-700 font-medium">Pendientes</p>
+                                <p class="font-mono font-semibold text-slate-700 text-base" x-text="cfgRuntime?.today?.pending ?? '0'"></p>
+                                <p class="text-slate-400 text-[10px] leading-tight mt-1">Esperando turno del stager. Corre "Escanear storages".</p>
+                            </div>
+                            <div class="bg-white rounded border border-slate-200 p-2">
+                                <p class="text-slate-700 font-medium">Encolados</p>
+                                <p class="font-mono font-semibold text-slate-700 text-base" x-text="cfgRuntime?.today?.queued ?? '0'"></p>
+                                <p class="text-slate-400 text-[10px] leading-tight mt-1">Subidos a la API remota, aún sin respuesta.</p>
+                            </div>
+                            <div class="bg-white rounded border border-slate-200 p-2">
+                                <p class="text-slate-700 font-medium">Procesando</p>
+                                <p class="font-mono font-semibold text-slate-700 text-base" x-text="cfgRuntime?.today?.processing ?? '0'"></p>
+                                <p class="text-slate-400 text-[10px] leading-tight mt-1">Convirtiendo o en cola upstream. Si pasa de 10 min, ver log.</p>
+                            </div>
+                            <div class="bg-white rounded border border-slate-200 p-2">
+                                <p class="text-slate-700 font-medium">Con error</p>
+                                <p class="font-mono font-semibold text-slate-700 text-base" x-text="cfgRuntime?.today?.error ?? '0'"></p>
+                                <p class="text-slate-400 text-[10px] leading-tight mt-1">Reintentar con "Reenviar fallidos" o revisa si el upstream está caído.</p>
+                            </div>
+                            <div class="bg-white rounded border border-slate-200 p-2">
+                                <p class="text-slate-700 font-medium">Irrecuperables</p>
+                                <p class="font-mono font-semibold text-slate-700 text-base" x-text="cfgRuntime?.today?.dead ?? '0'"></p>
+                                <p class="text-slate-400 text-[10px] leading-tight mt-1">Cerrados automáticamente. Revisar a mano o reescanear.</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    {{-- Barra de la API remota --}}
+                    <div class="mt-3 p-3 bg-slate-50 rounded-lg border border-slate-200">
+                        <div class="flex items-center justify-between mb-1.5">
+                            <p class="text-xs text-slate-600">
+                                <i class="fas fa-satellite-dish mr-1 text-brand-500"></i>
+                                <span class="font-medium">Cola del API remoto</span>
+                                <span class="text-slate-400 ml-1"
+                                      x-text="cfgRuntime?.remote_status ? '(' + cfgRuntime.remote_status.queue_queued + ' en cola + ' + cfgRuntime.remote_status.queue_processing + ' procesando)' : '(no reachable)'"></span>
+                            </p>
+                            <p class="text-xs text-slate-500">
+                                techo
+                                <span class="font-mono font-semibold text-slate-700"
+                                      x-text="cfgRuntime?.target_remote_queue ?? '—'"></span>
+                            </p>
+                        </div>
+                        <div class="w-full bg-slate-200 rounded-full h-2 overflow-hidden">
+                            {{-- La barra mide ocupacion contra el techo; el color lo decide el pestillo
+                                 del freno, no una comparacion cruda: asi el operador ve "frenada"
+                                 incluso cuando la cola ya bajo un poco pero aun no llega al reanudo. --}}
+                            <div class="h-2 rounded-full transition-all duration-300"
+                                 :class="(cfgRuntime?.remote_brake?.braked) ? 'bg-amber-500' : ((cfgRuntime?.remote_status?.queue_queued ?? 0) >= (cfgRuntime?.target_remote_queue ?? 180) * 0.8 ? 'bg-amber-400' : 'bg-emerald-500')"
+                                 :style="'width: ' + Math.min(100, ((cfgRuntime?.remote_status?.queue_queued ?? 0) / Math.max(1, cfgRuntime?.target_remote_queue ?? 180)) * 100) + '%'"></div>
+                        </div>
+                        <div class="flex items-center justify-between mt-1.5 text-[10px] text-slate-500">
+                            <span>
+                                {{-- Histéresis: frena en el techo y no reanuda hasta el umbral de reanudo.
+                                     El mensaje de "frenada" muestra ambos umbrales para que el operador
+                                     entienda por que no se reanuda al bajar un par de jobs. --}}
+                                <span x-show="cfgRuntime?.remote_brake?.braked"
+                                      class="text-amber-700 font-medium">
+                                    <i class="fas fa-hand-paper"></i> Frenada (baja a <span x-text="cfgRuntime?.remote_brake?.resume ?? 120"></span> para reanudar)
+                                </span>
+                                <span x-show="cfgRuntime?.remote_status && !(cfgRuntime?.remote_brake?.braked)"
+                                      class="text-emerald-700">
+                                    <i class="fas fa-circle-check"></i> Con headroom: envío activo
+                                </span>
+                                <span x-show="!cfgRuntime?.remote_status" class="text-slate-400">
+                                    <i class="fas fa-circle-exclamation"></i> Sin telemetría
+                                </span>
+                            </span>
+                            <span class="text-slate-400"
+                                  x-show="cfgRuntime?.remote_brake?.braked"
+                                  x-text="'revalida cada ' + (cfgRuntime?.remote_brake?.recheck_seconds ?? 30) + 's'"></span>
+                        </div>
+                    </div>
+
+                    {{-- Salud del nodo remoto (solo las señales que regulan
+                         el envío): RAM, RAM disk, disco y cola/corrector.
+                         CPU y GPU no se muestran: en este módulo no accionan
+                         un freno y ensucian el panel. --}}
+                    <div class="mt-3 p-3 bg-white rounded-lg border border-slate-200"
+                         x-show="cfgRuntime?.remote_status" x-cloak
+                         :class="remoteHealthAlert() ? 'border-amber-300 bg-amber-50/40' : 'border-slate-200'">
+                        <div class="flex items-center justify-between mb-2">
+                            <p class="text-xs text-slate-600">
+                                <i class="fas fa-heart-pulse mr-1 text-brand-500"></i>
+                                <span class="font-medium">Salud del nodo remoto</span>
+                                <span class="text-[10px] text-slate-400 ml-1"
+                                      x-text="cfgRuntime?.remote_status?.node_id ? '(' + cfgRuntime.remote_status.node_id + ')' : ''"></span>
+                            </p>
+                            <p class="text-[10px] text-slate-400">
+                                <span x-text="(cfgRuntime?.remote_status?.workers ?? 0) + ' workers'"></span>
+                                <span class="ml-1" x-text="cfgRuntime?.remote_status?.uptime_seconds ? '· UP ' + fmtUptime(cfgRuntime.remote_status.uptime_seconds) : ''"></span>
+                            </p>
+                        </div>
+                        {{-- RAM, RAM disk y disco: las tres señales que importan
+                             para regular el envío. CPU y GPU se omiten a propósito
+                             (GPU al 100% significa que está trabajando, no saturada). --}}
+                        <div class="grid grid-cols-2 md:grid-cols-4 gap-2 text-[11px]">
+                            {{-- RAM --}}
+                            <div class="p-2 rounded border"
+                                 :class="metricClass(cfgRuntime?.remote_status?.ram_pct, 90, 75)">
+                                <p class="text-slate-500 text-[10px]">RAM</p>
+                                <p class="font-mono font-semibold"
+                                   x-text="fmtPct(cfgRuntime?.remote_status?.ram_pct)"></p>
+                                <p class="text-[10px] text-slate-400"
+                                   x-text="(cfgRuntime?.remote_status?.ram_used_gb ?? 0).toFixed(1) + ' / ' + (cfgRuntime?.remote_status?.ram_total_gb ?? 0).toFixed(1) + ' GB'"></p>
+                                <p class="text-[10px] text-slate-400"
+                                   x-show="(cfgRuntime?.remote_status?.swap_pct ?? 0) > 0"
+                                   x-text="'swap ' + fmtPct(cfgRuntime?.remote_status?.swap_pct)"></p>
+                            </div>
+                            {{-- RAM disk (tmpfs del nodo ASR) --}}
+                            <div class="p-2 rounded border"
+                                 :class="metricClass(cfgRuntime?.remote_status?.ramdisk_pct, 85, 70)">
+                                <p class="text-slate-500 text-[10px]">RAM disk</p>
+                                <p class="font-mono font-semibold"
+                                   x-text="fmtPct(cfgRuntime?.remote_status?.ramdisk_pct)"></p>
+                                <p class="text-[10px] text-slate-400"
+                                   x-text="(cfgRuntime?.remote_status?.ramdisk_used_gb ?? 0).toFixed(1) + ' / ' + (cfgRuntime?.remote_status?.ramdisk_total_gb ?? 0).toFixed(1) + ' GB'"></p>
+                                <p class="text-[10px]"
+                                   :class="(cfgRuntime?.remote_status?.ramdisk_ok ?? true) ? 'text-slate-400' : 'text-red-600 font-medium'"
+                                   x-text="(cfgRuntime?.remote_status?.ramdisk_ok ?? true) ? (cfgRuntime?.remote_status?.ramdisk_path || '') : 'no responde'"></p>
+                            </div>
+                            {{-- Disco del nodo --}}
+                            <div class="p-2 rounded border"
+                                 :class="metricClass(cfgRuntime?.remote_status?.disk_pct, 90, 80)">
+                                <p class="text-slate-500 text-[10px]">Disco</p>
+                                <p class="font-mono font-semibold"
+                                   x-text="fmtPct(cfgRuntime?.remote_status?.disk_pct)"></p>
+                                <p class="text-[10px] text-slate-400"
+                                   x-text="(cfgRuntime?.remote_status?.disk_free_gb ?? 0).toFixed(1) + ' GB libres de ' + (cfgRuntime?.remote_status?.disk_total_gb ?? 0).toFixed(1)"></p>
+                            </div>
+                            {{-- Cola + corrector: es la señal que gobierna el envío. --}}
+                            <div class="p-2 rounded border border-slate-200 bg-slate-50">
+                                <p class="text-slate-500 text-[10px]">Cola / corrector</p>
+                                <p class="font-mono font-semibold text-slate-700"
+                                   x-text="(cfgRuntime?.remote_status?.queue_queued ?? 0) + ' / ' + (cfgRuntime?.remote_status?.queue_processing ?? 0)"></p>
+                                <p class="text-[10px] text-slate-400"
+                                   x-text="'corrector pendiente ' + (cfgRuntime?.remote_status?.queue_done_pending_corrector ?? 0)"></p>
+                            </div>
+                        </div>
+                        <div class="flex items-center justify-between mt-2 text-[10px]">
+                            <span :class="remoteHealthAlert() ? 'text-amber-700 font-medium' : 'text-emerald-700'">
+                                <i class="fas" :class="remoteHealthAlert() ? 'fa-triangle-exclamation' : 'fa-circle-check'"></i>
+                                <span x-text="remoteHealthAlert() ? remoteHealthAlert() : 'Nodo remoto sano'"></span>
+                            </span>
+                            <span class="text-slate-400" x-text="'actualizado ' + fmtAgo(cfgRuntime?.remote_status?.fetched_at)"></span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            {{-- Barra plegable: Expandir todo / Plegar todo --}}
+            <div class="mb-4 flex items-center justify-end gap-2" data-tour="cfg-groups-toolbar">
+                <button type="button" @click="expandAllGroups()"
+                        class="text-xs px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 inline-flex items-center gap-1.5">
+                    <i class="fas fa-chevrons-down text-[10px]"></i>
+                    <span>Expandir todo</span>
+                </button>
+                <button type="button" @click="collapseAllGroups()"
+                        class="text-xs px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 inline-flex items-center gap-1.5">
+                    <i class="fas fa-chevrons-up text-[10px]"></i>
+                    <span>Plegar todo</span>
+                </button>
             </div>
 
             {{-- Grupos de knobs --}}
             <template x-for="group in cfgGroups()" :key="group">
                 <div class="mb-4 bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden" :data-tour="'cfg-group-' + group">
-                    <div class="px-5 py-3 border-b border-slate-100 bg-slate-50/60 flex items-center gap-3">
+                    <button type="button" @click="toggleGroup(group)"
+                            :aria-expanded="isGroupOpen(group) ? 'true' : 'false'"
+                            :aria-controls="'cfg-group-body-' + group"
+                            class="w-full text-left px-5 py-3 border-b border-slate-100 bg-slate-50/60 flex items-center gap-3 hover:bg-slate-50 transition-colors">
                         <i class="fas text-brand-500 text-base" :class="cfgGroupIcons[group] || 'fa-cog'"></i>
                         <div class="flex-1 min-w-0">
                             <h3 class="text-sm font-semibold text-slate-700" x-text="groupLabel(group)"></h3>
                             <p class="text-xs text-slate-400 mt-0.5" x-text="groupHelp(group)"></p>
                         </div>
-                    </div>
-                    <div class="divide-y divide-slate-100">
+                        <i class="fas fa-chevron-down text-slate-400 text-xs transition-transform duration-150"
+                           :class="!isGroupOpen(group) ? 'rotate-180' : ''"></i>
+                    </button>
+                    <div :id="'cfg-group-body-' + group"
+                         x-show="isGroupOpen(group)"
+                         x-transition.opacity.duration.150ms
+                         class="divide-y divide-slate-100">
                         <template x-for="k in cfgKeysIn(group)" :key="k">
                             <div class="px-5 py-3.5" :data-tour="'cfg-knob-' + k">
                                 <div class="flex items-start gap-4">

@@ -2,12 +2,12 @@
 
 namespace App\Console\Commands;
 
-use App\Jobs\ConvertAndTranscribeJob;
 use App\Models\Transcription;
+use App\Services\Ia\TranscriptionBulkDispatchService;
 use App\Services\Ia\TranscriptorSettings;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Redis;
 
 /**
  * Re-transcribe las filas cuyo resultado se perdio en el transcriptor.
@@ -28,7 +28,7 @@ use Illuminate\Support\Facades\Redis;
  *    mismo.
  *  - Usa TranscriptorSettings::computeDispatchBatch(), la misma aritmetica del
  *    tick, de modo que solo consume la capacidad que sobra por debajo de
- *    target_redis_queue.
+ *    target_pg_queue.
  *  - Resetea a `pending` UNICAMENTE las filas que va a despachar en esta
  *    corrida. Si dejara un charco de miles de `pending` viejos, la fase 1 de
  *    PollResultsCommand los iria reenviando a 50/min con ffmpeg sincrono
@@ -119,8 +119,14 @@ class TranscriptionBackfillLostCommand extends Command
                     'finished_at' => null,
                 ]);
 
-                ConvertAndTranscribeJob::dispatch($tx->file_id, (bool) $tx->generate_alerts);
-                $requeued++;
+                // Cola nativa PG: marcar la fila como processing via el servicio
+                // centralizado. El worker PG no la re-toma; el submit corre aqui
+                // mismo de forma sincronica (mismo modelo que el bulk-dispatch UI).
+                $stats = app(TranscriptionBulkDispatchService::class)->dispatch([(int) $tx->id]);
+                $requeued += (int) ($stats['enqueued'] ?? 0);
+                if (($stats['errors'] ?? 0) > 0) {
+                    $errors++;
+                }
             } catch (\Throwable $e) {
                 $errors++;
                 $this->error("tx {$tx->id}: {$e->getMessage()}");
@@ -203,7 +209,7 @@ class TranscriptionBackfillLostCommand extends Command
     }
 
     /**
-     * Capacidad sobrante bajo target_redis_queue. Devuelve 0 (y explica por
+     * Capacidad sobrante bajo target_pg_queue. Devuelve 0 (y explica por
      * que) si el pipeline del dia ya esta usando toda la cola.
      */
     private function dispatchBudget(TranscriptorSettings $settings, bool $dryRun): int
@@ -214,16 +220,20 @@ class TranscriptionBackfillLostCommand extends Command
         }
 
         try {
-            $current = (int) Redis::llen('queues:transcription');
+            $current = (int) DB::table('transcriptions')
+                ->where('state', Transcription::STATE_PENDING)
+                ->whereNull('dispatched_at')
+                ->where('created_at', '>=', \Carbon\CarbonImmutable::today())
+                ->count();
         } catch (\Throwable $e) {
-            $this->error('No se pudo leer la cola Redis: ' . $e->getMessage());
+            $this->error('No se pudo contar pendientes en PG: ' . $e->getMessage());
             return 0;
         }
 
         $budget = $settings->computeDispatchBatch($current);
 
         if ($budget <= 0) {
-            $this->info("Cola Redis en/sobre el objetivo (current={$current}). El backfill cede el paso al trabajo del dia.");
+            $this->info("Cola PG en/sobre el objetivo (current={$current}). El backfill cede el paso al trabajo del dia.");
             return 0;
         }
 
@@ -236,7 +246,7 @@ class TranscriptionBackfillLostCommand extends Command
             $dryRun ? '[DRY-RUN] ' : '',
             $budget,
             $current,
-            $settings->int('target_redis_queue'),
+            $settings->int('target_pg_queue'),
         ));
 
         return $budget;

@@ -4,29 +4,6 @@ Define la observabilidad de extremo a extremo del pipeline de transcripción des
 
 ## Requirements
 
-### Requirement: Pipeline persiste cuatro marcas temporales por Transcription
-El sistema SHALL persistir cuatro columnas nuevas en `transcriptions`:
-- `discovered_at`: momento en que `DiskScannerService` crea por primera vez la fila `Transcription` para un archivo candidato recién visto en disco.
-- `dispatched_at`: momento en que `TranscriptionTickCommand` encola el `ConvertAndTranscribeJob` correspondiente al job pool `transcription` de Redis.
-- `submission_committed_at`: momento en que `TranscriptionSubmitService::submit()` recibe respuesta válida del `POST /v1/transcribe` y persiste `job_id` no nulo en la fila.
-- `regulator_skip_reason`: texto corto (`≤64` caracteres) con la razón por la que el último tick omitió despacho en este storage cuando aplica a una fila; `NULL` cuando la fila sí fue despachada.
-
-#### Scenario: Discovery en cold start
-- **WHEN** el scanner crea una nueva fila `Transcription` para un archivo recién detectado en `base_path/dmY/`
-- **THEN** `discovered_at` se setea con el timestamp del momento de creación del registro
-- **AND** `dispatched_at`, `submission_committed_at` y `regulator_skip_reason` arrancan en `NULL`
-
-#### Scenario: Fila existente en BD antes del upgrade
-- **WHEN** existen filas `Transcriptions` previas a la migración que no tienen `discovered_at` poblado
-- **THEN** la columna admite `NULL` sin violar restricciones
-- **AND** la fila sigue siendo elegible para `dispatched_at` y `submission_committed_at` en cuanto pase por el pipeline
-
-#### Scenario: Skip por regulador registra la causa
-- **WHEN** el tick decide NO encolar por alguna señal del nuevo `regulator_signals`
-- **AND** existe al menos una `Transcription` pendiente del almacenamiento actual con `dispatched_at IS NULL`
-- **THEN** el tick actualiza `regulator_skip_reason` con la razón dominante (ej. `remote_gpu>=90%`, `shm_free<200MB`, `inflight>=max`)
-- **AND** no encola hasta que la señal deje de estar saturada
-
 ### Requirement: Endpoint de latencias por etapa con percentiles
 El sistema SHALL exponer `GET /ia/api-transcriptor/latency` bajo el grupo `['auth','admin']` + `prefix('ia')`, que devuelva para las últimas N horas configurables (default 24h) y agrupado por storage opcional, las distribuciones p50/p95 en segundos de cuatro etapas:
 - `mtime_to_discovered`: `(discovered_at - files.file_modified_at)`
@@ -52,13 +29,13 @@ El sistema SHALL exponer `GET /ia/api-transcriptor/latency` bajo el grupo `['aut
 ### Requirement: Endpoint que explica por qué el último tick frenó
 El sistema SHALL exponer `GET /ia/api-transcriptor/regulator-cause` que devuelva, para el último tick ejecutado, las señales evaluadas y el resultado del cálculo del regulador:
 - `fired_at`: timestamp del tick (`null` si nunca corrió).
-- `signals_evaluated`: lista de señales que el modo actual considera (`redis_queue_depth`, `remote_gpu_usage`, `shm_free`, `inflight_active`, `dispatch_paused`).
-- `values`: lectura de cada señal (ej. `redis_queue_depth=87`, `remote_gpu_usage=null`, `shm_free=1.4GB`).
+- `signals_evaluated`: lista de señales que el modo actual considera (`pg_queue_depth`, `remote_gpu_usage`, `shm_free`, `inflight_active`, `dispatch_paused`).
+- `values`: lectura de cada señal (ej. `pg_queue_depth=87`, `remote_gpu_usage=null`, `shm_free=1.4GB`).
 - `decision`: `dispatched | skipped` y la razón (`queue_at_target`, `remote_gpu_saturated`, `shm_low`, `inflight_full`, `dispatch_paused`, `none`).
 - `batch_computed`: entero con el batch que el regulador habría calculado este ciclo.
 
-#### Scenario: Tick reciente con freno por cola Redis
-- **WHEN** el último tick decidió `skipped` por `redis_queue_depth >= target_redis_queue`
+#### Scenario: Tick reciente con freno por cola PG
+- **WHEN** el último tick decidió `skipped` por `pg_queue_depth >= target_pg_queue`
 - **THEN** el endpoint devuelve `decision=skipped`, `reason=queue_at_target`, `values.remote_gpu_usage=null` (modo `local_only`) y `batch_computed` igual al `min_batch` o 0
 
 #### Scenario: Modo `remote_aware` sin freno

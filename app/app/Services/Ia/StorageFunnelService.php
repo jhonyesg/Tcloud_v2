@@ -18,81 +18,52 @@ class StorageFunnelService
 
     /**
      * Conteos del dia de hoy por storage dentro del scope heredado
-     * cuya raiz es $rootId. Devuelve un dict {storageId => {pending, done}}.
+     * cuya raiz es $rootId. Devuelve un dict {storageId => {...}}.
      *
-     * "Hoy" se mide como `transcriptions.created_at >= today_start`. Solo
-     * dos categorias: `pending` (no terminado) y `done` (terminado OK).
-     * `dead` cuenta como pending (no se va a procesar solo) hasta que un
-     * operador lo rescate via backfill.
+     * Delegacion a TodayPendingService (2026-09-15): antes esta query hacia un
+     * INNER JOIN contra `transcriptions`, asi que un archivo de hoy SIN fila de
+     * transcripcion no aparecia en la columna "Pendientes" del tab Storages. El
+     * operador veia "pendientes" solo donde ya habia fila, que es justo lo
+     * contrario de lo que necesita: los huecos de discovery (~1.800 archivos)
+     * eran invisibles.
      *
-     * Cache: 60 segundos por scope. Invalidar con invalidate($rootId).
+     * Hoy el eje es el archivo (`files.file_modified_at` del dia) con LEFT JOIN,
+     * y "pendiente" = no tiene `done`. Se conservan las claves historicas
+     * `pending`/`done` (la UI las usa) y se agregan los cortes por estado.
+     *
+     * `pending` mantiene el significado previo para no romper consumidores:
+     * todo lo que no esta terminado (incluye huecos, error y dead), que es
+     * como el operador piensa la columna.
+     *
+     * Cache: la maneja TodayPendingService (45 s por scope, invalidable).
      */
     public function countsForScope(int $rootId): array
     {
-        $cacheKey = self::CACHE_KEY_PREFIX . $rootId;
+        $byStorage = app(TodayPendingService::class)->byStorageForScope($rootId);
 
-        return Cache::remember($cacheKey, self::CACHE_TTL_SECONDS, function () use ($rootId) {
-            return $this->computeScopeCounts($rootId);
-        });
-    }
-
-    /**
-     * Query agregada unica sobre todos los storages del scope (root +
-     * descendientes habilitados), agrupada por storage_provider_id y state.
-     * Devuelve dict compartido: cada storage_id apunta al MISMO array con
-     * las dos categorias del funnel diario.
-     */
-    private function computeScopeCounts(int $rootId): array
-    {
-        $scopeIds = StorageProvider::resolveInheritedTranscriptionScope($rootId);
-        if (empty($scopeIds)) {
-            return [];
+        $out = [];
+        foreach ($byStorage as $sid => $counts) {
+            $out[$sid] = [
+                // Claves historicas: la tabla de storages y sus agregados.
+                'pending' => (int) ($counts['not_done'] ?? 0),
+                'done' => (int) ($counts['done'] ?? 0),
+                // Desglose nuevo: lo que permite explicar la columna.
+                'missing' => (int) ($counts['missing'] ?? 0),
+                'queued' => (int) ($counts['queued'] ?? 0),
+                'processing' => (int) ($counts['processing'] ?? 0),
+                'error' => (int) ($counts['error'] ?? 0),
+                'dead' => (int) ($counts['dead'] ?? 0),
+                'total' => (int) ($counts['total'] ?? 0),
+            ];
         }
 
-        // "Hoy" se mide por la fecha en America/Bogota (app.timezone), NO por UTC.
-        // Postgres almacena created_at en UTC, pero la pregunta del operador es
-        // "archivos del dia actual en mi horario local". La conversion se hace
-        // en SQL con AT TIME ZONE para no perder filas en el borde de medianoche.
-        $todayDate = now()->format('Y-m-d');
-
-        $rows = DB::table('files')
-            ->join('transcriptions', 'transcriptions.file_id', '=', 'files.id')
-            ->whereIn('files.storage_provider_id', $scopeIds)
-            ->where('files.is_folder', false)
-            ->where('files.is_trashed', false)
-            ->whereNull('files.deleted_at')
-            ->whereRaw("(transcriptions.created_at AT TIME ZONE 'America/Bogota')::date = ?", [$todayDate])
-            ->select(
-                'files.storage_provider_id',
-                'transcriptions.state',
-                DB::raw('COUNT(*) AS cnt')
-            )
-            ->groupBy('files.storage_provider_id', 'transcriptions.state')
-            ->get();
-
-        $byStorage = [];
-        foreach ($scopeIds as $sid) {
-            $byStorage[$sid] = ['pending' => 0, 'done' => 0];
-        }
-
-        foreach ($rows as $r) {
-            $sid = (int) $r->storage_provider_id;
-            if (!isset($byStorage[$sid])) {
-                continue;
-            }
-            if ($r->state === 'done') {
-                $byStorage[$sid]['done'] += (int) $r->cnt;
-            } else {
-                $byStorage[$sid]['pending'] += (int) $r->cnt;
-            }
-        }
-
-        return $byStorage;
+        return $out;
     }
 
     public function invalidate(int $rootId): void
     {
         Cache::forget(self::CACHE_KEY_PREFIX . $rootId);
+        app(TodayPendingService::class)->forget();
         Log::info('transcriptor.funnel.invalidated', ['root_id' => $rootId]);
     }
 
@@ -190,10 +161,10 @@ class StorageFunnelService
 
     /**
      * Resuelve el rootId del scope al que pertenece un storage. Cacheado en
-     * Redis 10 min (ROOT_ID_CACHE_TTL): la geometria del filesystem cambia
-     * lento y este helper se llamaba 70+ veces por indexData() sin cache,
-     * cada una disparando 2 queries (find + LIKE seq scan). Change
-     * 2026-09-12-api-transcriptor-index-perf-cache.
+     * el store de caché 10 min (ROOT_ID_CACHE_TTL): la geometria del
+     * filesystem cambia lento y este helper se llamaba 70+ veces por
+     * indexData() sin cache, cada una disparando 2 queries (find + LIKE
+     * seq scan). Change 2026-09-12-api-transcriptor-index-perf-cache.
      */
     public function resolveRootIdFor(int $storageId): int
     {

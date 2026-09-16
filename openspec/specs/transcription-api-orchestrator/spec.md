@@ -130,45 +130,6 @@ modo `--audit` sin escrituras.
 
 ---
 
-### Requirement: Admin puede ver transcriptions recientes y sus detalles
-
-El sistema SHALL listar las transcripciones en `/ia/api-transcriptor` de forma **paginada y
-filtrada en servidor** por sub-tab, y permitir ver el detalle de una en
-`/ia/api-transcriptor/jobs/{id}` con el SRT, los segmentos y el SRT viewer (texto plano).
-
-Además SHALL permitir leer la transcripción sin abandonar el listado, mediante la acción
-"Ver transcripción" que consume `GET /ia/api-transcriptor/jobs/{id}/transcript` (ver
-capability `transcriptor-jobs-listing`).
-
-> **Historia.** El requisito original decía "los últimos 100 jobs ordenados por
-> `created_at DESC`", implementado como `limit(200)` sin paginación y con las sub-tabs
-> repartiendo esas filas en el cliente. Con 84.763 filas en `queued`, la ventana no contenía
-> ni una sola de las 88.514 transcripciones en `done`.
-
-#### Scenario: Listado paginado de jobs
-- **WHEN** el admin abre `/ia/api-transcriptor`
-- **THEN** ve la primera página de 50 trabajos del scope activo, con columnas filename,
-  file_id, state, duration_seconds, started_at, finished_at
-- **AND** dispone de controles Anterior/Siguiente hasta 500 registros por scope
-
-#### Scenario: Detalle muestra SRT y segmentos
-- **WHEN** el admin abre el detalle de un job en estado `done`
-- **THEN** ve la lista de segmentos con sus marcas de tiempo, el `srt_content` formateado en
-  un `<pre>` con scroll, y un botón "Descargar .srt" que descarga el contenido real
-
----
-
-### Requirement: Admin puede re-encolar un job fallido manualmente
-El sistema SHALL exponer acción "Reintentar" en el detalle de un job en estado `error` o `dead` que re-encola un `ConvertAndTranscribeJob` borrando la `Transcription` previa.
-
-#### Scenario: Reintentar un job error
-- **WHEN** el admin hace POST a `/ia/api-transcriptor/jobs/{id}/retry` con state ∈ {error, dead}
-- **THEN** se elimina la `Transcription` anterior y se encola un nuevo job (la API externa puede haber purgado el `.bin` tras 7 días, en cuyo caso el nuevo job fallará con "file not found in upstream")
-
-#### Scenario: Reintentar un job en estado terminal inválido
-- **WHEN** el job está en `done`, `queued` o `processing`
-- **THEN** el sistema responde 409 "solo se reintentan jobs en error/dead"
-
 ### Requirement: Scanner detecta archivos nuevos accesibles en storages habilitados
 El sistema SHALL ejecutar el command `transcription:scan-new` cada 2-3 minutos vía Laravel scheduler, identificando archivos válidos sin transcripción previa en cada StorageProvider con `transcription_enabled = true`.
 
@@ -229,46 +190,6 @@ El sistema SHALL crear `Transcription` con `state=pending` (no `queued`) hasta q
 
 ---
 
-### Requirement: Procesamiento por lote en background con alertas opcionales
-El sistema SHALL permitir al admin iniciar un lote global de hasta 200 archivos que se ejecuta en background (proceso separado via `nohup`), distribuyendo el lote entre storages habilitados según prioridad. El admin SHALL poder elegir si el lote genera alertas (checkbox, default OFF).
-
-#### Scenario: Lote iniciado en background
-- **WHEN** el admin selecciona batch=50 y hace clic en "Iniciar procesamiento"
-- **THEN** el sistema lanza `transcription:process-batch --batch=50 --run-id=xxx` en background, devuelve inmediatamente un `run_id`, y el frontend hace polling cada 2s del progreso
-
-#### Scenario: Lote con alertas deshabilitadas
-- **WHEN** el admin inicia un lote con "Generar alertas" desmarcado
-- **THEN** todos los jobs del lote se crean con `generateAlerts=false` y al completar no se disparan alertas
-
-#### Scenario: Lote con alertas habilitadas
-- **WHEN** el admin marca "Generar alertas" e inicia el lote
-- **THEN** los jobs se crean con `generateAlerts=true` y al completar se disparan alertas normalmente
-
-#### Scenario: Lote distribuido por prioridad
-- **WHEN** hay 2 storages habilitados: Caracol (priority=10, 100 candidatos) y Radio (priority=0, 50 candidatos) y batch=50
-- **THEN** el lote asigna más archivos a Caracol que a Radio, proporcional al peso `candidatos * (1 + priority/10)`
-
-#### Scenario: Cerrar/recargar no detiene el lote
-- **WHEN** el admin cierra el modal o recarga la página mientras el lote corre
-- **THEN** el lote continúa en background; al reabrir el modal, el polling retoma el progreso si el `run_id` sigue en cache
-
----
-
-### Requirement: Procesamiento manual por carpeta o día
-El sistema SHALL permitir al admin procesar todos los archivos de una carpeta específica o de un día (HOY/AYER) desde el navegador de archivos, encolando jobs con prioridad manual y alertas opcionales.
-
-#### Scenario: Procesar carpeta actual
-- **WHEN** el admin está navegando una carpeta y hace clic en "Procesar carpeta"
-- **THEN** el sistema encola `ConvertAndTranscribeJob` para cada archivo sin transcripción de la carpeta actual (parent_id), con `generateAlerts` según checkbox
-
-#### Scenario: Procesar día
-- **WHEN** el admin está en modo HOY o AYER y hace clic en "Procesar día"
-- **THEN** el sistema encola jobs para todos los archivos visibles sin transcripción, con `generateAlerts` según checkbox
-
-#### Scenario: Confirmación antes de encolar
-- **WHEN** el admin hace clic en "Procesar carpeta" o "Procesar día"
-- **THEN** se muestra confirmación con el número de archivos a encolar antes de proceder
-
 ### Requirement: Todo ajuste expuesto tiene un consumidor real
 
 Cada clave del `SCHEMA` de `TranscriptorSettings` SHALL tener al menos un consumidor que la lea **a través de la capa de settings**. Una clave que solo se menciona en comentarios, o que solo se lee con `config('transcriptor.…')`, NO SHALL exponerse en la pantalla de configuración.
@@ -304,63 +225,6 @@ El servidor clampea `processBatch` con `ui_batch_max` de la capa de settings. Si
 #### Scenario: Sin override
 - **WHEN** no hay override guardado
 - **THEN** la vista recibe el valor de `config/transcriptor.php`, sin cambio de comportamiento respecto a antes
-
-### Requirement: Re-encolar upstream de jobs zombies vía `unstick`
-El sistema SHALL exponer `POST /ia/api-transcriptor/jobs/{id}/unstick` que, para una `Transcription` en `state=processing` con `started_at < now()->subMinutes(15)` y `job_id` no nulo, invoca `POST {base_url}/v1/jobs/{job_id}/unstick` en el upstream, deja registro en log con actor y timestamps, y devuelve `{upstream: {...}}`. La respuesta upstream es libre (un `unstick` exitoso mueve el job de processing → queued en el upstream, que el polling cerrará la próxima vez que consulte).
-
-#### Scenario: Job processing zombie se re-encola
-- **WHEN** el operador hace clic en "Re-encolar upstream" sobre un job que lleva >15 min en `state=processing`
-- **THEN** el sistema llama `TranscriptorApiClient::unstickUpstream(job_id, node_url)`
-- **AND** loguea `unstick admin action tx={id} job_id={jobId} actor={user_id}`
-- **AND** el próximo poll (≤30 s) ve `state=queued` upstream y lo procesa con normalidad
-
-#### Scenario: Job processing no-zombie se protege
-- **WHEN** un job lleva <15 min en `state=processing`
-- **THEN** el botón "Re-encolar upstream" NO se renderiza en la UI
-- **AND** el endpoint rechaza con 409 si lo invocan por ruta directa
-
----
-
-### Requirement: Eliminar upstream + local con `delete_upstream`
-El sistema SHALL exponer `POST /ia/api-transcriptor/jobs/{id}/delete-upstream` que llama `DELETE {base_url}/v1/jobs/{job_id}` y luego borra la fila local con cascade `transcription_segments`. Restringido a estados terminales (`done`, `error`, `dead`, `cancelled`).
-
-#### Scenario: Delete upstream exitoso limpia local
-- **WHEN** el operador borra un job `state=dead` con `job_id` válido
-- **THEN** el sistema llama `TranscriptorApiClient::deleteUpstream(job_id, node_url)` y, si responde 200/204, elimina la fila local
-- **AND** los segmentos asociados se borran en cascade
-
-#### Scenario: Delete upstream falla, no se borra local
-- **WHEN** el upstream responde 5xx o timeout
-- **THEN** el sistema registra el error y deja la fila local intacta
-- **AND** un retry manual posterior puede intentarlo de nuevo
-
----
-
-### Requirement: Reintento masivo con `retry-batch`
-El sistema SHALL exponer `POST /ia/api-transcriptor/retry-batch` (background via `RunsBackgroundCommands::execBackground`) que invoca el comando `transcription:retry-batch-upstream`, captura los counters `requeued/skipped/failed` que devuelve el upstream (`POST {base_url}/v1/jobs/retry-batch`), y los persiste en `bg_jobs` para que la UI del módulo los muestre. La respuesta inmediata al operador es HTTP 202 con `{runId, accepted: true}`.
-
-#### Scenario: Retry-batch confirma jobs re-encolados
-- **WHEN** el operador hace clic en "Reintentar todos los fallidos"
-- **THEN** el sistema lanza el comando en background
-- **AND** devuelve `runId` y `accepted: true` en <500 ms
-- **AND** el operador puede abrir `/ia/api-transcriptor/batch-status/{runId}` para ver progreso en vivo y los counters finales al terminar
-
-#### Scenario: Retry-batch en dry-run no muta nada
-- **WHEN** el operador corre `transcription:retry-batch-upstream --dry-run`
-- **THEN** el comando cuenta y agrupa por motivo, no llama al upstream, no cambia ninguna fila
-- **AND** es seguro correrlo lunes a las 04:00 desde cron sin efectos secundarios
-
----
-
-### Requirement: Cancelación upstream centralizada en cliente
-El sistema SHALL exponer `TranscriptorApiClient::cancelUpstream(string $jobId, string $nodeUrl = ''): array` y SHALL usarlo desde `ApiTranscriptorController::cancelJob()` (linea 633+) en lugar del `Http::timeout()->post(...)` directo. El comportamiento esperado es idéntico: `POST {base_url}/v1/jobs/{job_id}/cancel` y tratar 200 como éxito.
-
-#### Scenario: Cancelación llama al cliente una sola vez
-- **WHEN** el operador cancela un job `state=queued` desde la UI
-- **THEN** `grep "v1/jobs/.*/cancel"` en `app/app/` devuelve exactamente 1 hit dentro de `TranscriptorApiClient.php`
-- **AND** `ApiTranscriptorController::cancelJob()` invoca `TranscriptorApiClient::cancelUpstream()` y maneja la respuesta uniformemente
-
----
 
 ### Requirement: Frontera cerrada (ver requirement homónima en el módulo)
 

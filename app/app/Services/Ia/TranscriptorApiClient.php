@@ -181,6 +181,62 @@ class TranscriptorApiClient
         return $data;
     }
 
+    /**
+     * Burst-dispatch: POST MP4 directo al upstream SIN ffmpeg local.
+     *
+     * Upstream acepta MP4 directamente (ver /api-docs.html — "Audio (.wav, .mp3)
+     * o video (.mp4, .mkv) ≤ 2 GB"). Saltarse ffmpeg local elimina la saturacion
+     * de CPU/ramdisk del servidor TCloud (la conversion la hace el GPU upstream).
+     *
+     * Usado por TranscriptorBurstDispatchCommand con curl_multi para N POSTs
+     * en paralelo. Devuelve solo los campos minimos que el burst-dispatcher
+     * necesita persistir (job_id + node_id).
+     */
+    public function submitMp4Direct(string $absolutePath, string $originalName): array
+    {
+        if (!is_file($absolutePath) || !is_readable($absolutePath)) {
+            throw new \RuntimeException("Archivo no legible en disco: {$absolutePath}");
+        }
+
+        $endpoint = $this->baseUrl() . '/v1/transcribe';
+        $payload = [
+            'language' => $this->settings->str('language'),
+            'lang_fix' => $this->settings->str('lang_fix'),
+            'priority' => 'normal',
+        ];
+        if ($this->settings->bool('submit_with_idempotency_key')) {
+            $payload['idempotency_key'] = hash_file('sha256', $absolutePath);
+        }
+
+        $response = $this->submitRequest($absolutePath, null)
+            ->post($endpoint, $payload);
+
+        if ($response->status() === 401) {
+            throw new \RuntimeException('API auth required');
+        }
+        if ($response->status() === 429) {
+            throw UpstreamRateLimitException::fromResponse(429, $response, 'submit_mp4');
+        }
+        if ($response->status() === 503) {
+            throw UpstreamUnavailableException::fromResponse(
+                503,
+                $response,
+                'submit_mp4',
+                $this->settings->int('max_backoff_seconds')
+            );
+        }
+        if (!$response->successful()) {
+            throw new \RuntimeException('Transcriptor API error ' . $response->status() . ': ' . substr($response->body(), 0, 200));
+        }
+
+        $data = $response->json();
+        if (!is_array($data) || empty($data['job_id'])) {
+            throw new \RuntimeException('Respuesta inesperada del transcriptor: ' . substr($response->body(), 0, 200));
+        }
+
+        return $data;
+    }
+
     /*
      * Aqui vivia submit(File, string, string $callbackUrl), que mandaba un
      * callback_url apuntando a /webhooks/transcription.
@@ -366,15 +422,31 @@ class TranscriptorApiClient
             }
 
             $gpu = is_array($data['gpu'] ?? null) ? $data['gpu'] : [];
+            $ram = is_array($data['ram'] ?? null) ? $data['ram'] : [];
             $ramdisk = is_array($data['ramdisk'] ?? null) ? $data['ramdisk'] : [];
-            $queue = is_array($data['queue']['by_state_corrected'] ?? null)
-                ? $data['queue']['by_state_corrected'] : [];
+            $disk = is_array($data['disk'] ?? null) ? $data['disk'] : [];
             $circuit = is_array($data['circuit_breakers'] ?? null)
                 ? $data['circuit_breakers'] : [];
             $cpu = is_array($data['cpu'] ?? null) ? $data['cpu'] : [];
+            $node = is_array($data['node'] ?? null) ? $data['node'] : [];
 
-            $workers = max(0, (int) $data['node']['workers']);
-            $processing = max(0, (int) ($queue['processing/0'] ?? 0));
+            // `queue` cambio de forma en el upstream: la version con la que se
+            // escribio el parser solo traia `by_state_corrected` (claves tipo
+            // "queued/0") y NO tenia `queued`/`processing` planos. La version
+            // actual expone ambos. Se leen las dos formas para no atarse al
+            // shape de turno: planas si existen, si no la clave compuesta.
+            $queue = is_array($data['queue'] ?? null) ? $data['queue'] : [];
+            $queueByState = is_array($queue['by_state_corrected'] ?? null)
+                ? $queue['by_state_corrected'] : [];
+
+            $workers = max(0, (int) ($node['workers'] ?? 0));
+            $processing = max(0, (int) ($queue['processing'] ?? $queueByState['processing/0'] ?? 0));
+            $queuedNow = max(0, (int) ($queue['queued'] ?? $queueByState['queued/0'] ?? 0));
+
+            // Swap: el overview expone solo los GB absolutos, no el porcentaje.
+            // Se deriva aqui para que la UI no tenga que repetir la aritmetica.
+            $swapTotal = max(0, (float) ($ram['swap_total_gb'] ?? 0));
+            $swapUsed = max(0, (float) ($ram['swap_used_gb'] ?? 0));
 
             return [
                 'workers'         => $workers,
@@ -385,17 +457,47 @@ class TranscriptorApiClient
                     : 0,
                 'cluster_state'   => 'UP',
                 'circuit_open'    => ((int) ($circuit['open'] ?? 0)) > 0,
+                'circuit_healthy' => (int) ($circuit['healthy'] ?? 0),
+                'circuit_half_open' => (int) ($circuit['half_open'] ?? 0),
+                'node_id'         => (string) ($node['id'] ?? ''),
+                'uptime_seconds'  => max(0, (int) ($node['uptime_seconds'] ?? 0)),
+                // --- GPU ---
                 'gpu_util_pct'    => max(0, min(100, (int) ($gpu['util_pct'] ?? 0))),
                 'gpu_vram_pct'    => max(0, min(100, (int) ($gpu['vram_used_pct'] ?? 0))),
+                'gpu_vram_total_gb' => max(0, (float) ($gpu['vram_total_gb'] ?? 0)),
+                'gpu_temp_c'      => max(0, (float) ($gpu['temp_c'] ?? 0)),
+                'gpu_power_w'     => max(0, (float) ($gpu['power_w'] ?? 0)),
                 'gpu_model'       => (string) ($gpu['model'] ?? ''),
-                'ram_pct'         => max(0, min(100, (float) ($data['ram']['pct'] ?? 0))),
+                // --- RAM ---
+                'ram_pct'         => max(0, min(100, (float) ($ram['pct'] ?? 0))),
+                'ram_used_gb'     => max(0, (float) ($ram['used_gb'] ?? 0)),
+                'ram_total_gb'    => max(0, (float) ($ram['total_gb'] ?? 0)),
+                'ram_available_gb' => max(0, (float) ($ram['available_gb'] ?? 0)),
+                'swap_pct'        => $swapTotal > 0
+                    ? max(0, min(100, round(($swapUsed / $swapTotal) * 100, 1)))
+                    : 0.0,
+                // --- RAM disk (tmpfs donde el nodo ASR deja los WAV) ---
                 'ramdisk_pct'     => max(0, min(100, (float) ($ramdisk['pct'] ?? 0))),
+                'ramdisk_used_gb' => max(0, (float) ($ramdisk['used_gb'] ?? 0)),
                 'ramdisk_free_gb' => max(0, (float) ($ramdisk['free_gb'] ?? 0)),
+                'ramdisk_total_gb' => max(0, (float) ($ramdisk['total_gb'] ?? 0)),
+                'ramdisk_path'    => (string) ($ramdisk['path'] ?? ''),
+                'ramdisk_ok'      => (bool) ($ramdisk['ok'] ?? false),
+                // --- Disco del nodo (persistencia, no RAM) ---
+                'disk_pct'        => max(0, min(100, (float) ($disk['pct'] ?? 0))),
+                'disk_free_gb'    => max(0, (float) ($disk['free_gb'] ?? 0)),
+                'disk_total_gb'   => max(0, (float) ($disk['total_gb'] ?? 0)),
+                // --- CPU ---
                 'cpu_pct'         => max(0, min(100, (float) ($cpu['pct'] ?? 0))),
                 'cpu_load_1m'     => max(0, (float) ($cpu['load_1m'] ?? 0)),
-                'queue_total'     => (int) ($data['queue']['total_jobs'] ?? 0),
-                'queue_queued'    => (int) ($queue['queued/0'] ?? 0),
-                'queue_done_minus1' => (int) ($queue['done/-1'] ?? 0),
+                'cpu_cores'       => max(0, (int) ($cpu['cores'] ?? 0)),
+                // --- Cola ---
+                'queue_total'     => (int) ($queue['total_jobs'] ?? 0),
+                'queue_queued'    => $queuedNow,
+                'queue_done_minus1' => (int) ($queueByState['done/-1'] ?? 0),
+                'queue_done_failed' => max(0, (int) ($queue['done_failed'] ?? 0)),
+                'queue_done_pending_corrector' => max(0, (int) ($queue['done_pending_corrector'] ?? 0)),
+                'queue_by_state'  => $queueByState,
                 'source'          => $path,
                 'fetched_at'      => now()->toIso8601String(),
             ];

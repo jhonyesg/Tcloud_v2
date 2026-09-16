@@ -2,14 +2,13 @@
 
 namespace App\Console\Commands;
 
-use App\Jobs\ConvertAndTranscribeJob;
 use App\Models\StorageProvider;
 use App\Models\Transcription;
 use App\Services\Ia\DiskScannerService;
+use App\Services\Ia\TranscriptionBulkDispatchService;
 use App\Services\Ia\TranscriptorSettings;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Redis;
 
 class ScanAndSubmitCommand extends Command
 {
@@ -21,12 +20,12 @@ class ScanAndSubmitCommand extends Command
                             {--dry-run : Contar candidatos SIN crear filas ni encolar}
                             {--batch=0 : Maximo archivos por storage por ciclo (0 = usar config scan_batch)}
                             {--run-id= : Identificador para reportar progreso en cache (opcional)}
-                            {--no-dispatch : Solo escanea y crea pending, NO encola a Redis}
+                            {--no-dispatch : Solo escanea y crea pendientes en BD; los workers PG los recogen via la propia tabla transcriptions}
                             {--alerts= : Entrar al matching global de menciones (KeywordMatcher) para las transcripciones creadas (1=si default, 0=opt-out explicito)}
                             {--include-failed : Incluir transcripciones en estado error con archivo accesible (max retries configurable)}
                             {--include-done : Incluir transcripciones en estado done con archivo accesible (reprocesar finalizados, transcriptor-rescan-completed)}';
 
-    protected $description = 'Escanea el disco de storages habilitados, crea transcripciones pendientes y las encola en Redis para que los workers supervisord las procesen en paralelo.';
+    protected $description = 'Escanea el disco de storages habilitados y crea transcripciones pendientes; el worker PG las consume directo de la tabla.';
 
     public function handle(DiskScannerService $scanner, TranscriptorSettings $settings): int
     {
@@ -281,13 +280,13 @@ class ScanAndSubmitCommand extends Command
             $this->info("Rescan-done resumen: candidates={$doneStats['candidates']} reset_to_pending={$doneStats['reset_to_pending']} promoted_to_dead={$doneStats['promoted_to_dead']} skipped_no_file={$doneStats['skipped_no_file']}");
         }
 
-        // Fase 2: encolar pendientes sin job_id en Redis. El dispatch es NO
-        // bloqueante: los workers supervisord (queue:work) consumen la cola y
-        // ejecutan el pipeline ffmpeg+POST en paralelo (hasta numprocs simultáneos).
+        // Fase 2: el worker PG (transcription:worker) toma las filas state='pending'
+        // directamente de la tabla `transcriptions` con FOR UPDATE SKIP LOCKED.
+        // El "dispatch" ya no es un paso distinto del cron.
         $noDispatch = (bool) $this->option('no-dispatch');
 
         if ($noDispatch) {
-            $this->info("Scan-and-submit (modo --no-dispatch) completado. Pendientes creados en BD: {$totalPendingCreated}. NO se encolo a Redis (encolado manual por scripts/transcription_enqueue_batch.php).");
+            $this->info("Scan-and-submit (modo --no-dispatch) completado. Pendientes creados en BD: {$totalPendingCreated}. Los workers PG los recogerán cuando arranquen.");
             if ($cacheKey) {
                 $status = ($failedStorages > 0 && $failedStorages < $storages->count()) ? 'partial' : 'queued';
                 $message = null;
@@ -335,7 +334,7 @@ class ScanAndSubmitCommand extends Command
             $submitBatch = $this->computeSubmitBatch($settings, $batchOverride);
 
             if ($submitBatch <= 0) {
-                $this->info('Dispatch omitido: la cola Redis ya esta en/sobre target.');
+                $this->info('Dispatch omitido: la cola ya esta en/sobre target.');
                 Log::info('ScanAndSubmitCommand: skip dispatch, queue at target');
             }
         }
@@ -350,13 +349,15 @@ class ScanAndSubmitCommand extends Command
 
         $dispatched = 0;
         $errors = 0;
+        // Cola nativa PG: el bulk-dispatch ahora marca `state='processing'` y
+        // `dispatched_at` directo en BD. El worker PG NO las re-toma (filtra
+        // `state='pending'`). Procesado sincrónico via TranscriptionBulkDispatchService
+        // — un reintento manual sigue siendo sincrónico como antes.
         foreach ($pending as $tx) {
             try {
-                ConvertAndTranscribeJob::dispatch(
-                    $tx->file_id,
-                    (bool) $tx->generate_alerts
-                );
-                $dispatched++;
+                $stats = app(TranscriptionBulkDispatchService::class)->dispatch([(int) $tx->id]);
+                $dispatched += (int) ($stats['enqueued'] ?? 0);
+                $errors += (int) ($stats['errors'] ?? 0);
             } catch (\Throwable $e) {
                 $errors++;
                 $this->error("Transcription {$tx->id}: {$e->getMessage()}");
@@ -364,7 +365,7 @@ class ScanAndSubmitCommand extends Command
             }
         }
 
-        $this->info("Scan-and-submit completado. Pendientes creados: {$totalPendingCreated}. Encolados: {$dispatched}. Errores: {$errors}. Los workers supervisord procesarán la cola en paralelo.");
+        $this->info("Scan-and-submit completado. Pendientes creados: {$totalPendingCreated}. Marcados como processing: {$dispatched}. Errores: {$errors}. El worker PG tomara las filas marcadas como processing.");
 
         if ($cacheKey) {
             $status = ($failedStorages > 0 && $failedStorages < $storages->count()) ? 'partial' : 'queued';
@@ -441,8 +442,8 @@ class ScanAndSubmitCommand extends Command
      * Antes esto era scan_batch * count($storages) — con 31 storages, 3100 jobs
      * de golpe sin consultar al regulador. Ahora se acota por dos vias:
      *  1. scan_max_dispatch_per_cycle: techo absoluto por ejecucion.
-     *  2. El deficit del regulador (misma aritmetica que TranscriptionTickCommand):
-     *     si la cola Redis ya esta en/sobre target, devuelve 0.
+*  2. El deficit del regulador (misma aritmetica que TranscriptionTickCommand):
+      *     si la cola ya esta en/sobre target, devuelve 0.
      *
      * Asi el camino manual (boton "Escanear storages") nunca puede exceder al
      * automatico.
@@ -452,16 +453,25 @@ class ScanAndSubmitCommand extends Command
         $cap = $batchOverride ?? $settings->int('scan_max_dispatch_per_cycle');
 
         try {
-            $current = (int) Redis::llen('queues:transcription');
+            $current = $this->countPendingToday();
         } catch (\Throwable $e) {
             // Sin visibilidad de la cola preferimos el techo conservador antes
             // que abortar el ciclo entero.
-            Log::warning('ScanAndSubmitCommand: no se pudo leer llen(queues:transcription): ' . $e->getMessage());
+            Log::warning('ScanAndSubmitCommand: no se pudo contar pendientes PG: ' . $e->getMessage());
             return $cap;
         }
 
         // Misma aritmetica que el tick: el camino manual nunca puede exceder al
         // automatico.
         return min($cap, $settings->computeDispatchBatch($current));
+    }
+
+    private function countPendingToday(): int
+    {
+        return (int) \Illuminate\Support\Facades\DB::table('transcriptions')
+            ->where('state', Transcription::STATE_PENDING)
+            ->whereNull('dispatched_at')
+            ->where('created_at', '>=', \Carbon\CarbonImmutable::today())
+            ->count();
     }
 }

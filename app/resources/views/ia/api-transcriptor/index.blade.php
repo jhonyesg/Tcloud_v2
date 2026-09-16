@@ -269,6 +269,15 @@
                             <i class="fas text-[10px]" :class="storagesSortIcon('done') + ' ' + storagesSortIconClass('done')"></i>
                         </button>
                     </th>
+                    <th class="py-2.5 pr-3 font-medium whitespace-nowrap text-center"
+                        title="Archivos de hoy en este storage (con transcripción habilitada) que todavía no tienen fila de descubrimiento. Se resuelven en los próximos ciclos del escáner.">
+                        <button type="button" @click="setStoragesSort('missing')"
+                                :class="storagesSortHeaderClass('missing') + ' inline-flex items-center gap-1.5 transition-colors'"
+                                title="Ordenar por archivos sin fila de transcripción">
+                            Sin fila
+                            <i class="fas text-[10px]" :class="storagesSortIcon('missing') + ' ' + storagesSortIconClass('missing')"></i>
+                        </button>
+                    </th>
                     <th class="py-2.5 pr-3 font-medium whitespace-nowrap text-center">
                         <button type="button" @click="setStoragesSort('priority')"
                                 :class="storagesSortHeaderClass('priority') + ' inline-flex items-center gap-1.5 transition-colors'"
@@ -297,26 +306,17 @@
                             x-text="storageRowNumber(idx)"></td>
                         <td class="py-3 pr-3 text-sm font-medium text-slate-700">
                             <div class="flex items-center gap-2">
-                                <template x-if="s.descendant_count > 0">
-                                    <button type="button" @click.stop="toggleStorageExpansion(s.parent_scope_id)"
-                                            class="text-slate-400 hover:text-slate-700 transition-transform"
-                                            :class="expandedScopes.has(s.parent_scope_id) ? 'rotate-90' : ''"
-                                            :title="expandedScopes.has(s.parent_scope_id) ? 'Colapsar hijos' : 'Expandir hijos'">
-                                        <i class="fas fa-chevron-right text-[10px]"></i>
-                                    </button>
-                                </template>
-                                <template x-if="!s.descendant_count || s.descendant_count === 0">
-                                    <span class="w-3 inline-block"></span>
-                                </template>
+                                <span class="w-3 inline-block"></span>
                                 <span x-text="s.name"></span>
                                 <template x-if="s.overlap_warning">
                                     <span class="text-[10px] px-1.5 py-0.5 bg-amber-100 text-amber-700 rounded-full font-semibold"
                                           title="Este storage tiene allow_parent_overlap=true y descendientes habilitados. Los conteos pueden sumar de más si ambos escanean los mismos archivos.">⚠ solapamiento</span>
                                 </template>
                                 <template x-if="s.descendant_count > 0">
-                                    <span class="text-[10px] px-1.5 py-0.5 bg-slate-100 text-slate-500 rounded-full"
-                                          :title="'Descendientes: ' + (s.descendant_names || []).join(', ')"
-                                          x-text="s.descendant_count + ' hijo(s)'"></span>
+                                    <button type="button" @click.stop="openDescendantsModal(s)"
+                                            class="text-[10px] px-1.5 py-0.5 bg-slate-100 text-slate-700 rounded-full font-semibold cursor-pointer hover:bg-brand-100 hover:text-brand-700 transition-colors"
+                                            :title="'Ver los ' + s.descendant_count + ' hijos de este storage'"
+                                            x-text="s.descendant_count + ' hijo(s)'"></button>
                                 </template>
                                 <template x-if="emptyFoldersFor(s.id)">
                                     <button type="button" @click.stop="emptyFoldersExpanded = true; emptyFoldersExpanded && setTimeout(() => { const el = document.querySelector('[data-tour=\"storages-empties\"]'); if (el) el.scrollIntoView({behavior:'smooth', block:'start'}); }, 50)"
@@ -342,6 +342,17 @@
                         </td>
                         <td class="py-3 pr-3 text-sm text-slate-700 text-right tabular-nums" x-text="s.funnel?.done ?? 0"></td>
                         <td class="py-3 pr-3 text-center">
+                            {{-- Archivos del día en este storage, con transcripción
+                                 habilitada, que aún NO tienen fila de descubrimiento.
+                                 Antes no existía señal alguna de ellos: el funnel hacía
+                                 INNER JOIN con transcriptions y los ocultaba. --}}
+                            <span x-show="(s.funnel?.missing ?? 0) > 0"
+                                  class="px-2 py-0.5 rounded bg-amber-50 text-amber-800 text-[10px] font-semibold tabular-nums"
+                                  :title="'Archivos de hoy sin fila de transcripción (huecos de descubrimiento)'"
+                                  x-text="s.funnel.missing"></span>
+                            <span x-show="(s.funnel?.missing ?? 0) === 0" class="text-[10px] text-slate-300">—</span>
+                        </td>
+                        <td class="py-3 pr-3 text-center">
                             <span class="px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-xs tabular-nums" x-text="s.transcription_priority ?? 0"></span>
                         </td>
                         {{-- Interruptor real: escribe storage_providers.transcription_enabled,
@@ -359,18 +370,10 @@
                                 <span x-text="s.transcription_enabled ? 'Transcribe' : 'Inactivo'"></span>
                             </button>
                         </td>
-                        <td class="py-3 text-right">
-                            <div class="flex items-center justify-end gap-1.5">
-                                <button @click="openFiles(s)"
-                                        data-tour="storage-files"
-                                        class="flex items-center gap-1 px-2.5 py-1.5 bg-slate-100 hover:bg-brand-50 text-slate-600 hover:text-brand-700 text-xs rounded-lg transition-colors"
-                                        :class="!s.transcription_enabled && 'opacity-50'">
-                                    <i class="fas fa-file-audio text-[10px]"></i> Ver archivos
-                                </button>
-                                {{-- Botón "Escanear" eliminado: confundir con "Escanear storages" del header y bloquea navegador.
-                                     Para escanear un storage específico, usar el flujo batch del header que es async. --}}
-                            </div>
-                        </td>
+                        {{-- Columna Acciones retirada en change remove-api-transcriptor-orphan-files-modal:
+                             el botón "Ver archivos" apuntaba a endpoints /storages/{id}/files, /process-folder
+                             y /process-day que fueron eliminados en 2026-09-15-simplify-api-transcriptor-to-storage-and-config.
+                             Sin endpoint vivo, el modal abría vacío. Ver spec archivada transcriptor-storage-files-srt-link. --}}
 
                         {{-- Snapshot transcriptor (transcriptor-pg-native-queue): tarjeta con el ultimo snapshot
                              y delta vs el anterior. Solo si transcription_enabled=true; si no, "N/A". --}}
@@ -460,364 +463,77 @@
         </div>
 
 
-    <!-- Modal navegador de archivos de un storage -->
-    <div x-cloak x-show="showFiles" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" x-transition>
-        <div class="bg-white rounded-2xl w-full max-w-3xl shadow-2xl flex flex-col max-h-[90vh]" @click.away="if (!showProgress && !showBatchModal) closeFiles()">
-            <div class="p-6 flex-1 overflow-y-auto min-h-0">
-                <div class="flex items-center justify-between mb-3">
-                    <h2 class="text-lg font-bold text-slate-800" x-text="'Archivos — ' + (currentStorage?.name || '')"></h2>
-                    <button @click="closeFiles()" class="text-slate-400 hover:text-slate-600"><i class="fas fa-times"></i></button>
-                </div>
+    </div> {{-- /TAB STORAGES --}}
 
-                {{-- Botones de modo: Explorar / Hoy / Ayer --}}
-                <div class="flex items-center gap-2 mb-3">
-                    <button @click="setMode('browse')"
-                            :class="filesMode === 'browse' ? 'bg-brand-600 text-white' : 'bg-slate-100 text-slate-600'"
-                            class="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors">
-                        <i class="fas fa-folder-open text-[10px] mr-1"></i> Explorar
-                    </button>
-                    <button @click="setMode('today')"
-                            :class="filesMode === 'today' ? 'bg-brand-600 text-white' : 'bg-slate-100 text-slate-600'"
-                            class="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors">
-                        <i class="fas fa-calendar-day text-[10px] mr-1"></i> Hoy
-                    </button>
-                    <button @click="setMode('yesterday')"
-                            :class="filesMode === 'yesterday' ? 'bg-brand-600 text-white' : 'bg-slate-100 text-slate-600'"
-                            class="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors">
-                        <i class="fas fa-calendar-minus text-[10px] mr-1"></i> Ayer
-                    </button>
-                    <div class="flex-1"></div>
-                    <div class="relative w-56">
-                        <input type="text" x-model="filesSearch" @input.debounce.400ms="searchFiles()"
-                               placeholder="Buscar archivo..."
-                               class="w-full border border-slate-300 rounded-lg pl-8 pr-3 py-1.5 text-xs focus:ring-2 focus:ring-brand-500 outline-none">
-                        <i class="fas fa-search absolute left-2.5 top-2 text-slate-400 text-xs"></i>
-                    </div>
+    {{-- Modal: hijos de un storage root --}}
+    <div x-show="descendantsModal.open"
+         x-transition.opacity
+         @keydown.escape.window="closeDescendantsModal()"
+         class="fixed inset-0 z-50 flex items-center justify-center p-4"
+         style="display:none;">
+        <div class="absolute inset-0 bg-slate-900/50" @click="closeDescendantsModal()"></div>
+        <div class="relative bg-white rounded-xl shadow-xl w-full max-w-2xl border border-slate-200 flex flex-col max-h-[80vh]">
+            <div class="flex items-start justify-between px-5 py-4 border-b border-slate-200">
+                <div>
+                    <h3 class="text-base font-semibold text-slate-800">
+                        <i class="fas fa-sitemap text-slate-400 mr-2"></i>
+                        Hijos de <span class="text-brand-700" x-text="descendantsModal.root?.name"></span>
+                    </h3>
+                    <p class="text-xs text-slate-500 mt-1">
+                        <span x-text="(descendantsModal.items || []).length"></span> storage(s) descendiente(s)
+                        con transcripción habilitada dentro del alcance de este root.
+                    </p>
                 </div>
-
-                {{-- Breadcrumb (solo en modo browse) --}}
-                <div x-show="filesMode === 'browse' && breadcrumb.length >= 0" class="flex items-center gap-1 text-xs text-slate-500 mb-2 flex-wrap">
-                    <button @click="openFolder(null)" class="hover:text-brand-600">
-                        <i class="fas fa-hdd mr-0.5"></i> Raíz
-                    </button>
-                    <template x-for="crumb in breadcrumb" :key="crumb.id">
-                        <span class="flex items-center gap-1">
-                            <i class="fas fa-chevron-right text-[9px] text-slate-300"></i>
-                            <button @click="openFolder(crumb.id)" class="hover:text-brand-600" x-text="crumb.name"></button>
-                        </span>
-                    </template>
-                </div>
-
-                <div x-show="filesLoading" class="flex items-center justify-center py-12"><i class="fas fa-spinner fa-spin text-brand-400"></i></div>
-
-                <div x-show="!filesLoading && folders.length === 0 && filesFlat.length === 0 && filesGroups.length === 0" class="text-center py-10 text-slate-400 text-sm">
-                    <i class="fas fa-folder-open text-2xl mb-2 block text-slate-200"></i>
-                    <p x-text="filesSearch ? 'Sin resultados para la búsqueda' : (filesMode === 'today' ? 'No hay grabaciones hoy' : (filesMode === 'yesterday' ? 'No hay grabaciones de ayer' : 'Esta carpeta está vacía'))"></p>
-                </div>
-
-                {{-- TABLA unificada (BROWSE / HOY / AYER / SEARCH) --}}
-                <div x-show="!filesLoading && (folders.length > 0 || filesFlat.length > 0 || filesGroups.length > 0)" class="max-h-[460px] overflow-auto border border-slate-200 rounded-lg">
-                    <table class="w-full text-xs">
-                        <thead class="bg-slate-100 sticky top-0 z-10">
-                            <tr class="text-left text-slate-500 uppercase tracking-wide">
-                                <th class="px-2 py-2 font-semibold w-8 text-center">
-                                    <input type="checkbox"
-                                           class="w-3.5 h-3.5 rounded border-slate-300 text-brand-600 focus:ring-brand-500 cursor-pointer disabled:opacity-40"
-                                           :checked="isAllVisibleSelected()"
-                                           :indeterminate.prop="!isAllVisibleSelected() && isSomeVisibleSelected()"
-                                           :disabled="visibleFileCount() === 0"
-                                           @change="toggleSelectAllVisible()"
-                                           title="Seleccionar todos los visibles">
-                                </th>
-                                <th class="px-3 py-2 font-semibold">
-                                    <div class="flex items-center gap-1">
-                                        <i class="fas fa-font text-[9px]"></i>
-                                        <input type="text" x-model="colFilters.name" @input.debounce.300ms="applyColumnFilter()" placeholder="Nombre" class="bg-white border border-slate-200 rounded px-1.5 py-0.5 text-[11px] w-40 font-normal normal-case">
-                                    </div>
-                                </th>
-                                <th class="px-2 py-2 font-semibold w-20">
-                                    <div class="flex items-center gap-1">
-                                        <i class="fas fa-clock text-[9px]"></i>
-                                        <input type="text" x-model="colFilters.time" @input.debounce.300ms="applyColumnFilter()" placeholder="HHMM" class="bg-white border border-slate-200 rounded px-1.5 py-0.5 text-[11px] w-14 font-normal normal-case font-mono">
-                                        <button @click="toggleSort('time')" class="ml-auto text-slate-400 hover:text-slate-600">
-                                            <i class="fas text-[9px]" :class="filesSort.key==='time' ? (filesSort.dir==='desc'?'fa-sort-down':'fa-sort-up') : 'fa-sort'"></i>
-                                        </button>
-                                    </div>
-                                </th>
-                                <th class="px-2 py-2 font-semibold w-24">
-                                    <div class="flex items-center gap-1">
-                                        <i class="fas fa-hdd text-[9px]"></i>
-                                        <span>Tamaño</span>
-                                        <button @click="toggleSort('size')" class="ml-auto text-slate-400 hover:text-slate-600">
-                                            <i class="fas text-[9px]" :class="filesSort.key==='size' ? (filesSort.dir==='desc'?'fa-sort-down':'fa-sort-up') : 'fa-sort'"></i>
-                                        </button>
-                                    </div>
-                                </th>
-                                <th class="px-2 py-2 font-semibold w-28">
-                                    <div class="flex items-center gap-1">
-                                        <i class="fas fa-calendar text-[9px]"></i>
-                                        <span>Fecha</span>
-                                        <button @click="toggleSort('modified')" class="ml-auto text-slate-400 hover:text-slate-600">
-                                            <i class="fas text-[9px]" :class="filesSort.key==='modified' ? (filesSort.dir==='desc'?'fa-sort-down':'fa-sort-up') : 'fa-sort'"></i>
-                                        </button>
-                                    </div>
-                                </th>
-                                <th class="px-2 py-2 font-semibold w-24 text-center">Estado</th>
-                                <th class="px-2 py-2 font-semibold w-20 text-right">Acción</th>
-                            </tr>
-                        </thead>
-                        <tbody class="divide-y divide-slate-100">
-                            {{-- Carpetas (solo en modo BROWSE) --}}
-                            <template x-if="filesMode === 'browse' && folders.length > 0">
-                                <template x-for="folder in folders" :key="'f' + folder.id">
-                                    <tr @click="openFolder(folder.id)" class="hover:bg-brand-50 cursor-pointer">
-                                        <td colspan="7" class="px-3 py-2">
-                                            <div class="flex items-center gap-2">
-                                                <i class="fas fa-folder text-amber-400"></i>
-                                                <span class="font-medium text-slate-700 truncate" x-text="folder.name"></span>
-                                                <span class="text-slate-400 text-[10px]">carpeta</span>
-                                                {{-- storage origen: si la carpeta viene de un descendiente del
-                                                     storage que el operador clickeó, mostrar el nombre del
-                                                     storage hijo para que pueda distinguir entre 11 carpetas
-                                                     "14092026" (una por cada descendiente). Sin esto, las
-                                                     carpetas del mismo nombre en distintos storages del
-                                                     scope aparecen indistinguibles y el operador no sabe
-                                                     a cuál descender. --}}
-                                                <template x-if="folder.source_storage_id && folder.source_storage_id !== currentStorage?.id && storageById(folder.source_storage_id)">
-                                                    <span class="ml-auto inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 bg-slate-100 text-slate-600 rounded font-medium"
-                                                          :title="'Esta carpeta vive en el storage ' + (storageById(folder.source_storage_id)?.name || folder.source_storage_id)">
-                                                        <i class="fas fa-server text-[9px]"></i>
-                                                        <span x-text="storageById(folder.source_storage_id)?.name"></span>
-                                                    </span>
-                                                </template>
-                                                <i class="fas fa-chevron-right text-slate-300 text-xs ml-auto"></i>
-                                            </div>
-                                        </td>
-                                    </tr>
-                                </template>
-                            </template>
-                            {{-- Archivos planos (BROWSE / HOY / AYER) --}}
-                            <template x-if="filesMode !== 'search' && filesFlat.length > 0">
-                                <template x-for="f in filesFlat" :key="'a' + f.id">
-                                    <tr class="hover:bg-slate-50">
-                                        <td class="px-2 py-2 text-center" @click.stop>
-                                            <input type="checkbox"
-                                                   class="w-3.5 h-3.5 rounded border-slate-300 text-brand-600 focus:ring-brand-500 cursor-pointer disabled:opacity-40"
-                                                   :checked="isSelected(f.id)"
-                                                   :disabled="f.has_transcription"
-                                                   :title="f.has_transcription ? 'Este archivo ya tiene transcripción' : 'Seleccionar para envío en lote'"
-                                                   @change="toggleSelected(f.id)">
-                                        </td>
-                                        <td class="px-3 py-2">
-                                            <div class="flex items-center gap-2 min-w-0">
-                                                <i class="fas fa-file-audio text-slate-400 flex-shrink-0"></i>
-                                                <template x-if="f.transcription_id">
-                                                    <a :href="'/ia/api-transcriptor/jobs/' + f.transcription_id"
-                                                       class="text-brand-600 hover:underline font-medium truncate"
-                                                       :title="f.name + ' — Ver transcripción (' + (f.transcription_state || '') + ')'"
-                                                       x-text="f.name"></a>
-                                                </template>
-                                                <template x-if="!f.transcription_id">
-                                                    <span class="text-slate-700 truncate" x-text="f.name" :title="f.name"></span>
-                                                </template>
-                                            </div>
-                                        </td>
-                                        <td class="px-2 py-2 font-mono text-slate-600" x-text="f.military_time ? (f.military_time.substr(0,2) + ':' + f.military_time.substr(2,2) + ':' + f.military_time.substr(4,2)) : '—'"></td>
-                                        <td class="px-2 py-2 text-slate-500" x-text="formatSize(f.size)"></td>
-                                        <td class="px-2 py-2 text-slate-500" x-text="formatDate(f.file_modified_at)"></td>
-                                        <td class="px-2 py-2 text-center">
-                                            <span x-show="!f.transcription_id" class="text-[10px] px-1.5 py-0.5 bg-slate-100 text-slate-500 rounded-full">Pendiente</span>
-                                        </td>
-                                        <td class="px-2 py-2 text-right">
-                                            <template x-if="!f.transcription_id">
-                                                <button @click="openProgress(f)"
-                                                        class="text-[10px] px-2 py-1 bg-brand-600 hover:bg-brand-700 text-white rounded whitespace-nowrap transition-colors">
-                                                    <i class="fas fa-paper-plane text-[8px] mr-0.5"></i> Enviar
-                                                </button>
-                                            </template>
-                                            <template x-if="f.transcription_id && f.transcription_state === 'done'">
-                                                <a :href="'/ia/api-transcriptor/jobs/' + f.transcription_id"
-                                                   class="text-[10px] px-2 py-1 bg-brand-600 hover:bg-brand-700 text-white rounded whitespace-nowrap transition-colors inline-flex items-center">
-                                                    <i class="fas fa-file-alt text-[8px] mr-0.5"></i> Ver transcripción
-                                                </a>
-                                            </template>
-                                            <template x-if="f.transcription_id && ['pending','queued','processing'].includes(f.transcription_state)">
-                                                <a :href="'/ia/api-transcriptor/jobs/' + f.transcription_id"
-                                                   class="text-[10px] px-2 py-1 bg-amber-500 hover:bg-amber-600 text-white rounded whitespace-nowrap transition-colors inline-flex items-center">
-                                                    <i class="fas fa-spinner text-[8px] mr-0.5"></i> En proceso…
-                                                </a>
-                                            </template>
-                                            <template x-if="f.transcription_id && ['error','dead'].includes(f.transcription_state)">
-                                                <a :href="'/ia/api-transcriptor/jobs/' + f.transcription_id"
-                                                   class="text-[10px] px-2 py-1 bg-red-600 hover:bg-red-700 text-white rounded whitespace-nowrap transition-colors inline-flex items-center">
-                                                    <i class="fas fa-exclamation-triangle text-[8px] mr-0.5"></i> Ver error
-                                                </a>
-                                            </template>
-                                        </td>
-                                    </tr>
-                                </template>
-                            </template>
-                            {{-- Archivos agrupados por carpeta (SEARCH) --}}
-                            <template x-if="filesMode === 'search' && filesGroups.length > 0">
-                                <template x-for="group in filesGroups" :key="'g' + group.folder">
-                                    <template x-for="(f, fi) in group.files" :key="'a' + f.id">
-                                        <tr class="hover:bg-slate-50">
-                                            <td class="px-2 py-2 text-center align-middle" :class="fi === 0 ? 'border-t border-slate-200' : ''" @click.stop>
-                                                <input type="checkbox"
-                                                       class="w-3.5 h-3.5 rounded border-slate-300 text-brand-600 focus:ring-brand-500 cursor-pointer disabled:opacity-40"
-                                                       :checked="isSelected(f.id)"
-                                                       :disabled="f.has_transcription"
-                                                       :title="f.has_transcription ? 'Este archivo ya tiene transcripción' : 'Seleccionar para envío en lote'"
-                                                       @change="toggleSelected(f.id)">
-                                            </td>
-                                            <td class="px-3 py-2" :class="fi === 0 ? 'border-t border-slate-200' : ''">
-                                                <div x-show="fi === 0" class="flex items-center gap-2 mb-1">
-                                                    <i class="fas fa-folder text-amber-400 text-[10px]"></i>
-                                                    <span class="text-[10px] font-semibold text-slate-600 uppercase tracking-wide" x-text="group.folder"></span>
-                                                    <span class="text-[10px] text-slate-400" x-text="'(' + group.files.length + ')'"></span>
-                                                </div>
-                                                <div class="flex items-center gap-2 min-w-0">
-                                                    <i class="fas fa-file-audio text-slate-400 flex-shrink-0"></i>
-                                                    <template x-if="f.transcription_id">
-                                                        <a :href="'/ia/api-transcriptor/jobs/' + f.transcription_id"
-                                                           class="text-brand-600 hover:underline font-medium truncate"
-                                                           :title="f.name + ' — Ver transcripción (' + (f.transcription_state || '') + ')'"
-                                                           x-text="f.name"></a>
-                                                    </template>
-                                                    <template x-if="!f.transcription_id">
-                                                        <span class="text-slate-700 truncate" x-text="f.name" :title="f.name"></span>
-                                                    </template>
-                                                </div>
-                                            </td>
-                                            <td class="px-2 py-2 font-mono text-slate-600" :class="fi === 0 ? 'border-t border-slate-200' : ''" x-text="f.military_time ? (f.military_time.substr(0,2) + ':' + f.military_time.substr(2,2) + ':' + f.military_time.substr(4,2)) : '—'"></td>
-                                            <td class="px-2 py-2 text-slate-500" :class="fi === 0 ? 'border-t border-slate-200' : ''" x-text="formatSize(f.size)"></td>
-                                            <td class="px-2 py-2 text-slate-500" :class="fi === 0 ? 'border-t border-slate-200' : ''" x-text="formatDate(f.file_modified_at)"></td>
-                                            <td class="px-2 py-2 text-center" :class="fi === 0 ? 'border-t border-slate-200' : ''">
-                                                <span x-show="!f.transcription_id" class="text-[10px] px-1.5 py-0.5 bg-slate-100 text-slate-500 rounded-full">Pendiente</span>
-                                            </td>
-                                            <td class="px-2 py-2 text-right" :class="fi === 0 ? 'border-t border-slate-200' : ''">
-                                                <template x-if="!f.transcription_id">
-                                                    <button @click="openProgress(f)"
-                                                            class="text-[10px] px-2 py-1 bg-brand-600 hover:bg-brand-700 text-white rounded whitespace-nowrap transition-colors">
-                                                        <i class="fas fa-paper-plane text-[8px] mr-0.5"></i> Enviar
-                                                    </button>
-                                                </template>
-                                                <template x-if="f.transcription_id && f.transcription_state === 'done'">
-                                                    <a :href="'/ia/api-transcriptor/jobs/' + f.transcription_id"
-                                                       class="text-[10px] px-2 py-1 bg-brand-600 hover:bg-brand-700 text-white rounded whitespace-nowrap transition-colors inline-flex items-center">
-                                                        <i class="fas fa-file-alt text-[8px] mr-0.5"></i> Ver transcripción
-                                                    </a>
-                                                </template>
-                                                <template x-if="f.transcription_id && ['pending','queued','processing'].includes(f.transcription_state)">
-                                                    <a :href="'/ia/api-transcriptor/jobs/' + f.transcription_id"
-                                                       class="text-[10px] px-2 py-1 bg-amber-500 hover:bg-amber-600 text-white rounded whitespace-nowrap transition-colors inline-flex items-center">
-                                                        <i class="fas fa-spinner text-[8px] mr-0.5"></i> En proceso…
-                                                    </a>
-                                                </template>
-                                                <template x-if="f.transcription_id && ['error','dead'].includes(f.transcription_state)">
-                                                    <a :href="'/ia/api-transcriptor/jobs/' + f.transcription_id"
-                                                       class="text-[10px] px-2 py-1 bg-red-600 hover:bg-red-700 text-white rounded whitespace-nowrap transition-colors inline-flex items-center">
-                                                        <i class="fas fa-exclamation-triangle text-[8px] mr-0.5"></i> Ver error
-                                                    </a>
-                                                </template>
-                                            </td>
-                                        </tr>
-                                    </template>
-                                </template>
-</template>
-                        </tbody>
-                    </table>
-                </div>
-
-                <div class="mt-4 flex items-center justify-between text-xs text-slate-400 gap-2">
-                    <span x-text="(filesMode === 'browse' ? folders.length + ' carpetas, ' : '') + filesTotal + ' archivos' + (filesTranscribed ? ' · ' + filesTranscribed + ' transcritos' : '')"></span>
-                    <div class="flex items-center gap-3">
-                        <button x-show="filesMode === 'browse'" @click="confirmProcessFolder()"
-                                class="text-brand-600 hover:underline"
-                                title="Crea transcripciones pendientes para todos los archivos sin transcribir de la carpeta actual. El envío real lo hace el botón 'Escanear storages' o la tarea automática.">
-                            <i class="fas fa-folder-open text-[10px] mr-1"></i> Procesar carpeta
-                        </button>
-                        <button x-show="filesMode === 'today' || filesMode === 'yesterday'" @click="confirmProcessDay()"
-                                class="text-brand-600 hover:underline"
-                                title="Crea transcripciones pendientes para todos los archivos del día (HOY o AYER) sin transcribir. El envío real lo hace el botón 'Escanear storages' o la tarea automática.">
-                            <i class="fas fa-calendar-day text-[10px] mr-1"></i> Procesar día
-                        </button>
-                        <button @click="syncStorage(currentStorage)" :disabled="syncing"
-                                class="text-slate-600 hover:underline disabled:opacity-40"
-                                title="Escanea el disco del storage y registra en la base de datos los archivos nuevos que aún no aparecen aquí. No transcribe, solo descubre.">
-                            <i class="fas fa-cloud-download-alt text-[10px] mr-1" :class="syncing ? 'fa-spin' : ''"></i>
-                            <span x-text="syncing ? 'Sincronizando...' : 'Sincronizar archivos'"></span>
-                        </button>
-                        {{-- Botón "Escanear y encolar últimos N" eliminado: usaba scanStorage síncrono que bloquea el navegador.
-                                 Para descubrimiento + dispatch, usar "Escanear storages" del header. --}}
-                    </div>
-                </div>
+                <button type="button" @click="closeDescendantsModal()"
+                        class="text-slate-400 hover:text-slate-700 transition-colors p-1"
+                        title="Cerrar">
+                    <i class="fas fa-times text-base"></i>
+                </button>
             </div>
-
-            {{-- Footer de selección múltiple / envío en lote --}}
-            <div x-show="selectedFileIds.size > 0 || bulkResult" x-transition.opacity
-                 class="px-6 py-3 border-t border-brand-200 bg-brand-50/80 backdrop-blur flex-shrink-0">
-                <div x-show="!bulkResult" class="flex items-center gap-3">
-                    <div class="flex items-center gap-2 text-sm text-brand-800">
-                        <i class="fas fa-check-square text-brand-500"></i>
-                        <span class="font-medium" x-text="selectedFileIds.size + ' seleccionados'"></span>
-                        <span class="text-xs text-brand-600/70" x-show="pendingSelectedCount() !== selectedFileIds.size">
-                            (<span x-text="pendingSelectedCount()"></span> pendientes, <span x-text="selectedFileIds.size - pendingSelectedCount()"></span> ya transcritos)
-                        </span>
-                    </div>
-                    <div class="flex-1"></div>
-                    <button @click="clearSelection()"
-                            class="text-xs text-slate-500 hover:text-slate-700 px-2 py-1.5">
-                        Limpiar selección
-                    </button>
-                    <button @click="bulkSendSelected()" :disabled="bulkSending || pendingSelectedCount() === 0"
-                            class="flex items-center gap-2 px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-xl text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-                        <i class="fas fa-paper-plane text-xs" :class="bulkSending ? 'fa-spin' : ''"></i>
-                        <span x-text="bulkSending
-                            ? (bulkProgress ? ('Enviando ' + bulkProgress.done + '/' + bulkProgress.total + '...') : 'Enviando...')
-                            : ('Enviar ' + pendingSelectedCount() + ' seleccionados')"></span>
-                    </button>
-                </div>
-                <div x-show="bulkResult" class="flex items-center gap-3">
-                    <template x-if="bulkResult && bulkResult.errors === 0 && bulkResult.sent > 0">
-                        <div class="flex items-center gap-2 text-sm text-green-700">
-                            <i class="fas fa-check-circle"></i>
-                            <span>
-                                <strong x-text="bulkResult.sent"></strong> despachados correctamente
-                                <span x-show="bulkResult.skipped > 0" class="text-slate-500">
-                                    · <span x-text="bulkResult.skipped"></span> ya transcritos (omitidos)
-                                </span>
-                            </span>
-                        </div>
-                    </template>
-                    <template x-if="bulkResult && bulkResult.errors > 0">
-                        <div class="flex items-center gap-2 text-sm text-amber-700">
-                            <i class="fas fa-exclamation-triangle"></i>
-                            <span>
-                                <strong x-text="bulkResult.sent"></strong> despachados, <strong x-text="bulkResult.errors"></strong> con error
-                                <span x-show="bulkResult.skipped > 0" class="text-slate-500">
-                                    · <span x-text="bulkResult.skipped"></span> ya transcritos (omitidos)
-                                </span>
-                            </span>
-                        </div>
-                    </template>
-                    <template x-if="bulkResult && bulkResult.sent === 0 && bulkResult.errors === 0">
-                        <div class="flex items-center gap-2 text-sm text-slate-600">
-                            <i class="fas fa-info-circle"></i>
-                            <span>No había archivos pendientes para enviar.</span>
-                        </div>
-                    </template>
-                    <div class="flex-1"></div>
-                    <button @click="bulkResult = null; clearSelection();"
-                            class="text-xs text-brand-600 hover:underline px-2 py-1.5">
-                        Aceptar
-                    </button>
-                </div>
+            <div class="overflow-y-auto px-5 py-4">
+                <template x-if="(descendantsModal.items || []).length === 0">
+                    <p class="text-sm text-slate-500 text-center py-6">
+                        Este root no tiene descendientes habilitados para transcripción.
+                    </p>
+                </template>
+                <template x-if="(descendantsModal.items || []).length > 0">
+                    <ul class="divide-y divide-slate-100">
+                        <template x-for="child in descendantsModal.items" :key="child.id">
+                            <li class="flex items-center justify-between gap-3 py-2.5">
+                                <div class="flex items-center gap-2 min-w-0">
+                                    <i class="fas fa-folder text-slate-300 text-xs"></i>
+                                    <span class="text-sm font-medium text-slate-700 truncate" x-text="child.name"></span>
+                                    <span class="text-[10px] px-1.5 py-0.5 bg-slate-100 text-slate-500 rounded-full tabular-nums"
+                                          x-text="child.cantidad ?? 1"
+                                          :title="'Medios en este storage: ' + (child.cantidad ?? 1)"></span>
+                                </div>
+                                <div class="flex items-center gap-3 text-xs text-slate-500 tabular-nums shrink-0">
+                                    <span>
+                                        <span class="text-slate-400">Pend:</span>
+                                        <span class="font-semibold text-slate-700" x-text="child.funnel?.pending ?? 0"></span>
+                                    </span>
+                                    <span>
+                                        <span class="text-slate-400">Hechos:</span>
+                                        <span class="font-semibold text-slate-700" x-text="child.funnel?.done ?? 0"></span>
+                                    </span>
+                                    <span class="inline-flex items-center gap-1">
+                                        <span class="w-1.5 h-1.5 rounded-full" :class="child.transcription_enabled ? 'bg-green-500' : 'bg-slate-400'"></span>
+                                        <span x-text="child.transcription_enabled ? 'On' : 'Off'"></span>
+                                    </span>
+                                </div>
+                            </li>
+                        </template>
+                    </ul>
+                </template>
+            </div>
+            <div class="flex justify-end px-5 py-3 border-t border-slate-200 bg-slate-50">
+                <button type="button" @click="closeDescendantsModal()"
+                        class="px-3 py-1.5 text-sm font-medium bg-white border border-slate-200 rounded-lg hover:bg-slate-100 transition-colors">
+                    Cerrar
+                </button>
             </div>
         </div>
     </div>
-
-    </div> {{-- /TAB STORAGES --}}
 
     {{-- TAB: CONFIGURACIÓN --}}
     @include('ia.api-transcriptor._settings-tab')
@@ -876,11 +592,6 @@ window.showToast = function(message, type = 'info', duration = 4000) {
 };
 
 function apiTranscriptor(config = {}) {
-    const storageExpansionKey = 'transcriptor-storages-expanded:' + (config.userId || 0);
-    let initialExpanded = [];
-    try {
-        initialExpanded = JSON.parse(localStorage.getItem(storageExpansionKey) || '[]');
-    } catch (e) { initialExpanded = []; }
     // Vista de la tabla storages (sort + filtro de estado) persistente por
     // usuario. Default: activos primero (column 'enabled' desc), que es como
     // el operador piensa la tabla: lo que esta transcribiendo arriba.
@@ -895,7 +606,7 @@ function apiTranscriptor(config = {}) {
     return {
         userId: config.userId || 0,
         pendingAlertThreshold: config.pendingAlertThreshold || 5,
-        expandedScopes: new Set(initialExpanded),
+        descendantsModal: { open: false, root: null, items: [] },
         storagesSearch: '',
         storagesStatusFilter: savedStatus || 'all',
         storagesSort: savedSort || { column: 'enabled', direction: 'desc' },
@@ -947,65 +658,6 @@ function apiTranscriptor(config = {}) {
         },
         // storage cuyo apagado espera confirmación en el modal (null = cerrado)
         storageToDisable: null,
-        // modal archivos
-        showFiles: false,
-        currentStorage: null,
-        files: [],         // datos crudos del backend
-        filesFlat: [],     // lista filtrada+ordenada para BROWSE/HOY/AYER
-        filesGroups: [],   // grupos para SEARCH
-        folders: [],
-        breadcrumb: [],
-        filesMode: 'browse', // browse | today | search
-        currentParent: null,
-        filesLoading: false,
-        filesSearch: '',
-        filesTotal: 0,
-        filesTranscribed: 0,
-        syncing: false,
-        colFilters: { name: '', time: '' },
-        filesSort: { key: 'time', dir: 'desc' }, // default: hora militar desc
-        // Modal de progreso (envío manual)
-        showProgress: false,
-        progressFile: null,
-        progressStep: 'converting', // converting | uploading | queued | processing | done | error
-        progressPercent: 0,
-        progressStatus: null,
-        progressResult: null,
-        progressError: null,
-        progressTranscriptionId: null,
-        progressElapsed: 0,
-        progressTimer: null,
-        // Modal de procesamiento por lotes
-        showBatchModal: false,
-        batchRunning: false,
-        batchSize: {{ (int) ($ui_limits['scan_batch'] ?? 100) }},
-        batchAlerts: true,
-        batchIncludeFailed: false,
-        // transcriptor-rescan-completed: reprocesar transcripciones state='done'.
-        batchIncludeDone: false,
-        batchResult: null,
-        batchRunId: null,
-        batchExpanded: false,
-        batchPollTimer: null,
-        batchProgress: null,
-        // transcriptor-scan-scope-selector: alcance del escaneo + estimación
-        batchScope: 'today',
-        batchScopeFrom: '',
-        batchScopeTo: '',
-        batchEstimate: null,
-        batchEstimateLoading: false,
-        batchEstimateError: null,
-        // Mini-modal confirmación carpeta/día
-        showProcessConfirm: false,
-        processConfirmText: '',
-        processConfirmAction: null,
-        processAlerts: true,
-        batch: 10,
-        // Multi-selección de archivos para envío en lote
-        selectedFileIds: new Set(),
-        bulkSending: false,
-        bulkResult: null,
-        bulkProgress: null,
         // Tope de POST simultaneos del envio en lote. Cada uno corre ffmpeg +
         // POST sincronos en php-fpm, asi que sin tope 200 archivos = 200 procesos.
         //
@@ -1024,6 +676,9 @@ function apiTranscriptor(config = {}) {
         bulkDispatchResult: null,
         refreshingJobs: new Set(),
         async init() {
+            // Hidratar el estado plegable de los grupos de Configuración desde
+            // localStorage. Idempotente: si ya está hidratado, no-op.
+            this.hydrateGroupOpen();
             // Antes cargaba también loadHealth/loadStats/loadEmptyFolders contra
             // los endpoints eliminados en simplify-api-transcriptor-to-storage-and-config:
             // ahora devuelven 404 y ensucian la consola. La señal viva es
@@ -1055,9 +710,10 @@ function apiTranscriptor(config = {}) {
 
         // ---------------------------------------------- pestaña Configuración
 
-        cfgGroupsOrder: ['ritmo', 'descubrimiento', 'api', 'workers', 'saturacion', 'burst', 'webhook', 'confiabilidad', 'ia', 'ui'],
+        cfgGroupsOrder: ['ritmo', 'staging', 'descubrimiento', 'api', 'workers', 'saturacion', 'burst', 'webhook', 'confiabilidad', 'ia', 'ui'],
         cfgGroupLabels: {
             ritmo: 'Ritmo de envío',
+            staging: 'Staging local (RAM disk)',
             descubrimiento: 'Descubrimiento',
             api: 'API del transcriptor',
             workers: 'Pool de workers',
@@ -1070,6 +726,7 @@ function apiTranscriptor(config = {}) {
         },
         cfgGroupHelps: {
             ritmo: 'Cuánto y cada cuánto se envía. Es lo que convierte la ráfaga en goteo.',
+            staging: 'Fase 1 del pipeline: convierte con ffmpeg y deja el audio listo en /dev/shm. Baja el pico de CPU del host local porque el envío se desacopla de la conversión.',
             descubrimiento: 'Qué archivos encuentra el escáner y cuántos toma por ciclo.',
             api: 'Tiempos de espera y reintentos contra el transcriptor externo.',
             workers: 'Cuántos procesos consumen la cola. El tuner los ajusta cada 5 min.',
@@ -1082,6 +739,7 @@ function apiTranscriptor(config = {}) {
         },
         cfgGroupIcons: {
             ritmo: 'fa-gauge-high',
+            staging: 'fa-layer-group',
             descubrimiento: 'fa-magnifying-glass',
             api: 'fa-paper-plane',
             workers: 'fa-microchip',
@@ -1123,6 +781,77 @@ function apiTranscriptor(config = {}) {
         toggleDetail(k) {
             this.detailOpen = { ...this.detailOpen, [k]: !this.detailOpen[k] };
         },
+        // Estado del acordeón de grupos (config). Persistido en localStorage.
+        // Default: todos cerrados. El operador expande los que necesite con
+        // un click en el header o con el botón "Expandir todo".
+        groupOpen: {},
+        groupOpenHydrated: false,
+        DEFAULT_OPEN_GROUPS: [],
+        CFG_GROUPS_STORAGE_KEY: 'tcloud:api-transcriptor:cfg-groups:v1',
+        isGroupOpen(g) {
+            // Un grupo está abierto a menos que explícitamente sea false.
+            // Si groupOpen[g] === undefined → abierto (default).
+            // Si groupOpen[g] === false → cerrado.
+            // Si groupOpen[g] === true → abierto (explícito).
+            const v = this.groupOpen[g];
+            return v === false ? false : true;
+        },
+        toggleGroup(g) {
+            this.groupOpen = { ...this.groupOpen, [g]: !this.isGroupOpen(g) };
+            this.persistGroupOpen();
+        },
+        expandAllGroups() {
+            const all = {};
+            for (const g of this.cfgGroupsOrder) { all[g] = true; }
+            this.groupOpen = all;
+            this.persistGroupOpen();
+        },
+        collapseAllGroups() {
+            const all = {};
+            for (const g of this.cfgGroupsOrder) { all[g] = false; }
+            this.groupOpen = all;
+            this.persistGroupOpen();
+        },
+        hydrateGroupOpen() {
+            if (this.groupOpenHydrated) return;
+            let stored = null;
+            try {
+                const raw = localStorage.getItem(this.CFG_GROUPS_STORAGE_KEY);
+                if (raw) stored = JSON.parse(raw);
+            } catch (e) {
+                stored = null;
+            }
+            const valid = new Set(this.cfgGroupsOrder);
+            const next = {};
+            if (stored && typeof stored === 'object') {
+                // Podar: solo conservamos claves de grupos válidos y valores booleanos.
+                for (const g of Object.keys(stored)) {
+                    if (valid.has(g) && typeof stored[g] === 'boolean') {
+                        next[g] = stored[g];
+                    }
+                }
+            }
+            // Si storage vacío o corrupto → caer al default (ritmo + staging abiertos).
+            const hasAnyValidKey = Object.keys(next).length > 0;
+            if (!hasAnyValidKey) {
+                for (const g of this.DEFAULT_OPEN_GROUPS) { next[g] = true; }
+            }
+            this.groupOpen = next;
+            this.groupOpenHydrated = true;
+        },
+        persistGroupOpen() {
+            try {
+                // Podar al escribir: solo claves de grupos válidos.
+                const valid = new Set(this.cfgGroupsOrder);
+                const pruned = {};
+                for (const g of Object.keys(this.groupOpen)) {
+                    if (valid.has(g)) pruned[g] = this.groupOpen[g];
+                }
+                localStorage.setItem(this.CFG_GROUPS_STORAGE_KEY, JSON.stringify(pruned));
+            } catch (e) {
+                // localStorage no disponible (modo privado, política IT): no-op silencioso.
+            }
+        },
 
         cfgGroups() {
             if (!this.cfgMeta) return [];
@@ -1139,6 +868,64 @@ function apiTranscriptor(config = {}) {
             const d = this.cfgRuntime?.queue_depth, t = this.cfgRuntime?.queue_target;
             if (d === null || d === undefined || !t) return 0;
             return Math.round((d / t) * 100);
+        },
+        // Inventario listo en RAM disk vs objetivo. Es la barra que importa hoy:
+        // la lista de pendientes es ilimitada (todo el día), el amortiguador es
+        // el inventario de audios ya convertidos.
+        inventoryPct() {
+            const f = this.cfgRuntime?.staging?.files ?? 0;
+            const t = this.cfgRuntime?.staging?.target ?? 0;
+            if (!t) return 0;
+            return Math.round((f / t) * 100);
+        },
+        fmtPct(v) {
+            if (v === null || v === undefined) return '—';
+            const n = Number(v);
+            if (Number.isNaN(n)) return '—';
+            return n.toFixed(0) + '%';
+        },
+        // Clase de color por umbral. El llamador pasa los cortes que
+        // corresponden a cada métrica (los porcentajes usan 90/75, temperaturas
+        // 83/75, etc.): no hay una escala única que sirva a todas.
+        metricClass(v, danger, warn) {
+            const n = Number(v ?? 0);
+            const level = n >= danger ? 'danger' : (n >= warn ? 'warn' : 'ok');
+            const map = {
+                ok:     'border-slate-200 bg-slate-50 text-slate-800',
+                warn:   'border-amber-300 bg-amber-50 text-amber-800',
+                danger: 'border-red-300 bg-red-50 text-red-800',
+            };
+            return map[level];
+        },
+        // Devuelve una alerta textual si alguna métrica remota esta en zona de
+        // riesgo, o cadena vacía si todo esta sano. Se muestra en el pie del
+        // panel de salud: la cola puede tener headroom y aun asi convenir bajar
+        // el ritmo si el ramdisk o la RAM estan al limite.
+        //
+        // Solo RAM, RAM disk, disco y circuit breaker: son las señales que
+        // importan en este módulo. CPU y GPU se omiten a propósito (GPU al 100%
+        // significa que está trabajando, no que esté saturada).
+        remoteHealthAlert() {
+            const r = this.cfgRuntime?.remote_status;
+            if (!r) return '';
+            const alerts = [];
+            if ((r.ram_pct ?? 0) >= 90) alerts.push('RAM ' + this.fmtPct(r.ram_pct));
+            if ((r.ramdisk_pct ?? 0) >= 85) alerts.push('RAM disk ' + this.fmtPct(r.ramdisk_pct));
+            if (r.ramdisk_ok === false) alerts.push('RAM disk no responde');
+            if ((r.disk_pct ?? 0) >= 90) alerts.push('disco ' + this.fmtPct(r.disk_pct));
+            if ((r.circuit_open ?? false) === true) alerts.push('circuit breaker abierto');
+            return alerts.length ? 'Atención: ' + alerts.join(', ') : '';
+        },
+        // Uptime del nodo remoto en formato corto (2d 4h / 4h 12m / 12m).
+        fmtUptime(seconds) {
+            const s = Number(seconds ?? 0);
+            if (!s || s < 60) return '';
+            const d = Math.floor(s / 86400);
+            const h = Math.floor((s % 86400) / 3600);
+            const m = Math.floor((s % 3600) / 60);
+            if (d > 0) return d + 'd ' + h + 'h';
+            if (h > 0) return h + 'h ' + m + 'm';
+            return m + 'm';
         },
         fmtAgo(iso) {
             if (!iso) return '—';
@@ -1159,7 +946,6 @@ function apiTranscriptor(config = {}) {
             // Propagar a los topes que consume el resto de la interfaz.
             if (next.ui_batch_max) this.uiBatchMax = next.ui_batch_max;
             if (next.ui_max_parallel_sends) this.uiMaxParallelSends = next.ui_max_parallel_sends;
-            if (this.batchSize > this.uiBatchMax) this.batchSize = this.uiBatchMax;
         },
 
         async loadConfig() {
@@ -1272,20 +1058,15 @@ function apiTranscriptor(config = {}) {
             return this.storages.filter(s => s.transcription_enabled);
         },
         visibleStorages() {
-            return this.storages.filter(s => {
-                // Root de scope (parent_scope_id = mi propio id): SIEMPRE visible
-                // aunque el operador no haya expandido el scope. Sin esto, los
-                // roots como "01 Emisoras 01" (con 11 hijos) desaparecian de la
-                // tabla porque el filtro los trataba como "hijo colapsado".
-                // Bug: usuario buscaba "emisoras" y solo veia las hojas
-                // (Emisoras 03/05/ABC) pero no los roots que aparecian en el
-                // banner amarillo.
-                if (s.parent_scope_id && s.parent_scope_id === s.id) return true;
-                // Storage sin scope (parent_scope_id null): visible siempre.
-                if (!s.parent_scope_id) return true;
-                // Hijo de un scope ajeno: visible solo si el scope esta expandido.
-                return this.expandedScopes.has(s.parent_scope_id);
-            });
+            return this.storages;
+        },
+        openDescendantsModal(root) {
+            if (!root || !root.id) return;
+            const scope = (this.storages || []).filter(s => s.parent_scope_id === root.id && s.id !== root.id);
+            this.descendantsModal = { open: true, root: root, items: scope };
+        },
+        closeDescendantsModal() {
+            this.descendantsModal = { open: false, root: null, items: [] };
         },
         filteredStorages() {
             const q = (this.storagesSearch || '').toLowerCase().trim();
@@ -1338,6 +1119,7 @@ function apiTranscriptor(config = {}) {
                 case 'tipo':      return (s.type || '').toString().toLowerCase();
                 case 'pending':   return Number(s.funnel?.pending || 0);
                 case 'done':      return Number(s.funnel?.done || 0);
+                case 'missing':   return Number(s.funnel?.missing || 0);
                 case 'priority':  return Number(s.transcription_priority || 0);
                 case 'enabled':   return s.transcription_enabled ? 1 : 0;
                 case 'name':
@@ -1442,17 +1224,6 @@ function apiTranscriptor(config = {}) {
         snapshotErrorsTotal() {
             return Object.values(this.snapshotErrors).reduce((acc, n) => acc + (Number(n) || 0), 0);
         },
-        toggleStorageExpansion(rootId) {
-            if (!rootId) return;
-            if (this.expandedScopes.has(rootId)) {
-                this.expandedScopes.delete(rootId);
-            } else {
-                this.expandedScopes.add(rootId);
-            }
-            try {
-                localStorage.setItem(storageExpansionKey, JSON.stringify([...this.expandedScopes]));
-            } catch (e) { /* localStorage no disponible, ignorar */ }
-        },
         shouldWarnPending(s) {
             if (!s) return false;
             const pending = s.funnel?.pending ?? 0;
@@ -1461,7 +1232,9 @@ function apiTranscriptor(config = {}) {
         pendingWarningTitle(s) {
             if (!s) return '';
             const pending = s.funnel?.pending ?? 0;
-            return pending + ' pendientes hoy supera el umbral de ' + this.pendingAlertThreshold;
+            const missing = s.funnel?.missing ?? 0;
+            const base = pending + ' pendientes hoy supera el umbral de ' + this.pendingAlertThreshold;
+            return missing > 0 ? base + ' (' + missing + ' de ellos sin fila de transcripción)' : base;
         },
         // Los contadores de badge leen stats.local (totales de BD). Contar la
         // pagina cargada daria como mucho per_page y mentiria sobre la cola real.
@@ -1645,478 +1418,6 @@ function apiTranscriptor(config = {}) {
                 s.saving = false;
             }
         },
-        async openFiles(s) {
-            this.currentStorage = s;
-            this.filesSearch = '';
-            this.currentParent = null;
-            this.clearSelection();
-            this.bulkResult = null;
-            this.setMode('browse');
-            this.showFiles = true;
-        },
-        closeFiles() {
-            this.showFiles = false;
-            this.clearSelection();
-            this.bulkResult = null;
-        },
-        toggleSelected(fileId) {
-            const id = Number(fileId);
-            if (this.selectedFileIds.has(id)) this.selectedFileIds.delete(id);
-            else this.selectedFileIds.add(id);
-        },
-        isSelected(fileId) {
-            return this.selectedFileIds.has(Number(fileId));
-        },
-        visibleFiles() {
-            if (this.filesMode === 'search') {
-                const out = [];
-                for (const g of (this.filesGroups || [])) for (const f of (g.files || [])) out.push(f);
-                return out;
-            }
-            return this.filesFlat || [];
-        },
-        visibleFileCount() {
-            return this.visibleFiles().length;
-        },
-        isAllVisibleSelected() {
-            const list = this.visibleFiles();
-            if (list.length === 0) return false;
-            return list.every(f => this.selectedFileIds.has(Number(f.id)));
-        },
-        isSomeVisibleSelected() {
-            const list = this.visibleFiles();
-            if (list.length === 0) return false;
-            let n = 0;
-            for (const f of list) if (this.selectedFileIds.has(Number(f.id))) { n++; if (n > 1) return true; }
-            return n > 0;
-        },
-        toggleSelectAllVisible() {
-            const list = this.visibleFiles();
-            if (list.length === 0) return;
-            if (this.isAllVisibleSelected()) {
-                for (const f of list) this.selectedFileIds.delete(Number(f.id));
-            } else {
-                for (const f of list) if (!f.has_transcription) this.selectedFileIds.add(Number(f.id));
-            }
-        },
-        clearSelection() {
-            this.selectedFileIds = new Set();
-        },
-        pendingSelectedCount() {
-            let n = 0;
-            for (const id of this.selectedFileIds) {
-                const f = this.visibleFiles().find(x => Number(x.id) === id);
-                if (f && !f.has_transcription) n++;
-            }
-            return n;
-        },
-        // --- Bulk dispatch de jobs pendientes (Trabajos → Pendientes) ---
-        dispatchableJobs() {
-            return (this.jobs || []).filter(j => ['pending', 'queued', 'processing'].includes(j.state));
-        },
-        dispatchableJobsCount() {
-            return this.dispatchableJobs().length;
-        },
-        isDispatchable(job) {
-            return job && ['pending', 'queued', 'processing'].includes(job.state);
-        },
-        // El boton hace dos cosas distintas segun lo seleccionado: enviar lo
-        // que nunca salio y consultar el resultado de lo que ya esta en la
-        // API. Decirlo en la etiqueta evita la expectativa de que "Procesar"
-        // signifique siempre "mandar a transcribir".
-        get bulkActionLabel() {
-            if (!(this.selectJobMode && this.selectedJobIds.size > 0)) {
-                return 'Enviar pendientes ahora';
-            }
-
-            const sel = (this.jobs || []).filter(j => this.selectedJobIds.has(Number(j.id)) && this.isDispatchable(j));
-            const toSend = sel.filter(j => !j.job_id).length;
-            const toCheck = sel.length - toSend;
-
-            if (toSend > 0 && toCheck > 0) return `Enviar ${toSend} y consultar ${toCheck}`;
-            if (toSend > 0) return `Enviar ${toSend} a la API`;
-            if (toCheck > 0) return `Consultar resultado de ${toCheck}`;
-
-            return 'Nada que procesar en la selección';
-        },
-        toggleJobSelected(jobId) {
-            const id = Number(jobId);
-            if (this.selectedJobIds.has(id)) this.selectedJobIds.delete(id);
-            else this.selectedJobIds.add(id);
-        },
-        isJobSelected(jobId) {
-            return this.selectedJobIds.has(Number(jobId));
-        },
-        isAllDispatchableSelected() {
-            const list = this.dispatchableJobs();
-            if (list.length === 0) return false;
-            return list.every(j => this.selectedJobIds.has(Number(j.id)));
-        },
-        isSomeDispatchableSelected() {
-            const list = this.dispatchableJobs();
-            let n = 0;
-            for (const j of list) if (this.selectedJobIds.has(Number(j.id))) { n++; if (n > 1) return true; }
-            return n > 0;
-        },
-        toggleSelectAllDispatchable() {
-            const list = this.dispatchableJobs();
-            if (list.length === 0) return;
-            if (this.isAllDispatchableSelected()) {
-                for (const j of list) this.selectedJobIds.delete(Number(j.id));
-            } else {
-                for (const j of list) this.selectedJobIds.add(Number(j.id));
-            }
-        },
-        clearJobSelection() {
-            this.selectedJobIds = new Set();
-            this.selectJobMode = false;
-        },
-        setMode(mode) {
-            this.filesMode = mode;
-            this.filesSearch = '';
-            if (mode === 'browse') { this.currentParent = null; this.loadFiles(); }
-            else if (mode === 'today' || mode === 'yesterday') { this.loadFiles(); }
-        },
-        openFolder(folderId) {
-            this.currentParent = folderId ?? null;
-            this.filesMode = 'browse';
-            this.loadFiles();
-        },
-        searchFiles() {
-            if (!this.filesSearch) { this.setMode('browse'); return; }
-            this.filesMode = 'search';
-            this.loadFiles();
-        },
-        async loadFiles() {
-            if (!this.currentStorage) return;
-            this.filesLoading = true;
-            try {
-                const params = new URLSearchParams({ limit: 2000 });
-                if (this.filesMode === 'today' || this.filesMode === 'yesterday') params.set('mode', this.filesMode);
-                else if (this.filesMode === 'search' && this.filesSearch) params.set('q', this.filesSearch);
-                else {
-                    params.set('mode', 'browse');
-                    if (this.currentParent) params.set('parent', this.currentParent);
-                }
-                const res = await apiFetch('/ia/api-transcriptor/storages/' + this.currentStorage.id + '/files?' + params, { headers: { 'Accept': 'application/json' } });
-                if (res.ok) {
-                    const d = await res.json();
-                    this.folders = d.folders || [];
-                    this.breadcrumb = d.breadcrumb || [];
-                    this.currentParent = d.current_parent;
-                    this.filesTotal = d.files_total || 0;
-                    this.filesTranscribed = d.transcribed_count || 0;
-                    // Backend devuelve lista plana en browse/today/yesterday, y
-                    // grupos en search. Detectar por la presencia de 'folder'.
-                    const raw = d.files || [];
-                    if (raw.length && raw[0] && typeof raw[0].folder !== 'undefined') {
-                        this.filesGroups = raw;
-                        this.filesFlat = [];
-                    } else {
-                        this.filesGroups = [];
-                        this.filesFlat = raw;
-                    }
-                    this.applyColumnFilter();
-                }
-            } finally { this.filesLoading = false; }
-        },
-        toggleSort(key) {
-            if (this.filesSort.key === key) {
-                this.filesSort.dir = this.filesSort.dir === 'desc' ? 'asc' : 'desc';
-            } else {
-                this.filesSort.key = key;
-                this.filesSort.dir = 'desc';
-            }
-            this.applyColumnFilter();
-        },
-        applyColumnFilter() {
-            if (this.filesMode === 'search') {
-                // Filtrar/ordenar dentro de cada grupo por nombre y hora
-                const nameRe = this.colFilters.name.toLowerCase();
-                const timeRe = this.colFilters.time.toLowerCase();
-                this.filesGroups = (this.filesGroups || []).map(g => {
-                    let arr = g.files.filter(f =>
-                        (!nameRe || (f.name || '').toLowerCase().includes(nameRe)) &&
-                        (!timeRe || (f.military_time || '').includes(timeRe))
-                    );
-                    arr = this.sortList(arr);
-                    return { folder: g.folder, files: arr };
-                }).filter(g => g.files.length > 0);
-                return;
-            }
-            const nameRe = (this.colFilters.name || '').toLowerCase();
-            const timeRe = (this.colFilters.time || '').toLowerCase();
-            this.filesFlat = (this.filesFlat || []).filter(f =>
-                (!nameRe || (f.name || '').toLowerCase().includes(nameRe)) &&
-                (!timeRe || (f.military_time || '').includes(timeRe))
-            );
-            this.filesFlat = this.sortList(this.filesFlat);
-        },
-        sortList(arr) {
-            const k = this.filesSort.key, d = this.filesSort.dir;
-            arr = arr.slice();
-            arr.sort((a, b) => {
-                let va, vb;
-                if (k === 'time') { va = a.military_time || ''; vb = b.military_time || ''; }
-                else if (k === 'size') { va = +a.size || 0; vb = +b.size || 0; }
-                else if (k === 'modified') { va = a.file_modified_at || ''; vb = b.file_modified_at || ''; }
-                else { va = a.name || ''; vb = b.name || ''; }
-                if (va < vb) return d === 'desc' ? 1 : -1;
-                if (va > vb) return d === 'desc' ? -1 : 1;
-                return 0;
-            });
-            return arr;
-        },
-        dispatchJobNow(job) {
-            // Enviar inmediatamente un job pendiente (queued sin job_id) a la API.
-            // Abre el modal de progreso y ejecuta el dispatch síncrono.
-            this.progressFile = { name: job.original_name || job.file?.name || ('File #' + job.file_id), id: job.file_id, size_human: '' };
-            this.progressStep = 'converting';
-            this.progressError = null;
-            this.progressElapsed = 0;
-            this.progressStatus = null;
-            this.progressResult = null;
-            this.showProgress = true;
-            this.progressTranscriptionId = job.id;
-            this.progressPercent = 0;
-
-            this.runDispatchNow(job).catch(e => {
-                this.progressStep = 'error';
-                this.progressError = (e && e.message) || 'Error al procesar';
-            });
-        },
-        async runDispatchNow(job) {
-            const t0 = Date.now();
-            try {
-                const res = await apiFetch('/ia/api-transcriptor/jobs/' + job.id + '/dispatch-now', {
-                    method: 'POST', credentials: 'same-origin',
-                    timeout: 600000,
-                    headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content },
-                });
-                this.progressElapsed = ((Date.now() - t0) / 1000).toFixed(1);
-                const data = await res.json().catch(() => ({}));
-
-                if (!res.ok) {
-                    this.progressStep = 'error';
-                    this.progressError = data.error || 'Error al enviar el job';
-                    this.progressPercent = 0;
-                    return;
-                }
-
-                // Si ya estaba enviado, solo refrescar estado con polling.
-                if (data.already_submitted) {
-                    this.progressTranscriptionId = data.transcription_id;
-                    this.progressStatus = { state: data.state, job_id: data.job_id, id: data.transcription_id, elapsed_seconds: this.progressElapsed };
-                    this.progressStep = data.state === 'queued' ? 'queued' : 'processing';
-                    this.progressPercent = 100;
-                    this.startPolling();
-                    return;
-                }
-
-                this.progressTranscriptionId = data.transcription_id;
-                this.progressStatus = { state: data.state, job_id: data.job_id, id: data.transcription_id, elapsed_seconds: this.progressElapsed };
-
-                if (data.state === 'done') {
-                    this.progressStep = 'done';
-                    this.progressPercent = 100;
-                    this.pollStatus();
-                } else if (data.state === 'queued' || data.state === 'processing') {
-                    this.progressStep = data.state === 'queued' ? 'queued' : 'processing';
-                    this.progressPercent = 100;
-                    this.startPolling();
-                } else if (data.state === 'error' || data.state === 'dead') {
-                    this.progressStep = 'error';
-                    this.progressError = 'Estado final: ' + data.state;
-                    this.progressPercent = 0;
-                }
-            } catch (e) {
-                this.progressStep = 'error';
-                this.progressError = (e && e.message) || 'Error de conexión';
-            } finally {
-                this.load();
-            }
-        },
-        openProgress(f) {
-            if (f.has_transcription && !confirm('Este archivo ya tiene transcripción. ¿Reenviar de todos modos?')) return;
-            this.progressFile = f;
-            this.progressStep = 'converting'; // paso inicial: ffmpeg + submit en el backend
-            this.progressError = null;
-            this.progressElapsed = 0;
-            this.progressStatus = null;
-            this.progressResult = null;
-            this.showProgress = true;
-            this.progressTranscriptionId = null;
-
-            // Ejecutar el job SÍNCRONAMENTE (un solo request HTTP, hasta ~60s).
-            // Mientras corre, el modal muestra "Convirtiendo..." y "Enviando a la API...".
-            this.dispatchSyncTranscription(f).catch(e => {
-                this.progressStep = 'error';
-                this.progressError = (e && e.message) || 'Error al procesar';
-            });
-        },
-        async dispatchSyncTranscription(f) {
-            const t0 = Date.now();
-            this.progressPercent = 0;
-            // Polling del progreso REAL del backend (ffmpeg + upload).
-            let progressKey = null;
-            this._progressTimer = setInterval(async () => {
-                if (progressKey) {
-                    try {
-                        const r = await apiFetch('/ia/api-transcriptor/transcribe/progress/' + progressKey, { headers: { 'Accept': 'application/json' } });
-                        if (r.ok) {
-                            const p = await r.json();
-                            if (typeof p.percent === 'number') this.progressPercent = p.percent;
-                            if (p.phase === 'converting') this.progressStep = 'converting';
-                            else if (p.phase === 'uploading') this.progressStep = 'uploading';
-                            else if (p.phase === 'queued') this.progressStep = 'queued';
-                        }
-                    } catch {}
-                }
-            }, 500);
-
-            try {
-                const res = await apiFetch('/ia/api-transcriptor/transcribe/' + f.id, {
-                    method: 'POST', credentials: 'same-origin',
-                    timeout: 600000,
-                    headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content },
-                });
-                const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-                this.progressElapsed = elapsed;
-                const data = await res.json().catch(() => ({}));
-
-                if (!res.ok) {
-                    this.progressStep = 'error';
-                    this.progressError = data.error || 'Error al procesar el archivo';
-                    this.progressPercent = 0;
-                    return;
-                }
-
-                progressKey = data.progress_key;
-                this.progressTranscriptionId = data.transcription_id;
-                this.progressStatus = { state: data.state, job_id: data.job_id, id: data.transcription_id, elapsed_seconds: elapsed };
-
-                if (data.state === 'done') {
-                    this.progressStep = 'done';
-                    this.progressPercent = 100;
-                    this.markFileTranscribed();
-                    this.pollStatus();
-                } else if (data.state === 'queued' || data.state === 'processing') {
-                    this.progressStep = data.state === 'queued' ? 'queued' : 'processing';
-                    this.progressPercent = 100;
-                    this.startPolling();
-                } else if (data.state === 'error' || data.state === 'dead') {
-                    this.progressStep = 'error';
-                    this.progressError = 'Estado final: ' + data.state;
-                    this.progressPercent = 0;
-                }
-            } finally {
-                clearInterval(this._progressTimer);
-                this._progressTimer = null;
-            }
-        },
-        startPolling() {
-            this.stopPolling();
-            this.progressTimer = setInterval(() => this.pollStatus(), 2000);
-            this.pollStatus();
-        },
-        stopPolling() {
-            if (this.progressTimer) { clearInterval(this.progressTimer); this.progressTimer = null; }
-        },
-        async pollStatus() {
-            if (!this.progressTranscriptionId) return;
-            try {
-                const res = await apiFetch('/ia/api-transcriptor/jobs/' + this.progressTranscriptionId + '/status', {
-                    headers: { 'Accept': 'application/json' },
-                });
-                if (!res.ok) return;
-                const s = await res.json();
-                this.progressStatus = s;
-                this.progressElapsed = s.elapsed_seconds ?? this.progressElapsed + 2;
-                // Mapear estado a paso del timeline
-                if (s.state === 'queued') this.progressStep = 'queued';
-                else if (s.state === 'processing') this.progressStep = 'processing';
-                else if (s.state === 'done') {
-                    this.progressStep = 'done';
-                    this.progressResult = s;
-                    this.stopPolling();
-                    this.markFileTranscribed();
-                } else if (s.state === 'error' || s.state === 'dead') {
-                    this.progressStep = 'error';
-                    this.progressError = s.error_message || ('Estado: ' + s.state);
-                    this.stopPolling();
-                }
-            } catch (e) {
-                // continuar polling
-            }
-        },
-        markFileTranscribed() {
-            // Marcar el archivo como transcrito en la UI local
-            if (this.progressFile) this.progressFile.has_transcription = true;
-        },
-        closeProgress() {
-            this.stopPolling();
-            this.showProgress = false;
-            this.progressFile = null;
-            this.progressStatus = null;
-            this.progressResult = null;
-            this.progressError = null;
-            this.progressTranscriptionId = null;
-        },
-        async bulkSendSelected() {
-            if (this.bulkSending) return;
-            const visible = this.visibleFiles();
-            const pending = [];
-            const skipped = [];
-            for (const id of this.selectedFileIds) {
-                const f = visible.find(x => Number(x.id) === Number(id));
-                if (!f) continue;
-                if (f.has_transcription) skipped.push(f);
-                else pending.push(f);
-            }
-            if (pending.length === 0 && skipped.length === 0) {
-                this.bulkResult = { sent: 0, errors: 0, skipped: 0, total: 0 };
-                return;
-            }
-            this.bulkSending = true;
-            this.bulkResult = null;
-            const csrf = document.querySelector('meta[name=csrf-token]').content;
-
-            // Pool acotado. Antes esto era Promise.allSettled(pending.map(...)),
-            // sin tope: cada request corre ffmpeg + POST SINCRONOS dentro de
-            // php-fpm (transcribeFile, set_time_limit(600)), asi que seleccionar
-            // 200 archivos levantaba 200 procesos php-fpm y 200 ffmpeg a la vez.
-            const limit = Math.max(1, Number(this.uiMaxParallelSends) || 3);
-            let idx = 0, sent = 0, errors = 0;
-            const runners = Array.from({ length: Math.min(limit, pending.length) }, async () => {
-                while (idx < pending.length) {
-                    const f = pending[idx++];
-                    try {
-                        const r = await fetch('/ia/api-transcriptor/transcribe/' + f.id, {
-                            method: 'POST',
-                            credentials: 'same-origin',
-                            headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': csrf },
-                        });
-                        if (r.ok) {
-                            sent++;
-                            f.has_transcription = true;
-                        } else {
-                            errors++;
-                        }
-                    } catch (e) {
-                        errors++;
-                    }
-                    // Progreso incremental: el modal lo consume mientras corre.
-                    this.bulkProgress = { done: sent + errors, total: pending.length };
-                }
-            });
-            await Promise.all(runners);
-
-            this.bulkProgress = null;
-            this.bulkResult = { sent, errors, skipped: skipped.length, total: pending.length + skipped.length };
-            this.bulkSending = false;
-            this.load();
-            this.loadFiles();
-        },
         async bulkDispatchPending() {
             if (this.bulkDispatching) return;
 
@@ -2237,331 +1538,6 @@ function apiTranscriptor(config = {}) {
                 this.refreshingJobs.delete(Number(job.id));
             }
         },
-        openBatchModal() {
-            this.batchResult = null;
-            this.batchRunning = false;
-            this.showBatchModal = true;
-            // transcriptor-scan-scope-selector: estimar al abrir (modo vigente).
-            this.$nextTick(() => this.refreshBatchEstimate());
-        },
-        closeBatchModal() {
-            this.stopBatchPolling();
-            this.showBatchModal = false;
-            this.batchResult = null;
-            this.batchRunning = false;
-            this.batchProgress = null;
-            this.batchRunId = null;
-            this.batchEstimate = null;
-            this.batchEstimateError = null;
-        },
-        // transcriptor-scan-scope-selector: consulta la estimación para el
-        // alcance elegido (debounce interno de 400ms vía timer).
-        async refreshBatchEstimate() {
-            if (this.batchScope === 'range') {
-                if (!this.batchScopeFrom || !this.batchScopeTo) { this.batchEstimate = null; return; }
-                if (this.batchScopeFrom > this.batchScopeTo) {
-                    this.batchEstimateError = 'La fecha "desde" es posterior a "hasta"';
-                    this.batchEstimate = null;
-                    return;
-                }
-            }
-            if (this.batchEstimateLoading) return;
-            this.batchEstimateLoading = true;
-            this.batchEstimateError = null;
-            try {
-                const res = await apiFetch('/ia/api-transcriptor/scan/estimate', {
-                    method: 'POST', credentials: 'same-origin',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Accept': 'application/json',
-                        'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
-                    },
-                    body: JSON.stringify({
-                        mode: this.batchScope,
-                        from: this.dmYToIso(this.batchScopeFrom),
-                        to: this.dmYToIso(this.batchScopeTo),
-                        include_done: this.batchIncludeDone,
-                    }),
-                });
-                const data = await res.json().catch(() => ({}));
-                if (!res.ok) {
-                    this.batchEstimateError = data.error || 'Error al estimar';
-                    this.batchEstimate = null;
-                    return;
-                }
-                this.batchEstimate = data;
-                this.batchEstimateError = null;
-            } catch (e) {
-                this.batchEstimateError = 'Error de conexión al estimar';
-            } finally {
-                this.batchEstimateLoading = false;
-            }
-        },
-        // Convierte DDMMYYYY del input a YYYY-MM-DD para el estimador.
-        // El input date del navegador ya da ISO; acepta ambos por robustez.
-        dmYToIso(v) {
-            const s = String(v || '').trim();
-            const m = s.match(/^(\d{2})(\d{2})(\d{4})$/);
-            if (m) return m[3] + '-' + m[2] + '-' + m[1];
-            return s; // ya ISO (YYYY-MM-DD)
-        },
-        batchScopeValid() {
-            if (this.batchScope === 'range') {
-                return this.batchScopeFrom && this.batchScopeTo
-                    && this.dmYToIso(this.batchScopeFrom) <= this.dmYToIso(this.batchScopeTo);
-            }
-            return true;
-        },
-        stopBatchPolling() {
-            if (this.batchPollTimer) { clearInterval(this.batchPollTimer); this.batchPollTimer = null; }
-            this.batchTableRefreshTick = 0;
-        },
-        async focusBgJob() {
-            try {
-                const params = new URLSearchParams(window.location.search);
-                const focus = params.get('focus');
-                if (!focus || !focus.startsWith('bg-transcriptor-batch-')) return;
-                const runId = focus.replace('bg-transcriptor-batch-', '');
-                if (!runId) return;
-                // Si el modal ya está abierto (otro flow), no duplicar
-                if (this.batchRunId === runId && this.batchRunning) return;
-                this.batchRunId = runId;
-                this.batchRunning = true;
-                this.batchProgress = null;
-                this.batchResult = null;
-                this.showBatchModal = true;
-                // Polling del run existente
-                if (this.batchPollTimer) clearInterval(this.batchPollTimer);
-                this.batchPollTimer = setInterval(() => this.pollBatch(), 2000);
-                this.pollBatch();
-            } catch (e) { /* silent */ }
-        },
-        async runBatch() {
-            this.batchRunning = true;
-            this.batchResult = null;
-            this.batchProgress = null;
-            this.batchExpanded = false;
-            // bg-job-indicator-hide-completed: cerrar el modal bloqueante de
-            // configuración/progreso para que la barra inline tome el control.
-            // El operador puede volver a abrir el modal con el botón "Escanear
-            // storages" si necesita reconfigurar otro batch.
-            this.showBatchModal = false;
-            const startPolling = (runId) => {
-                this.batchRunId = runId;
-                if (this.batchPollTimer) clearInterval(this.batchPollTimer);
-                this.batchPollTimer = setInterval(() => this.pollBatch(), 2000);
-                this.pollBatch();
-            };
-            const fetchPromise = apiFetch('/ia/api-transcriptor/process-batch', {
-                method: 'POST', credentials: 'same-origin',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Accept': 'application/json',
-                    'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
-                },
-                body: JSON.stringify({
-                    batch: this.batchSize,
-                    generate_alerts: this.batchAlerts,
-                    include_failed: this.batchIncludeFailed,
-                    include_done: this.batchIncludeDone,
-                    scope: this.batchScope === 'range'
-                        ? { mode: 'range', from: this.batchScopeFrom, to: this.batchScopeTo }
-                        : (this.batchScope === 'all' ? { mode: 'all' } : undefined),
-                }),
-            });
-
-            // Watchdog blando: si la respuesta HTTP tarda más de `WATCHDOG_MS`
-            // seguimos mostrando "Iniciando proceso en background..." en la UI
-            // (eso ya lo hace `batchRunning = true`), pero NO cortamos el fetch.
-            // El fetch original puede tardar tranquilamente hasta `MAX_FETCH_MS`
-            // antes de considerarlo perdido. Esto reemplaza el `Promise.race`
-            // anterior que rechazaba el fetch a los 5s y creaba un `runId`
-            // sintético, dejando el polling ciego contra cache inexistente.
-            const WATCHDOG_MS = 5000;   // solo cosmetic feedback
-            const MAX_FETCH_MS = 30000; // real network timeout
-            try {
-                const res = await Promise.race([
-                    fetchPromise,
-                    new Promise((_, reject) => setTimeout(() => reject(new Error('watchdog-timeout')), WATCHDOG_MS))
-                ]);
-                const data = await res.json().catch(() => ({}));
-                if (!res.ok) {
-                    showToast(data.error || 'Error al iniciar el lote', 'error');
-                    this.batchRunning = false;
-                    return;
-                }
-                startPolling(data.run_id);
-            } catch (watchdogErr) {
-                // Watchdog "cosmetic": el fetch probablemente está en vuelo (latencia
-                // de red, bootstrap de PHP-FPM). No lo cancelamos; seguimos
-                // mostrando el spinner y esperamos la respuesta REAL.
-                if (watchdogErr?.message === 'watchdog-timeout') {
-                    console.warn('runBatch: watchdog cosmetic disparado a ' + WATCHDOG_MS + 'ms, esperando fetch real...');
-                    try {
-                        const res = await Promise.race([
-                            fetchPromise,
-                            new Promise((_, reject) => setTimeout(() => reject(new Error('fetch-timeout')), MAX_FETCH_MS))
-                        ]);
-                        const data = await res.json().catch(() => ({}));
-                        if (!res.ok) {
-                            showToast(data.error || 'Error al iniciar el lote', 'error');
-                            this.batchRunning = false;
-                            return;
-                        }
-                        if (data?.run_id) {
-                            startPolling(data.run_id);
-                            return;
-                        }
-                        // res.ok pero sin run_id (respuesta inesperada)
-                        this.batchResult = {
-                            processed: 0, errors: 1, total_candidates: 0,
-                            storages: [], files: [], per_storage_errors: [],
-                            message: 'El servidor respondió 200 pero sin run_id. Revisá los logs.',
-                        };
-                        this.batchRunning = false;
-                        return;
-                    } catch (realErr) {
-                        // Fetch original falló después del watchdog: timeout de red
-                        // total, 5xx no recuperable, error de CSRF, etc.
-                        // NO inventamos un run_id sintético: mostramos error
-                        // accionable y dejamos que el modal cierre limpio.
-                        this.batchResult = {
-                            processed: 0,
-                            errors: 1,
-                            total_candidates: 0,
-                            storages: [],
-                            files: [],
-                            per_storage_errors: [],
-                            message: 'Sin respuesta del servidor después de ' + Math.round(MAX_FETCH_MS/1000) + 's. ' +
-                                     (realErr?.message === 'fetch-timeout'
-                                       ? 'El endpoint no respondió a tiempo (revisá /tmp/kilo_artisan_bg.log, filtro [transcriptor:scan]).'
-                                       : 'Error de conexión: ' + (realErr?.message || 'revisá los logs del servidor.')),
-                        };
-                        this.batchRunning = false;
-                    }
-                } else {
-                    // Error inmediato del fetch (red caída antes del watchdog)
-                    this.batchResult = {
-                        processed: 0,
-                        errors: 1,
-                        total_candidates: 0,
-                        storages: [],
-                        files: [],
-                        per_storage_errors: [],
-                        message: 'Error de conexión: ' + (watchdogErr?.message || 'sin respuesta del servidor. Reintenta o revisa los logs.'),
-                    };
-                    this.batchRunning = false;
-                }
-            }
-        },
-        confirmProcessFolder() {
-            this.processConfirmText = 'Procesar carpeta actual';
-            this.processConfirmAction = 'folder';
-            this.showProcessConfirm = true;
-        },
-        confirmProcessDay() {
-            this.processConfirmText = 'Procesar ' + (this.filesMode === 'today' ? 'HOY' : 'AYER');
-            this.processConfirmAction = 'day';
-            this.processAlerts = false;
-            this.showProcessConfirm = true;
-        },
-        async executeProcessConfirm() {
-            const action = this.processConfirmAction;
-            this.showProcessConfirm = false;
-            if (action === 'folder') {
-                await this.processFolder(this.currentParent);
-            } else if (action === 'day') {
-                await this.processDay(this.filesMode);
-            }
-        },
-        async processFolder(parentId) {
-            if (!this.currentStorage) return;
-            try {
-                const res = await apiFetch('/ia/api-transcriptor/storages/' + this.currentStorage.id + '/process-folder', {
-                    method: 'POST', credentials: 'same-origin',
-                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content },
-                    body: JSON.stringify({ parent_id: parentId ?? null, generate_alerts: this.processAlerts }),
-                });
-                const d = await res.json().catch(() => ({}));
-                if (res.ok) {
-                    showToast('Encolados ' + d.dispatched + ' archivos de ' + d.candidates + ' candidatos.', 'success');
-                    await this.loadFiles();
-                } else {
-                    showToast(d.error || 'Error al procesar carpeta', 'error');
-                }
-            } catch (e) { showToast('Error de conexión', 'error'); }
-        },
-        async processDay(mode) {
-            if (!this.currentStorage) return;
-            try {
-                const res = await apiFetch('/ia/api-transcriptor/storages/' + this.currentStorage.id + '/process-day', {
-                    method: 'POST', credentials: 'same-origin',
-                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content },
-                    body: JSON.stringify({ mode: mode, generate_alerts: this.processAlerts }),
-                });
-                const d = await res.json().catch(() => ({}));
-                if (res.ok) {
-                    showToast('Encolados ' + d.dispatched + ' archivos de ' + d.candidates + ' candidatos.', 'success');
-                    await this.loadFiles();
-                } else {
-                    showToast(d.error || 'Error al procesar día', 'error');
-                }
-            } catch (e) { showToast('Error de conexión', 'error'); }
-        },
-        async pollBatch() {
-            if (!this.batchRunId) return;
-            try {
-                const res = await apiFetch('/ia/api-transcriptor/batch-status/' + this.batchRunId, {
-                    headers: { 'Accept': 'application/json' },
-                });
-                if (!res.ok) return;
-                const data = await res.json();
-                this.batchProgress = data;
-
-                // Refrescar la tabla de Pendientes en cada poll mientras el batch
-                // corre, para que el usuario vea los nuevos jobs a medida que los
-                // workers los crean (antes había que esperar al 'done' final).
-                if (data.status === 'running' || data.status === 'starting') {
-                    this.batchTableRefreshTick = (this.batchTableRefreshTick || 0) + 1;
-                    // Throttle: refrescar la tabla solo cada 2do poll (~4s) para no
-                    // spammear el endpoint. El modal sí se actualiza cada 2s.
-                    if (this.batchTableRefreshTick % 2 === 0) {
-                        this.load();
-                    }
-                }
-
-// Si termino (done/queued/error/partial/not_found), detener polling y mostrar resultados.
-                if (data.status === 'done' || data.status === 'queued' || data.status === 'error' || data.status === 'partial' || data.status === 'not_found') {
-                    this.stopBatchPolling();
-                    this.batchRunning = false;
-                    if (data.status === 'done' || data.status === 'partial' || data.status === 'queued') {
-                        this.batchResult = data;
-                    } else if (data.status === 'not_found') {
-                        this.batchResult = {
-                            processed: 0, errors: 0, total_candidates: 0,
-                            storages: [], files: [],
-                            per_storage_errors: [],
-                            message: data.message || 'El lote no fue encontrado o ya expiró (cache TTL 2h).'
-                        };
-                    } else {
-                        const fallbackMsg = 'El lote terminó con errores. Revisa storage/logs/transcription-batch-' + this.batchRunId + '.log';
-                        this.batchResult = {
-                            processed: data.processed ?? 0,
-                            errors: data.errors ?? 1,
-                            total_candidates: data.total_candidates ?? 0,
-                            storages: data.storages ?? [],
-                            files: data.files ?? [],
-                            per_storage_errors: data.per_storage_errors ?? [],
-                            message: data.message || fallbackMsg,
-                        };
-                    }
-                    this.batchTableRefreshTick = 0;
-                    this.load();
-                }
-            } catch (e) {
-                // continuar polling
-            }
-        },
         async cancelJob(job) {
             let confirmMsg;
             if (job.state === 'pending') {
@@ -2580,79 +1556,6 @@ function apiTranscriptor(config = {}) {
                 if (d.message) console.info('[transcriptor]', d.message);
                 await this.load();
             } catch (e) { showToast('Error de conexión', 'error'); }
-        },
-        reprocessJob(job) {
-            const label = job.original_name || job.file?.name || ('File #' + job.file_id);
-            if (!confirm('¿Reprocesar "' + label + '"? Se borrará la transcripción actual y se enviará de nuevo.')) return;
-            // Abrir modal de progreso y ejecutar reprocess síncrono.
-            this.progressFile = { name: label, id: job.file_id, size_human: '' };
-            this.progressStep = 'converting';
-            this.progressError = null;
-            this.progressElapsed = 0;
-            this.progressStatus = null;
-            this.progressResult = null;
-            this.showProgress = true;
-            this.progressTranscriptionId = job.id;
-            this.progressPercent = 0;
-            this.runReprocess(job).catch(e => {
-                this.progressStep = 'error';
-                this.progressError = (e && e.message) || 'Error al reprocesar';
-            });
-        },
-        async runReprocess(job) {
-            const t0 = Date.now();
-            try {
-                const res = await apiFetch('/ia/api-transcriptor/jobs/' + job.id + '/reprocess', {
-                    method: 'POST', credentials: 'same-origin',
-                    timeout: 600000,
-                    headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content },
-                });
-                this.progressElapsed = ((Date.now() - t0) / 1000).toFixed(1);
-                const data = await res.json().catch(() => ({}));
-                if (!res.ok) {
-                    this.progressStep = 'error';
-                    this.progressError = data.error || 'Error al reprocesar';
-                    this.progressPercent = 0;
-                    return;
-                }
-                this.progressTranscriptionId = data.transcription_id;
-                this.progressStatus = { state: data.state, job_id: data.job_id, id: data.transcription_id, elapsed_seconds: this.progressElapsed };
-                if (data.state === 'done') {
-                    this.progressStep = 'done';
-                    this.progressPercent = 100;
-                    this.pollStatus();
-                } else if (data.state === 'queued' || data.state === 'processing') {
-                    this.progressStep = data.state === 'queued' ? 'queued' : 'processing';
-                    this.progressPercent = 100;
-                    this.startPolling();
-                } else if (data.state === 'error' || data.state === 'dead') {
-                    this.progressStep = 'error';
-                    this.progressError = 'Estado final: ' + data.state;
-                    this.progressPercent = 0;
-                }
-            } catch (e) {
-                this.progressStep = 'error';
-                this.progressError = (e && e.message) || 'Error de conexión';
-            } finally {
-                this.load();
-            }
-        },
-        async syncStorage(s) {
-            if (!s || s.type !== 'local') { showToast('Solo storages locales se pueden sincronizar.', 'warning'); return; }
-            this.syncing = true;
-            try {
-                const res = await apiFetch('/ia/api-transcriptor/storages/' + s.id + '/sync', {
-                    method: 'POST', credentials: 'same-origin',
-                    headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content },
-                });
-                const d = await res.json();
-                if (res.ok) {
-                    showToast('Sync: +' + (d.created||0) + ' archivos nuevos, -' + (d.deleted||0) + ' eliminados.', 'success');
-                    await this.loadFiles();
-                } else {
-                    showToast(d.error || 'No se pudo sincronizar', 'error');
-                }
-            } finally { this.syncing = false; }
         },
         stateClass(state) {
             return {

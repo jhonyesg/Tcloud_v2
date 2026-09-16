@@ -1,29 +1,58 @@
 ## Purpose
 
-Redefinir las señales que utiliza el regulador del tick de transcripción para frenar el despacho, sustituyendo la medición de profundidad de cola Redis local (que no refleja carga real de GPU ni de la vía upstream) por una combinación configurable de señales honestas: porcentaje de uso de la API externa, espacio libre en `/dev/shm`, número de jobs concurrentes dentro del semáforo de inflight, y como respaldo la profundidad de la cola Redis.
+Redefinir las señales que utiliza el regulador del tick de transcripción para frenar el despacho, sustituyendo la medición de profundidad de cola local (que en la versión legacy leía `Redis::llen('queues:transcription')`, hoy no fiable) por una medición directa sobre la tabla `transcriptions` (`COUNT(*) WHERE state IN ('pending','queued') AND recorded_at >= today`). La cola nativa PG es ahora la única fuente de verdad local; el resto de señales (API externa, /dev/shm, inflight, circuit breaker) se conservan tal cual.
 
 ## Requirements
 
 ### Requirement: Modos del regulador configurables en caliente
+
 El sistema SHALL soportar tres modos seleccionables desde la UI de settings y desde la variable de entorno `TRANSCRIPTOR_REGULATOR_MODE`:
-- `local_only` (default inicial): conserva el comportamiento actual basado en `target_redis_queue`; solo activa además la guarda de `/dev/shm` libre.
-- `remote_aware`: además de `local_only`, consulta `GET /api/stats` en la API externa con caché de N segundos (`TRANSCRIPTOR_REGULATOR_REMOTE_CACHE_SECONDS`, default 15) y frena si `processing_jobs / remote_capacity >= TRANSCRIPTOR_REGULATOR_REMOTE_SATURATION_PCT` (default 80).
-- `hybrid`: dispara freno si CUALQUIERA de las señales configuradas reporta saturación: `redis_queue_depth >= target_redis_queue`, `remote_gpu_usage >= umbral`, `shm_free_bytes < min_shm_free_bytes`, `inflight_active >= inflight_max`, o `dispatch_paused=true`.
+
+- `local_only`: frena cuando `COUNT(*) FROM transcriptions WHERE state IN ('pending','queued') AND recorded_at >= today >= target_pg_queue` (default 140). Adicionalmente activa la guarda de `/dev/shm` libre.
+- `remote_aware`: NO frena por cola PG local. Activa únicamente las señales remotas (`remote_ram_pressure`, `remote_ramdisk_pressure`, `remote_queue_full`), la guarda de `/dev/shm` y el inflight. La cola local queda solo como señal informativa en `values.pg_queue_depth` para que la UI la muestre sin usarla como freno.
+- `hybrid`: dispara freno si CUALQUIERA de las señales configuradas reporta saturación: `remote_ram_pressure`, `remote_ramdisk_pressure`, `remote_queue_full`, `shm_low`, `inflight_full`, o `dispatch_paused=true`. Al igual que `remote_aware`, la cola PG local NO actúa como freno; queda como señal informativa.
+
+El modo seleccionado se persiste en `system_settings` y el siguiente tick observa el cambio sin reinicio. La decisión cruda queda registrada en `storage/logs/laravel.log` con el prefijo del tick (`decision=`, `reason=`). La UI SHALL mostrar, dentro de la pestaña Configuración, el mensaje "El regulador frenaría: la cola está en/sobre el objetivo" SOLO cuando `regulator_mode == 'local_only'` Y `pg_queue_depth >= target_pg_queue`; en otros modos SHALL mostrar "Cola local: N (informativa en este modo — la regulación la hace la API remota en target_remote_queue)".
 
 #### Scenario: Modo `local_only` con cola llena y GPU remota al 30%
-- **WHEN** `regulator_mode=local_only`, `Redis::llen('queues:transcription')=140` (>= target) y `processing_jobs` remoto < 50% de `remote_capacity`
+
+- **WHEN** `regulator_mode=local_only`, `COUNT(*) FROM transcriptions WHERE state IN ('pending','queued') AND recorded_at >= today = 140` (>= target) y `processing_jobs` remoto < 50% de `remote_capacity`
 - **THEN** el tick frena por `queue_at_target` aunque la GPU esté ociosa
-- **AND** el endpoint `/regulator-cause` reporta `decision=skipped`, `reason=queue_at_target`, `values.remote_gpu_usage=null`
+- **AND** el log del tick muestra `decision=skipped reason=queue_at_target values.remote_gpu_usage=null`
+- **AND** la UI muestra "El regulador frenaría: la cola está en/sobre el objetivo"
 
 #### Scenario: Modo `remote_aware` con cola al 90% pero GPU al 25%
+
 - **WHEN** `regulator_mode=remote_aware`, cola local al 90% del target y la API remota reporta procesamiento al 25%
 - **THEN** el tick encola con el batch calculado (no frena por cola)
-- **AND** el endpoint reporta `decision=dispatched` con `remote_gpu_usage=25%`
+- **AND** `cfgRuntime.next_batch` muestra el batch positivo en la pestaña Configuración
+
+#### Scenario: Modo `remote_aware` con cola local 14x target pero API remota ociosa
+
+- **WHEN** `regulator_mode=remote_aware`, `pg_queue_depth=2028` (mucho mayor que `target_pg_queue=140`), y `queue_queued=10 <= floor_remote_queue=30` y `ram_pct=46 < remote_ram_pressure_pct=90` y `ramdisk_pct=12 < remote_ramdisk_pressure_pct=85` y `/dev/shm` libre
+- **THEN** el tick NO frena por cola local: `decision=dispatched`, `reason=none`
+- **AND** `values.pg_queue_depth=2028` se reporta como informativo pero no afecta `batch_computed`
+- **AND** la UI muestra "Cola local: 2028 (informativa en este modo — la regulación la hace la API remota en 180)" y NO muestra el texto "frenaría"
+
+#### Scenario: Modo `remote_aware` con cola local 14x target y API remota saturada
+
+- **WHEN** `regulator_mode=remote_aware`, `pg_queue_depth=2028` y `queue_queued=200 >= target_remote_queue=180`
+- **THEN** el tick frena por `decision=skipped, reason=remote_queue_full`, NO por `queue_at_target`
+- **AND** la UI sigue mostrando "Cola local: 2028 (informativa en este modo)" y añade la causa "Cola remota llena (200 >= 180)"
+
+#### Scenario: Modo `hybrid` con cola local 14x target pero todas las señales remotas y locales sanas
+
+- **WHEN** `regulator_mode=hybrid`, `pg_queue_depth=2028`, `queue_queued=10`, `ram_pct=46`, `ramdisk_pct=12`, `/dev/shm` libre, `inflight_active < inflight_max`, `dispatch_paused=false`, circuit cerrado
+- **THEN** el tick NO frena por cola local: `decision=dispatched, reason=none`
+- **AND** el batch se calcula por `computeEffectiveBatch` con el `pulse_batch_size` (default 50) sujeto a `max_batch` y `stuck_penalty`
+- **AND** la UI muestra "Cola local: 2028 (informativa en este modo)"
 
 #### Scenario: Modo `hybrid` con cualquier señal saturada
-- **WHEN** `regulator_mode=hybrid` y DOS o más señales indican saturación simultáneas (cola llena + GPU >80%)
+
+- **WHEN** `regulator_mode=hybrid` y DOS o más señales indican saturación simultáneas (cola remota llena + RAM remota >80%)
 - **THEN** el tick registra la señal que PRIMERO disparó (`signals_evaluated` en orden) y frena
-- **AND** la respuesta indica cuál fue la causa dominante y cuáles eran secundarias
+- **AND** el log indica cuál fue la causa dominante y cuáles eran secundarias
+- **AND** la causa NO es `queue_at_target` aunque la cola local esté sobre el target (porque la cola PG ya no es freno en `hybrid`)
 
 ### Requirement: Señal de RAM host remota (`remote_ram_pressure`)
 El sistema SHALL evaluar el porcentaje de RAM del host del API upstream en cada tick cuando `regulator_mode` sea `remote_aware` o `hybrid`, leyéndolo desde `/api/metrics/overview::ram.pct` (vía `getRemoteInfo()`, cacheado con `regulator_remote_cache_seconds`).
@@ -35,7 +64,7 @@ Cuando `ram_pct >= remote_ram_pressure_pct` (default 90%): `decision=skipped`, `
 - **THEN** el tick frena con `decision=skipped, reason=remote_ram_pressure`, sin importar el estado de la cola Redis local
 
 #### Scenario: RAM sana, cola llena
-- **WHEN** `ram.pct=46` (bajo umbral) y `Redis::llen >= target_redis_queue`
+- **WHEN** `ram.pct=46` (bajo umbral) y `pg_queue_depth >= target_pg_queue`
 - **THEN** el freno es por `queue_at_target`; `remote_ram_pressure` no dispara
 
 ### Requirement: Señal de ramdisk remoto (`remote_ramdisk_pressure`)
@@ -48,7 +77,7 @@ Prioridad de evaluación de frenos (primer match gana):
 2. `remote_ram_pressure`
 3. `remote_ramdisk_pressure`
 4. `remote_queue_full`
-5. `redis_queue_depth` (`queue_at_target`)
+5. `pg_queue_depth` (`queue_at_target`)
 6. `shm_free_bytes` (`shm_low`)
 7. `inflight_full`
 
@@ -128,7 +157,7 @@ El sistema SHALL reusar `disk_free_space()` sobre `/dev/shm` que ya se evalúa e
 - **AND** no encola hasta el próximo ciclo
 
 #### Scenario: `/dev/shm` sano pero cola llena
-- **WHEN** `/dev/shm` tiene espacio de sobra pero `Redis::llen >= target_redis_queue`
+- **WHEN** `/dev/shm` tiene espacio de sobra pero `pg_queue_depth >= target_pg_queue`
 - **THEN** el freno es por `queue_at_target` (no por `shm_low`)
 - **AND** el endpoint lista ambas señales en `signals_evaluated` con sus valores
 
@@ -155,7 +184,7 @@ El sistema SHALL escribir `regulator_skip_reason` con la razón dominante del fr
 
 #### Scenario: Causa legible por el panel
 - **WHEN** el admin abre el panel de diagnóstico
-- **THEN** la causa dominante se traduce a un texto humano (mapeo fijo): `queue_at_target` → "Cola Redis en objetivo", `remote_gpu_saturated` → "GPU remota saturada", `shm_low` → "/dev/shm bajo de espacio", `inflight_full` → "Concurrencia ffmpeg+POST al máximo", `dispatch_paused` → "Despacho pausado manualmente"
+- **THEN** la causa dominante se traduce a un texto humano (mapeo fijo): `queue_at_target` → "Cola PG en objetivo", `remote_gpu_saturated` → "GPU remota saturada", `shm_low` → "/dev/shm bajo de espacio", `inflight_full` → "Concurrencia ffmpeg+POST al máximo", `dispatch_paused` → "Despacho pausado manualmente"
 
 ### Requirement: Compatibilidad con `dispatch_paused`
 El sistema SHALL mantener `dispatch_paused` como freno de emergencia prioritario: si está activo, ningún modo del regulador encola, independientemente del resto de señales.

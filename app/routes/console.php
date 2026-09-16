@@ -71,13 +71,24 @@ Schedule::command('trash:purge')->dailyAt('03:17')->withoutOverlapping(30)->runI
 //
 // Tick unificado: corre cada 2 minutos. Phase 1 (discovery) escanea los archivos
 // del día actual en storages habilitados; Phase 2 (regulator dispatch) encola
-// hasta `target_redis_queue - current + runway` (clamped 10..200) jobs a Redis.
+// hasta `target_pg_queue - current + runway` (clamped 10..200) jobs al worker PG.
 // Solo procesa archivos de `created_at >= today` (scope=current_day en .env).
 // Documentado en openspec/changes/2026-07-22-transcription-operational-autotuning.
 Schedule::command('transcription:tick')
     ->everyTwoMinutes()
     ->withoutOverlapping(150)
     ->appendOutputTo(storage_path('logs/transcription-tick.log'));
+
+// Staging local (fase 1 del pipeline, transcriptor-two-phase-staging): convierte
+// con ffmpeg en goteo y deja los audios listos en /dev/shm. Cada minuto avanza
+// solo hasta el inventario objetivo, asi el host local nunca tiene un pico de
+// CPU y el worker PG solo hace el POST barato de lo ya convertido.
+// withoutOverlapping(5): una corrida con `staging_pace_seconds` alto puede durar
+// mas de un minuto, y no queremos dos stagers compitiendo por el presupuesto.
+Schedule::command('transcription:stage')
+    ->everyMinute()
+    ->withoutOverlapping(5)
+    ->appendOutputTo(storage_path('logs/transcription-stage.log'));
 
 // Auto-ajuste del pool de workers systemd basado en # de medios equivalentes.
 // Cada 5 min recalcula storages planos + subcarpetas de grouped_by_subfolder.
@@ -101,6 +112,21 @@ Schedule::command('transcription:tune --apply')
 Schedule::command('transcription:poll-results')
     ->everyMinute()
     ->withoutOverlapping(10);
+
+// Purga de alcance: cierra los `pending` que NO son de hoy. La regla operativa
+// del modulo es "solo se procesa el dia actual" (el worker PG filtra
+// `recorded_at >= today`), asi que cualquier pending anterior a hoy es basura
+// que nunca se reclamara y que inflaba las metricas de la UI.
+//
+// A las 03:00 Bogota, cuando el dia anterior ya no puede crecer. withoutOverlapping(120)
+// porque un backlog grande (miles de filas) tarda varios minutos en chunkById.
+// El comando respeta el guardarrail max-ratio=0.5: si el universo a purgar
+// parece anormalmente grande, aborta y lo deja al operador.
+Schedule::command('transcription:purge-stale-pending')
+    ->dailyAt('03:00')
+    ->timezone('America/Bogota')
+    ->withoutOverlapping(120)
+    ->appendOutputTo(storage_path('logs/transcription-purge.log'));
 
 // Cambio transcriptor-api-surface-completeness: recuperación masiva semanal.
 // Lunes 04:00 hora local. Re-encola en bloque los jobs error/dead de los últimos
@@ -149,6 +175,24 @@ Schedule::command('transcription:cleanup-orphan-wav')
 Schedule::command('transcription:check-shm-health')
     ->everyTenMinutes()
     ->withoutOverlapping(30);
+
+// Watchdog del transcriptor (transcriptor-pg-native-queue): cada minuto busca
+// filas en 'processing' que llevan mas de processing_timeout_seconds sin
+// submission_committed_at y las re-encola a 'pending'. sinOverlapping para
+// evitar carreras entre corridas concurrentes.
+Schedule::command('transcriptor:watchdog-processing')
+    ->everyMinute()
+    ->withoutOverlapping(60);
+
+// Snapshot por storage cada 15 minutos (alimenta la tarjeta del tab Storages).
+Schedule::command('transcriptor:storage-snapshot')
+    ->everyFifteenMinutes()
+    ->withoutOverlapping(60);
+
+// Purga diaria de snapshots >7 dias (transcription_storage_snapshots retention).
+Schedule::command('transcriptor:prune-storage-snapshots')
+    ->dailyAt('03:00')
+    ->withoutOverlapping(120);
 
 // (Eliminado el 2026-09-15 — change simplify-api-transcriptor-to-storage-and-config:
 // el snapshot por minuto de la serie temporal de consumo solo alimentaba el

@@ -10,7 +10,8 @@ use Illuminate\Support\Facades\Log;
  * y abre el break cuando se supera el threshold. Sirve para cortar el tick
  * antes de castigar al upstream con reenvios que sabe no podra absorber.
  *
- * Implementación en Redis (mismo store que el resto del módulo):
+ * Implementación sobre el store de caché (driver configurable vía
+ * `config/cache.php`, mismo store que el resto del módulo):
  * - "transcriptor:upstream:strikes:{minute}" con TTL 5 min, valor = count
  * - "transcriptor:upstream:open_until" sin TTL, valor = epoch_seconds
  *

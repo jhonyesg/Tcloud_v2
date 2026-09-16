@@ -20,8 +20,9 @@ use Illuminate\Validation\ValidationException;
  * La `api_key` queda EXCLUIDA a propósito: las credenciales son deploy-level
  * (van en .env / secretos), nunca en BD.
  *
- * Memoria compartida entre php-fpm y CLI: el store de cache es Redis, una
- * escritura desde la UI propaga a todos los procesos en TTL + 30s memo.
+ * Memoria compartida entre php-fpm y CLI: el store de cache es configurable
+ * vía `config/cache.php`, una escritura desde la UI propaga a todos los
+ * procesos en TTL + 30s memo.
  *
  * Companion a TranscriptorSettings; no se fusionaron porque tienen
  * dominios distintos (transcriptor pipeline vs LLM suggester) y las
@@ -834,7 +835,8 @@ class LlmCorrectionSettings
     // ---------------------------------------------------------------- internos
 
     /**
-     * Cache compartido Redis con memo en proceso. Mismo TTL que TranscriptorSettings.
+     * Cache compartido en el store de caché (driver configurable vía
+     * `config/cache.php`) con memo en proceso. Mismo TTL que TranscriptorSettings.
      * @return array<string,string>
      */
     private function map(): array

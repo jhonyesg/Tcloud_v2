@@ -67,13 +67,22 @@ return [
     // encolaba 3100 jobs de golpe saltandose el regulador.
     'scan_max_dispatch_per_cycle' => (int) env('TRANSCRIPTOR_SCAN_MAX_DISPATCH_PER_CYCLE', 200),
 
+    // Excluir el audio más reciente por storage del escaneo. Cuando el
+    // tick descubre archivos por mtime, el de mayor mtime suele estar
+    // aún siendo grabado por el radio. Si true, lo saltea y deja que el
+    // próximo tick (dentro de scan_min_age_seconds) lo levante ya completo.
+    'scan_skip_latest_per_storage' => (bool) env('TRANSCRIPTOR_SCAN_SKIP_LATEST_PER_STORAGE', true),
+
     // Tiempo (minutos) que un pending sin job_id se considera atascado y se reenvia
     'stale_after_minutes' => (int) env('TRANSCRIPTOR_STALE_AFTER_MINUTES', 30),
 
-    // === Regulador del batch dispatcher (transcription:tick) ===
-    // Target de jobs en Redis queues:transcription arriba del cual el regulador frena.
+// === Regulador del batch dispatcher (transcription:tick) ===
+    // Target de jobs pendientes (state=pending, recorded_at>=today) arriba del
+    // cual el regulador frena. El contador vive en la tabla `transcriptions`
+    // (cola nativa PG): el cutover transcriptor-pg-native-queue (2026-09-15)
+    // elimino la cola previa basada en Laravel Bus.
     // El transcriptor tiene 2 workers GPU; cola 140 lo mantiene alimentado sin hipersaturar.
-    'target_redis_queue' => (int) env('TRANSCRIPTOR_TARGET_REDIS_QUEUE', 140),
+    'target_pg_queue' => (int) env('TRANSCRIPTOR_TARGET_PG_QUEUE', 140),
 
     // Minimo y maximo por ciclo (regulador clamp)
     'min_batch' => (int) env('TRANSCRIPTOR_MIN_BATCH', 10),
@@ -97,24 +106,11 @@ return [
     // ajustable en caliente sin tocar routes/console.php.
     'tick_interval_minutes' => (int) env('TRANSCRIPTOR_TICK_INTERVAL_MINUTES', 3),
 
-    // Separacion entre encolados dentro de un mismo lote (ms). 0 = todos a la vez.
-    // Con >0 los jobs entran a Redis escalonados en vez de en el mismo instante:
-    // es la diferencia entre 145 arranques simultaneos de ffmpeg y 145 repartidos.
-    'dispatch_stagger_ms' => (int) env('TRANSCRIPTOR_DISPATCH_STAGGER_MS', 250),
-
-    // Tamano del chunk para el ramp-up progresivo. El batch se divide en
-    // chunks de este tamano y se reparten con dispatch_stagger_ms entre cada uno.
-    'stagger_chunk_size' => (int) env('TRANSCRIPTOR_STAGGER_CHUNK_SIZE', 5),
-
-    // Ratio de batch por worker remoto. max_batch adaptativo =
-    // ceil(remote_capacity * batch_per_worker_ratio). Con 3 workers y 1.5
-    // el techo efectivo es 5 en lugar de 200.
-    'batch_per_worker_ratio' => (float) env('TRANSCRIPTOR_BATCH_PER_WORKER_RATIO', 1.5),
-
     // Maximo de ffmpeg+POST SIMULTANEOS, independiente del numero de workers.
-    // 0 = desactivado. Con 11 workers e inflight_max=4, los sobrantes esperan en
-    // el semaforo Redis sin tocar systemd. El objetivo de cola regula el ritmo de
-    // encolado; esto regula la concurrencia real contra los 2 workers GPU.
+    // 0 = desactivado (default post-migracion). La concurrencia ahora se logra
+    // con N units supervisord (transcription:worker), no con funnel en la BD.
+    // El objetivo de cola regula el ritmo de encolado; esto regula la
+    // concurrencia intra-proceso contra los 2 workers GPU.
     'inflight_max' => (int) env('TRANSCRIPTOR_INFLIGHT_MAX', 0),
 
     // === Confiabilidad ===
@@ -166,6 +162,49 @@ return [
     // en ApiTranscriptorController::processBatch para no truncar en silencio.
     'ui_batch_max' => (int) env('TRANSCRIPTOR_UI_BATCH_MAX', 200),
 
+    // Cuando true, el submit calcula SHA256 del wav enviado y lo manda al
+    // upstream como `idempotency_key` para que la API externa deduplique
+    // reenvios dentro de su ventana. Default true (alineado con el schema).
+    'submit_with_idempotency_key' => (bool) env('TRANSCRIPTOR_SUBMIT_WITH_IDEMPOTENCY_KEY', true),
+
+    // Maximo de espera (s) entre reintentos si el upstream responde 503 sin
+    // header Retry-After. Si excede, el sistema aborta el envio y el job se
+    // reencola para el siguiente tick.
+    'max_backoff_seconds' => (int) env('TRANSCRIPTOR_MAX_BACKOFF_SECONDS', 300),
+
+    // Cantidad de respuestas 4xx/5xx en una ventana de 5 min para que el
+    // circuit breaker se abra y el tick frene con reason=upstream_circuit_open.
+    'circuit_breaker_threshold' => (int) env('TRANSCRIPTOR_CIRCUIT_BREAKER_THRESHOLD', 3),
+
+    // Tiempo que el break queda abierto antes de pasar a half-open. Durante
+    // este periodo el tick no encola.
+    'circuit_breaker_open_seconds' => (int) env('TRANSCRIPTOR_CIRCUIT_BREAKER_OPEN_SECONDS', 60),
+
+    // === Burst dispatcher (TranscriptorBurstDispatchCommand) ===
+    // Si la API remota tiene queue.queued + processing >= este valor, el
+    // burst-dispatcher pausa. Validado contra /api/metrics/overview.
+    'burst_max_upstream_queue' => (int) env('TRANSCRIPTOR_BURST_MAX_UPSTREAM_QUEUE', 180),
+
+    // Maximo de audios que toma el burst-dispatcher por rafaga cuando hay
+    // headroom. Se calcula como min(headroom, batch_size).
+    'burst_batch_size' => (int) env('TRANSCRIPTOR_BURST_BATCH_SIZE', 40),
+
+    // Cantidad de procesos paralelos (proc_open) que procesan audios del lote.
+    'burst_parallel_ffmpeg' => (int) env('TRANSCRIPTOR_BURST_PARALLEL_FFMPEG', 8),
+
+    // Cuando no hay headroom o candidatos, el daemon espera este tiempo
+    // antes de re-verificar /api/metrics/overview.
+    'burst_poll_interval_seconds' => (int) env('TRANSCRIPTOR_BURST_POLL_INTERVAL_SECONDS', 10),
+
+    // === Webhook (Fase D, experimental) ===
+    // Off por defecto. Cuando se activa, el upstream notifica via webhook
+    // en vez de esperar al polling. Requiere TCLOUD_CALLBACK_URL configurado.
+    'submit_with_callback' => (bool) env('TRANSCRIPTOR_SUBMIT_WITH_CALLBACK', false),
+
+    // Secreto compartido con el upstream para firmar los webhooks entrantes.
+    // Generar con: openssl rand -hex 32
+    'webhook_secret' => env('TCLOUD_WEBHOOK_SECRET', ''),
+
     // Max reintentos automaticos antes de promover una Transcription a 'dead'.
     // Se incrementa en TranscriptionSubmitService::markError() y se valida contra este
     // limite en DiskScannerService::collectFailedCandidates() con el flag --include-failed.
@@ -195,7 +234,17 @@ return [
     // === Pase de coherencia IA sobre segmentos con ingles residual ===
     // El umbral de seleccion y el modelo NO son configurables: viven en
     // TranscriptionCoherencePass y en llm-correction.model respectivamente.
-    'ai_coherence_enabled' => (bool) env('TRANSCRIPTOR_AI_COHERENCE_ENABLED', true),
+    //
+    // MANUAL-ONLY (default false): el pase consume tokens del LLM en CADA
+    // transcripcion que se ingesta, asi que NO se ejecuta solo. Para correrlo
+    // hay que activar el toggle a mano (AI Settings o este env) y luego
+    // dispararlo con `transcription:backfill-coherence`.
+    //
+    // Por que: change archivado `2026-08-25-llm-coherence-manual-only-defaults-off`
+    // ordenaba este default; quedo a medias y el pase siguio corriendo solo en
+    // cada ingesta del poller (~9.5 s por job, y con el gateway LLM caido el
+    // tiempo se pagaba igual sin obtener correccion).
+    'ai_coherence_enabled' => (bool) env('TRANSCRIPTOR_AI_COHERENCE_ENABLED', false),
     'ai_coherence_max_segments' => (int) env('TRANSCRIPTOR_AI_COHERENCE_MAX_SEGMENTS', 20),
     'ai_coherence_max_learn' => (int) env('TRANSCRIPTOR_AI_COHERENCE_MAX_LEARN', 5),
     'ai_coherence_batch_size' => (int) env('TRANSCRIPTOR_AI_COHERENCE_BATCH_SIZE', 5),
@@ -221,18 +270,18 @@ return [
     // === Regulador configurable (optimize-transcriptor-dispatch-throughput) ===
     //
     // `regulator_mode` redefine la senal que usa el tick para frenar.
-    //   - local_only : solo Redis LLEN + shm_free (comportamiento historico +
-    //                  guarda de tmpfs).
+    //   - local_only : solo conteo PG (pending state) + shm_free (comportamiento
+    //                  post-migracion + guarda de tmpfs).
     //   - remote_aware: ademas consulta /api/stats con cache y TTL corto;
     //                  prioriza la saturacion real de la GPU remota sobre
     //                  la cola local.
-    //   - hybrid    : cualquiera de redis_queue / remote_gpu / shm / inflight
+    //   - hybrid    : cualquiera de pg_queue / remote_gpu / shm / inflight
     //                  dispara freno; la razon es la primera senal saturada
     //                  en orden de prioridad.
     'regulator_mode' => env('TRANSCRIPTOR_REGULATOR_MODE', 'local_only'),
 
-    // TTL de la cache de /api/stats en Redis cuando regulator_mode consulta
-    // la GPU remota. Mantenerlo corto: 15s da margen para no castigar al
+    // TTL de la cache de /api/stats cuando regulator_mode consulta la GPU
+    // remota. Mantenerlo corto: 15s da margen para no castigar al
     // nodo ASR sin perder relevancia operativa.
     'regulator_remote_cache_seconds' => (int) env('TRANSCRIPTOR_REGULATOR_REMOTE_CACHE_SECONDS', 15),
 

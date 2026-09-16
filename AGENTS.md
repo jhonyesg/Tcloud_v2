@@ -849,3 +849,334 @@ php -r 'require "vendor/autoload.php"; ... App\Models\SystemSetting::set("avisos
 redis-cli -a 'Clouding2026!Redis' -n 1 --scan --pattern 'tcloud_tcloud_cache_avisos:*' \
   | xargs -r redis-cli ... DEL
 ```
+
+## Filtro de tamaño en el escaneo (`min_file_size_bytes`, 2026-09-16)
+
+Una grabación con el stream caído existe en disco pero pesa **0 bytes**. El
+tick la encolaba igual, el stage la rechazaba por `min_file_size_bytes`, la
+reencolaba cada 5 min y consumía los reintentos (~40 min) antes de morir: la
+fila aparecía como "en cola" esperando algo que nunca podría convertirse, con
+CPU de ffprobe pagada en cada intento.
+
+**Ahora el filtro se aplica en el ORIGEN**: `DiskScannerService::scanStorage()`
+salta los archivos por debajo de `min_file_size_bytes`, así la fila **ni se
+crea**. El filtro se reevalúa en cada escaneo, así que si el grabador estaba
+escribiendo y el archivo crece después, el siguiente tick lo levanta normal.
+
+| Setting | Default | Notas |
+|---|---|---|
+| `min_file_size_bytes` | **512000** (500 KB) | `0` = desactivar. Antes 1024. |
+
+También se aplica en `TranscriptionSubmitService::stage()` (para filas ya
+creadas) y en `TranscriptionBackfillLostCommand`.
+
+**Ámbito**: solo el pipeline del transcriptor (`DiskScannerService`). El
+explorador de archivos usa `StorageSyncService`, que NO filtra por tamaño: un
+archivo pequeño sigue siendo visible y descargable.
+
+**Referencia de tamaño**: un programa de 21 min pesa ~20 MB en MP3 y ~12 MB en
+M4A; 500 KB equivale a ~30 s de audio. Los archivos por debajo de ese umbral
+medidos en producción tenían `word_count = 0` (grabaciones vacías).
+
+**Reversión**: `SystemSetting::set('transcriptor.min_file_size_bytes', '1024')`
+(o el valor que se quiera). No hay migración.
+
+## Incidente 2026-09-16: bucle de stagers por `dispatched_at` no limpiado
+
+**Síntoma**: CPU del host al 70-80% sin conversiones visibles en el panel,
+25-30 procesos `transcription:stage` concurrentes, load average 42 en 32 cores.
+
+**Causa raíz (dos bugs propios, corregidos en `TranscriptionStageCommand`):**
+
+1. `candidates()` seleccionaba `pending` + `staged_path IS NULL` pero **no
+   filtraba `dispatched_at IS NULL`**, mientras que el claim condicional de
+   `TranscriptionSubmitService::stage()` sí lo exige. Una fila `pending` con
+   `dispatched_at` seteado era candidata pero el claim la rechazaba: ffmpeg se
+   pagaba, devolvía `lost_claim` y **el inventario nunca crecía**, así que el
+   loop de lotes elegía las mismas filas para siempre.
+2. El resultado `lost_claim` se contaba como `staged`, así que el loop no
+   detectaba que no había progreso.
+
+Se sumó el `withoutOverlapping(5)` del scheduler: a los 5 min vencía el lock y
+arrancaba **otro** stager en paralelo mientras el primero seguía girando.
+
+**Correcciones aplicadas:**
+
+- `candidates()` ahora exige `whereNull('dispatched_at')` (misma condición que
+  el claim).
+- `lost_claim` es un bucket propio; se propaga por `absorbParallelPayload` /
+  `absorbStageResult` / `mergeBatchOut`.
+- **Tope duro `MAX_BATCHES_PER_RUN = 20`** por corrida.
+- Si un lote entero pierde el claim sin progreso (`lost_claim > 0` y
+  `staged === 0` y `requeued === 0`), la corrida corta con warning.
+- Fix de datos: `UPDATE transcriptions SET dispatched_at = NULL WHERE
+  state='pending' AND dispatched_at IS NOT NULL` (109 filas el 2026-09-16).
+
+**Regla para cualquier reset manual de filas a `pending`**: limpiar SIEMPRE
+`dispatched_at` (y `staged_path` si se quiere reconvertir). El worker PG
+selecciona por `dispatched_at IS NULL`, y el stager por la misma condición; una
+fila `pending` con el sello puesto es invisible para ambos caminos.
+
+```sql
+-- Reset correcto de una fila a pending:
+UPDATE transcriptions
+SET state='pending', job_id=NULL, dispatched_at=NULL, requeue_after_at=NULL,
+    error_message=NULL, staged_path=NULL, staged_bytes=NULL, staged_at=NULL
+WHERE id = :id;
+```
+
+## El paso 1 del poller competía con los workers por CPU
+
+`transcription:poll-results` tiene dos fases: **(1)** reenviar hasta
+`stale_resend_limit` pendientes atascados ejecutando **ffmpeg + POST
+síncronos**, y **(2)** sondear resultados.
+
+Cada reenvío medido: **~4 s** (ffmpeg). Con el default de 50, la fase 1 consume
+**~3.5 min del ciclo** y la fase 2 no llega a correr: los jobs que ya están
+`done` en el nodo remoto **nunca se recogen** y el backlog crece.
+
+Medición 2026-09-16: `sondeadas_10min = 0` con ~1.800 filas en `queued`.
+
+**Fix operativo**: `transcriptor.stale_resend_limit = 0`. El reenvío de
+atascados lo hace el worker PG con staging paralelo, que es su diseño correcto;
+duplicarlo dentro del poller solo destruye el ciclo de sondeo.
+
+| Métrica | Antes | Después |
+|---|---|---|
+| `queued` | 1.796 | 9 |
+| `done` en 10 min | ~0 | 1.059 |
+| Ritmo | estancado | -54 queued / +100 done cada 150 s |
+
+**Regla**: el poller sondea, el worker PG convierte y envía. No mezclar ffmpeg
+dentro del ciclo de polling.
+
+## Coherencia IA del transcriptor: manual-only (2026-09-16)
+
+`transcriptor.ai_coherence_enabled` arranca en **`false`** (default en código:
+`config/transcriptor.php` y `TranscriptorSettings`). El pase LLM de coherencia
+NO se ejecuta solo.
+
+**Por qué**: `TranscriptionCoherencePass::apply()` corre dentro de
+`TranscriptionProcessor::processDone()`, o sea en el **poller**, en CADA
+transcripción ingestada. Con el toggle encendido se gastan tokens en todo el
+volumen y el poller cae a ~9.5 s/job (con el gateway LLM caído el tiempo se
+paga igual sin obtener corrección). Medición 2026-09-16: **9.5 s/job → 0.26
+s/job** (37x) al apagarlo.
+
+Esto completa el change archivado
+`2026-08-25-llm-coherence-manual-only-defaults-off`, que ordenaba el default en
+`false` pero quedó a medias (solo se aplicó a `llm-correction.enabled`).
+
+### Cómo correrlo a propósito
+
+```bash
+# 1. Encender el toggle (AI Settings o directo):
+#    SystemSetting::set('transcriptor.ai_coherence_enabled', '1');
+#    TranscriptorSettings->flush()
+# 2. Disparar el pase sobre el rango deseado:
+cd app && php artisan transcription:backfill-coherence --days=7 --batch=5 --sleep=2
+# 3. Apagarlo otra vez al terminar.
+```
+
+El comando `transcription:backfill-coherence` aborta con WARNING si el toggle
+está apagado (no gasta tokens ni toca BD).
+
+### Circuit breaker
+
+`TranscriptionCoherencePass::callWithRetry()` excluye un proveedor LLM tras 5
+fallos consecutivos en 10 min (`coherence_breaker:{provider}` en cache). Si
+todos quedan excluidos, el pase cae al texto del diccionario sin corrección.
+
+## Zona horaria de PostgreSQL (`fix-pg-session-timezone-bogota`, 2026-09-16)
+
+La conexión `pgsql` fija `timezone => America/Bogota` (override:
+`DB_TIMEZONE` en `.env` + `php artisan config:cache`). **No quitar esa clave.**
+
+**Por qué**: Laravel formatea los bindings `DateTimeInterface` con
+`format('Y-m-d H:i:s')` en la zona del Carbon (`America/Bogota`), y PostgreSQL
+interpreta ese texto naive en la zona de la **sesión**. Con la sesión en UTC
+(default de PostgreSQL), cada `timestamptz` escrito desde la app quedaba
+corrido **-5 h**: la hora local se guardaba como si fuera UTC.
+
+Columnas `timestamptz` afectadas (las únicas interpretadas):
+
+| Tabla | Columna |
+|---|---|
+| `transcriptions` | `recorded_at`, `staged_at` |
+| `files` | `file_modified_at` |
+| `transcription_storage_snapshots` | `captured_at` |
+
+Las columnas naive (`created_at`, `dispatched_at`, `started_at`,
+`finished_at`, `last_polled_at`, `requeue_after_at`) NO se ven afectadas:
+se guardan como hora de pared y se comparan contra `now()` en el mismo marco.
+Ese mismo marco es el que necesitan el watchdog
+(`dispatched_at < now()-900s`) y el filtro "hoy" del worker — con la sesión en
+UTC, el watchdog se retrasaba 5 h y dejaba filas `processing` varadas.
+
+### Regla para escribir fechas
+
+Todo `Carbon::createFromTimestamp($ts)` debe pasar la zona de la app:
+
+```php
+Carbon::createFromTimestamp($ts, config('app.timezone'))  // correcto
+Carbon::createFromTimestamp($ts)                          // UTC -> desfase +5h
+```
+
+`DiskScannerService` ya usaba `config('app.timezone')`; el fix alineó
+`StorageSyncService` (3 sitios) y `FileController` (3 sitios).
+
+### Backfill de datos ya desfasados
+
+```bash
+cd app
+php artisan transcription:fix-recorded-at-timezone --days=N          # dry-run
+php artisan transcription:fix-recorded-at-timezone --days=N --apply
+```
+
+Corrige **solo** las filas donde el desfase es demostrable: `recorded_at` ==
+hora de pared del nombre tratada como UTC (derivadas de `RecordedAt`). Es
+idempotente y no toca las que provinieron de `file_modified_at`/`finished_at`.
+Aplicado el 2026-09-16: 35.670 filas de los últimos 2 días.
+
+## Freno con histéresis de la cola remota (`transcriptor-remote-queue-hysteresis-brake`)
+
+El envío al nodo remoto ya **NO** compara `queue_queued >= target_remote_queue`
+en crudo. Esa comparación producía ping-pong alrededor del techo: frena en 180,
+el nodo drena 1 job, la cola queda en 179 y se reanuda — goteo de 1-2 jobs por
+ciclo y el nodo nunca baja de verdad.
+
+Ahora el freno vive en `App\Services\Ia\RemoteQueueBrake` con dos umbrales:
+
+| Setting | Default | Efecto |
+|---|---|---|
+| `target_remote_queue` | 180 | FRENO inmediato al alcanzarlo. |
+| `resume_remote_queue` | 120 | REANUDO solo cuando la cola baja a este valor. |
+| `remote_queue_recheck_seconds` | 30 | Con el freno activo, cada cuánto se revalida la cola. |
+| `remote_queue_requeue_seconds` | 30 | Aplazamiento del sender al rebotar por este freno (reemplaza los 5 min genéricos solo para este motivo). |
+
+**Comportamiento:**
+- Freno **inmediato** en el techo, sin esperar la ventana de revalidación.
+- Entre `resume` y `target` el envío permanece frenado (colchón de respiro).
+- Reanuda solo si la cola `<= resume` **y** venció la ventana de revalidación.
+- **Fail-open**: sin telemetría (`remoteInfo === null`) el freno no aplica.
+- Invariante garantizada en código: `resume` se clampea siempre a `< target`
+  (aunque el setting sea absurdo), para que el freno no se levante con la
+  misma cola que lo activó.
+
+**Pestillo compartido**: `RemoteQueueBrake::CACHE_KEY`
+(`transcriptor:remote_queue_brake`) guarda `{braked, queue, checked_at}`. Lo
+usan el **planner** (`TranscriptionTickCommand::computeEffectiveBatch` devuelve
+0 si el pestillo está activo) y el **sender**
+(`TranscriptionSubmitService::send` reencola conservando el staged). Ambos
+toman la misma decisión, así que no hay carrera entre tick y worker.
+
+**Invalidación**: `TranscriptorSettingsController::update()` y `reset()` llaman
+`RemoteQueueBrake::forget()` cuando cambia la configuración, para que un
+pestillo viejo no sobreviva a un cambio de umbrales.
+
+**Observabilidad**: el panel muestra `cfgRuntime.remote_brake`
+(`braked`, `queue`, `target`, `resume`, `recheck_seconds`, `requeue_seconds`).
+La barra de la cola remota se pinta ámbar cuando el pestillo está activo, y el
+pie dice "Frenada (baja a 120 para reanudar) · revalida cada 30s".
+
+**Harness**: `tests/harness_remote_queue_brake.php` (18 aserciones: freno en el
+techo, ausencia de ping-pong en 179/150, reanudo con ventana vencida, ventana
+vigente, fail-open, coherencia con el planner, aplazamiento corto, invariante
+`resume < target`).
+
+**Rollback sin deploy**: poner `resume_remote_queue` igual a
+`target_remote_queue - 1` (o cualquier valor cercano al techo) reduce la
+histéresis al mínimo; con `resume = target - 1` el comportamiento vuelve a ser
+casi el original. No hay migración ni estado persistente que limpiar: el
+pestillo expira solo.
+
+## Staging paralelo (`transcriptor-stage-parallel-lotes`, 2026-09-16)
+
+El comando `transcription:stage` (fase 1 del pipeline) ya **NO** opera en
+goteo de 1 ffmpeg + sleep. Opera en **lotes paralelos** vía `pcntl_fork`:
+
+- `staging_parallel` (default **4**, rango 1..8): cuántos ffmpeg corren a la
+  vez. Cada hijo es un proceso independiente que ejecuta
+  `TranscriptionSubmitService::stage()` y reporta el resultado al padre por
+  un `stream_socket_pair`. El hijo hace `DB::disconnect()` al arrancar y
+  termina con `posix_kill(getmypid(), SIGKILL)` para NO ejecutar destructores
+  de Laravel sobre sockets heredados.
+- `staging_pace_seconds` (default **0**): pausa al final de cada lote. Con
+  0 el stager arranca el lote siguiente apenas termina el actual.
+- `staging_budget_bytes` (default 8GB): freno duro por bytes. El stager no
+  arranca un lote si el total staged excedería el presupuesto.
+- `staging_target_inventory` (default 60): freno por conteo. El tope real es
+  `min(inventario, presupuesto)`.
+
+**Razón operativa**: el goteo anterior desperdiciaba el host. Entre
+conversiones el CPU caía a ~3% mientras la cola seguía creciendo, y el sender
+quedaba sin inventario durante esos huecos. Con 4 paralelos y sin pausa, el
+stager mantiene el RAM disk cargado (limitado por `staging_budget_bytes`) y
+el sender tiene siempre munición lista. La saturación del host se gobierna
+por bytes de tmpfs y por `staging_parallel`, no por un sleep fijo.
+
+**Watchdog por hijo**: 900 s (`CHILD_TIMEOUT_SECONDS`). Si un ffmpeg se
+cuelga, el padre lo mata con SIGKILL y cuenta la fila como failed; el
+siguiente ciclo del cron la vuelve a candidatar (no tiene staged_path).
+
+**Fallback sin pcntl**: si `pcntl_fork` no está disponible, el comando cae a
+secuencial (1 conversión a la vez, sin pausa) y loguea warning. Es señal de
+entorno mal configurado, no un modo soportado.
+
+**Rollback sin deploy**: poner `staging_parallel=1` (vía UI o `php artisan
+tinker`) vuelve al comportamiento secuencial. Para suspender todo el staging
+sin tocar workers: `staging_enabled=false`.
+
+**Comando de diagnóstico**:
+
+```bash
+cd app && php artisan transcription:stage --dry-run
+# muestra: inventario actual, presupuesto libre, paralelos, candidatos
+```
+
+Logs por corrida: `storage/logs/transcription-stage.log` (cada lote) y
+`laravel.log` (warnings por hijo sin payload o timeout).
+
+## Cola nativa PG del transcriptor (change `transcriptor-pg-native-queue`)
+
+Post-migracion (cutover 2026-09-15) el modulo API Transcriptor ya **NO usa
+Redis como cola de despacho**. La cola ES la tabla PostgreSQL `transcriptions`
+misma: las filas `state='pending'` con `dispatched_at IS NULL` y
+`recorded_at >= today` son candidatas; el worker las toma con `FOR UPDATE
+SKIP LOCKED`.
+
+### Componentes nuevos
+
+| Archivo | Rol |
+|---------|-----|
+| `app/app/Console/Commands/TranscriptionWorkerCommand.php` | Poleador PG. Una instancia por unit supervisord; corre `SELECT FOR UPDATE SKIP LOCKED LIMIT N` en loop. Signal handlers SIGTERM/SIGINT para salida limpia. |
+| `app/app/Console/Commands/TranscriptionWatchdogCommand.php` | Recupera filas en `processing` con `dispatched_at < now() - processing_timeout_seconds` y `submission_committed_at IS NULL` → las pone en `pending` con `regulator_skip_reason='watchdog_recover'`. |
+| `app/app/Console/Commands/TranscriptionStorageSnapshotCommand.php` | Cada 15 min: agrega `pending/inflight/sent/error` por storage en `transcription_storage_snapshots`. Alimenta la tarjeta del tab Storages. |
+| `app/app/Console/Commands/TranscriptionPruneSnapshotsCommand.php` | Purga diaria (03:00 Bogota) snapshots > 7 dias. |
+| `app/app/Console/Commands/TranscriptorPurgeBacklogCommand.php` | One-shot de cutover: migra `target_redis_queue` → `target_pg_queue` y borra backlog pre-migracion. |
+| `app/app/Services/Ia/TranscriptionBulkDispatchService.php` | Reemplaza `ConvertAndTranscribeJob::dispatch`. Usado por `POST /ia/api-transcriptor/jobs/bulk-dispatch`, `ScanAndSubmitCommand` y `TranscriptionBackfillLostCommand`. |
+| `app/database/migrations/2026_09_15_130000_add_pending_today_dispatch_index_to_transcriptions.php` | Indice parcial `(recorded_at DESC, discovered_at DESC) WHERE state='pending' AND dispatched_at IS NULL`. Acelera el worker query a <5 ms. |
+| `app/database/migrations/2026_09_15_130100_create_transcription_storage_snapshots_table.php` | Tabla de snapshots por storage. PK compuesta `(storage_provider_id, captured_at)`. |
+| `app/config/supervisor/tcloud-transcription-worker.conf` | Unit supervisord del worker. numprocs=3, stopwaitsecs=3600. |
+
+### Schedules (registrados en routes/console.php)
+
+- `transcriptor:watchdog-processing` cada minuto (withoutOverlapping 60)
+- `transcriptor:storage-snapshot` cada 15 minutos (withoutOverlapping 60)
+- `transcriptor:prune-storage-snapshots` diario 03:00 Bogota (withoutOverlapping 120)
+
+### Settings renombrados / retirados
+
+- `transcriptor.target_redis_queue` → `transcriptor.target_pg_queue` (mismo valor, mismo semantica)
+- `transcriptor.dispatch_stagger_ms` **retirado**. Sin dispatch step como fase distinta; el ritmo lo controla el regulador (lee `/api/metrics/overview`) y el guardrail de `/dev/shm` en `TranscriptionSubmitService::markRequeueable`.
+
+### Decisiones operativas
+
+- **Sin kill switch**: el rollback completo via `git revert <commit>` cubre los escenarios. `dispatch_paused` (existente) + `TRANSCRIPTOR_DISPATCH_PAUSED` (env) siguen siendo los frenos de emergencia.
+- **Concurrencia**: N units supervisord. Sin funnel Redis (`LimitTranscriptionConcurrency` eliminado).
+- **Privacidad cliente**: `GET /ia/api-transcriptor/storages/{id}/snapshot` filtra campos para rol `cliente`.
+
+### Cutover (ya ejecutado)
+
+El cutover fue un procedimiento operativo documentado en `design.md §1.7` del change. Pasos clave: backup pre-cutover (`pg_dump` + `COPY transcriptions TO ...`), drenado del pipeline legacy, `transcriptor:purge-backlog --execute`, migracion de las dos tablas nuevas, deploy del codigo, arranque de `tcloud-transcription-worker-*`.
+

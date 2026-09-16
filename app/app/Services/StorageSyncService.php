@@ -233,7 +233,13 @@ class StorageSyncService
                     $changes['size'] = $entry['size'];
                 }
                 if (isset($entry['modified_at'])) {
-                    $entryModified = \Carbon\Carbon::createFromTimestamp($entry['modified_at']);
+                    // createFromTimestamp() SIN zona devuelve un Carbon en UTC
+                    // (su default). Con la sesion PostgreSQL en America/Bogota
+                    // (config database.connections.pgsql.timezone), el binding se
+                    // formatea con `Y-m-d H:i:s` y PostgreSQL lo interpreta en la
+                    // zona de la sesion: hay que entregarlo ya en la zona de la
+                    // app o el instante queda corrido +5h. Ver fix 2026-09-16.
+                    $entryModified = \Carbon\Carbon::createFromTimestamp($entry['modified_at'], config('app.timezone'));
                     if (!$existingFile->file_modified_at || !$existingFile->file_modified_at->eq($entryModified)) {
                         $changes['file_modified_at'] = $entryModified;
                     }
@@ -318,7 +324,8 @@ class StorageSyncService
 
         if ($parentId !== null && $parentFolder) {
             // store directory mtime so fullSync can skip it next time when nothing changed
-            $dirMtime = \Carbon\Carbon::createFromTimestamp(filemtime($realPath));
+            // (zona de la app: ver nota en el otro createFromTimestamp de este archivo)
+            $dirMtime = \Carbon\Carbon::createFromTimestamp(filemtime($realPath), config('app.timezone'));
             $parentFolder->update(['file_modified_at' => $dirMtime]);
         }
 
@@ -437,7 +444,11 @@ class StorageSyncService
             return $existingTrashed;
         }
 
-        $modifiedAt = isset($entry['modified_at']) ? \Carbon\Carbon::createFromTimestamp($entry['modified_at']) : null;
+        // Zona de la app: con la sesion PG en America/Bogota, entregar un Carbon
+        // en UTC desplazaria el instante +5h. Ver fix 2026-09-16.
+        $modifiedAt = isset($entry['modified_at'])
+            ? \Carbon\Carbon::createFromTimestamp($entry['modified_at'], config('app.timezone'))
+            : null;
 
         // Via FileRegistry: si otro proceso gana la carrera, se lee al ganador en
         // vez de insertar una copia. Antes era un File::create() pelado.

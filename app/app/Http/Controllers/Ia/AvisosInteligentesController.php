@@ -370,7 +370,7 @@ class AvisosInteligentesController extends Controller
     /** Estado del escaneo: settings + últimas corridas + pendientes estimados. */
     public function scanStatus(Request $request, AvisosScanService $service)
     {
-        // Cacheado en Redis 60s (change 2026-09-13-perf-audit-and-improve).
+        // Cacheado en el store de caché 60s (change 2026-09-13-perf-audit-and-improve).
         // El compute original ejecuta service->estimate() DOS veces + recentRuns()
         // + lastRun() + settings() — cada estimate() recorre ~387k transcriptions.
         // Sin cache, este endpoint tardaba ~4.9s warm en mediciones Playwright.
@@ -1227,7 +1227,7 @@ class AvisosInteligentesController extends Controller
      * el operador + `Log::error()` con la traza completa para el admin.
      *
      * Antes de este cambio, una excepción tipo `Undefined array key` o un error
-     * de BD/Redis se convertía en el genérico `{"message":"Server Error"}`
+     * de BD/caché se convertía en el genérico `{"message":"Server Error"}`
      * que el frontend mostraba como "No se pudo iniciar el escaneo" sin que
      * el operador supiera qué falló. Ahora el operador ve el motivo y el
      * admin tiene la traza en laravel.log sin grep manual.

@@ -7,7 +7,6 @@ use App\Models\Transcription;
 use App\Services\Ia\TranscriptionPollingService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Redis;
 use Symfony\Component\HttpFoundation\Response;
 
 /**

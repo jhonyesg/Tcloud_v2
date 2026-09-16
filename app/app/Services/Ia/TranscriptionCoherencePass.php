@@ -51,9 +51,9 @@ class TranscriptionCoherencePass
      *
      * Estado persistido en Laravel Cache bajo la clave
      * `coherence_breaker:{provider}` con TTL = ventana móvil. Cache miss
-     * (Redis rebalancé, flush, etc.) cae a estado cerrado por fail-safe:
-     * peor caso = una llamada extra con error; mejor que quedar bloqueado
-     * para siempre.
+     * (rebalanceo del store de caché, flush manual, etc.) cae a estado
+     * cerrado por fail-safe: peor caso = una llamada extra con error;
+     * mejor que quedar bloqueado para siempre.
      */
     private const BREAKER_FAILURE_THRESHOLD = 5;
     private const BREAKER_WINDOW_SECONDS = 600;
@@ -610,7 +610,7 @@ class TranscriptionCoherencePass
     /**
      * Registra un fallo consecutivo para el proveedor e inicializa el TTL
      * de la ventana móvil si era la primera entrada. Usa Cache::increment
-     * (atómico en Redis) y Cache::put para garantizar expiración.
+     * (atómico en el store de caché) y Cache::put para garantizar expiración.
      */
     private function recordFailure(string $provider): void
     {

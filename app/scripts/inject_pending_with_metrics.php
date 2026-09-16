@@ -1,16 +1,17 @@
 <?php
 /**
- * Inyecta pendientes al Redis consultando el endpoint /api/metrics/overview
+ * Inyecta pendientes a la cola nativa PG consultando /api/metrics/overview
  * del upstream para NO saturar. Decisión basada en 4 señales:
  *   1. queue.queued + queue.processing < uplink_pool_max * 2 (cabe en workers)
  *   2. ramdisk.pct < 80% (espacio para temp wavs)
  *   3. ram.pct < 85% (margen de RAM del sistema)
- *   4. Cola Redis local current < 140 (regulador de TCloud)
+ *   4. Cola nativa PG pending < target_pg_queue (regulador de TCloud)
  *
  * USO:
  *   cd app && php scripts/inject_pending_with_metrics.php [max=200] [interval=30]
  *
- * No espera al tick. Despacha directo al Redis cola para acelerar.
+ * Post-migracion (transcriptor-pg-native-queue): marca filas a state=processing
+ * via TranscriptionBulkDispatchService; el worker PG las deja intactas.
  */
 
 require __DIR__ . '/../vendor/autoload.php';
@@ -19,10 +20,9 @@ $app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
 
 use App\Support\TimeFormat;
 use App\Models\Transcription;
-use App\Jobs\ConvertAndTranscribeJob;
+use App\Services\Ia\TranscriptionBulkDispatchService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Facades\Redis;
 
 $maxHardCap = (int) ($argv[1] ?? 200);
 $intervalSec = (int) ($argv[2] ?? 30);
@@ -58,8 +58,12 @@ for ($round = 1; $round <= $rounds; $round++) {
     $ramPct        = (float) ($ram['pct'] ?? 0);
     $swapUsedPct   = $ram['swap_total_gb'] > 0 ? (float) ($ram['swap_used_gb'] / $ram['swap_total_gb']) * 100 : 0;
 
-    $redisQ = (int) Redis::llen('queues:transcription');
-    $runway = max(0, 140 - $redisQ);
+    $pgPendingQ = (int) DB::table('transcriptions')
+        ->where('state', Transcription::STATE_PENDING)
+        ->whereNull('dispatched_at')
+        ->where('created_at', '>=', \Carbon\CarbonImmutable::today())
+        ->count();
+    $runway = max(0, 140 - $pgPendingQ);
 
     $vramPct = (float) ($m['gpu']['vram_used_pct'] ?? 0);
 
@@ -67,7 +71,7 @@ for ($round = 1; $round <= $rounds; $round++) {
     echo "  ramdisk: " . number_format($ramdiskPct, 1) . "% used (" . ($ramdiskOk ? 'ok' : 'CRITICAL') . ")\n";
     echo "  ram:     " . number_format($ramPct, 1) . "% used, swap: " . number_format($swapUsedPct, 1) . "%\n";
     echo "  gpu:     " . number_format($vramPct, 1) . "% vram\n";
-    echo "  redis_q: {$redisQ}/140 runway: {$runway}\n";
+    echo "  pg_q: {$pgPendingQ}/140 runway: {$runway}\n";
 
 // Limites (el operador dijo: solo cola, RAM y ramdisk importan; swap se ignora)
     $reasons = [];
@@ -96,16 +100,19 @@ for ($round = 1; $round <= $rounds; $round++) {
         ->orderBy('created_at', 'asc')
         ->limit($batchSize)
         ->get() as $tx) {
-        $u = DB::table('transcriptions')->where('id', $tx->id)->whereNull('dispatched_at')
-            ->update(['dispatched_at' => now()]);
-        if (!$u) continue;
-        ConvertAndTranscribeJob::dispatch($tx->file_id, true, 0);
-        $dispatched++;
+        $stats = app(TranscriptionBulkDispatchService::class)->dispatch([(int) $tx->id]);
+        if (($stats['enqueued'] ?? 0) > 0) {
+            $dispatched++;
+        }
     }
     echo "  dispatched: {$dispatched} (meta era {$batchSize})\n";
 
     // Snapshot post-dispatch
-    $postQ = (int) Redis::llen('queues:transcription');
+    $postQ = (int) DB::table('transcriptions')
+        ->where('state', Transcription::STATE_PENDING)
+        ->whereNull('dispatched_at')
+        ->where('created_at', '>=', \Carbon\CarbonImmutable::today())
+        ->count();
     $stats = DB::table('transcriptions')
         ->selectRaw("
             COUNT(*) FILTER (WHERE state='pending' AND created_at >= '2026-09-14') AS pend_hoy,
@@ -114,7 +121,7 @@ for ($round = 1; $round <= $rounds; $round++) {
             COUNT(*) FILTER (WHERE state='done' AND created_at >= '2026-09-14') AS done_hoy
         ")
         ->first();
-    echo "  post: redis_q=" . $postQ . " | pend_hoy=" . ($stats->pend_hoy ?? 0)
+    echo "  post: pg_q=" . $postQ . " | pend_hoy=" . ($stats->pend_hoy ?? 0)
        . " queued_hoy=" . ($stats->queued_hoy ?? 0) . " proc_hoy=" . ($stats->proc_hoy ?? 0)
        . " done_hoy=" . ($stats->done_hoy ?? 0) . "\n";
 

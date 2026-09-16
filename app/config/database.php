@@ -15,6 +15,22 @@ return [
             'prefix_indexes' => true,
             'search_path' => 'public',
             'sslmode' => 'prefer',
+            // Zona horaria de la SESION de PostgreSQL. Sin esto la sesion queda
+            // en UTC, y como Laravel formatea los bindings DateTime con
+            // `format('Y-m-d H:i:s')` en la zona del Carbon (America/Bogota),
+            // un instante Bogota se enviaba como naive y PostgreSQL lo
+            // interpretaba como UTC: cada `timestamptz` escrito desde la app
+            // quedaba corrido -5h.
+            //
+            // Con la sesion en America/Bogota:
+            //  - los `timestamptz` se escriben/leen con el instante correcto;
+            //  - las columnas naive (created_at, dispatched_at, started_at...)
+            //    se comparan contra `now()` en el MISMO marco horario, que es
+            //    justo lo que necesitan el watchdog (dispatched_at < now()-15m)
+            //    y el filtro "hoy" del worker (recorded_at >= medianoche local).
+            //
+            // Override operativo: DB_TIMEZONE=UTC en .env + config:cache.
+            'timezone' => env('DB_TIMEZONE', 'America/Bogota'),
         ],
     ],
     'migrations' => 'migrations',

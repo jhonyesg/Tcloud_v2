@@ -2,7 +2,6 @@
 
 namespace App\Services\Ia;
 
-use App\Jobs\ConvertAndTranscribeJob;
 use App\Models\File;
 use App\Models\StorageProvider;
 use App\Models\Transcription;
@@ -125,6 +124,7 @@ class DiskScannerService
         $batch = $batchOverride ?? $this->settings->int('scan_batch');
         $minAge = $this->settings->int('scan_min_age_seconds');
         $cutoff = time() - $minAge;
+        $skipLatest = $this->settings->bool('scan_skip_latest_per_storage');
         $tz = config('app.timezone');
 
         $candidates = [];
@@ -191,6 +191,22 @@ class DiskScannerService
                 $size = @filesize($full);
                 if ($size === false) continue;
 
+                // Filtro de tamaño en el ORIGEN (fix 2026-09-16): una grabación
+                // con el stream caído existe en disco pero pesa 0 bytes, y el
+                // tick la encolaba igual. El stage la rechazaba por
+                // `min_file_size_bytes`, la reencolaba cada 5 min y consumia 8
+                // reintentos (~40 min) antes de morir: la fila se veia como
+                // "en cola" esperando algo que nunca iba a poder convertirse.
+                //
+                // Filtrando aqui, la fila NI SE CREA. Y si el grabador estaba
+                // escribiendo y el archivo crece despues, el proximo pase del
+                // tick lo levanta normalmente: el filtro se reevalua en cada
+                // escaneo.
+                $minSize = $this->settings->int('min_file_size_bytes');
+                if ($minSize > 0 && $size < $minSize) {
+                    continue;
+                }
+
                 $path = $folderRel === '' ? $name : $folderRel . '/' . $name;
                 $candidates[] = [
                     'full' => $full,
@@ -198,12 +214,49 @@ class DiskScannerService
                     'name' => $name,
                     'mtime' => $mtime,
                     'size' => (int) $size,
+                    'storage_id' => (int) $storage->id,
                 ];
             }
         }
 
         // Ordenar por mtime descendente (más recientes primero) y respetar batch.
         usort($candidates, fn($a, $b) => $b['mtime'] <=> $a['mtime']);
+
+        // Validacion 3: excluir el archivo mas reciente por storage (transcriptor-burst-validation).
+        // El operador confirma que "siempre el archivo mas reciente del dia se esta
+        // generando" (ffmpeg con -t 15-20min). Por tanto, descartamos el primer
+        // elemento de cada storage del sort por mtime DESC.
+        if ($skipLatest && !empty($candidates)) {
+            $latestMtimePerStorage = [];
+            foreach ($candidates as $idx => $c) {
+                $sid = (int) ($c['storage_id'] ?? 0);
+                if (!isset($latestMtimePerStorage[$sid])) {
+                    $latestMtimePerStorage[$sid] = $c['mtime'];
+                    unset($candidates[$idx]); // descartar el mas reciente
+                }
+            }
+            $candidates = array_values($candidates);
+        }
+
+        // transcriptor-two-phase-staging — el cap del batch se aplica DESPUES de
+        // descartar lo ya registrado, no antes.
+        //
+        // Antes: se cortaba a `$batch` y recien entonces se saltaban los archivos
+        // que ya tenian fila de transcripcion. Como el orden es mtime DESC, cada
+        // ciclo gastaba cupo en los archivos recien registrados (que siguen siendo
+        // los mas nuevos) y solo descubria los pocos huecos que quedaran dentro de
+        // esa ventana. Medido en "02 Emisoras 01 Reg": de 100 slots, ~20 se
+        // desperdiciaban en archivos conocidos, y quedaban 1.467 archivos del dia
+        // sin fila — invisibles para todos los paneles.
+        //
+        // Ahora: se filtra contra el registro existente y se corta despues, asi
+        // los slots del batch se gastan integramente en material nuevo.
+        $candidates = $this->dropAlreadyRegistered(
+            $candidates,
+            (int) $storage->id,
+            $maxProbe = max(1000, $batch * 20),
+        );
+
         if (count($candidates) > $batch) {
             $candidates = array_slice($candidates, 0, $batch);
         }
@@ -382,8 +435,9 @@ class DiskScannerService
      * A diferencia de collectFailedCandidates, este método:
      *  - No tiene tope de retries (el admin decide cuándo reprocesar).
      *  - Conserva srt_content como fallback si el job nuevo falla upstream.
-     *  - Limpia el lock ShouldBeUnique (ConvertAndTranscribeJob::uniqueFor=900s)
-     *    para que el dispatch posterior no sea deduplicado por Laravel.
+     *  - Limpia el lock ShouldBeUnique previo si lo hubiera (compatibilidad
+     *    con locks legados del dispatch Bus pre-cutover, eliminados en
+     *    transcriptor-pg-native-queue).
      *
      * El filtro de fecha es por finished_at (no created_at): el operador piensa
      * en "lo que terminó hoy", no en "lo que se creó hoy".
@@ -448,13 +502,14 @@ class DiskScannerService
                 'retries' => $tx->retries + 1,
             ]);
 
-            // transcriptor-rescan-completed (R1): limpiar el lock ShouldBeUnique
-            // para que el dispatch en Fase 2 NO sea deduplicado por Laravel.
-            // El patrón de cache key viene de UniqueLock::getKey() en
-            // Illuminate\Bus: 'laravel_unique_job:{class}:{uniqueId}'.
-            // ConvertAndTranscribeJob no implementa displayName(), por lo que
-            // getKey() usa get_class($job) literal.
-            Cache::lock('laravel_unique_job:' . ConvertAndTranscribeJob::class . ':' . $tx->file_id)->forceRelease();
+            // transcriptor-rescan-completed (R1): limpiar cualquier lock ShouldBeUnique
+            // que pudiera quedar de la era pre-migracion (clase de job eliminada
+            // en transcriptor-pg-native-queue). El patron de cache key viene de
+            // UniqueLock::getKey() en Illuminate\Bus: 'laravel_unique_job:{class}:{uniqueId}'.
+            // Si existian locks legados en cache con esa key, forceRelease los limpia
+            // para que el dispatch en Fase 2 NO sea deduplicado por Laravel. La cadena
+            // literal preserva la clave exacta que venia usando el Bus historico.
+            Cache::lock('laravel_unique_job:App\\Jobs\\ConvertAndTranscribeJob:' . $tx->file_id)->forceRelease();
 
             $stats['reset_to_pending']++;
         }
@@ -709,6 +764,64 @@ class DiskScannerService
         }
 
         return $map;
+    }
+
+    /**
+     * Descarta de la lista de candidatos los archivos que YA tienen fila de
+     * transcripcion en este storage.
+     *
+     * Por que existe: el cap `scan_batch` de cada ciclo se aplicaba antes de
+     * este chequeo, asi que los slots se gastaban en archivos recien
+     * registrados (que por el orden mtime DESC siempre estan al frente) en vez
+     * de en material nuevo. Resultado medido: 1.838 archivos del dia sin fila,
+     * invisibles en todos los paneles.
+     *
+     * La query es acotada: usa el indice unico `transcriptions(file_id)` y
+     * resuelve los IDs de `files` por (storage_provider_id, path) — el mismo
+     * par que usa el resto del scanner. Se limita con `$maxProbe` para no
+     * construir un IN gigante si un storage tuviera decenas de miles de
+     * candidatos en un dia.
+     *
+     * @param  list<array{full:string,path:string,name:string,mtime:int,size:int,storage_id:int}>  $candidates
+     * @return list<array{full:string,path:string,name:string,mtime:int,size:int,storage_id:int}>
+     */
+    private function dropAlreadyRegistered(array $candidates, int $storageId, int $maxProbe): array
+    {
+        if (empty($candidates)) {
+            return [];
+        }
+
+        $probe = array_slice($candidates, 0, max(1, $maxProbe));
+
+        $paths = array_map(static fn ($c) => (string) $c['path'], $probe);
+
+        try {
+            // Un solo query: paths de este storage que ya tienen transcripcion.
+            $registered = DB::table('files')
+                ->join('transcriptions as t', 't.file_id', '=', 'files.id')
+                ->where('files.storage_provider_id', $storageId)
+                ->where('files.is_folder', false)
+                ->whereIn('files.path', $paths)
+                ->pluck('files.path')
+                ->all();
+        } catch (\Throwable $e) {
+            // Fail-open: si el chequeo falla, es preferible procesar candidatos
+            // de mas (el loop de abajo los salta igual) que no descubrir nada.
+            Log::warning("DiskScanner: dropAlreadyRegistered fallo storage {$storageId}: {$e->getMessage()}");
+
+            return $candidates;
+        }
+
+        if (empty($registered)) {
+            return $candidates;
+        }
+
+        $known = array_flip($registered);
+
+        return array_values(array_filter(
+            $candidates,
+            static fn ($c) => !isset($known[(string) $c['path']])
+        ));
     }
 
     /**

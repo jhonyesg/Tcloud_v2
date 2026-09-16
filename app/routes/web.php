@@ -189,7 +189,12 @@ Route::middleware(['auth', 'admin'])->prefix('ia')->group(function () {
     // módulo. Entre el 18 y el 20 de agosto estuvo en Avisos Inteligentes (como
     // bandera derivada por cliente); fue un acoplamiento equivocado y costó una
     // caída de 44 horas. Ver ApiTranscriptorController::toggleStorage().
-    Route::post('/api-transcriptor/storages/{id}/toggle', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'toggleStorage']);
+    // Bulk dispatch directo a la cola PG (transcriptor-pg-native-queue).
+    // Reemplaza al antiguo POST /jobs/bulk-dispatch que encolaba a Redis via
+    // la clase de job del transcriptor eliminada. Ver TranscriptionBulkDispatchService.
+    Route::post('/api-transcriptor/jobs/bulk-dispatch', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'bulkDispatch'])->middleware('throttle:30,1');
+
+    Route::get('/api-transcriptor/storages/{id}/snapshot', [App\Http\Controllers\Ia\ApiTranscriptorController::class, 'storageSnapshot'])->whereNumber('id');
 
     // Configuracion en caliente del pipeline (pestaña "Configuracion").
     Route::get('/api-transcriptor/settings', [App\Http\Controllers\Ia\TranscriptorSettingsController::class, 'index']);

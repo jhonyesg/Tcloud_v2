@@ -2,7 +2,6 @@
 
 namespace App\Console\Commands;
 
-use App\Jobs\ConvertAndTranscribeJob;
 use App\Models\StorageProvider;
 use App\Models\Transcription;
 use App\Services\Ia\TranscriptorApiClient;
@@ -15,43 +14,37 @@ use Illuminate\Contracts\Console\Kernel as ConsoleKernel;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Redis;
 
 /**
- * Tick automatico del modulo de transcripcion.
+ * Planner puro del modulo de transcripcion.
  *
  * Frecuencia: cada 2 minutos (declarado en routes/console.php con ->everyTwoMinutes()).
  *
  * Fases:
  *  1. Discovery: invoca transcription:scan-and-submit --no-dispatch --days=0
  *     para descubrir archivos nuevos del dia actual y crear filas Transcription
- *     (state=pending, job_id=null) en BD. NO encola a Redis.
+ *     (state=pending, job_id=null) en BD.
  *
- *  2. Regulator dispatch: lee transcriptor.target_redis_queue (default 140) y
- *     calcula deficit = target - current + runway. Si deficit <= 0, omite
- *     (queue ya en/sobre target). Si deficit > 0, batch = clamp(deficit,
- *     min_batch, max_batch) y dispatcha ConvertAndTranscribeJob para los
- *     primeros `batch` registros pendientes del dia actual ordenados por
- *     created_at ASC (FIFO).
+ *  2. Regulador: lee transcriptor.target_pg_queue (default 140) y calcula
+ *     deficit = target - current + runway. Persiste la decision en cache para
+ *     `/ia/api-transcriptor/regulator-cause`. NO encola — la cola es la propia
+ *     tabla `transcriptions` y el worker PG (transcription:worker) la consume
+ *     con FOR UPDATE SKIP LOCKED.
  *
- *     El orden importa: el freno se evalua sobre el deficit crudo, NO sobre el
- *     valor ya clampeado. Aplicar min_batch antes del freno lo volvia codigo
- *     muerto y el tick seguia encolando sobre una cola saturada.
- *
- * Scope: TRANSCRIPTOR_SCOPE=current_day (default). Solo dispatcha archivos de hoy;
+ * Scope: TRANSCRIPTOR_SCOPE=current_day (default). Solo descubre archivos de hoy;
  *     dias anteriores requieren recuperacion manual via UI/bulk-dispatch.
  *
- * Por diseno NO dispatcha nada cuando:
+ * Por diseno NO despacha nada cuando:
  *  - el scope no es current_day (escapa a este tick automatico)
- *  - la cola Redis ya esta en/sobre target (regulador frena)
+ *  - el regulador freno (cache de decision documenta el motivo)
  *  - no hay Transcription pendientes del dia actual
  */
 class TranscriptionTickCommand extends Command
 {
     protected $signature = 'transcription:tick
-                            {--dry-run : Muestra conteos propuestos sin escribir en BD/Redis}';
+                            {--dry-run : Muestra conteos propuestos sin escribir en BD}';
 
-    protected $description = 'Ciclo unificado: discovery (scan disco, dia actual) + dispatch regulado por target_redis_queue.';
+    protected $description = 'Ciclo unificado: discovery (scan disco, dia actual) + evaluacion del regulador sobre la cola PG nativa.';
 
     /** Marca de la ultima ejecucion real, para el autolimitado por intervalo. */
     private const LAST_RUN_CACHE_KEY = 'transcriptor:tick:last_run';
@@ -129,8 +122,8 @@ class TranscriptionTickCommand extends Command
                 "[tick %s] SCAN: ok; DISPATCH: skip (%s, current=%d, target=%d)",
                 TimeFormat::bogota(now(), 'Y-m-d H:i:s'),
                 $decision['reason'],
-                $decision['values']['redis_queue_depth'] ?? -1,
-                $settings->int('target_redis_queue'),
+                $decision['values']['pg_queue_depth'] ?? -1,
+                $settings->int('target_pg_queue'),
             );
             $this->line($msg);
             Log::info('TranscriptionTick: skip dispatch, regulator decision', [
@@ -140,27 +133,28 @@ class TranscriptionTickCommand extends Command
             return Command::SUCCESS;
         }
 
+        $current = $decision['values']['pg_queue_depth'] ?? 0;
         $batch = $decision['batch_computed'];
-        $current = $decision['values']['redis_queue_depth'] ?? 0;
 
-        // Query: pending del dia actual, sin job_id, FIFO.
-        $query = Transcription::query()
+        // Conteo de pending del dia actual para observabilidad y para saber
+        // cuantos hay disponibles para que el worker PG los recoja.
+        //
+        // Se alinea con el filtro EXACTO del worker (state=pending, job_id nulo,
+        // dispatched_at nulo, aplazamiento vencido) y con el eje `recorded_at`
+        // que usa el worker — antes el tick medía `created_at` mientras el worker
+        // filtraba por `recorded_at`, y los dos numeros no cuadraban nunca.
+        $pendientes = (int) DB::table('transcriptions')
             ->where('state', Transcription::STATE_PENDING)
             ->whereNull('job_id')
-            ->where('created_at', '>=', $todayStart)
-            // Excluir jobs rebotados por pre-flight (tmpfs sin espacio) cuyo
-            // plazo de requeue aun no vencio. Ver TranscriptionSubmitService::
-            // markRequeueable(). Sin este filtro, el tick reencolaria el job
-            // inmediatamente y volveria a rebotar.
+            ->whereNull('dispatched_at')
+            ->where('recorded_at', '>=', $todayStart)
             ->where(function ($q) {
                 $q->whereNull('requeue_after_at')
                   ->orWhere('requeue_after_at', '<=', now());
             })
-            ->orderBy('created_at', 'asc');
+            ->count();
 
-        $pendientes = $query->limit($batch)->pluck('file_id', 'id');
-
-        if ($pendientes->isEmpty()) {
+        if ($pendientes === 0) {
             // "No hay pending" se registraba igual estando el sistema sano y al
             // dia que estando el pipeline muerto por falta de storages
             // habilitados. Los dos casos son indistinguibles en el log, y por
@@ -175,7 +169,7 @@ class TranscriptionTickCommand extends Command
                     ? 'NINGUN storage con transcripcion habilitada'
                     : 'no hay pending del dia actual',
                 $current,
-                $settings->int('target_redis_queue'),
+                $settings->int('target_pg_queue'),
                 $batch,
                 $storagesHabilitados,
             );
@@ -184,12 +178,12 @@ class TranscriptionTickCommand extends Command
             if (!$this->dryRun) {
                 if ($storagesHabilitados === 0) {
                     Log::warning('TranscriptionTick: 0 storages con transcripcion habilitada; no hay nada que descubrir ni que enviar', [
-                        'current_redis' => $current,
+                        'current_pg' => $current,
                         'pista' => 'ningun storage tiene transcription_enabled; encender los canales en /ia/api-transcriptor',
                     ]);
                 } else {
                     Log::info('TranscriptionTick: no pending today', [
-                        'current_redis' => $current,
+                        'current_pg' => $current,
                         'batch_computed' => $batch,
                         'storages_habilitados' => $storagesHabilitados,
                     ]);
@@ -203,19 +197,19 @@ class TranscriptionTickCommand extends Command
 
         if ($this->dryRun) {
             $msg = sprintf(
-                "[tick DRY-RUN %s] SCAN: ok; DISPATCH: encolaria %d jobs de %d pendientes (current=%d, target=%d, batch_computed=%d)",
+                "[tick DRY-RUN %s] SCAN: ok; DISPATCH: worker tomaria hasta %d de %d pendientes (current=%d, target=%d, batch_computed=%d)",
                 TimeFormat::bogota(now(), 'Y-m-d H:i:s'),
-                min(count($pendientes), $batch),
-                $pendientes->count(),
+                min($pendientes, $batch),
+                $pendientes,
                 $current,
-                $settings->int('target_redis_queue'),
+                $settings->int('target_pg_queue'),
                 $batch,
             );
             $this->line($msg);
             Log::info('TranscriptionTick: dry-run', [
-                'would_dispatch' => min(count($pendientes), $batch),
-                'available_today' => $pendientes->count(),
-                'current_redis' => $current,
+                'would_dispatch' => min($pendientes, $batch),
+                'available_today' => $pendientes,
+                'current_pg' => $current,
                 'batch_computed' => $batch,
             ]);
             $decision['note'] = 'dry_run';
@@ -223,62 +217,27 @@ class TranscriptionTickCommand extends Command
             return Command::SUCCESS;
         }
 
-        // Ramp-up progresivo: divide el batch en chunks y reparte con stagger.
-        // Antes el loop encolaba todos los jobs del lote en el mismo instante;
-        // ahora cada chunk se procesa con dispatch_stagger_ms entre ellos para
-        // no arrancar N ffmpeg simultaneos.
-        $pendientesArray = $pendientes->all();
-        $pendientesKeys = array_keys($pendientesArray);
-        $idsToDispatch = array_slice($pendientesKeys, 0, $batch);
-
-        $dispatched = 0;
-        $errores = 0;
-        $chunksProcessed = 0;
-        foreach ($this->applyStagger($idsToDispatch, $settings) as $chunk) {
-            $chunksProcessed++;
-            foreach ($chunk as $txId) {
-                if (!isset($pendientesArray[$txId])) continue;
-                $fileId = $pendientesArray[$txId];
-                try {
-                    DB::table('transcriptions')
-                        ->where('id', $txId)
-                        ->whereNull('dispatched_at')
-                        ->update(['dispatched_at' => now()]);
-
-                    ConvertAndTranscribeJob::dispatch($fileId, true);
-                    $dispatched++;
-                } catch (\Throwable $e) {
-                    $errores++;
-                    Log::error("TranscriptionTick: error encolando tx={$txId} file={$fileId}: " . $e->getMessage());
-                }
-            }
-        }
-
+        // Planner puro: el worker PG (transcription:worker) consume directamente
+        // `transcriptions` con FOR UPDATE SKIP LOCKED. Solo dejamos evidencia
+        // para el panel de diagnostico.
         $msg = sprintf(
-            "[tick %s] SCAN: ok; DISPATCH: encolados=%d errores=%d (current_redis=%d, target=%d, batch_computed=%d, chunks=%d, stagger_ms=%d)",
+            "[tick %s] SCAN: ok; DISPATCH: worker PG (pendientes_hoy=%d, current_pg=%d, target=%d, batch_computed=%d)",
             TimeFormat::bogota(now(), 'Y-m-d H:i:s'),
-            $dispatched,
-            $errores,
+            $pendientes,
             $current,
-            $settings->int('target_redis_queue'),
+            $settings->int('target_pg_queue'),
             $batch,
-            $chunksProcessed,
-            $settings->int('dispatch_stagger_ms'),
         );
         $this->line($msg);
-        Log::info('TranscriptionTick: dispatch', [
-            'stagger_ms' => $settings->int('dispatch_stagger_ms'),
-            'chunks' => $chunksProcessed,
-            'dispatched' => $dispatched,
-            'errores' => $errores,
-            'current_redis_before' => $current,
-            'target' => $settings->int('target_redis_queue'),
+        Log::info('TranscriptionTick: planner observability', [
+            'pendientes_hoy' => $pendientes,
+            'current_pg_before' => $current,
+            'target' => $settings->int('target_pg_queue'),
             'batch_computed' => $batch,
             'regulator_mode' => $settings->str('regulator_mode'),
         ]);
 
-        $decision['dispatched'] = $dispatched;
-        $decision['errores'] = $errores;
+        $decision['pendientes_hoy'] = $pendientes;
         $this->cacheDecision($decision);
 
         return Command::SUCCESS;
@@ -299,13 +258,13 @@ class TranscriptionTickCommand extends Command
     private function evaluateRegulator(TranscriptorSettings $settings, TranscriptorApiClient $client): array
     {
         $mode = $settings->str('regulator_mode');
-        $target = $settings->int('target_redis_queue');
-        $current = (int) Redis::llen('queues:transcription');
+        $target = $settings->int('target_pg_queue');
+        $current = $this->countPendingToday();
         $runway = $settings->int('runway');
 
         $values = [
-            'redis_queue_depth' => $current,
-            'redis_target' => $target,
+            'pg_queue_depth' => $current,
+            'pg_target' => $target,
         ];
 
         // upstream_circuit: Cualquier modo puede frenar si el break está abierto.
@@ -359,7 +318,7 @@ class TranscriptionTickCommand extends Command
         //   2. remote_ram_pressure          → remote_ram_pressure
         //   3. remote_ramdisk_pressure      → remote_ramdisk_pressure
         //   4. remote_queue_full            → remote_queue_full (NUEVO)
-        //   5. redis_queue_depth <= 0       → queue_at_target
+        //   5. pg_queue_depth <= 0           → queue_at_target
         //   6. shm_free_bytes               → shm_low
         //   7. inflight_active              → inflight_full
         //
@@ -374,7 +333,7 @@ class TranscriptionTickCommand extends Command
         $skipped = false;
         $reason = 'none';
 
-        $signalsEvaluated = ['redis_queue_depth'];
+        $signalsEvaluated = ['pg_queue_depth'];
         if (in_array($mode, ['remote_aware', 'hybrid'], true)) {
             $signalsEvaluated[] = 'remote_ram_pressure';
             $signalsEvaluated[] = 'remote_ramdisk_pressure';
@@ -394,7 +353,7 @@ class TranscriptionTickCommand extends Command
             return $circuitOpen;
         };
 
-        $checkRedis = function () use ($current, $target, $runway) {
+        $checkPg = function () use ($current, $target, $runway) {
             return $target - $current + $runway;
         };
 
@@ -409,9 +368,9 @@ class TranscriptionTickCommand extends Command
         };
 
         $checkRemoteQueueFull = function () use ($remoteInfo, $settings) {
-            if ($remoteInfo === null) return false;
-            $targetQ = $settings->int('target_remote_queue');
-            return ($remoteInfo['queue_queued'] ?? 0) >= $targetQ;
+            $brake = app(\App\Services\Ia\RemoteQueueBrake::class)->evaluate($remoteInfo, $settings);
+
+            return (bool) ($brake['braked'] ?? false);
         };
 
         $checkShm = function () use ($shmFreeBytes, $minShm) {
@@ -428,7 +387,7 @@ class TranscriptionTickCommand extends Command
                     $skipped = true; $reason = 'upstream_circuit_open';
                 } elseif ($checkShm()) {
                     $skipped = true; $reason = 'shm_low';
-                } elseif ($checkRedis() <= 0) {
+                } elseif ($checkPg() <= 0) {
                     $skipped = true; $reason = 'queue_at_target';
                 }
                 break;
@@ -443,8 +402,6 @@ class TranscriptionTickCommand extends Command
                     $skipped = true; $reason = 'remote_queue_full';
                 } elseif ($checkShm()) {
                     $skipped = true; $reason = 'shm_low';
-                } elseif ($checkRedis() <= 0) {
-                    $skipped = true; $reason = 'queue_at_target';
                 }
                 break;
             case 'hybrid':
@@ -452,7 +409,6 @@ class TranscriptionTickCommand extends Command
                 elseif ($checkRam()) { $skipped = true; $reason = 'remote_ram_pressure'; }
                 elseif ($checkRamdisk()) { $skipped = true; $reason = 'remote_ramdisk_pressure'; }
                 elseif ($checkRemoteQueueFull()) { $skipped = true; $reason = 'remote_queue_full'; }
-                elseif ($checkRedis() <= 0) { $skipped = true; $reason = 'queue_at_target'; }
                 elseif ($checkShm()) { $skipped = true; $reason = 'shm_low'; }
                 elseif ($checkInflight()) { $skipped = true; $reason = 'inflight_full'; }
                 break;
@@ -461,12 +417,10 @@ class TranscriptionTickCommand extends Command
                     $skipped = true; $reason = 'upstream_circuit_open';
                 } elseif ($checkShm()) {
                     $skipped = true; $reason = 'shm_low';
-                } elseif ($checkRedis() <= 0) {
-                    $skipped = true; $reason = 'queue_at_target';
                 }
         }
 
-        $deficit = $checkRedis();
+        $deficit = $checkPg();
 
         if ($skipped) {
             return [
@@ -517,8 +471,28 @@ class TranscriptionTickCommand extends Command
 
         $remoteQueue = $remoteInfo['queue_queued'] ?? null;
 
+        // El freno con histéresis manda: si esta activo, el batch es 0 sin
+        // importar la interpolacion. Sin esto, un queue apenas por debajo del
+        // techo (ej. 179 tras drenar 1 job) daria un batch > 0 y volveria el
+        // ping-pong que la histeresis elimina.
+        $brake = app(\App\Services\Ia\RemoteQueueBrake::class)->evaluate($remoteInfo, $settings);
+        if ($brake['braked'] ?? false) {
+            return 0;
+        }
+
+        // Sin telemetria remota se falla ABIERTO con el pulso completo.
+        //
+        // Antes caia a `$baseBatch` (= computeDispatchBatch contra target_pg_queue),
+        // y como la lista de pendientes del dia es ilimitada por diseño (puede
+        // haber miles), esa aritmetica daba 0 y el tick dejaba de enviar por un
+        // freno que no corresponde: el limite es de la cola REMOTA (180), no de
+        // cuantos archivos del dia falten por transcribir.
+        //
+        // La profundidad local ya no es freno en `remote_aware`/`hybrid`
+        // (evaluateRegulator no la evalua); usarla aqui como base del lote
+        // reintroducia el freno por la puerta de atras.
         if ($remoteInfo === null || $remoteQueue === null) {
-            $candidate = $baseBatch;
+            $candidate = $pulse > 0 ? $pulse : $baseBatch;
         } elseif ($remoteQueue >= $targetQ) {
             $candidate = 0;
         } elseif ($remoteQueue <= $floorQ) {
@@ -540,34 +514,49 @@ class TranscriptionTickCommand extends Command
             return 0;
         }
 
-        $effective = min($candidate, $baseBatch, $maxStatic);
+        $effective = min($candidate, $maxStatic);
         $effective = max($minBatch, $effective);
 
         return max(0, $effective);
     }
 
     /**
-     * Divide el batch en chunks de `stagger_chunk_size` y aplica
-     * `dispatch_stagger_ms` entre cada chunk. Devuelve un generator que
-     * produce arrays de IDs listos para encolar.
+     * Cuenta las filas `pending` con `recorded_at >= today Bogota`. Es la senal
+     * `pg_queue_depth` que alimenta al regulador y a la UI de /ia/api-transcriptor.
      *
-     * Si stagger_ms == 0 devuelve todos los IDs de una sola vez (sin pausa).
+     * Implementado como COUNT(*) sobre la tabla `transcriptions` usando el indice
+     * parcial `transcriptions_pending_today_dispatch_idx` (creado por la migration
+     * 2026_09_15_130000). Tarda <5 ms incluso con backlog de 10k filas.
      */
-    private function applyStagger(array $ids, TranscriptorSettings $settings): \Generator
+    /**
+     * Profundidad de la cola PG local: pendientes de hoy sin reclamar ni
+     * aplazados. Es la señal `pg_queue_depth` del regulador.
+     *
+     * Se mide por `recorded_at` (igual que el worker) y no por `created_at`:
+     * con `created_at`, una fila descubierta hoy pero con fecha de programa de
+     * ayer se contaba como cola, mientras el worker nunca la tomaba. Los dos
+     * numeros se contradecian en el panel.
+     *
+     * `job_id` y `dispatched_at` nulos + aplazamiento vencido replican el
+     * filtro exacto de TranscriptionWorkerCommand::claimRow().
+     */
+    private function countPendingToday(): int
     {
-        if (empty($ids)) {
-            return;
-        }
+        try {
+            return (int) DB::table('transcriptions')
+                ->where('state', Transcription::STATE_PENDING)
+                ->whereNull('job_id')
+                ->whereNull('dispatched_at')
+                ->where('recorded_at', '>=', CarbonImmutable::today())
+                ->where(function ($q) {
+                    $q->whereNull('requeue_after_at')
+                      ->orWhere('requeue_after_at', '<=', now());
+                })
+                ->count();
+        } catch (\Throwable $e) {
+            Log::warning('TranscriptionTick: countPendingToday fallo: ' . $e->getMessage());
 
-        $chunkSize = max(1, $settings->int('stagger_chunk_size'));
-        $staggerMs = max(0, $settings->int('dispatch_stagger_ms'));
-        $chunks = array_chunk($ids, $chunkSize);
-
-        foreach ($chunks as $i => $chunk) {
-            if ($i > 0 && $staggerMs > 0) {
-                usleep($staggerMs * 1000);
-            }
-            yield $chunk;
+            return 0;
         }
     }
 
@@ -586,12 +575,15 @@ class TranscriptionTickCommand extends Command
             $todayStart = CarbonImmutable::today();
             $total = 0;
             do {
+                // `use ($reason)` es obligatorio: sin el, PHP evalua $reason
+                // dentro del closure como variable local indefinida y el update
+                // nunca se aplicaba (warning silencioso en cada tick).
                 $affected = DB::table('transcriptions')
                     ->where('state', Transcription::STATE_PENDING)
                     ->whereNull('dispatched_at')
                     ->whereNull('job_id')
-                    ->where('created_at', '>=', $todayStart)
-                    ->where(function ($q) {
+                    ->where('recorded_at', '>=', $todayStart)
+                    ->where(function ($q) use ($reason) {
                         $q->whereNull('regulator_skip_reason')
                           ->orWhere('regulator_skip_reason', '!=', $reason);
                     })

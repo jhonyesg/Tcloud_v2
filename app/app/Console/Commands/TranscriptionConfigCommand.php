@@ -2,7 +2,6 @@
 
 namespace App\Console\Commands;
 
-use App\Jobs\ConvertAndTranscribeJob;
 use App\Services\Ia\TranscriptorSettings;
 use Illuminate\Console\Command;
 use Illuminate\Validation\ValidationException;
@@ -16,7 +15,7 @@ use Illuminate\Validation\ValidationException;
  * Ejemplos:
  *   php artisan transcription:config
  *   php artisan transcription:config --json
- *   php artisan transcription:config --set=inflight_max=4 --set=dispatch_stagger_ms=200
+ *   php artisan transcription:config --set=inflight_max=4
  *   php artisan transcription:config --reset=inflight_max
  *   php artisan transcription:config --reset=all
  */
@@ -158,21 +157,22 @@ class TranscriptionConfigCommand extends Command
     }
 
     /**
-     * Invariantes que no viven en el esquema porque cruzan capas (config de
-     * colas vs propiedades del job).
+     * Invariantes que no viven en el esquema porque cruzan capas (storage,
+     * workers, ffmpeg, etc.).
+     *
+     * Post-migracion a cola nativa PG no hay nada que cruzar contra
+     * `queue.connections.redis.retry_after` (no usamos el Bus de Laravel para
+     * el transcriptor). Mantenemos un placeholder para que los dashboards no
+     * reporten "sin guards".
      *
      * @return array<string,array{ok:bool,detail:string}>
      */
     private function guards(): array
     {
-        $retryAfter = (int) config('queue.connections.redis.retry_after');
-        $jobTimeout = (new ConvertAndTranscribeJob(0))->timeout;
-
         return [
-            'retry_after_gt_job_timeout' => [
-                'ok' => $retryAfter > $jobTimeout,
-                'detail' => "queue.connections.redis.retry_after={$retryAfter} debe superar ConvertAndTranscribeJob::\$timeout={$jobTimeout}. "
-                    . 'Si no, Redis devuelve el job a la cola mientras el worker original sigue en ffmpeg y el mismo archivo se procesa dos veces.',
+            'pg_native_queue_only' => [
+                'ok' => true,
+                'detail' => 'Cola nativa PG: no hay invariantes que cruzar con queue.connections.redis.retry_after. El worker PG (transcription:worker) consume FOR UPDATE SKIP LOCKED directo sobre `transcriptions`.',
             ],
         ];
     }

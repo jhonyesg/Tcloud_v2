@@ -38,15 +38,15 @@ class TranscriptorSettingsTest extends LaravelTestCase
     {
         Cache::forget(self::CACHE_KEY);
 
-        $this->assertSame(config('transcriptor.target_redis_queue'), $this->settings()->int('target_redis_queue'));
-        $this->assertSame(140, $this->settings()->int('target_redis_queue'));
+        $this->assertSame(config('transcriptor.target_pg_queue'), $this->settings()->int('target_pg_queue'));
+        $this->assertSame(140, $this->settings()->int('target_pg_queue'));
     }
 
     public function testElOverrideDeBdGanaSobreConfig(): void
     {
-        $this->seedOverrides(['target_redis_queue' => 300]);
+        $this->seedOverrides(['target_pg_queue' => 300]);
 
-        $this->assertSame(300, $this->settings()->int('target_redis_queue'));
+        $this->assertSame(300, $this->settings()->int('target_pg_queue'));
     }
 
     public function testValorFueraDeRangoSeClampeaEnLectura(): void
@@ -93,7 +93,16 @@ class TranscriptorSettingsTest extends LaravelTestCase
 
     public function testElFrenoActuaJustoEnElLimite(): void
     {
-        Cache::forget(self::CACHE_KEY);
+        // seedOverrides fija el baseline de la prueba (no producción): con estos
+        // valores deficit = target - current + runway produce 0 o 1, ejercitando
+        // el caso frontera del freno sin depender de los overrides reales del
+        // operador en system_settings.
+        $this->seedOverrides([
+            'target_pg_queue' => 140,
+            'runway' => 5,
+            'min_batch' => 10,
+            'max_batch' => 200,
+        ]);
 
         // deficit = 140 - 145 + 5 = 0 -> frena
         $this->assertSame(0, $this->settings()->computeDispatchBatch(145));
@@ -104,12 +113,18 @@ class TranscriptorSettingsTest extends LaravelTestCase
 
     public function testConMargenAmplioSeAplicaElTechoMaxBatch(): void
     {
-        Cache::forget(self::CACHE_KEY);
+        $this->seedOverrides([
+            'target_pg_queue' => 140,
+            'runway' => 5,
+            'min_batch' => 10,
+            'max_batch' => 200,
+        ]);
 
         // deficit = 140 - 0 + 5 = 145, por debajo de max_batch=200
         $this->assertSame(145, $this->settings()->computeDispatchBatch(0));
 
-        $this->seedOverrides(['target_redis_queue' => 1000, 'max_batch' => 200]);
+        $this->seedOverrides(['target_pg_queue' => 1000, 'max_batch' => 200]);
+        // deficit = 1000 - 0 + 5 = 1005, clampeado a max_batch=200
         $this->assertSame(200, $this->settings()->computeDispatchBatch(0));
     }
 
@@ -174,10 +189,16 @@ class TranscriptorSettingsTest extends LaravelTestCase
 
     public function testRechazaMinBatchMayorQueMaxBatch(): void
     {
-        Cache::forget(self::CACHE_KEY);
+        // Baseline fijado: con max_batch=200, un set de min_batch=300 debe
+        // disparar la invariante cruzada. seedOverrides evita depender del
+        // max_batch real persistido por el operador (que en producción está
+        // tuneado a 500).
+        $this->seedOverrides([
+            'min_batch' => 300,
+            'max_batch' => 200,
+        ]);
 
         try {
-            // max_batch efectivo es 200; 300 lo supera.
             $this->settings()->set(['min_batch' => 300]);
             $this->fail('Esperaba ValidationException por la invariante cruzada.');
         } catch (ValidationException $e) {
@@ -215,13 +236,13 @@ class TranscriptorSettingsTest extends LaravelTestCase
     {
         Cache::forget(self::CACHE_KEY);
         $sinOverride = $this->settings()->effective();
-        $this->assertNotSame('bd', $sinOverride['target_redis_queue']['source']);
+        $this->assertNotSame('bd', $sinOverride['target_pg_queue']['source']);
 
-        $this->seedOverrides(['target_redis_queue' => 300]);
+        $this->seedOverrides(['target_pg_queue' => 300]);
         $conOverride = $this->settings()->effective();
-        $this->assertSame('bd', $conOverride['target_redis_queue']['source']);
-        $this->assertSame(300, $conOverride['target_redis_queue']['value']);
-        $this->assertSame(140, $conOverride['target_redis_queue']['default'], 'default debe seguir mostrando el valor de config, no el override.');
+        $this->assertSame('bd', $conOverride['target_pg_queue']['source']);
+        $this->assertSame(300, $conOverride['target_pg_queue']['value']);
+        $this->assertSame(140, $conOverride['target_pg_queue']['default'], 'default debe seguir mostrando el valor de config, no el override.');
     }
 
     public function testEffectiveExponeElRangoQueLaUiNecesita(): void
@@ -272,10 +293,10 @@ class TranscriptorSettingsTest extends LaravelTestCase
 
     public function testFlushInvalidaLaCache(): void
     {
-        $this->seedOverrides(['target_redis_queue' => 300]);
-        $settings = $this->settings();
-        $this->assertSame(300, $settings->int('target_redis_queue'));
+$this->seedOverrides(['target_pg_queue' => 300]);
 
+        $settings = $this->settings();
+        $this->assertSame(300, $settings->int('target_pg_queue'));
         $settings->flush();
 
         $this->assertNull(Cache::get(self::CACHE_KEY));

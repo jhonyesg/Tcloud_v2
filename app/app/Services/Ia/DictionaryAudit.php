@@ -18,7 +18,7 @@ use Illuminate\Support\Facades\DB;
  * NO modifica la BD. Útil para correr antes/después de cambios y entender
  * la composición real del diccionario.
  *
- * Cache: los resultados se cachean 5 min en Redis/array con key
+ * Cache: los resultados se cachean 5 min en el store de caché con key
  * `dictionary_audit:YYYYMMDDHHMM` para no recalcular en cada request.
  */
 class DictionaryAudit
