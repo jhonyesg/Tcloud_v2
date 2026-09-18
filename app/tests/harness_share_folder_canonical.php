@@ -158,7 +158,7 @@ $share2 = Share::create([
 ]);
 // Aplicar la lógica de canonicación que el controller aplica:
 $file = File::findOrFail($share2->file_id);
-if ($file->is_folder && $file->isMirror()) {
+if ($file->is_folder && $file->isFolderMirror()) {
     $canonical2 = app(FilePhysicalIdentity::class)->canonicalFor($file);
     if ($canonical2) {
         $share2->file_id = $canonical2->id;
@@ -255,7 +255,7 @@ h_check($listingEmptyCanon->count() === 4,
 // Folder en storage A con archivos en storage B (mismo physical_path_normalized)
 // pero SIN enlace de mirror. Esto simula el escenario real de producción donde
 // un auto-sync movió archivos al sub-storage y el folder en el storage padre
-// quedó sin linkage de merged_into_id. El listado desde el folder "vacío" debe
+// quedó sin linkage de canonical_folder_id. El listado desde el folder "vacío" debe
 // retornar los archivos del folder equivalente en el otro storage.
 $pathA = "physA/b3_folder";
 $pathB = "b3_folder";
@@ -352,7 +352,7 @@ $diskExisted = is_dir($dirPath);
 
 // Simular delete en mirror (3-case policy logic)
 $mir = $mirrorFile->refresh();
-if ($mir->isMirror()) {
+if ($mir->isFolderMirror()) {
     // Policy 1: solo borrar row mirror + share
     $mir->delete();
 }

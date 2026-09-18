@@ -5,6 +5,18 @@ namespace App\Services\Ia;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use RuntimeException;
+
+/**
+ * Tirada por `WatermarkReconciler` cuando se intenta operar sobre un storage
+ * que fue mergeado en otro (change `storage-physical-path-normalization`,
+ * 2026-09-17). Los storages mergeados tienen `enabled=false, base_path=NULL,
+ * duplicate_of_storage_id=<canonical>`. Crear/consultar watermarks contra ellos seria
+ * escribir estado en un storage que el sistema considera muerto.
+ */
+class WatermarkReconcilerOnMergedStorageException extends RuntimeException
+{
+}
 
 /**
  * Reconciliador de cobertura de watermarks (avisos-scan-coverage-reconciler).
@@ -125,6 +137,21 @@ class WatermarkReconciler
      */
     public function ensureForStorage(int $storageId, ?int $actorId = null): int
     {
+        // Change `storage-physical-path-normalization` (2026-09-17):
+        // rechazamos storages mergeados. Operar contra uno de ellos dejaria
+        // estado en una fila que el sistema ya considera "soft-deleted".
+        // El operador debe reconciliar contra el canonical (ver
+        // `StorageProvider::canonicalFor()` si hay ambigüedad).
+        $mergedInto = DB::table('storage_providers')
+            ->where('id', $storageId)
+            ->whereNotNull('duplicate_of_storage_id')
+            ->value('duplicate_of_storage_id');
+        if ($mergedInto !== null) {
+            throw new WatermarkReconcilerOnMergedStorageException(
+                "Storage {$storageId} fue mergeado en {$mergedInto}; reconcilie contra {$mergedInto} en su lugar."
+            );
+        }
+
         $now = now();
         $inserted = DB::affectingStatement("
             INSERT INTO keyword_scan_watermarks

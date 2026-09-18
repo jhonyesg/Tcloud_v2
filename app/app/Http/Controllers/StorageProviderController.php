@@ -59,18 +59,44 @@ class StorageProviderController extends Controller
             'enabled' => 'nullable|boolean',
         ]);
 
+        // Change `storage-physical-path-normalization` (2026-09-17): bloquear
+        // la creacion de storages con base_path duplicado. El constraint del
+        // modelo es: cada (kind, physical_path_normalized) tiene UN storage
+        // canónico (no mergeado). Si ya existe uno, devolvemos HTTP 409 con
+        // sugerencia accionable; el operador puede reusarlo o elegir otro path.
+        $basePath = $request->input('base_path');
+        $kind = $request->input('type', 'local');
+        if (!empty($basePath) && $kind === 'local') {
+            $normalized = strtolower(rtrim($basePath, '/'));
+            $existing = StorageProvider::findByNormalizedPath($normalized, $kind);
+            if ($existing !== null) {
+                return response()->json([
+                    'error' => 'duplicate_storage_path',
+                    'message' => "ya existe storage #{$existing->id} '{$existing->name}' en ese path; use ese en su lugar o cree un path distinto.",
+                    'existing_storage_id' => $existing->id,
+                    'existing_storage_name' => $existing->name,
+                    'attempted_path' => $basePath,
+                ], 409);
+            }
+        }
+
         $storage = StorageProvider::create([
             'name' => $request->input('name'),
-            'type' => $request->input('type'),
+            'type' => $kind,
             'config' => $request->input('config', []),
-            'base_path' => $request->input('base_path'),
+            'base_path' => $basePath,
             'enabled' => $request->boolean('enabled', true),
         ]);
+
+        // guardarrail (change 2026-09-16-transcriptor-physical-file-identity):
+        // calcular la jerarquia al guardar base_path, para que el operador vea
+        // el scope que hereda y si queda solapado con un ancestro habilitado.
+        $hierarchy = $this->recomputeHierarchy($storage);
 
         // Change 2026-09-13-perf-audit-and-improve: creacion invalida el cache del listado.
         Cache::forget('admin:storages:index');
 
-        return response()->json($storage, 201);
+        return response()->json(array_merge($storage->toArray(), ['hierarchy' => $hierarchy]), 201);
     }
 
     public function show(int $id)
@@ -98,12 +124,95 @@ class StorageProviderController extends Controller
         if ($request->has('base_path')) $data['base_path'] = $request->input('base_path');
         if ($request->has('enabled')) $data['enabled'] = $request->boolean('enabled');
 
+        // Change `storage-physical-path-normalization` (2026-09-17):
+        // si el `base_path` cambia, validar que el nuevo path no este ya
+        // ocupado por OTRO storage no mergeado. Tambien manejamos el caso
+        // "un-merge": si este storage estaba mergeado y se le asigna un
+        // nuevo `base_path`, limpiamos `duplicate_of_storage_id`/`merged_at`/
+        // `merged_reason` para rehabilitarlo.
+        if ($request->has('base_path') && $data['base_path'] !== $storage->base_path) {
+            $newBase = $data['base_path'];
+            $kind = $data['type'] ?? $storage->type;
+            if (!empty($newBase) && $kind === 'local') {
+                $normalized = strtolower(rtrim($newBase, '/'));
+                $existing = StorageProvider::findByNormalizedPath($normalized, $kind);
+                if ($existing !== null && $existing->id !== $storage->id) {
+                    return response()->json([
+                        'error' => 'duplicate_storage_path',
+                        'message' => "ya existe storage #{$existing->id} '{$existing->name}' en ese path.",
+                        'existing_storage_id' => $existing->id,
+                        'attempted_path' => $newBase,
+                    ], 409);
+                }
+            }
+            if ($storage->duplicate_of_storage_id !== null) {
+                $data['duplicate_of_storage_id'] = null;
+                $data['merged_at'] = null;
+                $data['merged_reason'] = null;
+                $data['enabled'] = $request->boolean('enabled', true);
+            }
+        }
+
+        // El root anterior puede cambiar si se mueve base_path: hay que
+        // invalidar su scope heredado (cache).
+        $rootAnterior = $this->hierarchyService()->rootIdOf((int) $storage->id);
+
         $storage->update($data);
+
+        $hierarchy = $this->recomputeHierarchy($storage);
+        $rootNuevo = $this->hierarchyService()->rootIdOf((int) $storage->id);
+
+        if ($rootAnterior !== $rootNuevo) {
+            StorageProvider::forgetInheritedTranscriptionScope($rootAnterior);
+            StorageProvider::forgetInheritedTranscriptionScope($rootNuevo);
+        }
 
         // Change 2026-09-13-perf-audit-and-improve: cambio invalida el cache del listado.
         Cache::forget('admin:storages:index');
 
-        return response()->json($storage);
+        return response()->json(array_merge($storage->fresh()->toArray(), ['hierarchy' => $hierarchy]));
+    }
+
+    /**
+     * Recalcula `parent_storage_id` y devuelve la jerarquia resultante para la
+     * respuesta del guardarrail. Invalida las caches de scope afectadas.
+     *
+     * @return array{
+     *     parent_storage_id: ?int,
+     *     ancestor: ?array{id:int,name:string},
+     *     descendants: list<array{id:int,name:string,transcription_enabled:bool}>,
+     *     equivalent_nodes: list<array{id:int,name:string,transcription_enabled:bool}>,
+     *     overlap_warning: bool
+     * }
+     */
+    private function recomputeHierarchy(StorageProvider $storage): array
+    {
+        $svc = $this->hierarchyService();
+        $svc->recomputeParent($storage);
+
+        $info = $svc->hierarchyInfo((int) $storage->id);
+
+        // El scope heredado del root cambio: invalidar la cache.
+        StorageProvider::forgetInheritedTranscriptionScope($svc->rootIdOf((int) $storage->id));
+
+        $map = static fn (StorageProvider $s) => [
+            'id' => (int) $s->id,
+            'name' => (string) $s->name,
+            'transcription_enabled' => (bool) $s->transcription_enabled,
+        ];
+
+        return [
+            'parent_storage_id' => $storage->parent_storage_id !== null ? (int) $storage->parent_storage_id : null,
+            'ancestor' => $info['ancestor'] !== null ? $map($info['ancestor']) : null,
+            'descendants' => array_map($map, $info['descendants']),
+            'equivalent_nodes' => array_map($map, $info['equivalent_nodes']),
+            'overlap_warning' => (bool) $info['overlap_warning'],
+        ];
+    }
+
+    private function hierarchyService(): \App\Services\Ia\StorageHierarchyService
+    {
+        return app(\App\Services\Ia\StorageHierarchyService::class);
     }
 
     public function destroy(int $id)

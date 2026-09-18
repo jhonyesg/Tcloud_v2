@@ -87,6 +87,27 @@ class ShareController extends Controller
 
         $file = File::findOrFail($request->file_id);
 
+        // change 2026-09-17-share-folder-canonical-wiring: si el usuario seleccionó
+        // un folder que es mirror (post-`files:repair-folder-mirrors` queda con
+        // `canonical_folder_id` apuntando al canónico), redirigir al canónico para que
+        // el share quede apuntando al row que tiene los archivos físicos reales.
+        // Defense-in-depth: incluso si el operador ya navega solo canónicos vía UI,
+        // un share creado vía API/admin-script sobre un mirror queda corregido.
+        $canonicalRedirect = false;
+        if ($file->is_folder && $file->isFolderMirror()) {
+            $canonical = app(\App\Services\FilePhysicalIdentity::class)->canonicalFor($file);
+            if ($canonical) {
+                \Log::info('share.created.canonicalized', [
+                    'original_file_id' => $file->id,
+                    'canonical_file_id' => $canonical->id,
+                    'created_by' => $user->id,
+                    'permissions' => $request->permissions,
+                ]);
+                $file = $canonical;
+                $canonicalRedirect = true;
+            }
+        }
+
         if (!$user->isAdmin()) {
             if ($file->storage_provider_id) {
                 if (!$user->canCreateSharesInStorage($file->storage_provider_id)) {

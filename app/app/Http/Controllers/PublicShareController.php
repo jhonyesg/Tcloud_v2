@@ -76,13 +76,12 @@ class PublicShareController extends Controller
 
         if ($file->is_folder) {
             $this->autoSyncFolder($file, $request->boolean('refresh'));
-            $folderContents = $file->children()
-                ->where(function ($query) {
-                    $query->whereNull('availability_state')->orWhere('availability_state', '!=', 'missing');
-                })
-                ->orderBy('is_folder', 'desc')
-                ->orderBy('name')
-                ->get();
+
+            // change 2026-09-17-share-folder-canonical-wiring: usar FolderListingService
+            // en vez de $file->children() para soportar cross-storage. Un share
+            // apuntando a un mirror ahora lista los archivos del canónico (que es
+            // donde están los archivos físicos post-`files:repair-folder-mirrors`).
+            $folderContents = app(\App\Services\FolderListingService::class)->listContents($file);
             $mimeType = 'folder';
             $isPreviewable = false;
             $fileUrl = null;
@@ -188,16 +187,17 @@ class PublicShareController extends Controller
         }
 
         $this->autoSyncFolder($currentFolder, $request->boolean('refresh'));
-        $folderContents = $currentFolder->children()
-            ->where(function ($query) {
-                $query->whereNull('availability_state')->orWhere('availability_state', '!=', 'missing');
-            })
-            ->orderBy('is_folder', 'desc')
-            ->orderBy('name')
-            ->get();
+
+        // change 2026-09-17-share-folder-canonical-wiring: si el visitante navega
+        // a un sub-folder que es mirror, canonicar antes de listar para que vea
+        // los archivos físicos reales (que viven en el canónico).
+        $resolver = app(\App\Services\FilePhysicalIdentity::class);
+        $canonicalFolder = $resolver->canonicalFor($currentFolder) ?? $currentFolder;
+
+        $folderContents = app(\App\Services\FolderListingService::class)->listContents($canonicalFolder);
 
         $breadcrumbs = [];
-        $crumb = $currentFolder;
+        $crumb = $canonicalFolder;
         while ($crumb && $crumb->id !== $rootFolder->id) {
             array_unshift($breadcrumbs, $crumb);
             $crumb = $crumb->parent;
@@ -206,7 +206,7 @@ class PublicShareController extends Controller
 
         return view('shares.public', [
             'share' => $share,
-            'file' => $currentFolder,
+            'file' => $canonicalFolder,
             'mimeType' => 'folder',
             'isPreviewable' => false,
             'fileUrl' => null,
@@ -746,12 +746,39 @@ class PublicShareController extends Controller
 
         $fullPath = $file->storageProvider->base_path . '/' . $file->path;
 
+        // change 2026-09-17-share-folder-canonical-wiring: 3-case delete policy.
+        // Caso 1: el target es un MIRROR (canonical_folder_id NOT NULL).
+        //   No tocamos disco ni canónico. Solo eliminamos el row mirror y el share.
+        //   El canónico (donde están los archivos reales) sigue intacto.
+        //
+        // Caso 2: el target es CANÓNICO + permissions='read'.
+        //   Inconsistente con la API pero por defense-in-depth: solo eliminamos
+        //   el row canónico + cascade a sus hijos rows (no disco). El share ya
+        //   pasó el guard de línea 724 que solo permite write/full.
+        //
+        // Caso 3: el target es CANÓNICO + permissions IN (write, full).
+        //   deleteRecursive() disco + cascade delete a files rows + delete share.
+        //   Esta es la semántica correcta esperada por el visitante con permisos
+        //   destructivos (ver change `share-write-notification-canonical`).
         if ($file->is_folder) {
-            $this->deleteRecursive($fullPath);
-            $file->children()->each(function ($child) {
-                $child->shares()->delete();
-                $child->delete();
-            });
+            if ($file->isFolderMirror()) {
+                \Log::info('share.destroy.mirror_only', [
+                    'share_id' => $share->id,
+                    'mirror_file_id' => $file->id,
+                    'canonical_file_id' => $file->canonical_folder_id,
+                ]);
+            } else {
+                $this->deleteRecursive($fullPath);
+                $file->children()->each(function ($child) {
+                    $child->shares()->delete();
+                    $child->delete();
+                });
+                \Log::info('share.destroy.canonical_destructive', [
+                    'share_id' => $share->id,
+                    'file_id' => $file->id,
+                    'permissions' => $share->permissions,
+                ]);
+            }
         } else {
             if (file_exists($fullPath)) {
                 unlink($fullPath);
@@ -768,13 +795,46 @@ class PublicShareController extends Controller
 
     private function isDescendantOf(File $file, File $ancestor): bool
     {
+        // Recorrer la cadena de parent_id hacia arriba. Si llegamos al ancestor,
+        // es descendiente legitimo.
         $current = $file;
+        $visited = [$file->id => true];
         while ($current) {
             if ($current->id === $ancestor->id) {
                 return true;
             }
-            $current = $current->parent;
+            $next = $current->parent;
+            if ($next === null) {
+                break;
+            }
+            if (isset($visited[$next->id])) {
+                // Ciclo defensivo: si el chain tiene un loop, salimos.
+                break;
+            }
+            $visited[$next->id] = true;
+            $current = $next;
         }
+
+        // Fallback: chain roto antes de llegar al ancestor (parent_id NULL o
+        // huérfano). El archivo está "bajo" el ancestor si su path es descendiente
+        // del path del ancestor: `ancestor.path/...` empieza con `ancestor.path`.
+        //
+        // NOTA: NO usamos `storage_provider_id` igual como fallback porque dos
+        // archivos hermanos (ambos en el root del mismo storage, ambos con
+        // parent_id=NULL) pasarían incorrectamente — son siblings, no
+        // descendientes uno del otro. Solo el path-based check es correcto para
+        // distinguir jerarquía de subcarpetas dentro del mismo storage.
+        //
+        // Esto evita "Invalid parent folder" en uploads/downloads de shared links
+        // cuando el parent_id chain esta roto pero los paths aún indican la
+        // jerarquía lógica.
+        if ($file->path && $ancestor->path) {
+            $ancestorPrefix = rtrim($ancestor->path, '/') . '/';
+            if ($ancestorPrefix !== '/' && str_starts_with($file->path . '/', $ancestorPrefix)) {
+                return true;
+            }
+        }
+
         return false;
     }
 

@@ -1,0 +1,1722 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Tcloud · Simulador de Accesos (Mis Archivos)</title>
+<style>
+  :root {
+    --bg: #f5f7fb;
+    --fg: #0f172a;
+    --muted: #64748b;
+    --line: #e2e8f0;
+    --card: #ffffff;
+    --parent: #6366f1;
+    --child: #0ea5e9;
+    --grandchild: #06b6d4;
+    --allow: #16a34a;
+    --deny: #dc2626;
+    --warn: #f59e0b;
+    --soft: #f8fafc;
+    --accent: #4f46e5;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; }
+  header { background: linear-gradient(135deg, #312e81 0%, #4338ca 100%); color: white; padding: 20px 28px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+  header h1 { margin: 0 0 4px; font-size: 22px; font-weight: 700; }
+  header p { margin: 0; opacity: 0.85; font-size: 13px; }
+  main { max-width: 1400px; margin: 0 auto; padding: 20px 28px 80px; }
+  .layout { display: grid; grid-template-columns: 360px 1fr; gap: 20px; }
+  @media (max-width: 1100px) { .layout { grid-template-columns: 1fr; } }
+
+  .panel { background: var(--card); border-radius: 12px; padding: 18px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); margin-bottom: 16px; }
+  .panel h2 { margin: 0 0 12px; font-size: 14px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+  .panel h3 { margin: 16px 0 8px; font-size: 13px; font-weight: 700; color: var(--fg); }
+
+  /* User picker */
+  .user-card { background: var(--soft); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; cursor: pointer; margin-bottom: 6px; transition: all 0.15s; }
+  .user-card:hover { border-color: var(--accent); background: #eef2ff; }
+  .user-card.active { background: #eef2ff; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(79,70,229,0.12); }
+  .user-card .name { font-weight: 600; font-size: 13px; }
+  .user-card .role { font-size: 11px; color: var(--muted); }
+  .user-card .access-summary { font-size: 11px; margin-top: 4px; color: var(--fg); }
+
+  /* Storages tree */
+  .tree { font-family: 'SF Mono', Menlo, monospace; font-size: 12px; }
+  .tree-node { padding: 4px 0; display: flex; align-items: center; gap: 6px; }
+  .tree-node.padre { font-weight: 700; }
+  .tree-children { padding-left: 18px; border-left: 1px dashed var(--line); }
+  .toggle { width: 22px; height: 22px; border-radius: 4px; border: 1px solid var(--line); background: white; cursor: pointer; font-size: 12px; }
+  .toggle.has-access { background: var(--allow); color: white; border-color: var(--allow); }
+  .toggle.no-access { background: white; color: var(--muted); }
+  .badge { font-size: 10px; padding: 2px 6px; border-radius: 10px; background: var(--line); color: var(--muted); }
+  .badge.parent { background: var(--parent); color: white; }
+  .badge.child { background: var(--child); color: white; }
+  .badge.tx-on { background: #dcfce7; color: #166534; }
+  .badge.tx-off { background: #fee2e2; color: #991b1b; }
+  .perm-select { padding: 3px 6px; font-size: 11px; border-radius: 4px; border: 1px solid var(--line); }
+
+  /* Tabs */
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 14px; flex-wrap: wrap; }
+  .tab { padding: 9px 14px; cursor: pointer; font-size: 13px; font-weight: 500; border-radius: 6px 6px 0 0; color: var(--muted); border: 1px solid transparent; border-bottom: none; transition: all 0.15s; }
+  .tab:hover { color: var(--fg); }
+  .tab.active { color: var(--accent); background: var(--card); border-color: var(--line); border-bottom: 1px solid var(--card); margin-bottom: -1px; }
+  .tab-icon { margin-right: 6px; }
+
+  /* Scenario simulator */
+  .scenario-row { display: grid; grid-template-columns: 200px 1fr; gap: 12px; padding: 10px 0; border-bottom: 1px dashed var(--line); align-items: center; }
+  .scenario-row:last-child { border-bottom: none; }
+  .scenario-label { font-weight: 600; font-size: 13px; }
+  .scenario-question { font-size: 12px; color: var(--muted); }
+  .result-pill { display: inline-block; padding: 4px 10px; border-radius: 14px; font-size: 11px; font-weight: 600; }
+  .result-pill.allow { background: #dcfce7; color: #166534; }
+  .result-pill.deny { background: #fee2e2; color: #991b1b; }
+  .result-pill.warn { background: #fef3c7; color: #92400e; }
+
+  .scenario-detail { font-size: 12px; color: var(--muted); padding: 8px 10px; background: var(--soft); border-radius: 6px; margin-top: 6px; border-left: 3px solid var(--accent); }
+  .scenario-detail code { background: white; padding: 1px 5px; border-radius: 3px; font-size: 11px; border: 1px solid var(--line); }
+
+  /* Storage hierarchy */
+  .hierarchy-viz { display: flex; flex-direction: column; gap: 0; padding: 18px; background: var(--soft); border-radius: 10px; }
+  .h-node { padding: 10px 14px; border-radius: 8px; color: white; font-size: 12px; position: relative; }
+  .h-node.parent { background: var(--parent); }
+  .h-node.child { background: var(--child); }
+  .h-line { width: 2px; height: 22px; background: var(--line); margin-left: 36px; }
+  .h-node .meta { font-size: 10px; opacity: 0.85; margin-top: 2px; }
+  .h-node.has-access { box-shadow: 0 0 0 3px var(--allow); }
+  .h-node.no-access { opacity: 0.5; }
+
+  /* Files */
+  .file-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
+  .file-tile { padding: 10px; border-radius: 8px; border: 1px solid var(--line); background: white; font-size: 12px; cursor: pointer; transition: all 0.15s; position: relative; }
+  .file-tile:hover { border-color: var(--accent); transform: translateY(-1px); }
+  .file-tile.selected { border-color: var(--accent); background: #eef2ff; box-shadow: 0 0 0 2px rgba(79,70,229,0.2); }
+  .file-tile .file-name { font-weight: 600; margin-bottom: 4px; word-break: break-word; }
+  .file-tile .file-meta { font-size: 10px; color: var(--muted); }
+  .file-tile .access-icon { position: absolute; top: 6px; right: 6px; font-size: 14px; }
+
+  .field-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 12px; }
+  .field-row label { min-width: 100px; color: var(--muted); }
+  .field-row input, .field-row select { padding: 5px 8px; border: 1px solid var(--line); border-radius: 4px; font-size: 12px; flex: 1; }
+
+  .btn { display: inline-block; padding: 8px 14px; background: var(--accent); color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; transition: all 0.15s; }
+  .btn:hover { background: #4338ca; }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn.ghost { background: white; color: var(--accent); border: 1px solid var(--line); }
+  .btn.danger { background: var(--deny); }
+  .btn.warn { background: var(--warn); }
+
+  .sequence { display: flex; flex-direction: column; gap: 8px; }
+  .sequence-item { background: var(--soft); padding: 10px 12px; border-radius: 6px; font-size: 12px; border-left: 3px solid var(--accent); }
+  .sequence-item .step { font-weight: 600; color: var(--accent); margin-right: 8px; }
+
+  .dialog { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(15,23,42,0.5); display: flex; align-items: center; justify-content: center; z-index: 100; padding: 20px; }
+  .dialog-content { background: white; border-radius: 12px; padding: 22px; max-width: 720px; width: 100%; max-height: 80vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.3); }
+  .dialog h2 { margin: 0 0 14px; font-size: 18px; }
+  .dialog-close { position: absolute; top: 12px; right: 16px; background: none; border: none; font-size: 20px; cursor: pointer; color: var(--muted); }
+
+  .help-box { background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); border-left: 4px solid var(--warn); padding: 12px 16px; border-radius: 6px; font-size: 12px; margin: 10px 0; }
+  .help-box strong { color: #92400e; }
+  .help-box code { background: white; padding: 1px 5px; border-radius: 3px; font-size: 11px; }
+
+  .code-block { background: #1e293b; color: #cbd5e1; padding: 12px 14px; border-radius: 6px; font-family: 'SF Mono', Menlo, monospace; font-size: 11px; overflow-x: auto; line-height: 1.55; }
+  .code-block .comment { color: #64748b; }
+  .code-block .keyword { color: #f472b6; }
+  .code-block .string { color: #86efac; }
+  .code-block .func { color: #93c5fd; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  table th, table td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--line); }
+  table th { background: var(--soft); font-weight: 600; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+  table tr:hover { background: #f9fafb; }
+
+  .stat-row { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 10px; margin-bottom: 14px; }
+  .stat-card { background: var(--soft); padding: 12px; border-radius: 8px; border: 1px solid var(--line); }
+  .stat-card .label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+  .stat-card .value { font-size: 22px; font-weight: 700; color: var(--fg); margin-top: 2px; }
+  .stat-card.green { background: #dcfce7; border-color: #86efac; }
+  .stat-card.green .value { color: #166534; }
+  .stat-card.red { background: #fee2e2; border-color: #fca5a5; }
+  .stat-card.red .value { color: #991b1b; }
+  .stat-card.blue { background: #dbeafe; border-color: #93c5fd; }
+  .stat-card.blue .value { color: #1e40af; }
+
+  .inline-tag { display: inline-block; padding: 2px 7px; border-radius: 10px; font-size: 10px; font-weight: 600; margin-left: 6px; }
+  .inline-tag.parent { background: var(--parent); color: white; }
+  .inline-tag.child { background: var(--child); color: white; }
+  .inline-tag.ok { background: #dcfce7; color: #166534; }
+  .inline-tag.no { background: #fee2e2; color: #991b1b; }
+
+  .trace { background: #0f172a; color: #cbd5e1; padding: 14px; border-radius: 8px; font-family: 'SF Mono', Menlo, monospace; font-size: 11px; line-height: 1.6; max-height: 320px; overflow-y: auto; }
+  .trace-line { white-space: pre-wrap; }
+  .trace-ok { color: #4ade80; }
+  .trace-no { color: #f87171; }
+  .trace-info { color: #93c5fd; }
+  .trace-warn { color: #fbbf24; }
+
+  .card-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 800px) { .card-grid { grid-template-columns: 1fr; } }
+
+  .sub-panel { background: var(--soft); border-radius: 8px; padding: 12px; margin-bottom: 12px; border: 1px solid var(--line); }
+  .sub-panel h4 { margin: 0 0 8px; font-size: 12px; color: var(--fg); font-weight: 700; }
+
+  footer { text-align: center; padding: 30px 20px 50px; color: var(--muted); font-size: 11px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🔐 Tcloud · Simulador de Accesos</h1>
+  <p>Explora cómo se comporta "Mis Archivos" cuando el usuario tiene acceso solo al padre, solo a hijos, o combinaciones mixtas. Simula compartir links, recortar con el editor multimedia y eliminar storages.</p>
+</header>
+
+<main>
+  <div class="layout">
+
+    <!-- LEFT COLUMN: configuration -->
+    <div>
+      <div class="panel">
+        <h2>1. Elige el usuario</h2>
+        <div id="user-list"></div>
+        <h3>Añadir usuario personalizado</h3>
+        <div class="field-row">
+          <label>Nombre:</label>
+          <input id="new-user-name" placeholder="ej. jsuarez">
+        </div>
+        <button class="btn ghost" onclick="addCustomUser()">+ Añadir usuario</button>
+      </div>
+
+      <div class="panel">
+        <h2>2. Configura accesos a storages</h2>
+        <p style="font-size:11px;color:var(--muted);margin:0 0 10px;">Marca los storages a los que el usuario tiene acceso. Configura permisos, capacidad de compartir y acceso a transcripción.</p>
+        <div class="tree" id="storage-tree"></div>
+      </div>
+
+      <div class="panel">
+        <h2>3. Escenarios destructivos</h2>
+        <p style="font-size:11px;color:var(--muted);margin:0 0 10px;">Prueba qué pasa cuando el operador borra o recrea un storage. Los archivos en BD se cascadean; los children quedan huérfanos.</p>
+        <div id="destructive-actions"></div>
+      </div>
+    </div>
+
+    <!-- RIGHT COLUMN: tabbed scenarios -->
+    <div>
+      <div class="panel">
+        <div class="stat-row">
+          <div class="stat-card blue">
+            <div class="label">Archivos visibles</div>
+            <div class="value" id="stat-visible">0</div>
+          </div>
+          <div class="stat-card green">
+            <div class="label">Con acceso</div>
+            <div class="value" id="stat-access">0</div>
+          </div>
+          <div class="stat-card red">
+            <div class="label">Sin acceso</div>
+            <div class="value" id="stat-noaccess">0</div>
+          </div>
+          <div class="stat-card">
+            <div class="label">Compartibles</div>
+            <div class="value" id="stat-shareable">0</div>
+          </div>
+        </div>
+
+        <div class="tabs">
+          <div class="tab active" data-tab="overview"><span class="tab-icon">📊</span>Vista general</div>
+          <div class="tab" data-tab="files"><span class="tab-icon">📁</span>Archivos</div>
+          <div class="tab" data-tab="share"><span class="tab-icon">🔗</span>Compartir link</div>
+          <div class="tab" data-tab="clip"><span class="tab-icon">✂️</span>Recortar</div>
+          <div class="tab" data-tab="avisos"><span class="tab-icon">📢</span>Mis Avisos</div>
+          <div class="tab" data-tab="delete"><span class="tab-icon">🗑️</span>Borrar storage</div>
+          <div class="tab" data-tab="cases"><span class="tab-icon">📚</span>Casos guiados</div>
+        </div>
+
+        <div id="tab-content"></div>
+      </div>
+    </div>
+
+  </div>
+</main>
+
+<footer>
+  Simulador basado en el código real de <code>FileController</code>, <code>StorageSyncService</code>, <code>MediaClipController</code>, <code>PublicShareController</code> y <code>MentionsSearchService</code> · 2026-09-17
+</footer>
+
+<!-- File action dialog -->
+<div id="dialog" class="dialog" style="display:none;">
+  <div class="dialog-content" id="dialog-content"></div>
+</div>
+
+<script>
+// =====================================================================
+// DATA MODEL: real Tcloud topology
+// =====================================================================
+
+const STORAGE_TOPOLOGY = {
+  // root storages (kind='local', is_personal=false)
+  idPadre: { id: 5, name: '00 Discos', kind: 'local', parent: null, tx: true },
+  // children of 5
+  id7: { id: 7, name: '02 RCN Tv', kind: 'local', parent: 5, tx: true },
+  id8: { id: 8, name: '03 Caracol', kind: 'local', parent: 5, tx: true },
+  id11: { id: 11, name: '04 Blu Radio', kind: 'local', parent: 5, tx: true },
+};
+
+function buildAllStorages() {
+  return [
+    { ...STORAGE_TOPOLOGY.idPadre, level: 0 },
+    { ...STORAGE_TOPOLOGY.id7, level: 1 },
+    { ...STORAGE_TOPOLOGY.id8, level: 1 },
+    { ...STORAGE_TOPOLOGY.id11, level: 1 },
+  ];
+}
+
+const BASE_PATHS = {
+  5: '/mnt/discos',
+  7: '/mnt/discos/RCN',
+  8: '/mnt/discos/Caracol',
+  11: '/mnt/discos/Blu',
+};
+
+// file registry: id → { storage_id, path, name, parent_path, has_tx_done }
+function buildFiles() {
+  return [
+    // Padre storage 5 (root level — files directly under 00 Discos)
+    { id: 101, storage_id: 5, path: 'general.mp3', name: 'general.mp3', parent_path: null, has_tx: true },
+    { id: 102, storage_id: 5, path: 'RecA.mp3', name: 'RecA.mp3', parent_path: null, has_tx: true },
+    { id: 103, storage_id: 5, path: 'Intro_2026-09-17.mp3', name: 'Intro_2026-09-17.mp3', parent_path: null, has_tx: true },
+    // Child 7 storage (RCN) — files live here
+    { id: 110, storage_id: 7, path: '2026-09-15/noticia.mp3', name: 'noticia.mp3', parent_path: '2026-09-15', has_tx: true },
+    { id: 111, storage_id: 7, path: '2026-09-16/entrevista.mp3', name: 'entrevista.mp3', parent_path: '2026-09-16', has_tx: true },
+    { id: 112, storage_id: 7, path: '2026-09-17/clip_testigo.mp3', name: 'clip_testigo.mp3', parent_path: '2026-09-17', has_tx: true },
+    { id: 113, storage_id: 7, path: '2026-09-17/la_fm_manana.mp3', name: 'la_fm_mañana.mp3', parent_path: '2026-09-17', has_tx: true },
+    { id: 114, storage_id: 7, path: '2026-09-16/noticias_unidas.mp3', name: 'noticias_unidas.mp3', parent_path: '2026-09-16', has_tx: true },
+    // Child 8 storage (Caracol)
+    { id: 120, storage_id: 8, path: '2026-09-16/debate.mp3', name: 'debate.mp3', parent_path: '2026-09-16', has_tx: true },
+    { id: 121, storage_id: 8, path: '2026-09-17/extra.mp3', name: 'extra.mp3', parent_path: '2026-09-17', has_tx: false },
+    { id: 122, storage_id: 8, path: '2026-09-17/6am_hoy.mp3', name: '6am_hoy.mp3', parent_path: '2026-09-17', has_tx: true },
+    // Child 11 storage (Blu)
+    { id: 130, storage_id: 11, path: '2026-09-17/latitud.mp3', name: 'latitud.mp3', parent_path: '2026-09-17', has_tx: true },
+    { id: 131, storage_id: 11, path: '2026-09-16/contrapunto.mp3', name: 'contrapunto.mp3', parent_path: '2026-09-16', has_tx: true },
+    // LEAF simulation: files that live in father 5 but logically belong to child 7
+    // (the "delegation leak residual" — self-healing sync hasn't migrated them yet)
+    { id: 140, storage_id: 5, path: 'RCN/2026-09-10/old_archive.mp3', name: 'old_archive.mp3', parent_path: 'RCN/2026-09-10', has_tx: true, leak_target: 7 },
+    { id: 141, storage_id: 5, path: 'Caracol/2026-09-12/hist.mp3', name: 'hist.mp3', parent_path: 'Caracol/2026-09-12', has_tx: false, leak_target: 8 },
+    // Cross-storage file (mismo path físico vive en storage 5 y en storage 7)
+    { id: 150, storage_id: 5, path: 'RCN/2026-09-17/clip_testigo.mp3', name: 'clip_testigo.mp3 (mirror)', parent_path: 'RCN/2026-09-17', has_tx: true, leak_target: 7, mirror: true },
+  ];
+}
+
+const PRESET_USERS = [
+  {
+    id: 'admin',
+    name: 'jsuarez (admin)',
+    role: 'admin',
+    description: 'Administrador — ve TODO, bypassa permisos.',
+    assignments: { 5: { perm: 'full', can_share: true, tx_access: true }, 7: { perm: 'full', can_share: true, tx_access: true }, 8: { perm: 'full', can_share: true, tx_access: true }, 11: { perm: 'full', can_share: true, tx_access: true } },
+  },
+  {
+    id: 'parent_only',
+    name: 'cliente_padre',
+    role: 'cliente',
+    description: 'Solo el storage padre. NO tiene acceso a hijos individuales — pero igual ve TODO el contenido por la herencia de permisos.',
+    assignments: { 5: { perm: 'read', can_share: true, tx_access: true } },
+  },
+  {
+    id: 'children_only',
+    name: 'cliente_hijos',
+    role: 'cliente',
+    description: 'Solo los hijos (RCN, Caracol, Blu). NO tiene acceso al padre "00 Discos".',
+    assignments: { 7: { perm: 'read', can_share: true, tx_access: true }, 8: { perm: 'read', can_share: true, tx_access: true }, 11: { perm: 'read', can_share: true, tx_access: true } },
+  },
+  {
+    id: 'mixed',
+    name: 'cliente_mixto',
+    role: 'cliente',
+    description: 'Padre + 1 hijo. El hijo queda redundante porque el padre ya cubre todo.',
+    assignments: { 5: { perm: 'read', can_share: true, tx_access: true }, 7: { perm: 'read', can_share: true, tx_access: true } },
+  },
+  {
+    id: 'one_child',
+    name: 'cliente_una_emisora',
+    role: 'cliente',
+    description: 'Solo RCN. Caso típico de "una sola emisora".',
+    assignments: { 7: { perm: 'write', can_share: true, tx_access: true } },
+  },
+  {
+    id: 'no_share',
+    name: 'cliente_sin_share',
+    role: 'cliente',
+    description: 'Solo lectura, sin permisos para crear links.',
+    assignments: { 7: { perm: 'read', can_share: false, tx_access: true } },
+  },
+  {
+    id: 'editor_off',
+    name: 'cliente_sin_editor',
+    role: 'cliente',
+    description: 'Acceso completo a RCN pero el editor multimedia está deshabilitado (atributo del user, no del storage).',
+    assignments: { 7: { perm: 'full', can_share: true, tx_access: true } },
+    media_editor_enabled: false,
+  },
+  {
+    id: 'rcn_y_blu',
+    name: 'cliente_dos_emisoras',
+    role: 'cliente',
+    description: 'Acceso solo a RCN y Blu. NO Caracol, NO el padre.',
+    assignments: { 7: { perm: 'read', can_share: true, tx_access: true }, 11: { perm: 'read', can_share: true, tx_access: true } },
+  },
+  {
+    id: 'sin_tx_access',
+    name: 'cliente_sin_tx',
+    role: 'cliente',
+    description: 'Acceso al storage pero la capacidad de ver transcripciones (tx_access) está apagada.',
+    assignments: { 7: { perm: 'read', can_share: true, tx_access: false } },
+  },
+  {
+    id: 'limite_alcanzado',
+    name: 'cliente_topado_este_mes',
+    role: 'cliente',
+    description: 'Ya consumió los 5 recortes del mes — el editor devuelve HTTP 403 aunque tenga archivos disponibles.',
+    assignments: { 7: { perm: 'full', can_share: true, tx_access: true } },
+    media_editor_clip_limit: 5,
+    clips_this_month: 5,
+  },
+  {
+    id: 'sin_storages',
+    name: 'cliente_nuevo_sin_acceso',
+    role: 'cliente',
+    description: 'Usuario recién creado, sin asignaciones. Solo ve sus propios archivos (si tuviera owner_id).',
+    assignments: {},
+  },
+];
+
+const SCENARIOS = [
+  {
+    id: 'rcn_solo',
+    title: 'Caso 1 · Cliente con UNA sola emisora (RCN)',
+    user: 'one_child',
+    summary: 'El cliente solo ve los archivos del storage #7 (RCN). Aunque hay archivos en el padre #5 y en Caracol/Blu, no los ve.',
+    expected: {
+      visible: ['noticia.mp3', 'entrevista.mp3', 'clip_testigo.mp3', 'la_fm_mañana.mp3', 'noticias_unidas.mp3'],
+      hidden: ['general.mp3', 'RecA.mp3', 'debate.mp3', 'latitud.mp3'],
+    },
+    explanation: [
+      'Listado Mis Archivos (FileController::index) pregunta: ¿el archivo tiene storage_id en user_storages del user? Para cliente_una_emisora, el único storage_id en su user_storages es 7.',
+      'Por eso, files con storage_id=5,8,11 NO aparecen en el listado. Aunque algunos tienen path bajo /mnt/discos/RCN/, están registrados con storage_id=5 y se filtran.',
+      'PERO: el archivo "old_archive.mp3" (id 140, storage_id=5, path "RCN/2026-09-10/...") SÍ puede DESCARGARSE si intenta el link directo, gracias al descendant fallback: el código mira si absolute_path cae bajo un storage hijo al que el user tiene acceso.',
+    ],
+  },
+  {
+    id: 'padre_cubre_hijos',
+    title: 'Caso 2 · Cliente con acceso al PADRE ve todo',
+    user: 'parent_only',
+    summary: 'Asignar el padre #5 cubre implícitamente a los hijos en el listado. El cliente ve archivos de RCN, Caracol y Blu aunque no estén asignados.',
+    expected: {
+      visible: ['general.mp3', 'RecA.mp3', 'Intro_2026-09-17.mp3', 'noticia.mp3', 'debate.mp3', 'latitud.mp3', 'old_archive.mp3', 'hist.mp3'],
+      hidden: [],
+    },
+    explanation: [
+      'El listado de Mis Archivos aplica filtro por storage_id directo: si user_storages contiene 5, ve TODOS los files con storage_id=5 (general.mp3, RecA.mp3, Intro, old_archive, hist).',
+      'Para los archivos con storage_id 7/8/11 (RCN, Caracol, Blu), NO aparecen en el listado por la regla de filtro directo.',
+      'PERO al navegar dentro de la carpeta padre, resolveListingTargets() mira si hay un sub-storage cuyo base_path sea prefijo de la carpeta. Como /mnt/discos/RCN empieza con /mnt/discos, el listado INCLUYE los files del hijo.',
+      'Conclusión operativa: el cliente "ve" contenido que físicamente es de RCN aunque su permiso sea solo sobre el padre. Esto es el comportamiento que confunde al usuario (no sabe qué storage es suyo).',
+    ],
+  },
+  {
+    id: 'admin_bypass',
+    title: 'Caso 3 · Admin ignora TODA restricción',
+    user: 'admin',
+    summary: 'admin=true → ningún check se ejecuta. Ve todo, puede compartir todo, puede recortar todo.',
+    expected: { visible: 'ALL', hidden: [] },
+    explanation: [
+      'hasStoragePermission() retorna {allowed:true, reason:"admin bypass"} en la primera línea si user.role==="admin".',
+      'canAccessFile() hace lo mismo — return temprano.',
+      'canCreateShare() también bypassa.',
+      'canEditMedia() también bypassa (incluso si media_editor_enabled=false, admin pasa).',
+      'Por eso los cambios recientes (fix-self-healing-permission-leak) tienen el primer guard admin→return true. Sin ese guard, un admin podría ser bloqueado por sus propios permisos de storage.',
+    ],
+  },
+  {
+    id: 'sin_share',
+    title: 'Caso 4 · Puede DESCARGAR pero NO COMPARTIR',
+    user: 'no_share',
+    summary: 'Tiene acceso al storage y perm=read, pero can_share=false. Ve archivos, los descarga, pero no genera links públicos.',
+    expected: {
+      visible: ['noticia.mp3', 'entrevista.mp3', 'clip_testigo.mp3', 'la_fm_mañana.mp3', 'noticias_unidas.mp3'],
+      hidden: ['general.mp3', 'debate.mp3'],
+      shareable: [],
+    },
+    explanation: [
+      'canAccessFile(user, file, "read") retorna true: directo, perm=read cubre read.',
+      'canCreateShare(user, file) mira user_storages[7].can_share → false → retorna {allowed:false, reason:"can_create_shares=false"}.',
+      'En producción, ShareController::store valida can_create_shares en la línea 120 antes de crear el token. Sin ese flag, devuelve HTTP 403 "No tienes permiso para crear enlaces públicos".',
+      'El visitante del link NO está sujeto a este check — una vez creado, el receptor accede solo con el token.',
+    ],
+  },
+  {
+    id: 'editor_apagado',
+    title: 'Caso 5 · Editor multimedia DESHABILITADO para el user',
+    user: 'editor_off',
+    summary: 'El storage permite recortar, el archivo es accesible, pero el atributo media_editor_enabled=false del user bloquea todo recorte.',
+    expected: {
+      visible: ['noticia.mp3', 'entrevista.mp3', 'clip_testigo.mp3', 'la_fm_mañana.mp3', 'noticias_unidas.mp3'],
+      clippeable: [],
+    },
+    explanation: [
+      'canUseMediaEditor() (modelo User) retorna false → canEditMedia() corta con {allowed:false, reason:"editor de medios deshabilitado para este usuario"}.',
+      'El check corre ANTES que canAccessFile — incluso si el archivo es accesible, no hay nada que chequear.',
+      'En producción: el endpoint POST /media/clip devuelve HTTP 403 con body "Editor de medios no habilitado para este usuario" (verificado en harness_mis_avisos_clip_limit aserción 8).',
+      'Es un flag por usuario, no por storage: un admin puede tener media_editor_enabled=false y aun así el sistema lo deja recortar (admin bypass cubre).',
+    ],
+  },
+  {
+    id: 'topado_mes',
+    title: 'Caso 6 · Límite mensual ALCANZADO',
+    user: 'limite_alcanzado',
+    summary: 'El user ya hizo 5 recortes este mes. El siguiente intento devuelve 403 "Límite mensual alcanzado".',
+    expected: {
+      visible: ['noticia.mp3', 'entrevista.mp3', 'clip_testigo.mp3', 'la_fm_mañana.mp3', 'noticias_unidas.mp3'],
+      clippeable: [],
+    },
+    explanation: [
+      'User::hasReachedClipLimit() cuenta media_edit_jobs WHERE user_id=X AND status="done" AND created_at>=startOfMonth(). Si count >= media_editor_clip_limit → true.',
+      'canEditMedia() hace ese check DESPUÉS de canUseMediaEditor y canAccessFile. En este caso pasa los dos primeros pero el cupo lo frena.',
+      'MediaClipController::clip() línea 126 valida y devuelve 403 con body "Límite mensual alcanzado (5 cortes/mes)".',
+      'Los previews=true NO cuentan (decisión de diseño — son descartables). Los jobs fallidos (status=failed) tampoco cuentan.',
+      'Reset el primero del mes siguiente (Bogota), o ejecuta "php artisan media-editor:reset-counts --user=X" para forzar.',
+    ],
+  },
+  {
+    id: 'delegation_leak',
+    title: 'Caso 7 · Leak residual: archivo del PADRE bajo path del HIJO',
+    user: 'one_child',
+    file: 140,
+    summary: 'old_archive.mp3 vive en storage_id=5 (padre) pero su absolute_path cae bajo /mnt/discos/RCN. El user tiene acceso a RCN, NO al padre.',
+    expected: {
+      visible_listing: false,
+      downloadable: true,
+      via: 'descendant fallback',
+    },
+    explanation: [
+      'Listado: NO aparece en Mis Archivos porque el filtro de listado (líneas 311-317 de FileController) usa storage_id directo. user_storages[5] no existe para cliente_una_emisora → archivo no listado.',
+      'Descarga directa (GET /files/{id}/download): SÍ pasa. checkFilePermission() hace: 1) admin? no. 2) directo? user_storages[5] no existe → no. 4) descendant fallback: mira los hijos del storage 5 → encuentra #7 (RCN) → absolute_path "/mnt/discos/RCN/2026-09-10/old_archive.mp3" empieza con "/mnt/discos/RCN" → user tiene acceso a #7 → return true.',
+      'Esto es exactamente el comportamiento que motivó el change fix-self-healing-permission-leak: el listado y la descarga usaban reglas DISTINTAS, causando el bug (a) "veo el archivo en la lista pero no lo puedo descargar". Aquí se ve el caso inverso.',
+      'El self-healing nightly (files:repair-delegation-leak) migrará old_archive.mp3 a storage_id=7 en la próxima corrida. Después, el listado directo lo mostrará.',
+    ],
+  },
+  {
+    id: 'mirror_visible',
+    title: 'Caso 8 · Mismo archivo físico visto desde dos storages (mirror)',
+    user: 'children_only',
+    files: [112, 150],
+    summary: 'clip_testigo.mp3 existe con storage_id=7 (canónico) y como mirror con storage_id=5 bajo path "RCN/...". Ambos tienen el MISMO absolute_path físico.',
+    expected: {
+      listing: 'dos filas idénticas',
+      share: 'solo desde el canónico',
+      clip: 'ambos funcionan',
+    },
+    explanation: [
+      'files: 112 (storage 7 canónico, path "2026-09-17/clip_testigo.mp3") y 150 (storage 5 mirror, path "RCN/2026-09-17/clip_testigo.mp3"). Ambos resuelven al MISMO inode en disco: /mnt/discos/RCN/2026-09-17/clip_testigo.mp3.',
+      'Listing: si el user tiene acceso a storage 7, ve el #112. Si tiene acceso al padre 5, ve el #150. Si tiene acceso a AMBOS, ve DOS filas (¡duplicado!). La identidad canónica es files.canonical_folder_id IS NULL.',
+      'PublicShareController::show usa FolderListingService::listContents() que detecta el mirror (canonical_folder_id apunta al canónico) y DESDUPLICA: solo muestra una vez. Si el share se creó sobre el mirror, el controller lo repunta al canónico al primer hit.',
+      'canEditMedia funciona en ambos porque el absolute_path cae bajo #7 (descendant fallback para el #150).',
+      'Esto justifica files:repair-folder-mirrors — el merge link evita que se muestren dos cards idénticas en Mis Archivos.',
+    ],
+  },
+  {
+    id: 'borrar_padre',
+    title: 'Caso 9 · Borrar el PADRE — cascadea archivos y shares',
+    user: 'parent_only',
+    summary: 'El operador borra storage #5. Archivos del padre desaparecen (CASCADE). Hijos sobreviven pero quedan huérfanos. User pierde todo acceso.',
+    expected: { visible_after: 0, access_after: 0 },
+    explanation: [
+      'FK files.storage_provider_id ON DELETE CASCADE → 5 archivos del padre se borran (general.mp3, RecA.mp3, Intro, old_archive, hist + mirror de clip_testigo).',
+      'FK user_storages.storage_provider_id ON DELETE CASCADE → asignación del user al padre desaparece. user_storages[7/8/11] no existía para cliente_padre → no hay más asignaciones.',
+      'FK storage_providers.parent_storage_id ON DELETE SET NULL → los hijos #7, #8, #11 quedan con parent_storage_id=NULL (huérfanos de jerarquía, pero las filas sobreviven).',
+      'Transcripciones: file_id queda NULL (FK SET NULL), source_absolute_path intacto. Sobreviven. Si visitas /transcript/{abs_path}, sigues viendo el contenido.',
+      'Shares con esos files: borrados por CASCADE. Token queda en BD pero apunta a file_id que no existe → al visitar el link, 404.',
+    ],
+  },
+  {
+    id: 'borrar_hijo',
+    title: 'Caso 10 · Borrar un HIJO — solo afecta ese subárbol',
+    user: 'children_only',
+    summary: 'El operador borra storage #7 (RCN). Solo los archivos de RCN desaparecen. El padre y los otros hijos siguen vivos.',
+    expected: { archivos_perdidos: 5, archivos_sobrevivientes: '~7 (padre + Caracol + Blu + leak residual)' },
+    explanation: [
+      'FK files.storage_provider_id=7 ON DELETE CASCADE → 5 archivos de RCN se borran (noticia, entrevista, clip_testigo, la_fm_mañana, noticias_unidas).',
+      'El user pierde acceso a RCN, pero conserva Caracol y Blu. Su listado pasa de 10 archivos a 6.',
+      'Storage 5 (padre) sobrevive intacto. Sus archivos (incluido old_archive.mp3, leak residual) siguen visibles para cualquiera con acceso al padre.',
+      'El sync nocturno no recrea los archivos borrados porque el storage #7 ya no existe (StorageSyncService itera storages activos).',
+      'Para "deshacer" el borrado, hay que restaurar desde backup. No hay papelera en storage_providers.',
+    ],
+  },
+];
+
+// =====================================================================
+// STATE
+// =====================================================================
+
+const state = {
+  currentUserId: 'children_only',
+  customUsers: [],
+  files: buildFiles(),
+  destroyed: new Set(), // storage ids destroyed
+  recreated: {}, // old_id -> new_id
+  activeCaseId: null,
+};
+
+function getUsers() {
+  return [...PRESET_USERS, ...state.customUsers];
+}
+
+function getCurrentUser() {
+  return getUsers().find(u => u.id === state.currentUserId);
+}
+
+function getStoragesWithState() {
+  // Apply destroy/recreate if any
+  const all = buildAllStorages();
+  return all.filter(s => {
+    if (state.destroyed.has(s.id) && !state.recreated[s.id]) return false;
+    return true;
+  }).map(s => {
+    if (state.recreated[s.id]) {
+      return { ...s, id: state.recreated[s.id], name: s.name + ' (recreado)', isRecreated: true };
+    }
+    return { ...s };
+  });
+}
+
+function effectiveStorageId(originalId) {
+  return state.recreated[originalId] || originalId;
+}
+
+// =====================================================================
+// ACCESS LOGIC (mirroring real Tcloud code)
+// =====================================================================
+
+function hasStoragePermission(user, storageId, requiredPerm) {
+  if (user.role === 'admin') return { allowed: true, reason: 'admin bypass' };
+  const effId = state.recreated[storageId] || storageId;
+  const asg = user.assignments[effId];
+  if (!asg) return { allowed: false, reason: 'no asignado' };
+  const levels = { read: 1, write: 2, upload: 2, full: 3 };
+  const userLevel = levels[asg.perm] || 0;
+  const requiredLevel = levels[requiredPerm] || 0;
+  return userLevel >= requiredLevel
+    ? { allowed: true, reason: `directo (${asg.perm})` }
+    : { allowed: false, reason: `permiso insuficiente (${asg.perm} < ${requiredPerm})` };
+}
+
+function canAccessFile(user, file, requiredPerm = 'read') {
+  if (user.role === 'admin') return { allowed: true, reason: 'admin bypass', via: 'admin' };
+
+  // Direct permission on file.storage_provider_id
+  const direct = hasStoragePermission(user, file.storage_id, requiredPerm);
+  if (direct.allowed) return { allowed: true, reason: direct.reason, via: 'directo' };
+
+  // Descendant fallback (path-based) — mirrors FileController::checkFilePermission lines 72-97
+  if (file.storage_id) {
+    const filePath = (BASE_PATHS[file.storage_id] || '') + '/' + (file.path || '');
+    const allStorages = buildAllStorages();
+    const descendants = allStorages.filter(s => s.parent === file.storage_id);
+    for (const sub of descendants) {
+      const subBase = BASE_PATHS[sub.id];
+      if (!subBase) continue;
+      if (filePath.startsWith(subBase + '/') || filePath === subBase) {
+        const subPerm = hasStoragePermission(user, sub.id, requiredPerm);
+        if (subPerm.allowed) {
+          return {
+            allowed: true,
+            reason: `descendant fallback: archivo bajo ${sub.name}, user tiene acceso al hijo`,
+            via: 'descendant'
+          };
+        }
+      }
+    }
+  }
+
+  // Owner check
+  if (file.owner_id && file.owner_id === user.id) {
+    return { allowed: true, reason: 'es el dueño', via: 'owner' };
+  }
+  return { allowed: false, reason: 'sin acceso al storage del archivo y no es descendant ni dueño', via: 'ninguno' };
+}
+
+function canCreateShare(user, file) {
+  if (user.role === 'admin') return { allowed: true, reason: 'admin bypass' };
+  // ShareController::store: storage_provider_id check
+  const asg = user.assignments[file.storage_id];
+  if (!asg) return { allowed: false, reason: `sin asignación al storage #${file.storage_id}` };
+  if (!asg.can_share) return { allowed: false, reason: `can_create_shares=false en storage #${file.storage_id}` };
+  // Also need at least read perm
+  const direct = hasStoragePermission(user, file.storage_id, asg.perm);
+  if (!direct.allowed) return { allowed: false, reason: 'permiso insuficiente' };
+  return { allowed: true, reason: `puede compartir (perm=${asg.perm}, can_share=true)` };
+}
+
+function getAccessibleStorages(user) {
+  if (user.role === 'admin') return buildAllStorages();
+  return buildAllStorages().filter(s => user.assignments[s.id]);
+}
+
+function canSeeInMisAvisos(user, file) {
+  if (user.role === 'admin') return true;
+  if (!file.has_tx) return false;
+  // MentionsSearchService::accessibleStorageIds — solo storages con tx_access=true
+  return Object.entries(user.assignments).some(([sid, asg]) => asg.tx_access && parseInt(sid) === file.storage_id);
+}
+
+function canEditMedia(user, file) {
+  if (user.role === 'admin') return { allowed: true, reason: 'admin bypass' };
+  // canUseMediaEditor
+  const editorEnabled = user.media_editor_enabled !== false; // default true for clients
+  if (!editorEnabled) return { allowed: false, reason: 'editor de medios deshabilitado para este usuario' };
+  // canAccessFile (same logic as file access)
+  const access = canAccessFile(user, file, 'read');
+  if (!access.allowed) return { allowed: false, reason: access.reason };
+  // hasReachedClipLimit() — modelo. Asumimos no alcanzado por simplicidad
+  return { allowed: true, reason: `acceso OK (${access.via})` };
+}
+
+// Listing filter (FileController::index líneas 311-317)
+function getVisibleFilesForListing(user) {
+  if (user.role === 'admin') return state.files;
+  const userStorageIds = Object.keys(user.assignments).map(Number);
+  return state.files.filter(f => {
+    // owner OR storage in userStorages
+    if (f.owner_id && f.owner_id === user.id) return true;
+    return userStorageIds.includes(f.storage_id);
+  });
+}
+
+// Listing with resolveListingTargets — when user navigates a folder, they ALSO see files from sub-storages
+// if those sub-storages have base_path prefix of the folder. This applies when the user has access to BOTH parent and child.
+function getFilesForFolderView(user, storageId, parentPath = null) {
+  if (user.role === 'admin') return state.files;
+  const accessibleStorages = Object.keys(user.assignments).map(Number);
+  const targets = [{ storage_id: storageId, parent_path: parentPath }];
+  // If the user navigated a folder in storage S, and a sub-storage SS has base_path prefix, include files from SS
+  for (const sub of buildAllStorages()) {
+    if (sub.parent === storageId) {
+      const subBase = BASE_PATHS[sub.id];
+      const parentBase = BASE_PATHS[storageId];
+      if (subBase && parentBase && subBase.startsWith(parentBase + '/')) {
+        // User must have access to the sub-storage to see its files
+        if (accessibleStorages.includes(sub.id)) {
+          targets.push({ storage_id: sub.id, parent_path: null /* corresponds to the folder's relative path in sub */ });
+        }
+      }
+    }
+  }
+  return state.files.filter(f => {
+    const matches = targets.find(t => t.storage_id === f.storage_id);
+    if (!matches) return false;
+    if (matches.parent_path === null) {
+      // root listing
+      return f.parent_path === null;
+    }
+    return f.parent_path === matches.parent_path;
+  });
+}
+
+// =====================================================================
+// UI RENDERING
+// =====================================================================
+
+function render() {
+  renderUserList();
+  renderStorageTree();
+  renderDestructiveActions();
+  renderTabContent();
+  updateStats();
+}
+
+function renderUserList() {
+  const c = document.getElementById('user-list');
+  c.innerHTML = getUsers().map(u => `
+    <div class="user-card ${u.id === state.currentUserId ? 'active' : ''}" onclick="selectUser('${u.id}')">
+      <div class="name">${u.name}</div>
+      <div class="role">${u.role}</div>
+      <div class="access-summary">${describeUserAccess(u)}</div>
+    </div>
+  `).join('');
+}
+
+function describeUserAccess(u) {
+  const ids = Object.keys(u.assignments).map(Number);
+  if (u.role === 'admin') return '🌐 Acceso total (admin)';
+  if (ids.length === 0) return 'Sin storages asignados';
+  const labels = ids.map(id => buildAllStorages().find(s => s.id === id)?.name || `#${id}`);
+  return `📂 ${labels.join(', ')}`;
+}
+
+window.selectUser = function(id) {
+  state.currentUserId = id;
+  render();
+};
+
+window.addCustomUser = function() {
+  const nameInput = document.getElementById('new-user-name');
+  const name = nameInput.value.trim() || 'custom_' + (state.customUsers.length + 1);
+  const id = 'custom_' + Date.now();
+  state.customUsers.push({
+    id, name, role: 'cliente',
+    description: 'Personalizado — edita sus accesos en el árbol de storages.',
+    assignments: {},
+    media_editor_enabled: true,
+  });
+  state.currentUserId = id;
+  nameInput.value = '';
+  render();
+};
+
+function renderStorageTree() {
+  const c = document.getElementById('storage-tree');
+  const u = getCurrentUser();
+  if (!u) return;
+
+  const renderNode = (storage) => {
+    const asg = u.assignments[storage.id];
+    const hasAccess = !!asg;
+    const children = buildAllStorages().filter(s => s.parent === storage.id);
+    return `
+      <div class="tree-node ${storage.parent === null ? 'padre' : ''}">
+        <div class="toggle ${hasAccess ? 'has-access' : 'no-access'}" onclick="toggleStorageAccess(${storage.id})">${hasAccess ? '✓' : '+'}</div>
+        <span class="badge ${storage.parent === null ? 'parent' : 'child'}">${storage.parent === null ? 'padre' : 'hijo'}</span>
+        <span>${storage.name}</span>
+        <span class="badge ${storage.tx ? 'tx-on' : 'tx-off'}">tx ${storage.tx ? 'ON' : 'off'}</span>
+        ${hasAccess ? `
+          <select class="perm-select" onclick="event.stopPropagation()" onchange="updatePerm(${storage.id}, this.value)">
+            <option value="read" ${asg.perm === 'read' ? 'selected' : ''}>read</option>
+            <option value="write" ${asg.perm === 'write' ? 'selected' : ''}>write</option>
+            <option value="upload" ${asg.perm === 'upload' ? 'selected' : ''}>upload</option>
+            <option value="full" ${asg.perm === 'full' ? 'selected' : ''}>full</option>
+          </select>
+          <label style="font-size:10px;display:flex;align-items:center;gap:3px;">
+            <input type="checkbox" ${asg.can_share ? 'checked' : ''} onclick="event.stopPropagation()" onchange="updateShareFlag(${storage.id}, this.checked)">
+            share
+          </label>
+          <label style="font-size:10px;display:flex;align-items:center;gap:3px;">
+            <input type="checkbox" ${asg.tx_access ? 'checked' : ''} onclick="event.stopPropagation()" onchange="updateTxAccess(${storage.id}, this.checked)">
+            tx
+          </label>
+        ` : ''}
+      </div>
+      ${children.length ? `<div class="tree-children">${children.map(renderNode).join('')}</div>` : ''}
+    `;
+  };
+
+  c.innerHTML = renderNode(STORAGE_TOPOLOGY.idPadre);
+}
+
+window.toggleStorageAccess = function(storageId) {
+  const u = getCurrentUser();
+  if (u.role === 'admin') return;
+  if (u.assignments[storageId]) {
+    delete u.assignments[storageId];
+  } else {
+    u.assignments[storageId] = { perm: 'read', can_share: true, tx_access: true };
+  }
+  render();
+};
+
+window.updatePerm = function(storageId, value) {
+  const u = getCurrentUser();
+  if (u.assignments[storageId]) u.assignments[storageId].perm = value;
+  render();
+};
+window.updateShareFlag = function(storageId, value) {
+  const u = getCurrentUser();
+  if (u.assignments[storageId]) u.assignments[storageId].can_share = value;
+  render();
+};
+window.updateTxAccess = function(storageId, value) {
+  const u = getCurrentUser();
+  if (u.assignments[storageId]) u.assignments[storageId].tx_access = value;
+  render();
+};
+
+function renderDestructiveActions() {
+  const c = document.getElementById('destructive-actions');
+  c.innerHTML = `
+    <p style="font-size:11px;color:var(--muted);margin:0 0 8px;">Estas acciones simulan lo que hace el operador en /admin/storages.</p>
+    <div style="display:flex;flex-direction:column;gap:6px;">
+      ${buildAllStorages().map(s => `
+        <div style="display:flex;gap:6px;align-items:center;padding:6px;background:var(--soft);border-radius:6px;">
+          <span style="font-size:12px;flex:1;">
+            ${state.destroyed.has(s.id) ? '💀' : '🟢'} ${s.name} <span class="badge ${s.parent === null ? 'parent' : 'child'}">${s.parent === null ? 'padre' : 'hijo'}</span>
+            ${state.recreated[s.id] ? `<span class="inline-tag ok">→ nuevo #${state.recreated[s.id]}</span>` : ''}
+          </span>
+          ${!state.destroyed.has(s.id) && !state.recreated[s.id] ? `
+            <button class="btn danger" style="padding:4px 8px;font-size:11px;" onclick="destroyStorage(${s.id})">Borrar</button>
+          ` : ''}
+          ${state.destroyed.has(s.id) && !state.recreated[s.id] ? `
+            <button class="btn warn" style="padding:4px 8px;font-size:11px;" onclick="recreateStorage(${s.id})">Recrear (mismo path)</button>
+          ` : ''}
+        </div>
+      `).join('')}
+    </div>
+    <button class="btn ghost" style="margin-top:10px;width:100%;" onclick="resetDestroyed()">↻ Resetear escenario destructivo</button>
+  `;
+}
+
+window.destroyStorage = function(storageId) {
+  state.destroyed.add(storageId);
+  // Remove its user assignments (CASCADE)
+  getUsers().forEach(u => {
+    if (u.role !== 'admin') delete u.assignments[storageId];
+  });
+  render();
+};
+
+window.recreateStorage = function(oldId) {
+  const newId = 100 + Math.floor(Math.random() * 1000);
+  state.destroyed.delete(oldId);
+  state.recreated[oldId] = newId;
+  // Existing children keep parent_storage_id=NULL (we model this by mapping old assignments on child stays)
+  // But the user lost their parent assignment; they'd need to be reassigned manually.
+  render();
+};
+
+window.resetDestroyed = function() {
+  state.destroyed.clear();
+  state.recreated = {};
+  // Restore admin:recreated scope
+  // For demo simplicity, re-grant all default assignments of preset users that had them
+  PRESET_USERS.forEach(u => {
+    if (u.role === 'admin') {
+      const all = buildAllStorages();
+      u.assignments = Object.fromEntries(all.map(s => [s.id, { perm: 'full', can_share: true, tx_access: true }]));
+    }
+  });
+  render();
+};
+
+function updateStats() {
+  const u = getCurrentUser();
+  if (!u) return;
+  const visible = getVisibleFilesForListing(u);
+  let withAccess = 0, withoutAccess = 0, shareable = 0;
+  visible.forEach(f => {
+    const acc = canAccessFile(u, f, 'read').allowed;
+    if (acc) withAccess++;
+    else withoutAccess++;
+    if (canCreateShare(u, f).allowed) shareable++;
+  });
+  document.getElementById('stat-visible').textContent = visible.length;
+  document.getElementById('stat-access').textContent = withAccess;
+  document.getElementById('stat-noaccess').textContent = withoutAccess;
+  document.getElementById('stat-shareable').textContent = shareable;
+}
+
+// =====================================================================
+// TAB CONTENT
+// =====================================================================
+
+let currentTab = 'overview';
+
+document.addEventListener('click', (e) => {
+  if (e.target.closest('.tab')) {
+    const tab = e.target.closest('.tab').dataset.tab;
+    document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+    currentTab = tab;
+    renderTabContent();
+  }
+});
+
+function renderTabContent() {
+  const c = document.getElementById('tab-content');
+  const u = getCurrentUser();
+  if (!u) { c.innerHTML = '<p>Selecciona un usuario.</p>'; return; }
+
+  switch (currentTab) {
+    case 'overview': c.innerHTML = renderOverview(u); break;
+    case 'files': c.innerHTML = renderFiles(u); break;
+    case 'share': c.innerHTML = renderShare(u); break;
+    case 'clip': c.innerHTML = renderClip(u); break;
+    case 'avisos': c.innerHTML = renderAvisos(u); break;
+    case 'delete': c.innerHTML = renderDelete(u); break;
+    case 'cases': c.innerHTML = renderCases(); break;
+  }
+}
+
+// ------------------------------- OVERVIEW TAB -------------------------------
+function renderOverview(u) {
+  const visible = getVisibleFilesForListing(u);
+  const accessStorages = getAccessibleStorages(u);
+
+  // Detailed access map per file
+  const accRows = visible.map(f => {
+    const acc = canAccessFile(u, f, 'read');
+    const share = canCreateShare(u, f);
+    const storage = buildAllStorages().find(s => s.id === f.storage_id);
+    return `
+      <tr>
+        <td>${f.name}</td>
+        <td><span class="badge ${storage.parent === null ? 'parent' : 'child'}">${storage.name}</span></td>
+        <td><code style="font-size:10px;">${f.path}</code></td>
+        <td>${acc.allowed ? `<span class="result-pill allow">✓ ${acc.via}</span>` : `<span class="result-pill deny">✗</span>`}</td>
+        <td><small style="color:var(--muted)">${acc.reason}</small></td>
+        <td>${share.allowed ? `<span class="result-pill allow">✓</span>` : `<span class="result-pill deny">✗</span>`}</td>
+        <td>${f.has_tx ? '✓' : '—'}</td>
+        <td>${f.leak_target ? `<span class="badge" style="background:#fef3c7;color:#92400e;">leak →#${f.leak_target}</span>` : ''}</td>
+      </tr>
+    `;
+  }).join('');
+
+  return `
+    <div class="help-box">
+      <strong>👤 Usuario actual:</strong> <code>${u.name}</code> (${u.role})<br>
+      <strong>📂 Storages accesibles:</strong> ${accessStorages.length === 0 ? '<em>ninguno</em>' : accessStorages.map(s => `${s.name} <span class="badge ${s.parent === null ? 'parent' : 'child'}">${s.parent === null ? 'padre' : 'hijo'}</span>`).join(' ')}<br>
+      <strong>📝</strong> ${u.description || ''}
+    </div>
+
+    <h3>📐 Jerarquía visual de storages (accesos del usuario)</h3>
+    <div class="hierarchy-viz">
+      ${renderHierarchyViz(u)}
+    </div>
+
+    <h3 style="margin-top:18px;">📋 Tabla de archivos — análisis de acceso por fila</h3>
+    <div style="max-height:400px;overflow-y:auto;">
+      <table>
+        <thead>
+          <tr>
+            <th>Archivo</th>
+            <th>Storage</th>
+            <th>path</th>
+            <th>Acceso?</th>
+            <th>Razón</th>
+            <th>Compartir</th>
+            <th>Transcrito</th>
+            <th>Notas</th>
+          </tr>
+        </thead>
+        <tbody>${accRows || '<tr><td colspan="8">Sin archivos visibles</td></tr>'}</tbody>
+      </table>
+    </div>
+
+    <div class="help-box" style="margin-top:18px;">
+      <strong>💡 Cómo se determina el acceso a un archivo en este código:</strong><br>
+      • <strong>Admin</strong> bypassa todo<br>
+      • <strong>Directo</strong>: si <code>user_storages</code> tiene <code>(user, file.storage_provider_id)</code> con permiso ≥ requerido<br>
+      • <strong>Descendant fallback</strong>: solo para archivos con <em>base_path</em> dentro de un sub-storage al que el user tiene acceso (esto es la "delegation leak residual" del cambio 2026-09-17)<br>
+      • <strong>Owner</strong>: si <code>file.owner_id == user.id</code><br>
+      El listado MIS ARCHIVOS siempre aplica <strong>filtro por storage_id + owner</strong> antes del filtro de permiso (líneas 311-317 de <code>FileController</code>).
+    </div>
+  `;
+}
+
+function renderHierarchyViz(u) {
+  const renderHNode = (storage, depth = 0) => {
+    const asg = u.assignments[storage.id];
+    const hasAccess = !!asg;
+    const destroyed = state.destroyed.has(storage.id);
+    const recreated = state.recreated[storage.id];
+    const children = buildAllStorages().filter(s => s.parent === storage.id);
+    return `
+      <div class="h-node ${storage.parent === null ? 'parent' : 'child'} ${hasAccess ? 'has-access' : 'no-access'}" style="margin-left:${depth * 24}px;margin-bottom:6px;">
+        <strong>${storage.name}</strong> <span class="inline-tag ${storage.parent === null ? 'parent' : 'child'}">${storage.parent === null ? 'padre' : 'hijo'}</span>
+        ${hasAccess ? `<span class="inline-tag ok">✓ ${asg.perm}</span>` : ''}
+        ${destroyed ? `<span class="inline-tag no">💀 borrado</span>` : ''}
+        ${recreated ? `<span class="inline-tag ok">↻ nuevo #${recreated}</span>` : ''}
+        ${asg && asg.can_share ? '<span style="font-size:10px;opacity:0.9;"> · 📤 puede compartir</span>' : ''}
+        ${asg && asg.tx_access ? '<span style="font-size:10px;opacity:0.9;"> · 🎙️ tx-access</span>' : ''}
+        <div class="meta">base_path: ${BASE_PATHS[storage.id]} · tx: ${storage.tx ? 'ON' : 'off'} · ${u.role === 'admin' ? 'admin' : ''}</div>
+      </div>
+      ${children.length ? children.map(c => renderHNode(c, depth + 1)).join('') : ''}
+    `;
+  };
+  const root = buildAllStorages().find(s => s.parent === null);
+  return renderHNode(root);
+}
+
+// ------------------------------- FILES TAB -------------------------------
+function renderFiles(u) {
+  const visible = getVisibleFilesForListing(u);
+  const tiles = visible.map(f => {
+    const storage = buildAllStorages().find(s => s.id === f.storage_id);
+    const acc = canAccessFile(u, f, 'read');
+    return `
+      <div class="file-tile" onclick="showFileDetail(${f.id})">
+        <div class="access-icon">${acc.allowed ? '🔓' : '🔒'}</div>
+        <div class="file-name">${f.name}</div>
+        <div class="file-meta">
+          <span class="badge ${storage.parent === null ? 'parent' : 'child'}">${storage.name}</span><br>
+          ${f.has_tx ? '🎙️ transcrito · ' : ''}${f.leak_target ? '⚠️ leak residual' : ''}<br>
+          <code style="font-size:9px;">${f.path}</code>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  // Highlight: if user has parent + child, show resolveListingTargets behavior
+  const hasParentAndChild = u.assignments[5] && (u.assignments[7] || u.assignments[8] || u.assignments[11]);
+  const parentAccessOnly = u.assignments[5] && !Object.keys(u.assignments).some(k => k != 5);
+  const childrenOnly = !u.assignments[5] && Object.keys(u.assignments).length > 0;
+
+  return `
+    <h3>📁 Vista "Mis Archivos" — qué carpetas y archivos aparecen</h3>
+    <div class="help-box">
+      <strong>¿Qué ve el usuario en el sidebar izquierdo?</strong><br>
+      Solo aparecen los storages donde tiene <code>user_storages</code> con cualquier permiso. La interfaz NO muestra hijos automáticos a partir del padre — el usuario ve el storage padre como entrada única, y al navegar carpetas, el sistema resuelve si hay un sub-storage más específico debajo (<code>resolveListingTargets</code>).
+    </div>
+
+    <div class="stat-row">
+      <div class="stat-card"><div class="label">Storages en sidebar</div><div class="value">${Object.keys(u.assignments).length}</div></div>
+      <div class="stat-card"><div class="label">Archivos en listado</div><div class="value">${visible.length}</div></div>
+      <div class="stat-card green"><div class="label">Descargables</div><div class="value">${visible.filter(f => canAccessFile(u, f, 'read').allowed).length}</div></div>
+      <div class="stat-card"><div class="label">Permite subir?</div><div class="value">${Object.values(u.assignments).some(a => ['write', 'upload', 'full'].includes(a.perm)) ? '✓' : '✗'}</div></div>
+    </div>
+
+    ${parentAccessOnly ? `
+      <div class="help-box" style="background:linear-gradient(135deg,#dbeafe,#bfdbfe);border-left-color:#2563eb;color:#1e3a8a;">
+        <strong>🔍 Caso: solo acceso al padre</strong><br>
+        El sidebar solo muestra <em>00 Discos</em>. Al navegar una carpeta, <code>resolveListingTargets()</code> la cruza con los sub-storages cuyos base_path son prefijo. <strong>RESULTADO</strong>: el usuario ve carpetas-archivo que físicamente pertenecen a RCN, Caracol, Blu — sin que él las tenga asignadas individualmente. Esto <strong>puede confundir al usuario</strong> (no entiende por qué "sus archivos" están en una subcarpeta de un storage que él no conoce).
+      </div>
+    ` : ''}
+
+    ${childrenOnly ? `
+      <div class="help-box" style="background:linear-gradient(135deg,#dcfce7,#bbf7d0);border-left-color:#16a34a;color:#166534;">
+        <strong>🔍 Caso: solo acceso a hijos (sin el padre)</strong><br>
+        El sidebar muestra solo los hijos asignados. Al navegar dentro de un hijo, NO hay inheritance hacia arriba — si hay archivos en el padre con base_path prefijo pero el user no tiene acceso al padre, <strong>no aparecen</strong>. Sin embargo, el fallback de <code>checkFilePermission</code> SÍ le permite descargar archivos del padre si su path cae dentro del hijo (leak residual).
+      </div>
+    ` : ''}
+
+    ${hasParentAndChild ? `
+      <div class="help-box" style="background:linear-gradient(135deg,#fef3c7,#fde68a);border-left-color:#f59e0b;color:#92400e;">
+        <strong>⚠️ Caso: padre + hijo redundante</strong><br>
+        Asignar el hijo cuando ya tiene el padre es <strong>REDUNDANTE</strong> — no le da acceso adicional. Lo único que cambia: el sidebar muestra dos entradas separadas (Padre + Hijo), y el usuario puede elegir desde dónde navegar. Si los permisos son distintos (ej. write en el hijo, read en el padre), el módulo respetará el más alto donde aplique.
+      </div>
+    ` : ''}
+
+    <h3>Archivos visibles para el usuario (clic para detalle)</h3>
+    <div class="file-grid">
+      ${tiles || '<p>No hay archivos visibles para este usuario.</p>'}
+    </div>
+  `;
+}
+
+window.showFileDetail = function(fileId) {
+  const f = state.files.find(f => f.id === fileId);
+  const u = getCurrentUser();
+  const storage = buildAllStorages().find(s => s.id === f.storage_id);
+  const acc = canAccessFile(u, f, 'read');
+  const accWrite = canAccessFile(u, f, 'write');
+  const share = canCreateShare(u, f);
+  const txAccess = canSeeInMisAvisos(u, f);
+  const clip = canEditMedia(u, f);
+
+  const dialog = document.getElementById('dialog');
+  const content = document.getElementById('dialog-content');
+  content.innerHTML = `
+    <h2>${f.name}</h2>
+    <div style="display:flex;gap:8px;margin-bottom:14px;">
+      <span class="badge ${storage.parent === null ? 'parent' : 'child'}">${storage.name}</span>
+      ${f.has_tx ? '<span class="badge tx-on">tx ON</span>' : '<span class="badge tx-off">sin tx</span>'}
+      ${f.leak_target ? `<span class="badge" style="background:#fef3c7;color:#92400e;">leak residual →#${f.leak_target}</span>` : ''}
+    </div>
+
+    <div class="sub-panel">
+      <h4>📍 Identidad física</h4>
+      <div class="code-block"><span class="comment">// Identidad del archivo (storage_providers.base_path + files.path)</span>
+<span class="func">storage_id</span>: ${storage.id}
+<span class="func">storage_name</span>: "${storage.name}"
+<span class="func">base_path</span>: "${BASE_PATHS[storage.id]}"
+<span class="func">files.path</span>: "${f.path}"
+<span class="string">→ absolute_path = "${BASE_PATHS[storage.id]}/${f.path}"</span></div>
+    </div>
+
+    <div class="sub-panel">
+      <h4>🔐 Acceso del usuario (4 chequeos)</h4>
+      <table style="margin-top:6px;">
+        <tr><th>Acción</th><th>Método</th><th>Resultado</th><th>Razón</th></tr>
+        <tr>
+          <td><strong>Ver / Descargar</strong></td>
+          <td><code>checkFilePermission(file, 'read')</code></td>
+          <td>${acc.allowed ? '<span class="result-pill allow">✓ Permitido</span>' : '<span class="result-pill deny">✗ Denegado</span>'}</td>
+          <td><small>${acc.reason}</small></td>
+        </tr>
+        <tr>
+          <td><strong>Renombrar / Borrar</strong></td>
+          <td><code>checkFilePermission(file, 'write')</code></td>
+          <td>${accWrite.allowed ? '<span class="result-pill allow">✓ Permitido</span>' : '<span class="result-pill deny">✗ Denegado</span>'}</td>
+          <td><small>${accWrite.reason}</small></td>
+        </tr>
+        <tr>
+          <td><strong>Crear share link</strong></td>
+          <td><code>canCreateSharesInStorage(file.storage_id)</code></td>
+          <td>${share.allowed ? '<span class="result-pill allow">✓ Permitido</span>' : '<span class="result-pill deny">✗ Denegado</span>'}</td>
+          <td><small>${share.reason}</small></td>
+        </tr>
+        <tr>
+          <td><strong>Aparece en Mis Avisos</strong></td>
+          <td><code>accessibleStorageIds(user)</code></td>
+          <td>${txAccess ? '<span class="result-pill allow">✓ Visible</span>' : '<span class="result-pill deny">✗ Oculto</span>'}</td>
+          <td><small>${txAccess ? 'storage con transcription_access=true' : (f.has_tx ? 'storage sin transcription_access' : 'archivo sin transcripción')}</small></td>
+        </tr>
+        <tr>
+          <td><strong>Recortar (editor)</strong></td>
+          <td><code>canAccessFile + canUseMediaEditor</code></td>
+          <td>${clip.allowed ? '<span class="result-pill allow">✓ OK</span>' : '<span class="result-pill deny">✗ Denegado</span>'}</td>
+          <td><small>${clip.reason}</small></td>
+        </tr>
+      </table>
+    </div>
+
+    ${f.leak_target ? `
+      <div class="help-box">
+        <strong>⚠️ Leak residual — qué pasaría en el self-healing</strong><br>
+        Este archivo tiene <code>storage_provider_id=${f.storage_id}</code> pero su absolute path cae bajo el storage #${f.leak_target} (más específico). La próxima corrida del cron <code>files:repair-delegation-leak</code> lo migrará a #${f.leak_target}. Mientras tanto, el usuario recibe acceso por el <strong>descendant fallback</strong>: el código mira si su absolute_path cae bajo algún descendant al que tiene acceso.
+      </div>
+    ` : ''}
+
+    <div class="sub-panel">
+      <h4>🛠️ Trace del código (simplificado)</h4>
+      <div class="trace">
+<span class="trace-info">// FileController::checkFilePermission()</span>
+<span class="trace-line"><span class="trace-info">if</span> (admin) <span class="trace-ok">return true</span>; <span class="trace-warn">// bypass</span></span>
+<span class="trace-line"><span class="trace-info">if</span> (file.storage_provider_id == ${f.storage_id}) {</span>
+<span class="trace-line">    user.hasStoragePermission(${f.storage_id}, 'read')</span>
+<span class="trace-line ${acc.allowed && acc.via === 'directo' ? 'trace-ok' : ''}">    → ${acc.allowed && acc.via === 'directo' ? 'true (directo)' : 'false'}</span>
+<span class="trace-line">}</span>
+<span class="trace-line"><span class="trace-info">if</span> (!directo) {</span>
+<span class="trace-line">    <span class="trace-warn">// descendant fallback</span></span>
+${buildAllStorages().filter(s => s.parent === f.storage_id).map(sub => {
+  const subHasPathPrefix = f.path && BASE_PATHS[sub.id] && (BASE_PATHS[sub.id] + '/' + f.path).startsWith(BASE_PATHS[sub.id] + '/');
+  const subHasAccess = !!u.assignments[sub.id];
+  return `<span class="trace-line">    <span class="trace-info">foreach descendant of storage ${f.storage_id}</span>:</span>
+<span class="trace-line">        sub #${sub.id} (${sub.name})</span>
+<span class="trace-line ${subHasPathPrefix ? 'trace-ok' : 'trace-no'}">        ${subHasPathPrefix ? '✓' : '✗'} absolute_path cae bajo ${BASE_PATHS[sub.id]}</span>
+<span class="trace-line ${subHasAccess ? 'trace-ok' : 'trace-no'}">        ${subHasAccess ? '✓' : '✗'} user tiene permiso en #${sub.id}</span>
+<span class="trace-line ${subHasAccess && subHasPathPrefix ? 'trace-ok' : ''}">        → ${subHasAccess && subHasPathPrefix ? 'return true (descendant fallback)' : 'sigue probando'}</span>`;
+}).join('\n')}
+<span class="trace-line">}</span>
+<span class="trace-line"><span class="trace-info">if</span> (file.owner_id == user.id) <span class="trace-ok">return true</span>; <span class="trace-warn">// owner</span></span>
+<span class="trace-line ${acc.allowed ? '' : 'trace-no'}">→ ${acc.allowed ? '<span class="trace-ok">return true</span>' : '<span class="trace-no">return false</span>'} <span class="trace-warn">: final deny</span></span>
+      </div>
+    </div>
+
+    <button class="btn" style="margin-top:14px;" onclick="document.getElementById('dialog').style.display='none'">Cerrar</button>
+  `;
+  dialog.style.display = 'flex';
+};
+
+// ------------------------------- SHARE TAB -------------------------------
+function renderShare(u) {
+  const visible = getVisibleFilesForListing(u);
+  const canShares = visible.filter(f => canCreateShare(u, f).allowed);
+  const noShares = visible.filter(f => !canCreateShare(u, f).allowed);
+
+  return `
+    <h3>🔗 Compartir un enlace público a un archivo/carpeta</h3>
+    <div class="help-box">
+      <strong>Cómo funciona (ShareController::store → PublicShareController::show):</strong><br>
+      1. <strong>Crear share</strong>: solo permitido si el user tiene <code>can_create_shares=true</code> en el storage del archivo (validación en <code>ShareController::store</code> línea 111-126).<br>
+      2. <strong>Acceso al share</strong>: una vez creado, el receptor del link accede SIN estar logueado. Solo necesita el token (± password si tiene). <strong>No se valida permisos de storage</strong> en el visitante.<br>
+      3. <strong>Caducidad / trash</strong>: si el archivo del share se mueve a papelera → 410 Gone. Si se borra físicamente o se pierde → 404/410.
+    </div>
+
+    <h3>📤 ¿Qué puede compartir este usuario?</h3>
+    <p style="font-size:12px;color:var(--muted);">${canShares.length} de ${visible.length} archivos visibles. <strong>${canShares.length > 0 ? '✓' : '✗'}</strong></p>
+
+    ${canShares.length > 0 ? `
+      <div class="sub-panel">
+        <h4 style="color:#166534;">✅ Puede compartir estos archivos</h4>
+        <table>
+          <tr><th>Archivo</th><th>Storage</th><th>Link generado</th><th>Permisos del share</th></tr>
+          ${canShares.slice(0, 8).map(f => {
+            const storage = buildAllStorages().find(s => s.id === f.storage_id);
+            const token = 'sh_' + Math.random().toString(36).slice(2, 10);
+            return `<tr>
+              <td>${f.name}</td>
+              <td><span class="badge ${storage.parent === null ? 'parent' : 'child'}">${storage.name}</span></td>
+              <td><code style="font-size:10px;">/s/${token}</code></td>
+              <td><select disabled style="font-size:11px;padding:3px;"><option>read</option><option>write</option><option>upload</option><option>full</option></select></td>
+            </tr>`;
+          }).join('')}
+        </table>
+        ${canShares.length > 8 ? `<p style="font-size:11px;color:var(--muted);">+ ${canShares.length - 8} archivos más</p>` : ''}
+      </div>
+    ` : ''}
+
+    ${noShares.length > 0 ? `
+      <div class="sub-panel">
+        <h4 style="color:#991b1b;">✗ NO puede compartir estos archivos</h4>
+        <table>
+          <tr><th>Archivo</th><th>Storage</th><th>Razón</th></tr>
+          ${noShares.slice(0, 6).map(f => {
+            const storage = buildAllStorages().find(s => s.id === f.storage_id);
+            const asg = u.assignments[f.storage_id];
+            const reason = !asg
+              ? `sin asignación a storage #${f.storage_id}`
+              : (!asg.can_share ? `can_create_shares=false en #${f.storage_id}` : 'permiso insuficiente');
+            return `<tr>
+              <td>${f.name}</td>
+              <td><span class="badge ${storage.parent === null ? 'parent' : 'child'}">${storage.name}</span></td>
+              <td><small style="color:var(--deny);">${reason}</small></td>
+            </tr>`;
+          }).join('')}
+        </table>
+      </div>
+    ` : ''}
+
+    <div class="help-box" style="margin-top:18px;">
+      <strong>🎭 Simulación: el visitante del link recibe un archivo trashado</strong><br>
+      • Si el archivo está en papelera (is_trashed=true): <strong>410 Gone</strong> con mensaje "El archivo fue movido a la papelera por su propietario."<br>
+      • Si el archivo es missing (availability_state='missing'): <strong>404</strong>.<br>
+      • Si el password está mal: <strong>401</strong> con vista "Contraseña incorrecta".<br>
+      • Si el share expiró: <strong>410</strong> con vista "Share has expired".<br>
+      <strong>Importante:</strong> el visitante NO está sujeto al descendant fallback ni a <code>checkFilePermission</code> — el share es totalmente agnóstico al sistema de storages.
+    </div>
+  `;
+}
+
+// ------------------------------- CLIP / RECORTAR TAB -------------------------------
+function renderClip(u) {
+  const visible = getVisibleFilesForListing(u).filter(f => !f.path.endsWith('/'));
+  const clips = visible.filter(f => canEditMedia(u, f).allowed);
+  const noClips = visible.filter(f => !canEditMedia(u, f).allowed);
+
+  return `
+    <h3>✂️ Editor multimedia (MediaClipController)</h3>
+    <div class="help-box">
+      <strong>Requisitos (orden de chequeo):</strong><br>
+      1. <code>canUseMediaEditor()</code>: admin O <code>media_editor_enabled=true</code> (atributo del usuario)<br>
+      2. <code>canAccessFile(user, file)</code>: admin O permiso directo en el storage del archivo O path-based descendant fallback<br>
+      3. <code>!hasReachedClipLimit()</code>: el usuario no debe haber alcanzado <code>media_editor_clip_limit</code> en el mes actual<br>
+      4. <code>can_clip=true</code> en la capability de la transcripción (lo entrega MentionsSearchService si la mención viene de Mis Avisos)
+    </div>
+
+    <div class="stat-row">
+      <div class="stat-card"><div class="label">Editor habilitado</div><div class="value">${u.media_editor_enabled !== false ? '✓' : '✗'}</div></div>
+      <div class="stat-card"><div class="label">Límite mensual</div><div class="value">${u.media_editor_clip_limit || 5}</div></div>
+      <div class="stat-card green"><div class="label">Recortables</div><div class="value">${clips.length}</div></div>
+      <div class="stat-card red"><div class="label">No recortables</div><div class="value">${noClips.length}</div></div>
+    </div>
+
+    ${clips.length > 0 ? `
+      <div class="sub-panel">
+        <h4 style="color:#166534;">✂️ Puede recortar</h4>
+        <table>
+          <tr><th>Archivo</th><th>Storage</th><th>Camino del check</th></tr>
+          ${clips.slice(0, 6).map(f => {
+            const storage = buildAllStorages().find(s => s.id === f.storage_id);
+            const access = canAccessFile(u, f, 'read');
+            return `<tr>
+              <td>${f.name}</td>
+              <td><span class="badge ${storage.parent === null ? 'parent' : 'child'}">${storage.name}</span></td>
+              <td><small>${access.via}</small></td>
+            </tr>`;
+          }).join('')}
+        </table>
+      </div>
+    ` : ''}
+
+    ${noClips.length > 0 ? `
+      <div class="sub-panel">
+        <h4 style="color:#991b1b;">✗ NO puede recortar</h4>
+        <table>
+          <tr><th>Archivo</th><th>Storage</th><th>Razón</th></tr>
+          ${noClips.slice(0, 6).map(f => {
+            const storage = buildAllStorages().find(s => s.id === f.storage_id);
+            const access = canAccessFile(u, f, 'read');
+            return `<tr>
+              <td>${f.name}</td>
+              <td><span class="badge ${storage.parent === null ? 'parent' : 'child'}">${storage.name}</span></td>
+              <td><small style="color:var(--deny);">${access.reason}</small></td>
+            </tr>`;
+          }).join('')}
+        </table>
+      </div>
+    ` : ''}
+
+    <div class="help-box" style="margin-top:18px;">
+      <strong>🔬 Path-based descendant en MediaClipController</strong><br>
+      El chequeo del editor multimedia es más estricto que el de Mis Archivos en un sentido — solo abre acceso si el absolute path del archivo cae bajo el descendant. Si el archivo pertenece al padre y el usuario solo tiene acceso al hijo, se concede el recorte. Si el archivo pertenece al hijo y el usuario solo tiene acceso al padre, NO — porque el chequeo busca hacia abajo, no hacia arriba.<br>
+      <code>canAccessFile()</code> hace: <code>file.storageProvider->children</code> → recorre los hijos del storage del archivo → si user tiene acceso a alguno y el path del archivo cae bajo el base_path del hijo, OK.
+    </div>
+
+    <div class="help-box">
+      <strong>⚠️ Límite mensual compartido con Mis Avisos</strong><br>
+      El cupo de recortes (<code>media_editor_clip_limit</code>) es por usuario GLOBAL, no por storage. Los recortes hechos desde <strong>Mis Avisos</strong> cuentan también (lo verifica el harness <code>harness_mis_avisos_clip_limit.php</code>). Si el usuario llega al límite, recibe HTTP 403 con "Límite mensual alcanzado ({n} cortes/mes)".
+    </div>
+  `;
+}
+
+// ------------------------------- AVISOS TAB -------------------------------
+function renderAvisos(u) {
+  const txAccessIds = Object.entries(u.assignments).filter(([_, a]) => a.tx_access).map(([k]) => parseInt(k));
+  const txFiles = state.files.filter(f => f.has_tx && txAccessIds.includes(f.storage_id));
+  const txNoAccess = state.files.filter(f => f.has_tx && !txAccessIds.includes(f.storage_id));
+
+  return `
+    <h3>📢 Mis Avisos — qué menciones ve este usuario</h3>
+    <div class="help-box">
+      <strong>Diferencia clave con Mis Archivos y el Transcriptor</strong>:<br>
+      Mis Avisos filtra por <code>user_storages.transcription_access = true</code>, <strong>NO por storage_id directo</strong> y <strong>NO por cadena de ancestros</strong> (asimétrico con el Transcriptor que sí mira cadena).<br>
+      Si el usuario tiene <code>transcription_access=true</code> en storage 7 (RCN), ve todas las transcripciones de archivos en storage 7. NO ve transcripciones de archivos en storage 5 (padre) aunque sea ancestor de 7.
+    </div>
+
+    <div class="stat-row">
+      <div class="stat-card blue"><div class="label">Storages con tx-access</div><div class="value">${txAccessIds.length}</div></div>
+      <div class="stat-card green"><div class="label">Archivos visibles</div><div class="value">${txFiles.length}</div></div>
+      <div class="stat-card red"><div class="label">Ocultos (sin tx-access)</div><div class="value">${txNoAccess.length}</div></div>
+      <div class="stat-card"><div class="label">Cap. clip</div><div class="value">${txFiles.filter(f => canAccessFile(u, f, 'read').allowed).length}</div></div>
+    </div>
+
+    ${txFiles.length > 0 ? `
+      <div class="sub-panel">
+        <h4 style="color:#1e40af;">📢 Visibles en Mis Avisos (con transcripción done)</h4>
+        <table>
+          <tr><th>Transcripción (#)</th><th>Archivo</th><th>Storage</th><th>can_clip</th></tr>
+          ${txFiles.map(f => {
+            const storage = buildAllStorages().find(s => s.id === f.storage_id);
+            const clip = canEditMedia(u, f).allowed;
+            return `<tr>
+              <td><code>tx_${f.id}</code></td>
+              <td>${f.name}</td>
+              <td><span class="badge ${storage.parent === null ? 'parent' : 'child'}">${storage.name}</span></td>
+              <td>${clip ? '<span class="result-pill allow">✓ recortar</span>' : '<span class="result-pill warn">solo ver</span>'}</td>
+            </tr>`;
+          }).join('')}
+        </table>
+      </div>
+    ` : ''}
+
+    ${txNoAccess.length > 0 ? `
+      <div class="sub-panel">
+        <h4 style="color:#991b1b;">🚫 Ocultos (el archivo tiene transcripción pero el user no tiene tx-access)</h4>
+        <table>
+          <tr><th>Archivo</th><th>Storage</th><th>Por qué?</th></tr>
+          ${txNoAccess.map(f => {
+            const storage = buildAllStorages().find(s => s.id === f.storage_id);
+            const asg = u.assignments[f.storage_id];
+            return `<tr>
+              <td>${f.name}</td>
+              <td><span class="badge ${storage.parent === null ? 'parent' : 'child'}">${storage.name}</span></td>
+              <td><small>${asg ? 'tx_access=false' : 'sin asignación al storage'}</small></td>
+            </tr>`;
+          }).join('')}
+        </table>
+      </div>
+    ` : ''}
+
+    <div class="help-box" style="margin-top:14px;">
+      <strong>🧮 Algoritmo (MentionsSearchService):</strong><br>
+      <code>accessibleStorageIds(user)</code> → SELECT storage_provider_id FROM user_storages WHERE user_id=X AND transcription_access=true<br>
+      Luego:<br>
+      <code>visibleHitsQuery(user)</code> hace JOIN files INNER JOIN transcriptions y filtra <code>WHERE files.storage_provider_id IN (storageIds)</code><br>
+      <strong>Consecuencia:</strong> aunque el transcriptor detecte el archivo como "target" por la cadena, Mis Avisos <strong>NO LO MUESTRA</strong> si el user no tiene acceso explícito al storage concreto. Es por diseño: la UI no debe filtrar archivos que el operador no ha autorizado.
+    </div>
+  `;
+}
+
+// ------------------------------- CASES TAB -------------------------------
+function renderCases() {
+  const u = getCurrentUser();
+  return `
+    <h3>📚 Casos guiados — emula el comportamiento real y obtén explicación en español</h3>
+    <div class="help-box">
+      <strong>Cómo usar esta sección:</strong>
+      <ol style="margin:6px 0 0;padding-left:20px;line-height:1.7;">
+        <li>Selecciona un caso de la lista (auto-cambia el usuario).</li>
+        <li>Lee la <strong>explicación paso a paso</strong> abajo: describe literalmente lo que hace el código de Tcloud.</li>
+        <li>Compara con las <strong>estadísticas</strong> de arriba (visibles / con acceso / compartibles) y la <strong>tabla de archivos</strong> en "Vista general".</li>
+        <li>Si un caso requiere acción destructiva, ve a la pestaña "Borrar storage" y ejecútala; los escenarios 9 y 10 lo sugieren.</li>
+      </ol>
+    </div>
+
+    <div class="card-grid">
+      ${SCENARIOS.map((s, idx) => `
+        <div class="sub-panel" style="cursor:pointer;${state.activeCaseId === s.id ? 'border-color:var(--accent);box-shadow:0 0 0 2px rgba(79,70,229,0.2);' : ''}" onclick="runCase('${s.id}')">
+          <h4 style="margin:0 0 6px;color:var(--accent);">${s.title}</h4>
+          <p style="font-size:11px;color:var(--muted);margin:0 0 6px;">👤 ${(PRESET_USERS.find(u => u.id === s.user) || {name:s.user}).name}</p>
+          <p style="font-size:12px;margin:0;">${s.summary}</p>
+          <button class="btn ghost" style="margin-top:8px;font-size:11px;padding:5px 10px;">▶ Ejecutar y explicar</button>
+        </div>
+      `).join('')}
+    </div>
+
+    <div id="case-explanation" style="margin-top:18px;">
+      ${state.activeCaseId ? renderCaseExplanation(SCENARIOS.find(s => s.id === state.activeCaseId)) : `
+        <div class="help-box" style="background:linear-gradient(135deg,#eef2ff,#e0e7ff);border-left-color:var(--accent);color:#1e1b4b;">
+          <strong>👆 Selecciona un caso arriba para ver la explicación detallada.</strong>
+        </div>
+      `}
+    </div>
+  `;
+}
+
+function renderCaseExplanation(scenario) {
+  if (!scenario) return '<p>Caso no encontrado.</p>';
+  const u = getUsers().find(u => u.id === scenario.user);
+  if (!u) return '<p>Usuario del caso no encontrado.</p>';
+
+  const visible = getVisibleFilesForListing(u);
+  const accessByFile = visible.map(f => ({ f, acc: canAccessFile(u, f, 'read'), share: canCreateShare(u, f), clip: canEditMedia(u, f) }));
+  const withAccess = accessByFile.filter(x => x.acc.allowed);
+  const noAccess = accessByFile.filter(x => !x.acc.allowed);
+
+  return `
+    <div class="sub-panel" style="border-left:4px solid var(--accent);">
+      <h3 style="margin:0 0 8px;color:var(--accent);">▶ ${scenario.title}</h3>
+      <p style="margin:0 0 4px;"><strong>👤 Usuario:</strong> <code>${u.name}</code> (${u.role})</p>
+      <p style="margin:0 0 4px;"><strong>📂 Storages asignados:</strong> ${Object.keys(u.assignments).length === 0 ? '<em>ninguno</em>' : Object.keys(u.assignments).map(k => `#${k} (${buildAllStorages().find(s=>s.id==k)?.name})`).join(', ')}</p>
+      <p style="margin:0;color:var(--muted);">${scenario.summary}</p>
+    </div>
+
+    <div class="sub-panel">
+      <h4>📊 Resultado empírico (con este usuario)</h4>
+      <div class="stat-row">
+        <div class="stat-card blue"><div class="label">Archivos visibles</div><div class="value">${visible.length}</div></div>
+        <div class="stat-card green"><div class="label">Con acceso</div><div class="value">${withAccess.length}</div></div>
+        <div class="stat-card red"><div class="label">Sin acceso</div><div class="value">${noAccess.length}</div></div>
+        <div class="stat-card"><div class="label">Compartibles</div><div class="value">${accessByFile.filter(x => x.share.allowed).length}</div></div>
+      </div>
+      ${visible.length > 0 ? `
+        <table style="margin-top:8px;">
+          <tr><th>Archivo</th><th>Storage</th><th>Acceso</th><th>Compartir</th><th>Recortar</th></tr>
+          ${accessByFile.slice(0, 15).map(({f, acc, share, clip}) => {
+            const storage = buildAllStorages().find(s => s.id === f.storage_id);
+            return `<tr>
+              <td>${f.name}</td>
+              <td><span class="badge ${storage.parent === null ? 'parent' : 'child'}">${storage.name}</span></td>
+              <td>${acc.allowed ? '<span class="result-pill allow">✓ ' + acc.via + '</span>' : '<span class="result-pill deny">✗</span>'}</td>
+              <td>${share.allowed ? '<span class="result-pill allow">✓</span>' : '<span class="result-pill deny">✗</span>'}</td>
+              <td>${clip.allowed ? '<span class="result-pill allow">✓</span>' : '<span class="result-pill deny">✗</span>'}</td>
+            </tr>`;
+          }).join('')}
+        </table>
+      ` : '<p style="font-size:12px;color:var(--muted);">El listado está vacío para este usuario.</p>'}
+    </div>
+
+    <div class="sub-panel" style="background:linear-gradient(135deg,#fefce8,#fef9c3);border-left:4px solid #ca8a04;">
+      <h4 style="color:#854d0e;">🧠 Explicación paso a paso (lo que hace el código real)</h4>
+      <ol style="margin:6px 0 0;padding-left:20px;font-size:12px;line-height:1.8;">
+        ${scenario.explanation.map(line => `<li style="margin-bottom:6px;">${line}</li>`).join('')}
+      </ol>
+    </div>
+
+    <div class="sub-panel">
+      <h4>🛠️ Trace del código (cada check ejecutado)</h4>
+      <div class="trace">
+${buildCaseTrace(scenario, u)}
+      </div>
+    </div>
+  `;
+}
+
+function buildCaseTrace(scenario, u) {
+  if (scenario.id === 'delegation_leak') {
+    const f = state.files.find(f => f.id === scenario.file);
+    return `<span class="trace-info">// Caso 7: leak residual</span>
+<span class="trace-line">user = ${u.name}, file = ${f.name}, file.storage_id = ${f.storage_id}, path = "${f.path}"</span>
+<span class="trace-line"></span>
+<span class="trace-line"><span class="trace-info">check 1</span>: user.role === 'admin'? <span class="trace-no">no</span></span>
+<span class="trace-line"><span class="trace-info">check 2</span>: user_storages[${f.storage_id}] existe?</span>
+<span class="trace-line">  → user solo tiene user_storages[7] <span class="trace-no">→ false</span></span>
+<span class="trace-line"><span class="trace-info">check 3</span>: descendant fallback</span>
+<span class="trace-line">  absolute_path = "${BASE_PATHS[f.storage_id]}/${f.path}"</span>
+<span class="trace-line">  hijos de storage ${f.storage_id}: ninguno (storage 5 es ROOT, no tiene hijos) <span class="trace-warn">→ no aplica aquí</span></span>
+<span class="trace-line">  PERO si el file hubiera estado en un storage con hijos, miraría cada uno.</span>
+<span class="trace-line">  En este caso concreto: file está en storage 5, absolute_path cae bajo /mnt/discos/RCN → storage 7</span>
+<span class="trace-line">  ¿user tiene acceso a #7? <span class="trace-ok">sí (cliente_una_emisora con assignment[7]=read)</span></span>
+<span class="trace-line">  → <span class="trace-ok">return true</span> (descendant fallback desde el path, no desde el storage del file)</span>
+<span class="trace-line"></span>
+<span class="trace-line"><span class="trace-warn">⚠️ Detalle sutil:</span> el descendant fallback se aplica desde el storage del FILE, no del padre.</span>
+<span class="trace-line">Aquí file.storage_id = 5 (que NO tiene hijos). El código real busca los hijos del storage del file.</span>
+<span class="trace-line">El simulador lo modela mirando todos los sub-storages cuyo base_path es prefijo del absolute_path — eso es la REGLA EFECTIVA.</span>
+<span class="trace-line"></span>
+<span class="trace-line"><span class="trace-info">RESULTADO</span>: el archivo ES descargable aunque NO aparece en el listado.</span>
+<span class="trace-line">Esto es el bug "veo en la lista pero no puedo descargar" en sentido inverso (no lo veo, pero sí lo descargo).</span>`;
+  }
+  if (scenario.id === 'admin_bypass') {
+    return `<span class="trace-info">// Cada método retorna en la primera línea</span>
+<span class="trace-line"><span class="trace-info">hasStoragePermission(user, storageId, perm)</span></span>
+<span class="trace-line">  if (user.role === 'admin') <span class="trace-ok">return {allowed:true, reason:"admin bypass"}</span>;</span>
+<span class="trace-line"></span>
+<span class="trace-line"><span class="trace-info">canAccessFile(user, file, perm)</span></span>
+<span class="trace-line">  if (user.role === 'admin') <span class="trace-ok">return {allowed:true, via:"admin"}</span>;</span>
+<span class="trace-line"></span>
+<span class="trace-line"><span class="trace-info">canCreateShare(user, file)</span></span>
+<span class="trace-line">  if (user.role === 'admin') <span class="trace-ok">return {allowed:true, reason:"admin bypass"}</span>;</span>
+<span class="trace-line"></span>
+<span class="trace-line"><span class="trace-info">canEditMedia(user, file)</span></span>
+<span class="trace-line">  if (user.role === 'admin') <span class="trace-ok">return {allowed:true, reason:"admin bypass"}</span>;</span>
+<span class="trace-line"></span>
+<span class="trace-line"><span class="trace-info">canSeeInMisAvisos(user, file)</span></span>
+<span class="trace-line">  if (user.role === 'admin') <span class="trace-ok">return true</span>;</span>
+<span class="trace-line"></span>
+<span class="trace-line"><span class="trace-ok">Ningún check adicional se ejecuta.</span></span>
+<span class="trace-line"><span class="trace-ok">Admin ve TODO, comparte TODO, recorta TODO, ve TODAS las menciones.</span></span>`;
+  }
+  if (scenario.id === 'topado_mes') {
+    return `<span class="trace-info">// Caso 6: límite mensual</span>
+<span class="trace-line">User::hasReachedClipLimit():</span>
+<span class="trace-line">  count = SELECT COUNT(*) FROM media_edit_jobs</span>
+<span class="trace-line">          WHERE user_id = ${u.id} AND status = 'done'</span>
+<span class="trace-line">            AND created_at >= BogotaTime::todayStart()->startOfMonth();</span>
+<span class="trace-line">  limit = ${u.media_editor_clip_limit || 5}</span>
+<span class="trace-line">  count = ${u.clips_this_month || 0}, limit = ${u.media_editor_clip_limit || 5}</span>
+<span class="trace-line">  → <span class="trace-no">${u.clips_this_month >= (u.media_editor_clip_limit || 5) ? 'hasReached = true' : 'hasReached = false'}</span></span>
+<span class="trace-line"></span>
+<span class="trace-line"><span class="trace-info">canEditMedia(user, file)</span></span>
+<span class="trace-line">  1. canUseMediaEditor() → media_editor_enabled=true? <span class="trace-ok">sí</span> → pasa</span>
+<span class="trace-line">  2. canAccessFile(user, file, "read") → tiene acceso? <span class="trace-ok">sí</span> → pasa</span>
+<span class="trace-line">  3. !hasReachedClipLimit() → <span class="trace-no">false</span> → DENEGADO</span>
+<span class="trace-line">  → <span class="trace-no">return {allowed:false, reason:"límite mensual alcanzado"}</span></span>
+<span class="trace-line"></span>
+<span class="trace-line"><span class="trace-info">POST /media/clip</span> → <span class="trace-no">HTTP 403</span> "Límite mensual alcanzado (5 cortes/mes)"</span>`;
+  }
+  // Trace genérico para los demás casos
+  const visible = getVisibleFilesForListing(u);
+  return `<span class="trace-info">// Caso: ${scenario.id}</span>
+<span class="trace-line">user = ${u.name}</span>
+<span class="trace-line">assignments = ${JSON.stringify(u.assignments)}</span>
+<span class="trace-line">archivos visibles (FileController::index, filtro storage_id) = ${visible.length}</span>
+<span class="trace-line"></span>
+<span class="trace-line"><span class="trace-info">Archivos analizados (canAccessFile "read"):</span></span>
+${visible.slice(0, 8).map(f => {
+  const acc = canAccessFile(u, f, 'read');
+  return `<span class="trace-line">  ${f.name} (storage_id=${f.storage_id}): <span class="${acc.allowed ? 'trace-ok' : 'trace-no'}">${acc.allowed ? '✓ ' + acc.via : '✗ ' + acc.reason}</span></span>`;
+}).join('\n')}
+<span class="trace-line"></span>
+<span class="trace-line">Lee la explicación arriba para entender cada decisión.</span>`;
+}
+
+window.runCase = function(id) {
+  const scenario = SCENARIOS.find(s => s.id === id);
+  if (!scenario) return;
+  state.currentUserId = scenario.user;
+  state.activeCaseId = id;
+  currentTab = 'cases';
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === 'cases'));
+  render();
+  // Resaltar el caso en el sidebar
+  setTimeout(() => {
+    const el = document.getElementById('case-explanation');
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, 100);
+};
+
+// ------------------------------- DELETE TAB -------------------------------
+function renderDelete(u) {
+  const scenarios = [];
+
+  // Scenario 1: Delete parent with user having only parent
+  if (u.assignments[5]) {
+    scenarios.push({
+      title: 'Borrar storage PADRE (usuario solo tiene el padre)',
+      actions: [
+        'ON DELETE CASCADE en files.storage_provider_id → <strong>todos los archivos del padre se BORRAN</strong>',
+        'ON DELETE CASCADE en user_storages.storage_provider_id → <strong>se borra la asignación</strong> al padre',
+        'ON DELETE SET NULL en storage_providers.parent_storage_id → los HIJOS quedan con parent_storage_id = NULL (huérfanos)',
+        'ON DELETE CASCADE en shares (vía files) → <strong>todos los shares del padre desaparecen</strong>',
+        'Transcripciones (source_absolute_path): <strong>SOBREVIVEN</strong> porque no hay FK desde transcription a storage_provider. Las que tenían file_id, ese campo queda NULL.',
+        'media_edit_jobs.source_file_id → <strong>SE PIERDEN</strong> (FK CASCADE)',
+      ],
+      pre: () => {
+        const accFiles = state.files.filter(f => f.storage_id === 5).length;
+        return `Antes: ${accFiles} archivos del padre en BD.`;
+      },
+      post: () => 'Después: archivos borrados. Hijos intactos pero huérfanos de jerarquía. User sin acceso a nada.',
+    });
+  }
+
+  // Scenario 2: Delete parent with user having only children
+  if (!u.assignments[5] && Object.keys(u.assignments).some(k => k != 5)) {
+    scenarios.push({
+      title: 'Borrar storage PADRE (usuario solo tiene hijos)',
+      actions: [
+        'Los archivos DEL PADRE se borran por CASCADE — el usuario NO los veía igual, así que no hay cambio visible.',
+        'Su <code>user_storages</code> para el padre NO existía, así que no se pierde nada de su permiso.',
+        'Los HIJOS sobreviven y el user sigue accediendo sin problemas.',
+        'PERO: si los children tenían <code>transcription_enabled</code> por la cadena, ahora quedan "más solos". El scope de transcripción se reduce al hijo solo.',
+      ],
+      pre: () => `User con acceso a ${Object.keys(u.assignments).length} hijos.`,
+      post: () => 'El usuario sigue accediendo a sus hijos normalmente. La pérdida es operativa, no de permisos.',
+    });
+  }
+
+  // Scenario 3: Delete child
+  if (Object.keys(u.assignments).some(k => k != 5)) {
+    scenarios.push({
+      title: 'Borrar storage HIJO (caso típico)',
+      actions: [
+        '<code>files.storage_provider_id IN (children_ids)</code> → todos los archivos físicos de ese hijo se BORRAN en BD.',
+        'El disco <strong>NO se toca</strong> (el controller destroy no hace rm -rf). Los archivos en /mnt/discos/RCN siguen existiendo hasta que el sync los reprocese.',
+        '<code>shares</code> con archivos del hijo → borrados (CASCADE). Tokens quedan inactivos.',
+        'Transcripciones con file_id del hijo: sobreviven pero file_id queda NULL. source_absolute_path intacto.',
+        'Si era un storage hijo <strong>delegado</strong> (su base_path es prefijo del padre): la siguiente sync del padre intentará RECREAR las filas de files, pero ahora serán huérfanas.',
+      ],
+      pre: () => `User tiene asignaciones a ${Object.keys(u.assignments).filter(k => k != 5).length} hijos.`,
+      post: () => 'Si el user pierde el hijo pero tiene el padre, ve los archivos del padre otra vez (menos los huérfanos).',
+    });
+  }
+
+  // Scenario 4: Delete + recreate
+  scenarios.push({
+    title: 'Borrar + RECREAR storage (mismo base_path)',
+    actions: [
+      'El controller store valida con <code>findByNormalizedPath</code>: si el path existe en BD, devuelve <strong>409 Conflict</strong>.',
+      'Pero como borramos la fila anterior, el path ya NO existe → se crea con un <strong>nuevo ID</strong> y mismo base_path.',
+      'Los children que tenían parent_storage_id apuntando al viejo <strong>NO se re-vinculan automáticamente</strong>. El método <code>recomputeParent</code> solo se invoca para el storage guardado, no para sus hermanos.',
+      '<strong>BUG OPERATIVO:</strong> hoy no existe comando de recompute masivo. El operador debe editar cada child manualmente o ejecutar un comando nuevo.',
+    ],
+    pre: () => 'No aplica.',
+    post: () => 'Storage recreado con nuevo ID. Hijos huérfanos hasta intervención manual.',
+  });
+
+  // Render scenarios
+  return `
+    <h3>🗑️ Simulación: borrar y recrear storages</h3>
+    <p style="font-size:12px;color:var(--muted);">Usa los botones del panel izquierdo para ejecutar las acciones. La tabla de arriba y las estadísticas se recalculan en vivo.</p>
+
+    <div class="help-box" style="margin-bottom:18px;">
+      <strong>Cascadas de FK (verificadas en migraciones 2026_05_13_000001):</strong><br>
+      • <code>files.storage_provider_id</code> ON DELETE CASCADE<br>
+      • <code>files.parent_id</code> ON DELETE CASCADE (self)<br>
+      • <code>user_storages.storage_provider_id</code> ON DELETE CASCADE<br>
+      • <code>shares.file_id</code> ON DELETE CASCADE<br>
+      • <code>share_access_log.share_id</code> ON DELETE CASCADE<br>
+      • <code>storage_providers.parent_storage_id</code> ON DELETE SET NULL<br>
+      • <code>transcriptions.file_id</code> ON DELETE SET NULL<br>
+      • <code>media_edit_jobs.source_file_id</code> ON DELETE CASCADE<br>
+      <strong>NO HAY FK inversa</strong>: storages no apunta a files, ni a transcriptions. Storage es soberano.
+    </div>
+
+    ${scenarios.map((s, i) => `
+      <div class="sub-panel">
+        <h4>${s.title}</h4>
+        <ol style="margin:0;padding-left:20px;font-size:12px;line-height:1.7;">
+          ${s.actions.map(a => `<li>${a}</li>`).join('')}
+        </ol>
+      </div>
+    `).join('')}
+
+    <div class="help-box">
+      <strong>🔑 Caso especial: archivos que sobreviven vs. los que no</strong><br>
+      Después de borrar un storage:<br>
+      • <strong>Shares</strong> a archivos de ese storage → <strong>404</strong> cuando alguien visita el link (token existe pero file borrado por CASCADE).<br>
+      • <strong>Transcripciones</strong> con source_absolute_path registrado → siguen VIVAS. Se pueden buscar por el visor si el path original no fue modificado.<br>
+      • <strong>Menciones</strong> en Mis Avisos → si el archivo tenía tx_access en algún storage que sobrevive, la mención aparece "huérfana" (el link /files/{id} da 404).<br>
+      • <strong>Historial de clips</strong> en MediaEditJobs → <strong>se pierde</strong> (FK CASCADE). Si el operador quiere histórico, debe archivar antes de borrar.
+    </div>
+
+    <div class="help-box" style="background:linear-gradient(135deg,#fee2e2,#fecaca);border-left-color:#dc2626;">
+      <strong>⚠️ Recomendación para eliminar storages en producción</strong>:<br>
+      1. Hacer backup de la tabla <code>transcriptions</code> (WHERE storage_id IN (...)) antes.<br>
+      2. Auditar los shares activos (<code>SELECT * FROM shares WHERE file_id IN (SELECT id FROM files WHERE storage_provider_id IN (...))</code>) y notificar a los destinatarios.<br>
+      3. Si es un padre con hijos, NO borrar: poner <code>enabled=false</code> es reversible; el borrado rompe la jerarquía.<br>
+      4. Si tienes que borrarlo, primero re-vincula los children a otro padre (edita cada child con <code>parent_storage_id</code> explícito) o déjalos como root.<br>
+      5. Después del borrado, espera 24h y verifica que ningún worker quedó en estado inconsistente.
+    </div>
+  `;
+}
+
+// Initialize
+render();
+</script>
+
+</body>
+</html>

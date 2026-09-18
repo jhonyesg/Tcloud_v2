@@ -84,7 +84,7 @@ class FolderListingService
      * Devuelve el set de `files.id` que representan esta identidad de folder.
      *
      * Dos mecanismos:
-     *  1. **Mirror identity** (PR 1): canonical_id + IDs de rows con `merged_into_id`
+     *  1. **Mirror identity** (PR 1): canonical_id + IDs de rows con `canonical_folder_id`
      *     apuntando al canonical. Funciona para mirrors explícitamente vinculados.
      *  2. **Physical-path equivalence** (este fix): cualquier row folder con el MISMO
      *     `physical_path_normalized` (= base_path_snapshot + path). Funciona para
@@ -103,16 +103,16 @@ class FolderListingService
         $ids = [];
 
         // 1) Mirror identity: canonical + mirrors vinculados.
-        $canonical = $folder->isMirror()
-            ? File::find($folder->merged_into_id)
+        $canonical = $folder->isFolderMirror()
+            ? File::find($folder->canonical_folder_id)
             : $folder;
 
         if ($canonical) {
             $ids[] = $canonical->id;
         }
 
-        $mirrorIds = File::where('merged_into_id', $folder->id)
-            ->orWhere('merged_into_id', $canonical?->id)
+        $mirrorIds = File::where('canonical_folder_id', $folder->id)
+            ->orWhere('canonical_folder_id', $canonical?->id)
             ->pluck('id')
             ->all();
 

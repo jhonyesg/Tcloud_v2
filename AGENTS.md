@@ -116,6 +116,39 @@ redis-cli -a 'Clouding2026!Redis' -n 2 --scan --pattern 'tcloud_tcloud_cache_*' 
 - **Tests**: ver `phpunit.xml`. Tests de integración usan el harness
   `tests/harness_*.php` que ejecuta contra PostgreSQL y Redis reales.
 
+## Schema clarity policy
+
+Dos tablas distintas usando el mismo nombre de columna para conceptos
+diferentes es **clarity debt**. Se resuelve vía rename, no vía documentación.
+
+Contrato formal: ver `openspec/specs/schema-clarity-rename-policy/spec.md`.
+
+**Reglas operativas** (resumen):
+
+- **Mismo nombre en tablas distintas SOLO permitido cuando el concepto es el
+  mismo** (`id`, `created_at`, `updated_at`, `name`, `path`). Si dos tablas
+  tienen FKs distintas con el mismo nombre de columna, renombrar.
+- **Audit-log `action` values son inmunes al rename**: `link_mirror`,
+  `unlink_mirror`, `repoint_share`, etc. describen la operación conceptual,
+  no la columna. No se renombran aunque cambie el nombre de la columna.
+- **Deprecated helpers conservan nombre viejo por 1 ciclo de release**:
+  `File::isMirror()` y `File::canonical()` siguen existiendo como proxies
+  de `File::isFolderMirror()` / `File::canonicalFolder()` hasta que todos los
+  call sites se actualicen. Mismo patrón para `StorageProvider::isMerged()`
+  → `StorageProvider::isDuplicate()`.
+- **Cualquier propuesta de columna nueva debe incluir grep de blast radius**
+  (archivos, migrations, harnesses) en el `proposal.md`. Sin audit previo
+  no se aprueba el PR.
+- **Cada rename entrega**: una migration reversible atómica (BEGIN/COMMIT,
+  renombra columna + FK constraint + índice), `down()` que restaura los
+  nombres viejos, y todos los call sites actualizados en el mismo commit.
+  No hay ventana de convivencia de nombres.
+
+**Reglas operativas para columnas ambiguas**: `storage_providers.type` (legacy)
+se conserva deprecado mientras exista `kind` (canónico) — la eliminación total
+queda en un PR posterior una vez confirmado que `type='s3' | kind='local'` (1 fila
+divergente) se resuelve manualmente. Migración no-breaking.
+
 ## Harnesses de regresión (`tests/harness_*.php`)
 
 Suite de scripts PHP ejecutables directamente contra PostgreSQL/Redis
@@ -138,6 +171,9 @@ sin levantar el stack completo. Patrón común:
 | `harness_storage_sync_is_file_linked.php` | `fix-storage-sync-missing-db-facade-import` | Regresión: facade `DB` resuelve a `Illuminate\Support\Facades\DB` (no `App\Services\DB`); `syncFolderWithReport()` end-to-end sin 500. |
 | `harness_mis_avisos_clip_limit.php` | `verify-mis-avisos-clip-counts-toward-editor-limit` | **Cupo mensual del editor de medios**: clips desde Mis Avisos cuentan en `mediaEditorClipsThisMonth()`; al alcanzar `media_editor_clip_limit` el endpoint responde **HTTP 403** ("Límite mensual alcanzado..."). Previews, jobs `status='failed'`, admin y `limit=0` NO cuentan. |
 | `harness_dashboard_partials.php` | `dashboard-modular-partials` | **Contrato de partials auto-gated del dashboard**: 22 aserciones sobre gating (no renderiza cuando flag=false), shape por contexto (admin/client), privacidad (cliente NO incluye `hits_`/`audit_`/`drift_*`), separación de contexto (`bg-jobs-active` solo admin), y presencia de selectores `data-dashboard-partial="..."` para tours. |
+| `harness_merged_into_rename_compat.php` | `schema-clarity-rename-merged-into` | Compatibilidad post-rename de columnas: `files.canonical_folder_id` y `storage_providers.duplicate_of_storage_id` con sus FK/índices renombrados; helpers `isFolderMirror()`/`isDuplicate()` y sus aliases deprecados `isMirror()`/`isMerged()`/`canonical()`; queries Eloquent directas con los nombres nuevos. |
+| `harness_merged_into_create_edit_delete.php` | `schema-clarity-rename-merged-into` | **E2E de los flujos create/edit/delete** que tocan estas columnas: storage `findByNormalizedPath` + `storages:merge-duplicates --apply` + un-merge via update; files `repair-folder-mirrors --apply` + idempotencia + `link()`/`unlink()`; share create canónica sobre mirror + `repair-mirror-targets --apply --include-duplicates`; queries `whereNull(duplicate_of_storage_id)` y `resolveInheritedTranscriptionScope()` con el nombre nuevo. |
+| `harness_modules_rename_audit.php` | `schema-clarity-rename-merged-into` | **Auditoría módulo-por-módulo** (10 módulos, 36 aserciones): Mis Archivos, Shares, Admin Storages, Mis Avisos, API Transcriptor, Media Editor, Dashboard, Papelera, Canal/Grabador, Cross-Module (observers + casts). Cada módulo valida su operación crítica con los nombres nuevos y reporta PASS/FAIL por sección. |
 
 ### Runbook: `harness_mis_avisos_clip_limit.php`
 
@@ -1269,3 +1305,268 @@ Ver `design.md` del change para el algoritmo exacto.
 
 Para escalar a otros usuarios del sistema operativo, mover a `/etc/psqlrc`
 o crear `/etc/profile.d/psql.sh` que lo copie al home de cada usuario.
+
+## Frontera Mis Archivos ↔ API Transcriptor (`transcriptor-physical-file-identity`, 2026-09-16)
+
+**Regla de oro**: Mis Archivos **escanea y escribe** `files`; API Transcriptor
+**consulta y no escribe** `files`. Toda la independencia de los dos módulos se
+sostiene sobre esta frontera.
+
+### Qué puede y qué no puede hacer cada módulo
+
+| | Mis Archivos | API Transcriptor |
+|---|---|---|
+| Escanea el filesystem | **sí** (`storage:sync`, botón Actualizar) | **no** |
+| Escribe `files` | **sí** (único escritor) | **no, jamás** |
+| Crea carpetas en `files` | sí, al indexar | **no** |
+| Escribe `transcriptions` | no | **sí** (único escritor) |
+| Lee `transcription_enabled` para pertenencia | **no** | sí (elegibilidad) |
+
+### Las dos preguntas que NO se deben mezclar
+
+```php
+// ¿DE QUIÉN ES la fila?  -> geometría pura, sin mirar tx
+$owner = $hierarchy->resolveGeometricOwner($absolutePath);   // Mis Archivos
+
+// ¿QUIÉN PUEDE PROCESARLA? -> cadena de ancestros + tx
+$owner = $hierarchy->ownerOf($absolutePath);                 // Transcriptor
+```
+
+Mezclarlas fue el origen del acoplamiento: `StorageSyncService` filtraba por
+`transcriptionEnabled()` para decidir dueño, así que **apagar la transcripción
+de un storage hijo cambiaba dónde Mis Archivos asignaba archivos** y producía
+cientos de miles de filas duplicadas.
+
+### Elegibilidad por CADENA, no por el storage de la fila
+
+El panel "Pendientes de hoy", el estimador y el descubrimiento determinan si un
+archivo es target de transcripción por la **cadena de ancestros de su ruta**
+(`EXISTS ancestro con tx=true`), **nunca** por `files.storage_provider_id`.
+Medición 2026-09-16: filtrar por fila perdía **9.074 archivos de hoy** (28.530
+elegibles por cadena vs 19.456 por fila, casi todos de `00 Discos`, tx=false,
+bajo ancestros habilitados).
+
+### Identidad física del archivo
+
+- `transcriptions.source_absolute_path` (UNIQUE) es el identificador del
+  pipeline. Un archivo físico → **una** transcripción, aunque `files` tenga N
+  filas (una por gestor).
+- `transcriptions.file_id` es nullable con FK `ON DELETE SET NULL`: borrar en
+  Mis Archivos **no** destruye el resultado transcrito.
+- Los reintentos (`--include-failed`, `--include-done`) **reusan** la fila; no
+  crean otra.
+
+### Jerarquía persistida
+
+`storage_providers.parent_storage_id` es la fuente única del parentesco (ya no
+se deduce por `LIKE` de `base_path`). Rutas normalizadas **idénticas** son
+**nodos equivalentes** (mismo nodo físico, dos gestores): no se enlazan
+padre/hijo ni se fusionan.
+
+**Invalidación obligatoria**: quien cambie `transcription_enabled` o
+`base_path` DEBE llamar `StorageHierarchyService::forgetAll()` (toggle) o
+`forget($id)` + `recomputeParent($storage)` (base_path). Sin eso, la cache de
+60 s deja el dueño efectivo stale.
+
+**Un solo escritor de la bandera**: `transcription_enabled` se escribe
+únicamente en `ApiTranscriptorController::toggleStorage`. Ningún otro módulo
+la modifica (Avisos y Correcciones la leen).
+
+### Comandos
+
+```bash
+# Reconciliar identidades físicas (auditable, dry-run por defecto)
+cd app && php artisan transcription:reconcile-physical-identities           # dry-run
+cd app && php artisan transcription:reconcile-physical-identities --apply   # aplicar
+
+# Verificar invariantes
+PGPASSWORD=cloud123 psql -h 127.0.0.1 -U cloud -d tcloudstorage -c "
+SELECT count(*) FILTER (WHERE source_absolute_path IS NULL) AS sin_ruta,
+  (SELECT count(*) FROM (SELECT source_absolute_path FROM transcriptions
+     WHERE source_absolute_path IS NOT NULL GROUP BY 1 HAVING count(*)>1) x) AS duplicados
+FROM transcriptions;"
+# Ambas deben ser 0.
+```
+
+**Harness**: `cd app && php tests/harness_transcriptor_physical_identity.php`
+(27 aserciones sobre jerarquía, nodos equivalentes, dueño efectivo vs
+geométrico, elegibilidad por cadena, frontera de escritura, identidad física y
+CASCADE roto).
+
+### Rollback
+
+```bash
+git revert <commit-hash>
+php artisan migrate:rollback --step=3   # drop parent_storage_id, source_absolute_path, FK
+systemctl restart 'tcloud-transcription-*'
+```
+
+`parent_storage_id` y `source_absolute_path` son nullable y aditivas. El
+`down()` de la FK `SET NULL` **aborta** si quedaron transcripciones con
+`file_id IS NULL` (archivos borrados): hay que resolverlas antes.
+
+## Folder identity canónica para shares (`files-physical-folder-identity` + `share-folder-canonical-wiring`)
+
+### El problema
+
+Folder shares de Mis Archivos aparecían vacíos en el 51% de los casos (36 de 70 al spike del 2026-09-17) cuando el operador seleccionaba una carpeta del storage padre que existía también como mirror vacío en el sub-storage más específico. Caso origen: share `ffbaedfcfe6cfe28e7421eccc398c10e` sobre carpeta 7244491 (storage 5 "00 Discos") mostraba 0 archivos aunque los 35 MP4 vivían en folder 7244379 (storage 7 "02 RCN Tv").
+
+### Cómo está resuelto hoy (2026-09-17)
+
+**Modelo de datos** (PR 1, change `files-physical-folder-identity`):
+- `files.base_path_snapshot varchar(500)`: copia denormalizada de `storage_providers.base_path`. La copia la hace `App\Observers\FileObserver` en `File::saving`.
+- `files.merged_into_id bigint FK self-ref ON DELETE SET NULL`: NULL = canónico, NOT NULL = mirror (apunta al canónico).
+- `files.merged_at` + `files.merged_reason`: auditoría del link.
+- `file_mirror_audit_log`: tabla append-only (trigger rechaza UPDATE/DELETE).
+
+**Wiring en controllers** (PR 2, change `share-folder-canonical-wiring`):
+- `App\Services\FolderListingService::listContents(File $folder)`: lista cross-storage. Usado por `PublicShareController::show` y `showFolder`.
+- `ShareController::store` canónica el `file_id` antes de crear el share (defense-in-depth).
+- `PublicShareController::destroy` aplica 3 políticas: mirror → metadata-only; canónico + read → metadata-only; canónico + write/full → destructivo en disco.
+
+### Comandos operativos
+
+```bash
+# Dry-run del backfill de folder mirrors (no muta)
+cd app && php artisan files:repair-folder-mirrors --dry-run
+
+# Aplicar el backfill (setes merged_into_id en parent views, ~23.821 links)
+cd app && php artisan files:repair-folder-mirrors --apply
+
+# Repuntar folder shares históricos al canónico (default excluye conflictos)
+cd app && php artisan shares:repair-mirror-targets --dry-run
+cd app && php artisan shares:repair-mirror-targets --apply
+
+# Re-sync de base_path_snapshot tras cambios masivos de storage
+cd app && php artisan files:resync-base-path-snapshots --dry-run
+cd app && php artisan files:resync-base-path-snapshots --apply [--storage=ID]
+
+# Notificar a creadores de shares write/full repuntados (window 7 días)
+cd app && php artisan shares:notify-repointed --dry-run
+cd app && php artisan shares:notify-repointed --apply [--days=N]
+
+# Revertir repoints (respeta --storage para evitar afectar producción desde harness)
+cd app && php artisan shares:repair-mirror-targets --revert [--storage=ID]
+```
+
+### Verificación operacional
+
+```bash
+# Estado actual
+PGPASSWORD=cloud123 psql -h 127.0.0.1 -U cloud -d tcloudstorage -c "
+SELECT
+  (SELECT COUNT(*) FROM files WHERE merged_into_id IS NOT NULL AND is_folder=true AND deleted_at IS NULL) AS folder_mirrors,
+  (SELECT COUNT(*) FROM shares WHERE file_id IN (SELECT id FROM files WHERE merged_into_id IS NOT NULL)) AS shares_on_mirrors,
+  (SELECT COUNT(*) FROM file_mirror_audit_log WHERE action='link_mirror') AS link_audits,
+  (SELECT COUNT(*) FROM file_mirror_audit_log WHERE action='repoint_share') AS repoint_audits;
+"
+
+# Harnesses
+cd app && php tests/harness_files_folder_mirror.php        # 15 escenarios, modelo de identidad
+cd app && php tests/harness_share_folder_canonical.php     # 10 escenarios, wiring + notification
+```
+
+### Invariantes a mantener
+
+- `shares_on_mirrors` debe ser **0**.
+- `folder_mirrors` debería estabilizarse (no crecer post PR 1).
+- `file_mirror_audit_log` es **append-only** (trigger activo). NO UPDATE/DELETE.
+- `merged_into_id IS NOT NULL` = mirror; `IS NULL` = canónico. La identidad del file es esa columna.
+
+### Rollback
+
+```bash
+# Rollback total (PR 1 + PR 2 vía git revert)
+git revert <commit-hash-pr-1>
+git revert <commit-hash-pr-2>
+cd app && php artisan migrate:rollback --step=3   # drop files columns + share_notification_log
+cd app && php artisan shares:repair-mirror-targets --revert  # restaura file_id de los shares
+```
+
+Tras rollback, los 35+ shares vuelven a apuntar a mirrors vacíos (estado pre-fix). El comportamiento del controller vuelve a `$file->children()` (HasMany crudo, sin cross-storage).
+
+## Permission checks strict per storage_id (`fix-self-healing-permission-leak`, 2026-09-17)
+
+**Change:** `fix-self-healing-permission-leak`. `FileController::checkFilePermission()` ahora aplica **política estricta por storage_id**: el user solo puede acceder al file si tiene permiso explícito sobre el storage del file (`files.storage_provider_id`). **No hay fallback a descendants ni a ancestors** del storage del file.
+
+**Por qué:** un fallback anterior concedía acceso via descendientes del storage, lo cual producía dos bugs:
+- (a) **Veo el archivo en la lista pero no lo puedo descargar**: el listado filtraba por storage_id pero el download usaba el fallback, dando un listado correcto pero un acceso incorrecto.
+- (b) **Acceso cruzado**: un user con acceso al sub-storage específico podía descargar archivos del parent general sin tener acceso explícito al parent, exponiendo contenido que el operador no había autorizado.
+
+### Comportamiento actual (estricto)
+
+```php
+private function checkFilePermission(File $file, string $permission): bool
+{
+    $user = $this->getUser();
+    if (!$user) return false;
+    if ($user->isAdmin()) return true;
+    if ($file->storage_provider_id) {
+        return $user->hasStoragePermission($file->storage_provider_id, $permission);
+    }
+    return $file->owner_id === $user->id;
+}
+```
+
+Solo 3 caminos para acceder:
+1. **Admin bypass**: cualquier `role='admin'` retorna true inmediatamente.
+2. **Direct permission**: `user.hasStoragePermission(file.storage_provider_id, $perm)` retorna true.
+3. **Owner**: el user es `file.owner_id`.
+
+### Verificación operacional
+
+```bash
+# Caso 1: file en storage 5 (root), user con acceso a storage 6 (sub) → debe retornar 403
+SESSION_COOKIE=$(grep -oP 'tcloud_session=[^;]+' /tmp/cookies.txt | head -c 200)
+curl -sb "$SESSION_COOKIE" -o /tmp/dl.bin -w "Status: %{http_code}\n" \
+  "https://cloud.mediaserver.com.co/files/6657832/download"
+# Esperado: 403 Forbidden {"error":"Forbidden"}
+
+# Caso 2: file en storage 6, mismo user → debe retornar 200
+# (necesita un file que realmente esté en storage 6; ver `files:repair-delegation-leak --to-storage=6`)
+
+# Caso 3: admin → debe retornar 200 (bypass)
+ADMIN_COOKIE=...  # sesión de jsuariez u otro admin
+curl -sb "$ADMIN_COOKIE" -o /tmp/dl.bin -w "Status: %{http_code}\n" \
+  "https://cloud.mediaserver.com.co/files/6657832/download"
+# Esperado: 200 OK
+```
+
+### Diagnóstico de regresiones
+
+```bash
+# Si un user reporta "veo el archivo pero no puedo descargarlo":
+PGPASSWORD=cloud123 psql -h 127.0.0.1 -U cloud -d tcloudstorage -c "
+SELECT f.id, f.name, f.storage_provider_id AS file_storage,
+  s1.name AS file_storage_name,
+  EXISTS (SELECT 1 FROM user_storages us WHERE us.user_id = <USER_ID> AND us.storage_provider_id = f.storage_provider_id) AS has_direct_perm
+FROM files f
+JOIN storage_providers s1 ON s1.id = f.storage_provider_id
+WHERE f.id = <FILE_ID>;
+"
+# Si `has_direct_perm=false`, el user NO tiene acceso. El file debería estar
+# en un storage descendiente del que el user SÍ tiene acceso — usar
+# `files:repair-delegation-leak --apply --to-storage=<sub_storage_id>` para
+# re-forkear el file al storage correcto (self-healing sync lo hace en
+# cron nightly a partir de hoy).
+```
+
+### Invariantes a mantener
+
+- `checkFilePermission` **NO** debe tener fallback a descendants ni ancestors del storage del file. Cualquier PR que proponga agregar un fallback debe justificar por qué el fallback no causa los bugs (a) o (b) mencionados arriba.
+- El `self-healing sync` en `StorageSyncService::selfHealDelegationLeak` (cron nightly via `files:repair-delegation-leak --apply`) es el mecanismo primario para corregir delegation leaks antes de que se manifiesten como downloads fallidos.
+
+### Rollback
+
+```bash
+# Revertir el PR: trae de vuelta el fallback (NO recomendado — vuelve los bugs)
+git revert <commit-hash-de-fix-self-healing-permission-leak>
+systemctl reload php84-php-fpm
+
+# Alternativa preferida (sin deploy): corregir el data drift que causa el
+# problema raiz. La "no permission" es la politica correcta; el data drift es
+# el bug. El usuario deberia tener acceso al sub-storage especifico, y el
+# file row deberia ser del sub-storage, no del parent general.
+cd app && php artisan files:repair-delegation-leak --dry-run --storage=5  # ver scope
+cd app && php artisan files:repair-delegation-leak --apply --to-storage=6  # reparar
+```
