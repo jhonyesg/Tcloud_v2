@@ -11,7 +11,39 @@
     editingUser: null,
     deletingUser: null,
     deletingUserId: null,
-    
+    toast: null,
+    searchQuery: '',
+    sortBy: { column: 'id', direction: 'asc' },
+    currentPage: 1,
+    perPage: 25,
+    get filteredAndSorted() {
+        let list = this.users;
+        if (this.searchQuery.trim()) {
+            const q = this.searchQuery.toLowerCase().trim();
+            list = list.filter(u =>
+                (u.email || '').toLowerCase().includes(q) ||
+                (u.username || '').toLowerCase().includes(q)
+            );
+        }
+        const col = this.sortBy.column;
+        const dir = this.sortBy.direction === 'asc' ? 1 : -1;
+        return [...list].sort((a, b) => {
+            let va = a[col] ?? '';
+            let vb = b[col] ?? '';
+            if (typeof va === 'boolean') { va = va ? 1 : 0; }
+            if (typeof vb === 'boolean') { vb = vb ? 1 : 0; }
+            if (typeof va === 'string') va = va.toLowerCase();
+            if (typeof vb === 'string') vb = vb.toLowerCase();
+            return va < vb ? -dir : va > vb ? dir : 0;
+        });
+    },
+    get totalFiltered() { return this.filteredAndSorted.length; },
+    get totalPages() { return Math.max(1, Math.ceil(this.filteredAndSorted.length / this.perPage)); },
+    get paginatedUsers() {
+        const start = (this.currentPage - 1) * this.perPage;
+        return this.filteredAndSorted.slice(start, start + Number(this.perPage));
+    },
+
     async loadUsers() {
         const res = await apiFetch('/admin/users', {
             credentials: 'include',
@@ -43,10 +75,10 @@
             this.loadUsers();
         } else {
             const err = await res.json();
-            alert('Error: ' + JSON.stringify(err));
+            this.showToast('Error: ' + JSON.stringify(err), 'error');
         }
     },
-    
+
     async updateUser(formData, id) {
         const res = await apiFetch('/admin/users/' + id, {
             method: 'PUT',
@@ -64,10 +96,10 @@
             this.loadUsers();
         } else {
             const err = await res.json();
-            alert('Error: ' + JSON.stringify(err));
+            this.showToast('Error: ' + JSON.stringify(err), 'error');
         }
     },
-    
+
     async deleteUser(id) {
         this.deletingUserId = id;
         try {
@@ -82,10 +114,10 @@
                 this.showDeleteModal = false;
                 this.deletingUser = null;
                 await this.loadUsers();
-                alert('Usuario eliminado correctamente');
+                this.showToast('Usuario eliminado correctamente', 'success');
             } else {
                 const err = await res.json().catch(() => ({}));
-                alert('Error al eliminar el usuario: ' + (err.error || err.message || 'Error desconocido'));
+                this.showToast('Error al eliminar el usuario: ' + (err.error || err.message || 'Error desconocido'), 'error');
             }
         } finally {
             this.deletingUserId = null;
@@ -113,8 +145,68 @@
             const data = await res.json();
             user.media_editor_enabled = data.media_editor_enabled;
         }
+    },
+
+    showToast(msg, type) {
+        this.toast = { msg, type };
+        setTimeout(() => this.toast = null, 16000);
+    },
+
+    toggleSort(column) {
+        if (this.sortBy.column === column) {
+            this.sortBy.direction = this.sortBy.direction === 'asc' ? 'desc' : 'asc';
+        } else {
+            this.sortBy = { column, direction: 'asc' };
+        }
     }
-}" x-init="loadUsers()">
+}" x-init="
+    loadUsers();
+    $watch('searchQuery', () => { currentPage = 1; });
+    $watch('perPage',     () => { currentPage = 1; });
+">
+    <div x-cloak x-show="toast" x-transition
+         :class="toast?.type === 'success' ? 'bg-green-600' : 'bg-red-600'"
+         class="fixed top-4 right-4 z-50 px-4 py-3 rounded-xl text-white shadow-lg text-sm font-medium">
+        <span x-text="toast?.msg"></span>
+    </div>
+
+    <!-- Barra de controles: búsqueda + perPage + limpiar -->
+    <div class="bg-white rounded-lg shadow p-4 mb-4">
+        <div class="flex flex-wrap gap-3 items-center">
+            <div class="flex-1 min-w-48 relative">
+                <input type="text" x-model="searchQuery" placeholder="Buscar usuario (email o username)..."
+                       class="w-full border rounded-lg pl-9 pr-3 py-2 text-sm focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 outline-none">
+                <svg class="absolute left-3 top-2.5 w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0"/>
+                </svg>
+            </div>
+            <div class="flex items-center gap-2">
+                <span class="text-sm text-gray-500 whitespace-nowrap">Por página:</span>
+                <select x-model="perPage" class="border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-300 outline-none">
+                    <option value="10">10</option>
+                    <option value="25">25</option>
+                    <option value="50">50</option>
+                    <option value="100">100</option>
+                    <option value="250">250</option>
+                    <option value="500">500</option>
+                </select>
+            </div>
+            <button x-show="searchQuery"
+                    @click="searchQuery = ''"
+                    class="flex items-center gap-1 text-sm text-red-600 hover:text-red-800 border border-red-200 rounded-lg px-3 py-2 hover:bg-red-50 transition-colors">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+                Limpiar
+            </button>
+        </div>
+        <div class="mt-2 text-xs text-gray-500" x-text="
+            totalFiltered === users.length
+                ? 'Mostrando ' + totalFiltered + (totalFiltered === 1 ? ' usuario' : ' usuarios')
+                : 'Mostrando ' + totalFiltered + ' de ' + users.length + ' usuarios'
+        "></div>
+    </div>
+
     <div class="flex justify-between items-center mb-4 sm:mb-6">
         <h1 class="text-lg sm:text-2xl font-bold text-gray-800">Gestionar Usuarios</h1>
         <div class="flex items-center gap-2">
@@ -174,6 +266,11 @@
                 </div>
             </div>
         </template>
+        <div x-show="users.length > 0 && filteredAndSorted.length === 0"
+             class="bg-white rounded-xl border border-slate-200 text-center py-8 text-gray-500 text-sm">
+            No se encontraron usuarios con la búsqueda aplicada.
+            <button @click="searchQuery = ''" class="ml-1 text-indigo-600">Limpiar filtros</button>
+        </div>
         <div x-show="users.length === 0" class="bg-white rounded-xl border border-slate-200 text-center py-8 text-gray-500 text-sm">
             No hay usuarios registrados.
         </div>
@@ -185,18 +282,32 @@
         <table class="w-full">
             <thead class="bg-gray-50">
                 <tr>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ID</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Email</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Username</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Rol</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Quota</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Usado</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Editor Medios</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer select-none hover:bg-gray-100 transition-colors" @click="toggleSort('id')">
+                        <div class="flex items-center gap-1">ID <span class="text-gray-400" x-text="sortBy.column === 'id' ? (sortBy.direction === 'asc' ? '↑' : '↓') : '↕'"></span></div>
+                    </th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer select-none hover:bg-gray-100 transition-colors" @click="toggleSort('email')">
+                        <div class="flex items-center gap-1">Email <span class="text-gray-400" x-text="sortBy.column === 'email' ? (sortBy.direction === 'asc' ? '↑' : '↓') : '↕'"></span></div>
+                    </th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer select-none hover:bg-gray-100 transition-colors" @click="toggleSort('username')">
+                        <div class="flex items-center gap-1">Username <span class="text-gray-400" x-text="sortBy.column === 'username' ? (sortBy.direction === 'asc' ? '↑' : '↓') : '↕'"></span></div>
+                    </th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer select-none hover:bg-gray-100 transition-colors" @click="toggleSort('role')">
+                        <div class="flex items-center gap-1">Rol <span class="text-gray-400" x-text="sortBy.column === 'role' ? (sortBy.direction === 'asc' ? '↑' : '↓') : '↕'"></span></div>
+                    </th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer select-none hover:bg-gray-100 transition-colors" @click="toggleSort('personal_quota_bytes')">
+                        <div class="flex items-center gap-1">Quota <span class="text-gray-400" x-text="sortBy.column === 'personal_quota_bytes' ? (sortBy.direction === 'asc' ? '↑' : '↓') : '↕'"></span></div>
+                    </th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer select-none hover:bg-gray-100 transition-colors" @click="toggleSort('personal_used_bytes')">
+                        <div class="flex items-center gap-1">Usado <span class="text-gray-400" x-text="sortBy.column === 'personal_used_bytes' ? (sortBy.direction === 'asc' ? '↑' : '↓') : '↕'"></span></div>
+                    </th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer select-none hover:bg-gray-100 transition-colors" @click="toggleSort('media_editor_enabled')">
+                        <div class="flex items-center gap-1">Editor Medios <span class="text-gray-400" x-text="sortBy.column === 'media_editor_enabled' ? (sortBy.direction === 'asc' ? '↑' : '↓') : '↕'"></span></div>
+                    </th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Acciones</th>
                 </tr>
             </thead>
             <tbody class="bg-white divide-y divide-gray-200">
-                <template x-for="user in (users || [])" :key="user.id">
+        <template x-for="user in paginatedUsers" :key="user.id">
                     <tr class="hover:bg-gray-50">
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900" x-text="user.id"></td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900" x-text="user.email"></td>
@@ -232,6 +343,10 @@
             </tbody>
         </table>
         </div>{{-- /overflow-x-auto --}}
+        <div x-show="users.length > 0 && filteredAndSorted.length === 0" class="text-center py-8 text-gray-500">
+            No se encontraron usuarios con la búsqueda aplicada.
+            <button @click="searchQuery = ''" class="ml-2 text-indigo-600 hover:underline text-sm">Limpiar filtros</button>
+        </div>
         <div x-show="users.length === 0" class="text-center py-8 text-gray-500">
             No hay usuarios registrados.
         </div>
@@ -250,9 +365,17 @@
                     <label class="block text-sm font-medium mb-1">Username <span class="text-gray-400 font-normal">(opcional)</span></label>
                     <input type="text" name="username" class="w-full border p-2 rounded" placeholder="ej. jsuarez">
                 </div>
-                <div class="mb-4">
+                <div class="mb-4" x-data="{ showCreatePw: false }">
                     <label class="block text-sm font-medium mb-1">Contraseña</label>
-                    <input type="password" name="password" required class="w-full border p-2 rounded">
+                    <div class="relative">
+                        <input :type="showCreatePw ? 'text' : 'password'" name="password" required class="w-full border p-2 rounded pr-10">
+                        <button type="button" @click="showCreatePw = !showCreatePw"
+                                :aria-label="showCreatePw ? 'Ocultar contraseña' : 'Mostrar contraseña'"
+                                :title="showCreatePw ? 'Ocultar contraseña' : 'Mostrar contraseña'"
+                                class="absolute inset-y-0 right-0 flex items-center px-3 text-gray-500 hover:text-gray-700">
+                            <i class="fa-solid" :class="showCreatePw ? 'fa-eye-slash' : 'fa-eye'"></i>
+                        </button>
+                    </div>
                 </div>
                 <div class="mb-4">
                     <label class="block text-sm font-medium mb-1">Rol</label>
@@ -291,9 +414,17 @@
                         <label class="block text-sm font-medium mb-1">Username <span class="text-gray-400 font-normal">(opcional)</span></label>
                         <input type="text" name="username" :value="editingUser.username || ''" class="w-full border p-2 rounded" placeholder="ej. jsuarez">
                     </div>
-                    <div class="mb-4">
+                    <div class="mb-4" x-data="{ showEditPw: false }">
                         <label class="block text-sm font-medium mb-1">Nueva Contraseña <span class="text-gray-400 font-normal">(dejar vacío para no cambiar)</span></label>
-                        <input type="password" name="password" class="w-full border p-2 rounded">
+                        <div class="relative">
+                            <input :type="showEditPw ? 'text' : 'password'" name="password" class="w-full border p-2 rounded pr-10">
+                            <button type="button" @click="showEditPw = !showEditPw"
+                                    :aria-label="showEditPw ? 'Ocultar contraseña' : 'Mostrar contraseña'"
+                                    :title="showEditPw ? 'Ocultar contraseña' : 'Mostrar contraseña'"
+                                    class="absolute inset-y-0 right-0 flex items-center px-3 text-gray-500 hover:text-gray-700">
+                                <i class="fa-solid" :class="showEditPw ? 'fa-eye-slash' : 'fa-eye'"></i>
+                            </button>
+                        </div>
                     </div>
                     <div class="mb-4">
                         <label class="block text-sm font-medium mb-1">Rol</label>

@@ -35,6 +35,7 @@ class PruneUnlinkedSafe extends Command
                             {--dry-run : Reporta conteos sin modificar nada}
                             {--batch-size=500 : Filas por fase}
                             {--storage= : Limitar a un storage_provider_id}
+                            {--only-missing : Solo marcar filas con availability_state=missing (cambia el contrato: las disponibles/unknown NO se tocan)}
                             {--confirm-batch= : ID del batch a borrar en fase 2}';
 
     protected $description = 'Purga huérfanos sin FKs en dos fases (mark + delete) con ventana de auditoría.';
@@ -44,6 +45,7 @@ class PruneUnlinkedSafe extends Command
         $dryRun = (bool) $this->option('dry-run');
         $batchSize = max(50, (int) $this->option('batch-size'));
         $storageId = $this->option('storage') !== null ? (int) $this->option('storage') : null;
+        $onlyMissing = (bool) $this->option('only-missing');
         $confirmBatch = $this->option('confirm-batch');
 
         $lockKey = 'files:prune-unlinked';
@@ -57,19 +59,23 @@ class PruneUnlinkedSafe extends Command
         try {
             return $confirmBatch !== null
                 ? $this->confirmDelete($confirmBatch, $dryRun)
-                : $this->markPhase($batchSize, $storageId, $dryRun);
+                : $this->markPhase($batchSize, $storageId, $onlyMissing, $dryRun);
         } finally {
             $lock->release();
         }
     }
 
-    private function markPhase(int $batchSize, ?int $storageId, bool $dryRun): int
+    private function markPhase(int $batchSize, ?int $storageId, bool $onlyMissing, bool $dryRun): int
     {
-        $this->line('Fase 1: marcando huérfanos seguros como gone...');
+        if ($onlyMissing) {
+            $this->line('Fase 1: marcando SOLO huérfanos confirmados como missing (--only-missing)...');
+        } else {
+            $this->line('Fase 1: marcando huérfanos seguros como gone...');
+        }
 
-        $stats = $this->countCandidates($storageId);
+        $stats = $this->countCandidates($storageId, $onlyMissing);
         $this->table(['Conteo', 'Valor'], [
-            ['Candidatos totales (sin tx/shares/jobs)', number_format($stats['total'])],
+            ['Candidatos totales (sin tx/shares/jobs' . ($onlyMissing ? ', missing only' : '') . ')', number_format($stats['total'])],
             ['Ya en estado gone', number_format($stats['already_gone'])],
             ['Disponibles para marcar', number_format($stats['available'])],
         ]);
@@ -89,37 +95,49 @@ class PruneUnlinkedSafe extends Command
         // que la fase 2 confirme sobre el mismo conjunto. Asi un operador puede
         // revisar "lo que marqué" antes de aceptar el DELETE.
         $batchId = 'purge-' . now()->format('Ymd-His') . '-' . substr(md5(uniqid('', true)), 0, 8);
-        $storageClause = $storageId !== null ? ' AND storage_provider_id = ' . $storageId : '';
 
-        DB::statement("
-            CREATE TEMP TABLE _prune_candidates ON COMMIT DROP AS
-            SELECT id FROM files
-            WHERE availability_state IN ('available','unknown','missing')
-              AND is_folder = false
-              AND NOT EXISTS (SELECT 1 FROM transcriptions WHERE file_id = files.id)
-              AND NOT EXISTS (SELECT 1 FROM shares WHERE file_id = files.id)
-              AND NOT EXISTS (
-                  SELECT 1 FROM information_schema.columns
-                  WHERE table_name = 'media_edit_jobs' AND column_name = 'source_file_id'
-              ) OR NOT EXISTS (
-                  SELECT 1 FROM media_edit_jobs WHERE source_file_id = files.id
-              )
-              {$storageClause}
-            LIMIT {$batchSize}
-        ");
+        // ON COMMIT DROP exige una transaccion explicita: sin beginTransaction(),
+        // cada statement corre en su propia tx y el temp table se destruye
+        // inmediatamente tras el CREATE.
+        DB::beginTransaction();
+        try {
+            // El WHERE de candidatos debe ser IDENTICO al de countCandidates().
+            // Antes teniamos el OR del check de media_edit_jobs sin parentesis:
+            //   A AND B AND C AND D AND E OR F
+            // que por precedencia AND>OR se evaluaba como
+            //   (A AND B AND C AND D AND E) OR F
+            // y el lado derecho (F = NOT EXISTS(jobs)) se aplicaba SIN los
+            // filtros de tx/shares, marcando archivos con transcripciones
+            // como gone. Bug pre-existente destapado por mi dry-run que decia
+            // 343 candidatos pero el mark marcaba 500 (incluyendo 454 con tx).
+            // Fix: extraer el WHERE a buildCandidateWhere() y aplicarlo tanto
+            // al SELECT INTO como al countCandidates().
+            $where = self::buildCandidateWhere($storageId, $onlyMissing);
+            DB::statement("
+                CREATE TEMP TABLE _prune_candidates ON COMMIT DROP AS
+                SELECT id FROM files
+                WHERE {$where}
+                LIMIT {$batchSize}
+            ");
 
-        $marked = (int) DB::affectingStatement("
-            UPDATE files SET
-                availability_state = 'gone',
-                missing_since_at = COALESCE(missing_since_at, now())
-            WHERE id IN (SELECT id FROM _prune_candidates)
-        ");
+            $marked = (int) DB::affectingStatement("
+                UPDATE files SET
+                    availability_state = 'gone',
+                    missing_since_at = COALESCE(missing_since_at, now())
+                WHERE id IN (SELECT id FROM _prune_candidates)
+            ");
 
-        DB::statement("
-            INSERT INTO files_prune_batches (batch_id, storage_id, marked, marked_at)
-            VALUES (?, ?, ?, now())
-            ON CONFLICT (batch_id) DO NOTHING
-        ", [$batchId, $storageId, $marked]);
+            DB::statement("
+                INSERT INTO files_prune_batches (batch_id, storage_id, marked, marked_at)
+                VALUES (?, ?, ?, now())
+                ON CONFLICT (batch_id) DO NOTHING
+            ", [$batchId, $storageId, $marked]);
+
+            DB::commit();
+        } catch (\Throwable $e) {
+            DB::rollBack();
+            throw $e;
+        }
 
         $this->newLine();
         $this->info("Batch {$batchId} marcado: {$marked} filas en estado 'gone'.");
@@ -194,33 +212,66 @@ class PruneUnlinkedSafe extends Command
         return Command::SUCCESS;
     }
 
-    private function countCandidates(?int $storageId): array
+    private function countCandidates(?int $storageId, bool $onlyMissing = false): array
     {
-        $filter = $storageId !== null ? ' AND storage_provider_id = ' . $storageId : '';
+        $where = self::buildCandidateWhere($storageId, $onlyMissing);
+        $total = (int) DB::selectOne("SELECT count(*) AS n FROM files WHERE {$where}")->n;
 
-        $total = (int) DB::selectOne("
-            SELECT count(*) AS n FROM files
-            WHERE is_folder = false
-              AND NOT EXISTS (SELECT 1 FROM transcriptions WHERE file_id = files.id)
-              AND NOT EXISTS (SELECT 1 FROM shares WHERE file_id = files.id)
-              AND NOT EXISTS (
-                  SELECT 1 FROM media_edit_jobs WHERE source_file_id = files.id
-              )
-              {$filter}
-        ")->n;
-
+        $alreadyGoneFilter = $storageId !== null ? " AND storage_provider_id = {$storageId}" : '';
         $alreadyGone = (int) DB::selectOne("
             SELECT count(*) AS n FROM files
             WHERE availability_state = 'gone' AND is_folder = false
-              {$filter}
+              {$alreadyGoneFilter}
         ")->n;
-
-        $available = $total;
 
         return [
             'total' => $total,
             'already_gone' => $alreadyGone,
-            'available' => $available,
+            'available' => $total,
         ];
+    }
+
+    /**
+     * WHERE clause compartido entre countCandidates() y el SELECT INTO de
+     * _prune_candidates. Antes ambos usaban WHERE similares pero el de mark
+     * tenia un OR sin parentesis que por precedencia AND>OR cortocircuitaba
+     * los filtros de tx/shares y marcaba filas con transcripciones como gone.
+     * Centralizar aqui elimina ese drift.
+     *
+     * Los placeholders `__STORAGE_CLAUSE__` y `__MISSING_CLAUSE__` se
+     * sustituyen por SQL literal (no binding) — son fragmentos que NO aceptan
+     * input del usuario, solo flags internos.
+     */
+    private static function candidateWhereClause(): string
+    {
+        return "is_folder = false
+            AND availability_state IN ('available', 'unknown', 'missing')
+            AND NOT EXISTS (SELECT 1 FROM transcriptions WHERE file_id = files.id)
+            AND NOT EXISTS (SELECT 1 FROM shares WHERE file_id = files.id)
+            AND (
+                NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'media_edit_jobs' AND column_name = 'source_file_id'
+                )
+                OR NOT EXISTS (
+                    SELECT 1 FROM media_edit_jobs WHERE source_file_id = files.id
+                )
+            )
+            __STORAGE_CLAUSE__
+            __MISSING_CLAUSE__";
+    }
+
+    /**
+     * Sustituye los placeholders del WHERE por SQL literal segun los flags.
+     * Retorna el WHERE final listo para concatenar.
+     */
+    private static function buildCandidateWhere(?int $storageId, bool $onlyMissing): string
+    {
+        $storageClause = $storageId !== null ? " AND storage_provider_id = {$storageId}" : '';
+        $missingClause = $onlyMissing ? " AND availability_state = 'missing' AND NOT is_trashed" : '';
+        return strtr(self::candidateWhereClause(), [
+            '__STORAGE_CLAUSE__' => $storageClause,
+            '__MISSING_CLAUSE__' => $missingClause,
+        ]);
     }
 }

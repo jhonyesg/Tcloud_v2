@@ -27,13 +27,50 @@ class MediaClipController extends Controller
      * FileController::checkFilePermission — obligatoria antes de cortar,
      * generar miniaturas o re-generar trabajos (mis-avisos entrega ids de
      * archivo a clientes que quizá solo tienen transcription_access).
+     *
+     * Fallback seguro (path-based): si el file vive en un storage sin acceso
+     * directo del usuario pero su absolute path cae bajo un DESCENDIENTE
+     * (sub-storage) al que el usuario SÍ tiene acceso, conceder acceso.
+     *
+     * Esto resuelve el caso del "delegation leak residual": cuando un file
+     * físicamente pertenece a un sub-storage (ej. "01 Caracol Tv") pero
+     * la fila en `files` sigue apuntando al parent (storage 5 "00 Discos")
+     * porque el self-healing sync aún no migró esa fila. El usuario con
+     * acceso al sub-storage DEBE poder ver el file porque físicamente está
+     * en su scope.
+     *
+     * A diferencia del fix anterior (change `2026-09-17-self-healing-sync-permissions`)
+     * que NO verificaba paths, este fix SOLO concede acceso si el absolute
+     * path del file cae bajo el descendant's base_path. Esto evita bypasses
+     * donde el usuario con acceso al sub-storage A podría descargar files del
+     * sub-storage B que viven en el mismo parent.
      */
     private function canAccessFile(User $user, ?File $file): bool
     {
         if (!$file) return false;
         if ($user->isAdmin()) return true;
+
         if ($file->storage_provider_id) {
-            return $user->hasStoragePermission($file->storage_provider_id, 'read');
+            if ($user->hasStoragePermission($file->storage_provider_id, 'read')) {
+                return true;
+            }
+
+            // Path-based descendant walk: solo si el absolute path del file
+            // cae bajo el descendant del usuario.
+            $fileStorage = $file->storageProvider;
+            if ($fileStorage && !empty($fileStorage->base_path)) {
+                $fileAbsPath = rtrim((string) $fileStorage->base_path, '/')
+                    . '/' . ltrim((string) $file->path, '/');
+
+                foreach ($fileStorage->children as $sub) {
+                    $dId = (int) $sub->id;
+                    if (!$user->hasStoragePermission($dId, 'read')) continue;
+                    $subAbsBase = rtrim((string) $sub->base_path, '/') . '/';
+                    if (str_starts_with($fileAbsPath, $subAbsBase)) {
+                        return true;
+                    }
+                }
+            }
         }
 
         return $file->owner_id === $user->id;

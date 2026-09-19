@@ -149,6 +149,36 @@ se conserva deprecado mientras exista `kind` (canónico) — la eliminación tot
 queda en un PR posterior una vez confirmado que `type='s3' | kind='local'` (1 fila
 divergente) se resuelve manualmente. Migración no-breaking.
 
+## Invariante de `files.owner_id` (change `files-canonical-owner-by-storage`, 2026-09-18)
+
+**Contrato**: cada `(storage_provider_id, path)` tiene UN `owner_id` canónico,
+resuelto por `StorageProvider::canonicalOwnerId($storageId)`. **NUNCA** usar
+`$storage->userStorages()->first()?->user_id ?? 1` sin `orderBy` en código
+nuevo (es no-determinístico en PostgreSQL).
+
+**Resolución del canónico**:
+1. Si `is_personal = true`: extraer `username` del último segmento de `base_path`
+   (formato `/home/www/Usuarios_tcloud/{username}/`). Si el user existe, ese es
+   el canónico. Esto previene que admin global robe ownership de storages
+   personales ajenos donde incidentalmente tiene `full`.
+2. Sino, `user_id` con `permissions='full'` y **menor `user_storages.id`**
+   (insertion order) sobre el storage.
+3. Si no hay `full` propio, subir por `parent_storage_id` aplicando la misma
+   regla 2.
+4. Si la cadena completa no tiene `full`, retornar `NULL`. Las vías de creación
+   de archivos DEBEN lanzar excepción en ese caso.
+
+**Visibilidad per-user NO depende de `files.owner_id`**. Se deriva de
+`user_storages.permissions` para el `storage_provider_id` del file. El check
+canónico es `FileController::checkFilePermission()` o `User::hasStoragePermission()`.
+Cualquier callsite que autorice contra `owner_id` per-fila reintroduce el bug
+original y debe refactorizarse a `storage_provider_id + user_storages`.
+
+**Papelera cambió de UX**: post-fix, cada usuario ve la papelera de los storages
+donde tiene acceso (`whereIn('storage_provider_id', $user->userStorages)`), no
+"papelera de lo que es mío". Admin sigue viendo TODO. La invalidación del cache
+del sidebar se hace por actor (quien operó), no por `owner_id`.
+
 ## Harnesses de regresión (`tests/harness_*.php`)
 
 Suite de scripts PHP ejecutables directamente contra PostgreSQL/Redis
@@ -1569,4 +1599,61 @@ systemctl reload php84-php-fpm
 # file row deberia ser del sub-storage, no del parent general.
 cd app && php artisan files:repair-delegation-leak --dry-run --storage=5  # ver scope
 cd app && php artisan files:repair-delegation-leak --apply --to-storage=6  # reparar
+```
+
+## Cross-storage access verification en shares públicos
+
+**Change:** `2026-09-18-fix-public-share-access-cross-storage`.
+
+`PublicShareController::isDescendantOf($file, $ancestor)` ahora hace
+dos chequeos, en orden:
+
+1. **Walk de `parent_id`**: barato, cubre el caso común (archivo en el
+   mismo storage que el folder).
+2. **Fallback por `physicalPathNormalized()`** (= `lower(rtrim(base_path_snapshot || '/' || path))`):
+   cubre el caso cross-storage donde el archivo vive en un storage distinto
+   pero representa el mismo path físico.
+
+`base_path_snapshot` se mantiene sincronizado vía `FileObserver::saving()`
+con `storage_providers.base_path` del row. Es único por storage, así que
+dos folders con `physical_path_normalized` compartido representan el mismo
+directorio físico real — el fallback no produce falsos positivos.
+
+**Regla para nuevos métodos que operen con un `$file` dentro de un share:**
+
+- Si el método lee contenido del disco (`mediaPreview`, `preview`,
+  `download`, o similar): canonizar `$file` vía `FilePhysicalIdentity::canonicalFor()`
+  antes del cálculo de `$storage`/`$fullPath`. Defense-in-depth para el
+  caso donde un mirror row se cuele.
+- Si el método opera solo metadata (`folder`, `upload`, `createFolder`,
+  `rename`, `delete`): no hace falta canonicalizar — `isDescendantOf`
+  ya reconoce equivalencia cross-storage.
+
+### Rollback del change `2026-09-18-fix-public-share-access-cross-storage`
+
+```bash
+git revert <commit-hash-de-fix-public-share-access-cross-storage>
+systemctl reload php84-php-fpm
+```
+
+No hay estado persistente que limpiar. El fallback de `isDescendantOf()`
+vuelve a comparar `path` relativo (comportamiento pre-fix). Las
+canonicalizaciones defense-in-depth en `mediaPreview`/`preview`/`download`
+también se revocan.
+
+Si el operador nota regresión en un share específico (algún caso que el
+fix rompe), el primer paso diagnóstico es:
+
+```bash
+# Verificar si los folders tienen physical_path_normalized compartido:
+PGPASSWORD=cloud123 psql -h 127.0.0.1 -U cloud -d tcloudstorage -c "
+SELECT f.id, f.name, f.path, f.storage_provider_id,
+       f.base_path_snapshot,
+       lower(rtrim(coalesce(f.base_path_snapshot,'') || '/' || coalesce(f.path,''))) AS phys_norm
+FROM files f
+WHERE f.id IN (<share_file_id>, <folder_id>);
+"
+# Si phys_norm del file NO empieza con phys_norm del folder + '/',
+# el 403 es correcto y debe investigarse (probablemente el file no
+# debería ser visible en ese share).
 ```

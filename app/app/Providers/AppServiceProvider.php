@@ -7,6 +7,7 @@ use App\Models\User;
 use App\Models\ExternalSite;
 use App\Models\Correction;
 use App\Models\UserAlertsInteligente;
+use App\Models\File;
 use App\Services\Ia\AlertDispatcher;
 use App\Services\Ia\AudioConverter;
 use App\Services\Ia\CorrectionService;
@@ -17,9 +18,13 @@ use App\Services\Ia\TranscriptorApiClient;
 use App\Services\Ia\TranscriptorSettings;
 use App\Modules\Correo\Services\EmailValidationService;
 use App\Modules\Papelera\Services\PapeleraService;
+use App\Observers\FileObserver;
 use App\Observers\TranscriptionObserver;
 use App\Observers\UserObserver;
+use App\Observers\UserStorageObserver;
+use App\Models\UserStorage;
 use App\Services\Auth\PasswordTokenService;
+use App\Services\FolderListingService;
 use Illuminate\Support\Facades\Session;
 use Illuminate\Support\ServiceProvider;
 
@@ -41,6 +46,9 @@ class AppServiceProvider extends ServiceProvider
         $this->app->singleton(EmailValidationService::class);
         $this->app->singleton(PasswordTokenService::class);
         $this->app->singleton(PapeleraService::class);
+        // change 2026-09-17-share-folder-canonical-wiring: servicio de listado
+        // cross-storage usado por PublicShareController y futuras extensiones.
+        $this->app->singleton(FolderListingService::class);
 
         // Motor de menciones seleccionable (mis-avisos-menciones): universal
         // por defecto; legacy preservado como fallback de rollback. La costura
@@ -61,6 +69,13 @@ class AppServiceProvider extends ServiceProvider
         // change 2026-09-10-mis-avisos-program-date-filter: calcula recorded_at
         // automáticamente al crear y la hace inmutable después.
         Transcription::observe(TranscriptionObserver::class);
+        // change 2026-09-17-files-physical-folder-identity: mantiene
+        // files.base_path_snapshot sincronizado con storage_providers.base_path
+        // para que File::physicalPathNormalized() no pague un JOIN por lookup.
+        File::observe(FileObserver::class);
+        // change files-canonical-owner-by-storage (2026-09-18): invalida la
+        // cache del owner canonico cuando un user_storages se crea/edita/borra.
+        UserStorage::observe(UserStorageObserver::class);
 
         view()->composer('layouts.app', function ($view) {
             $userId = Session::get('user_id');

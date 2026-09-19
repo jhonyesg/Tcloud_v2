@@ -361,6 +361,121 @@ class StorageProvider extends Model
     }
 
     /**
+     * Cache prefix + TTL del owner canonico por storage. Ver
+     * `canonicalOwnerIdCached()`. TTL configurable via `CANONICAL_OWNER_CACHE_TTL`
+     * (default 60s). 0 = bypass (freno de emergencia).
+     *
+     * Cambio: `files-canonical-owner-by-storage` (2026-09-18).
+     */
+    private const CANONICAL_OWNER_CACHE_PREFIX = 'storage:canonical_owner:';
+    private const CANONICAL_OWNER_CACHE_TTL_DEFAULT = 60;
+
+    /**
+     * Resuelve el owner canonico de un storage.
+     *
+     * Reglas:
+     * 1. Si `is_personal = true`: el `user_id` con `permissions='full'` y menor
+     *    `user_id` (NO menor `user_storages.id`). Esto evita que el admin
+     *    global robe el ownership de storages personales donde incidentalmente
+     *    tiene `full`.
+     * 2. Si `is_personal = false`: el `user_id` con `permissions='full'` y
+     *    menor `user_storages.id` (insertion order = admin original del
+     *    storage).
+     * 3. Si ninguno tiene `full` propio, subir por `parent_storage_id`
+     *    aplicando la misma regla.
+     * 4. Si la cadena completa no tiene `full`, retornar `NULL`.
+     *
+     * Determinismo: las reglas 1 y 2 ordenan por columnas fijas (user_id / id),
+     * NO por orden fisico de tabla. Por eso el resultado es estable en 100
+     * invocaciones consecutivas.
+     *
+     * Guardia anti-ciclo: si la cadena `parent_storage_id` contiene un ciclo
+     * (A → B → A), retorna `NULL` en lugar de loop infinito.
+     *
+     * Por que un metodo estatico: es la unica API que las vias de creacion de
+     * archivos deben usar para asignar `files.owner_id`. Cualquier callsite
+     * que use `userStorages()->first()` sin `ORDER BY` reintroduce el bug
+     * original (ver harness `tests/harness_files_canonical_owner.php`).
+     */
+    public static function canonicalOwnerId(int $storageId, array &$visited = []): ?int
+    {
+        if (in_array($storageId, $visited, true)) {
+            return null;
+        }
+        $visited[] = $storageId;
+
+        $storage = static::find($storageId, ['id', 'is_personal', 'base_path', 'parent_storage_id']);
+        if (!$storage) {
+            return null;
+        }
+
+        // Para storages personales: el owner es el user cuyo username aparece
+        // en base_path (formato /home/www/Usuarios_tcloud/{username}/). Esto es
+        // robusto contra admin dual-full porque identificamos al dueno por la
+        // identidad del storage, no por orden de user_storages.
+        if ($storage->is_personal && !empty($storage->base_path)) {
+            $basePath = rtrim($storage->base_path, '/');
+            $pathUsername = basename($basePath);
+            if ($pathUsername !== '' && $pathUsername !== '.' && $pathUsername !== '/') {
+                $ownerByPath = DB::table('users')->where('username', $pathUsername)->value('id');
+                if ($ownerByPath !== null) {
+                    return (int) $ownerByPath;
+                }
+            }
+        }
+
+        // Para storages compartidos (o personales sin match de username en base_path):
+        // el user con `permissions='full'` y menor `user_storages.id` (insertion order).
+        $owner = DB::table('user_storages')
+            ->where('storage_provider_id', $storageId)
+            ->where('permissions', 'full')
+            ->orderBy('id')
+            ->value('user_id');
+
+        if ($owner !== null) {
+            return (int) $owner;
+        }
+
+        if ($storage->parent_storage_id === null) {
+            return null;
+        }
+
+        return self::canonicalOwnerId((int) $storage->parent_storage_id, $visited);
+    }
+
+    /**
+     * Wrapper cacheado de `canonicalOwnerId()`. TTL 60s default
+     * (`CANONICAL_OWNER_CACHE_TTL_DEFAULT`). Bypass con TTL 0.
+     *
+     * Invalidacion: `UserStorageObserver` (created/updated/deleted) y
+     * cualquier mutador directo de `user_storages.permissions` /
+     * `storage_provider_id` deben llamar
+     * `StorageProvider::forgetCanonicalOwnerCache($storageId)`.
+     */
+    public static function canonicalOwnerIdCached(int $storageId): ?int
+    {
+        $ttl = self::CANONICAL_OWNER_CACHE_TTL_DEFAULT;
+
+        if ($ttl === 0) {
+            return self::canonicalOwnerId($storageId);
+        }
+
+        return Cache::remember(
+            self::CANONICAL_OWNER_CACHE_PREFIX . $storageId,
+            $ttl,
+            fn () => self::canonicalOwnerId($storageId)
+        );
+    }
+
+    /**
+     * Invalida la entrada de cache del owner canonico de un storage.
+     */
+    public static function forgetCanonicalOwnerCache(int $storageId): void
+    {
+        Cache::forget(self::CANONICAL_OWNER_CACHE_PREFIX . $storageId);
+    }
+
+    /**
      * Lee el TTL configurado via SystemSetting('transcriptor_scope_cache_ttl').
      * Si no esta seteado, usa SCOPE_CACHE_TTL_DEFAULT (5 min).
      * Acota al rango [SCOPE_CACHE_TTL_MIN, SCOPE_CACHE_TTL_MAX].

@@ -577,6 +577,10 @@ function shareModal() {
             return '/s/' + this.token + '/media/' + file.id + '/preview';
         },
 
+        getDownloadUrl(file) {
+            return '/s/' + this.token + '/download/' + file.id;
+        },
+
         togglePdfFullscreen() {
             this.pdfFullscreen = !this.pdfFullscreen;
             this.$nextTick(() => {
@@ -969,8 +973,8 @@ function refreshFolder() {
                       x-text="(currentIndex + 1) + ' / ' + files.length"></span>
             </div>
             <div class="flex items-center gap-4 flex-shrink-0">
-                <a x-show="currentFile" :href="currentFile ? getFileUrl(currentFile) : '#'"
-                   class="flex items-center gap-1.5 text-slate-300 hover:text-white text-sm transition-colors">
+                <a x-show="currentFile" :href="currentFile ? getDownloadUrl(currentFile) : '#'"
+                   download class="flex items-center gap-1.5 text-slate-300 hover:text-white text-sm transition-colors">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
                     </svg>

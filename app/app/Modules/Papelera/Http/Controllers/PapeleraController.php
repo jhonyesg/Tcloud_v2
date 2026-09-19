@@ -58,8 +58,10 @@ class PapeleraController extends Controller
 
         $query = File::trashed()->orderByDesc('deleted_at');
 
+        // canonical-owner: filtro por acceso al STORAGE (no owner_id)
         if (!$user->isAdmin()) {
-            $query->where('owner_id', $user->id);
+            $userStorageIds = $user->userStorages()->pluck('storage_provider_id')->all();
+            $query->whereIn('storage_provider_id', $userStorageIds);
         }
 
         $paginator = $query->paginate($perPage, ['*'], 'page', $page);
@@ -106,7 +108,8 @@ class PapeleraController extends Controller
             return response()->json(['error' => 'not_found_or_not_trashed'], 404);
         }
 
-        if (!$user->isAdmin() && $item->owner_id !== $user->id) {
+        // canonical-owner: filtro por acceso al STORAGE del item (no owner_id del item)
+        if (!$user->isAdmin() && !$user->hasStoragePermission($item->storage_provider_id, 'read')) {
             return response()->json(['error' => 'forbidden'], 403);
         }
 
@@ -146,7 +149,8 @@ class PapeleraController extends Controller
             return response()->json(['error' => 'not_found_or_not_trashed'], 404);
         }
 
-        if (!$user->isAdmin() && $item->owner_id !== $user->id) {
+        // canonical-owner: filtro por acceso al STORAGE del item (no owner_id del item)
+        if (!$user->isAdmin() && !$user->hasStoragePermission($item->storage_provider_id, 'read')) {
             return response()->json(['error' => 'forbidden'], 403);
         }
 
@@ -169,5 +173,64 @@ class PapeleraController extends Controller
         $deleted = $this->service->emptyFor($user);
 
         return response()->json(['message' => 'Trash emptied', 'deleted' => $deleted]);
+    }
+
+    /**
+     * POST /papelera/restore-many
+     * Body: { "ids": [1,2,3,...] }
+     * Restaura un subconjunto seleccionado de items en papelera.
+     */
+    public function restoreMany(Request $request): JsonResponse
+    {
+        $userId = (int) Session::get('user_id');
+        $user = User::find($userId);
+        if (!$user) {
+            return response()->json(['error' => 'unauthenticated'], 401);
+        }
+
+        $ids = $request->input('ids');
+        if (!is_array($ids) || empty($ids)) {
+            return response()->json(['error' => 'ids_required'], 422);
+        }
+
+        $ids = array_values(array_unique(array_filter(array_map('intval', $ids), fn ($i) => $i > 0)));
+        if (empty($ids)) {
+            return response()->json(['error' => 'ids_empty'], 422);
+        }
+
+        // Tope defensivo: si mandan 50k ids en una sola request, cortamos.
+        if (count($ids) > 5000) {
+            $ids = array_slice($ids, 0, 5000);
+        }
+
+        $result = $this->service->restoreMany($ids, $user);
+
+        return response()->json([
+            'message' => 'Restored batch',
+            'restored' => $result['restored'],
+            'skipped' => $result['skipped'],
+        ]);
+    }
+
+    /**
+     * POST /papelera/restore-all
+     * Restaura todos los items en papelera del actor (o de todos si admin).
+     */
+    public function restoreAll(Request $request): JsonResponse
+    {
+        $userId = (int) Session::get('user_id');
+        $user = User::find($userId);
+        if (!$user) {
+            return response()->json(['error' => 'unauthenticated'], 401);
+        }
+
+        $result = $this->service->restoreAll($user);
+
+        return response()->json([
+            'message' => 'Restored all',
+            'restored' => $result['restored'],
+            'skipped' => $result['skipped'],
+            'total' => $result['total'] ?? 0,
+        ]);
     }
 }

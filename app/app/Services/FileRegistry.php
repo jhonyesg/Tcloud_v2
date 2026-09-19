@@ -25,6 +25,14 @@ use Illuminate\Support\Facades\Log;
  *
  * `ensure()` es un upsert semantico: si dos procesos compiten, uno gana y el
  * otro lee al ganador en vez de insertar un duplicado.
+ *
+ * Cambio `files-mirror-consolidation` (2026-09-19):
+ * Despues de cada ensure(), invoca `FileMirrorLinker::reconcileAfterUpsert()`
+ * para que la fila recien creada/upserted se conecte via `canonical_folder_id`
+ * con su contraparte en otro storage si existe. Asi, el sync deja los files
+ * linkeados cross-storage automaticamente — sin necesidad de un comando de
+ * backfill. El backfill (set-based) cubre los files historicos que sync ya
+ * indexo antes del fix.
  */
 class FileRegistry
 {
@@ -49,7 +57,7 @@ class FileRegistry
         }
 
         try {
-            return File::create($attributes + [
+            $row = File::create($attributes + [
                 'storage_provider_id' => $storage->id,
                 'path' => $path,
             ]);
@@ -78,6 +86,26 @@ class FileRegistry
 
             return $winner;
         }
+
+        // Cambio files-mirror-consolidation: reconciliar con mirror canónico
+        // despues de crear la fila. Solo si no es un folder: los folders se
+        // reconcilian cuando sus files hijos se procesan, evitando overhead
+        // en cada escaneo.
+        if (!$row->is_folder) {
+            try {
+                app(FileMirrorLinker::class)->reconcileAfterUpsert($row);
+            } catch (\Throwable $e) {
+                // No bloquear el flujo de sync si la reconciliacion falla.
+                // El comando `files:repair-file-mirrors --apply` cubre el backfill.
+                Log::warning('file_registry.mirror_reconcile_failed', [
+                    'file_id' => $row->id,
+                    'path' => $path,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        return $row;
     }
 
     public function find(int $storageId, string $path): ?File

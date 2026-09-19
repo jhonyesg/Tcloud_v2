@@ -57,6 +57,7 @@ class ApiTranscriptorController extends Controller
     public function __construct(
         private TranscriptorSettings $settings,
         private StorageFunnelService $funnel,
+        private \App\Services\Ia\StorageHierarchyService $hierarchy,
     ) {}
 
     /**
@@ -84,7 +85,7 @@ class ApiTranscriptorController extends Controller
      */
     private function indexData(): array
     {
-        $storages = StorageProvider::select(['id', 'name', 'type', 'transcription_enabled', 'base_path', 'allow_parent_overlap', 'transcription_priority'])
+        $storages = StorageProvider::select(['id', 'name', 'type', 'transcription_enabled', 'base_path', 'parent_storage_id', 'transcription_priority'])
             ->orderByRaw('transcription_enabled DESC')
             ->orderBy('name')
             ->get();
@@ -145,17 +146,14 @@ class ApiTranscriptorController extends Controller
         }
 
         $overlapParents = [];
-        $overlapRoots = StorageProvider::query()
-            ->where('allow_parent_overlap', true)
-            ->where('transcription_enabled', true)
-            ->pluck('id')
-            ->all();
-        foreach ($overlapRoots as $rid) {
-            $scope = StorageProvider::resolveInheritedTranscriptionScope((int) $rid);
-            if (count($scope) > 1) {
-                $overlapParents[(int) $rid] = true;
-            }
-        }
+        // overlap_warning deriva de la JERARQUIA (design.md Q1), no del flag
+        // `allow_parent_overlap`: ese flag esta en false en las 190 filas y su
+        // unico consumidor real era la exclusion del scanner, que se elimino.
+        //
+        // Se usa overlapMap() (2 queries para los 190) y NO hierarchyInfo() en
+        // un loop: ese ultimo era un N+1 de ~500 queries / 800 ms por render
+        // (medido 2026-09-16), que hacia que el modulo tardara en cargar.
+        $overlapParents = $this->hierarchy->overlapMap();
 
         $storages = $storages->map(function ($s) use ($descendantCounts, $descendantNames, $parentScopeByStorage, $funnelByStorage, $overlapParents, $cantidadByStorage) {
             $s->descendant_count = $descendantCounts[$s->id] ?? 0;
@@ -212,6 +210,12 @@ class ApiTranscriptorController extends Controller
             $this->funnel->invalidate($rootId);
 
             StorageProvider::forgetInheritedTranscriptionScope((int) $rootId);
+
+            // La jerarquia define la elegibilidad por CADENA (design.md D9): el
+            // toggle cambia el dueño efectivo de TODA la descendencia, no solo
+            // de este storage. Se limpia el set completo.
+            $this->hierarchy->forgetAll();
+            $this->hierarchy->forget((int) $storage->id);
 
             // Caches con consumidores fuera de este módulo (admin storages + Avisos):
             Cache::forget('admin:storages:index');

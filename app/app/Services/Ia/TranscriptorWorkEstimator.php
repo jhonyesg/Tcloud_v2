@@ -51,7 +51,10 @@ class TranscriptorWorkEstimator
         if (!empty($storageIds)) {
             $storageQuery->whereIn('id', $storageIds);
         }
-        $storages = $storageQuery->get(['id', 'base_path', 'folder_layout', 'allow_parent_overlap']);
+        // `allow_parent_overlap` y `folder_layout` ya no son entradas del
+        // descubrimiento (design.md D4/Q1): la elegibilidad se resuelve por
+        // cadena de ancestros y la ruta relativa ya viene en `files.path`.
+        $storages = $storageQuery->get(['id', 'base_path']);
         $ids = $storages->pluck('id')->all();
 
         // Rango de fechas efectivo del alcance, en formato dmY -> Carbon.
@@ -206,14 +209,32 @@ class TranscriptorWorkEstimator
             return 0;
         }
 
+        // Elegibilidad por cadena de ancestros (design.md D9): cuenta archivos
+        // cuya ruta cae bajo ALGUN storage con transcription_enabled, no solo
+        // bajo los storages habilitados `$ids`. Antes, un archivo con fila en
+        // un hijo apagado bajo un ancestro habilitado no se contaba.
+        //
+        // `DISTINCT` por ruta absoluta: el mismo archivo fisico puede tener
+        // varias filas `files`, y el pipeline lo procesa UNA vez (candado
+        // source_absolute_path).
         $q = DB::table('files')
-            ->whereIn('files.storage_provider_id', $ids)
+            ->join('storage_providers as sp', 'sp.id', '=', 'files.storage_provider_id')
             ->where('files.is_folder', false)
             ->where('files.is_trashed', false)
+            ->whereExists(function ($sub) {
+                $sub->selectRaw('1')
+                    ->from('storage_providers as a')
+                    ->where('a.transcription_enabled', true)
+                    ->whereNotNull('a.base_path')
+                    ->whereRaw("rtrim(a.base_path, '/') <> ''")
+                    ->whereRaw(
+                        "(rtrim(sp.base_path, '/') || '/' || files.path) LIKE (rtrim(a.base_path, '/') || '/%')"
+                    );
+            })
             ->whereNotExists(function ($sub) {
-                $sub->select(DB::raw(1))
-                    ->from('transcriptions')
-                    ->whereColumn('transcriptions.file_id', 'files.id');
+                $sub->selectRaw('1')
+                    ->from('transcriptions as t')
+                    ->whereRaw("t.source_absolute_path = rtrim(sp.base_path, '/') || '/' || files.path");
             });
 
         if ($from !== null) {
@@ -223,6 +244,8 @@ class TranscriptorWorkEstimator
             $q->where('files.file_modified_at', '<', $to->addDay());
         }
 
-        return min(self::COUNT_CAP, $q->count());
+        $count = $q->distinct()->count('files.path');
+
+        return min(self::COUNT_CAP, $count);
     }
 }

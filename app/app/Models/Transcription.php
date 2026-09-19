@@ -32,7 +32,7 @@ class Transcription extends Model
      *    operador; default del request es true.
      */
     protected $fillable = [
-        'file_id', 'original_name', 'job_id', 'node_url', 'node_id', 'state', 'corrected', 'generate_alerts', 'language',
+        'file_id', 'source_absolute_path', 'original_name', 'job_id', 'node_url', 'node_id', 'state', 'corrected', 'generate_alerts', 'language',
         'srt_content', 'duration_seconds', 'word_count',
         'started_at', 'finished_at', 'recorded_at', 'requeue_after_at', 'last_polled_at', 'error_message', 'retries',
         'discovered_at', 'dispatched_at', 'submission_committed_at', 'regulator_skip_reason',

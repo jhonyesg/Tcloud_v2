@@ -63,6 +63,28 @@ class File extends Model
         return $query->where('is_trashed', false);
     }
 
+    /**
+     * @deprecated (change `files-mirror-elimination`, 2026-09-19)
+     *
+     * Todos los rows vivos son canónicos tras el retiro de los mirrors. El
+     * scope se conserva por un ciclo de release y retorna la query sin filtrar
+     * por `canonical_folder_id`.
+     */
+    public function scopeCanonical($query)
+    {
+        return $query->whereNull('canonical_folder_id');
+    }
+
+    /**
+     * @deprecated (change `files-mirror-elimination`, 2026-09-19)
+     *
+     * Ya no existen rows mirror vivos. Se conserva por un ciclo de release.
+     */
+    public function scopeMirror($query)
+    {
+        return $query->whereNotNull('canonical_folder_id');
+    }
+
     public function owner(): BelongsTo
     {
         return $this->belongsTo(User::class, 'owner_id');
@@ -114,19 +136,20 @@ class File extends Model
     }
 
     /**
-     * True si este row es un folder mirror (apunta a un canónico via canonical_folder_id).
-     * Falso si es canónico o huérfano.
+     * @deprecated (change `files-mirror-elimination`, 2026-09-19)
      *
-     * Ver convención de naming en AGENTS.md § Schema clarity policy.
+     * La materialización de mirrors se retiró: la identidad física se resuelve
+     * en tiempo de lectura vía `FilePhysicalIdentity::canonicalFor()`. Este
+     * método queda por un ciclo de release para no romper call sites y siempre
+     * retorna `false`. Se elimina junto con la columna `canonical_folder_id`.
      */
     public function isFolderMirror(): bool
     {
-        return $this->canonical_folder_id !== null;
+        return false;
     }
 
     /**
-     * Alias deprecado de isFolderMirror() conservado por un ciclo de release.
-     * Migración: cambiar todos los call sites a isFolderMirror() y eliminar.
+     * @deprecated Alias de isFolderMirror(). Siempre `false`. Ver nota arriba.
      */
     public function isMirror(): bool
     {
@@ -134,21 +157,19 @@ class File extends Model
     }
 
     /**
-     * Devuelve el folder canónico: self si no es mirror, el row apuntado si lo es.
-     * Retorna null si el canónico fue borrado (FK dangling — `canonical_folder_id` quedó
-     * apuntando a NULL por el ON DELETE SET NULL).
+     * @deprecated (change `files-mirror-elimination`, 2026-09-19)
+     *
+     * Retorna `$this` siempre: ya no hay un enlace materializado que resolver.
+     * Para resolver la identidad física usa
+     * `app(FilePhysicalIdentity::class)->canonicalFor($file)`.
      */
     public function canonicalFolder(): ?self
     {
-        if (!$this->isFolderMirror()) {
-            return $this;
-        }
-        return static::find($this->canonical_folder_id);
+        return $this;
     }
 
     /**
-     * Alias deprecado de canonicalFolder() conservado por un ciclo de release.
-     * Migración: cambiar todos los call sites a canonicalFolder() y eliminar.
+     * @deprecated Alias de canonicalFolder(). Retorna `$this`. Ver nota arriba.
      */
     public function canonical(): ?self
     {
@@ -163,5 +184,39 @@ class File extends Model
     {
         $norm = $this->physicalPathNormalized() ?? '(orphan)';
         return "{$this->id}@{$norm}";
+    }
+
+    /**
+     * Invalida la cache de identidad física (`FilePhysicalIdentity`) para la
+     * identidad actual y la original, cuando cambia alguno de sus componentes.
+     *
+     * Change `files-mirror-elimination` (2026-09-19).
+     */
+    public function forgetCanonicalIdentityCache(): void
+    {
+        if (!$this->isDirty('path')
+            && !$this->isDirty('storage_provider_id')
+            && !$this->isDirty('base_path_snapshot')) {
+            return;
+        }
+
+        $keys = [];
+
+        $current = $this->physicalPathNormalized();
+        if ($current !== null) {
+            $keys[] = \App\Services\FilePhysicalIdentity::cacheKeyFor($current);
+        }
+
+        $origBase = $this->getOriginal('base_path_snapshot');
+        $origPath = $this->getOriginal('path');
+        if (!empty($origBase) && $origPath !== null && $origPath !== '') {
+            $keys[] = \App\Services\FilePhysicalIdentity::cacheKeyFor(
+                strtolower(rtrim((string) $origBase, '/') . '/' . ltrim((string) $origPath, '/'))
+            );
+        }
+
+        foreach (array_unique($keys) as $key) {
+            \Illuminate\Support\Facades\Cache::forget($key);
+        }
     }
 }

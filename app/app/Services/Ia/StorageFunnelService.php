@@ -102,6 +102,22 @@ class StorageFunnelService
 
     private function countFoldersRecursive(string $basePath): int
     {
+        // GUARDA DE MONTAJE (2026-09-17): no recorrer un path cuyo punto de
+        // montaje de red NO esta montado. Sin esto, un NFS caido en modo `hard`
+        // bloquea la syscall indefinidamente: `RecursiveDirectoryIterator`
+        // sobre /…/Disco_E colgaba el render de /ia/api-transcriptor mas alla
+        // de 5 minutos (medido con Disco_D/E/G/H caidos).
+        //
+        // `detachedAncestor()` lee /proc/self/mounts (local, no bloquea), asi
+        // que la guarda es barata y no paga I/O al dispositivo remoto.
+        if (app(\App\Services\MountGuard::class)->detachedAncestor($basePath) !== null) {
+            Log::warning('transcriptor.cantidad.mount_detached', [
+                'base_path' => $basePath,
+            ]);
+
+            return 0;
+        }
+
         // Cantidad de medios = carpetas de "segundo nivel" bajo base_path
         // (las que el operador ve como medios al hacer drill-down desde el
         // navegador de archivos). Las carpetas de "primer nivel" son
@@ -180,20 +196,22 @@ class StorageFunnelService
 
     private function computeRootIdFor(int $storageId): int
     {
+        // Fuente unica: `storage_providers.parent_storage_id` (migracion
+        // 2026_09_16_200000). Antes se recalculaba con LIKE + LENGTH contra
+        // base_path, duplicando en este servicio una logica que vivia en otros
+        // tres sitios con criterios divergentes. Verificado 2026-09-16: el
+        // criterio viejo y la columna producen el MISMO resultado en los 177
+        // storages con base_path (0 diferencias).
         $current = StorageProvider::find($storageId);
-        if (!$current || empty($current->base_path)) {
+
+        if (!$current) {
             return $storageId;
         }
 
-        $currentPath = rtrim($current->base_path, '/');
-        $parent = StorageProvider::query()
-            ->where('id', '!=', $current->id)
-            ->whereNotNull('base_path')
-            ->where('base_path', '!=', '')
-            ->whereRaw("? LIKE (base_path || '/%')", [$currentPath])
-            ->orderByRaw('LENGTH(base_path) DESC')
-            ->first();
-
-        return $parent ? (int) $parent->id : (int) $current->id;
+        // Devuelve el PADRE INMEDIATO (no la raiz de la cadena): el scope
+        // heredado del tab Storages agrupa por ancestro directo.
+        return $current->parent_storage_id !== null
+            ? (int) $current->parent_storage_id
+            : (int) $current->id;
     }
 }

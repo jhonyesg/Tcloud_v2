@@ -492,28 +492,70 @@ class StorageSyncService
         }
 
         $parentFolder = File::find($parentId);
-        if (!$parentFolder || $parentFolder->storage_provider_id !== $storageId) {
+        if (!$parentFolder) {
             return $targets;
         }
 
-        $storage = StorageProvider::find($storageId);
-        if (!$storage || empty($storage->base_path)) {
+        // Change `files-mirror-elimination` (Task 2.1): el row del folder puede
+        // pertenecer a OTRO storage que el navegado. Pasa cuando el listado
+        // cross-storage devolvió la fila canónica de un sub-storage y el cliente
+        // todavía no adoptó ese storage (fix de frontend es el Grupo 3). Sin
+        // esto, `$parentFolder->storage_provider_id !== $storageId` abortaba y el
+        // listado salía vacío — el bug reportado.
+        $parentStorageId = $parentFolder->storage_provider_id ?: $storageId;
+
+        // El target primario debe usar el storage del propio row: `currentListing`
+        // consulta `where('storage_provider_id', ...)`, así que un target con el
+        // storage equivocado devuelve 0 filas.
+        if ($parentStorageId !== $storageId) {
+            $targets = [['storage_id' => $parentStorageId, 'parent_id' => $parentId]];
+        }
+
+        $parentStorage = StorageProvider::find($parentStorageId);
+        if (!$parentStorage || empty($parentStorage->base_path)) {
             return $targets;
         }
 
-        $absolutePath = rtrim($storage->base_path, '/') . '/' . ltrim($parentFolder->path, '/');
-        $sub = $this->findMoreSpecificStorage($absolutePath, $storageId);
+        $absolutePath = rtrim($parentStorage->base_path, '/') . '/' . ltrim((string) $parentFolder->path, '/');
+        $parentBase = rtrim((string) $parentStorage->base_path, '/');
+
+        // Task 2.1: si el path absoluto ES exactamente el base_path de un
+        // sub-storage, la carpeta navegada es la RAÍZ de ese sub-storage. Sus
+        // hijos cuelgan de `parent_id IS NULL`, no de un folder con `path = ''`.
+        //
+        // `findMoreSpecificStorage()` NO sirve para este caso: descarta
+        // candidatos cuyo base_path iguala el path absoluto (los trata como "el
+        // mismo storage"). Por eso se resuelve aparte.
+        $exact = $this->findStorageByExactBasePath($absolutePath, $parentStorageId);
+        if ($exact !== null) {
+            $targets[] = ['storage_id' => $exact->id, 'parent_id' => null];
+            return $targets;
+        }
+
+        $sub = $this->findMoreSpecificStorage($absolutePath, $parentStorageId);
         if ($sub === null) {
             return $targets;
         }
 
         $subBase = rtrim((string) $sub->base_path, '/');
+
+        // `findMoreSpecificStorage` solo garantiza "prefijo más largo que 0":
+        // puede devolver un ANCESTRO del storage actual (ej. navegando storage
+        // 44 `.../Prensa/Portafolio`, devuelve 37 `.../Prensa` o 5 `.../Tcloud`).
+        // Añadirlo como target duplicaría el listado con las filas del padre.
+        // El sub-storage real es estrictamente más específico que el navegado.
+        if (strlen($subBase) <= strlen($parentBase)) {
+            return $targets;
+        }
+
         $relativeToSub = ltrim(substr($absolutePath, strlen($subBase)), '/');
 
-        $subFolder = File::where('storage_provider_id', $sub->id)
-            ->where('path', $relativeToSub)
-            ->where('is_folder', true)
-            ->first();
+        if ($relativeToSub === '') {
+            $targets[] = ['storage_id' => $sub->id, 'parent_id' => null];
+            return $targets;
+        }
+
+        $subFolder = $this->findEquivalentFolderInStorage($absolutePath, $sub->id, $relativeToSub);
 
         if (!$subFolder) {
             return $targets;
@@ -522,6 +564,62 @@ class StorageSyncService
         $targets[] = ['storage_id' => $sub->id, 'parent_id' => $subFolder->id];
 
         return $targets;
+    }
+
+    /**
+     * Busca un storage (no mergeado) cuyo `base_path` sea EXACTAMENTE la ruta
+     * física dada. Es el caso "carpeta navegada = raíz del sub-storage".
+     *
+     * Change `files-mirror-elimination` (Task 2.1).
+     */
+    private function findStorageByExactBasePath(string $absolutePath, int $excludeStorageId): ?StorageProvider
+    {
+        $normalized = strtolower(rtrim($absolutePath, '/'));
+
+        return StorageProvider::query()
+            ->whereNotNull('base_path')
+            ->whereRaw("rtrim(base_path, '/') <> ''")
+            ->whereNull('duplicate_of_storage_id')
+            ->where('id', '<>', $excludeStorageId)
+            ->whereRaw("LOWER(RTRIM(base_path, '/')) = ?", [$normalized])
+            ->first(['id', 'name', 'base_path', 'parent_storage_id']);
+    }
+
+    /**
+     * Resuelve la fila de carpeta en `$subStorageId` que representa el mismo
+     * directorio físico que `$absolutePath`.
+     *
+     * Dos caminos:
+     *  1. `path` relativo exacto al base_path del sub-storage (caso normal).
+     *  2. Equivalencia por identidad física — cubre filas cuyo `path` quedó con
+     *     una base distinta (drift histórico de backfills).
+     *
+     * Change `files-mirror-elimination` (Task 2.3).
+     */
+    private function findEquivalentFolderInStorage(string $absolutePath, int $subStorageId, string $relativePath): ?File
+    {
+        $byPath = File::where('storage_provider_id', $subStorageId)
+            ->where('path', $relativePath)
+            ->where('is_folder', true)
+            ->where('is_trashed', false)
+            ->orderBy('id')
+            ->first();
+
+        if ($byPath !== null) {
+            return $byPath;
+        }
+
+        $normalized = strtolower(rtrim($absolutePath, '/'));
+
+        return File::where('storage_provider_id', $subStorageId)
+            ->where('is_folder', true)
+            ->where('is_trashed', false)
+            ->whereRaw(
+                "LOWER(RTRIM(COALESCE(base_path_snapshot, ''), '/') || '/' || LTRIM(COALESCE(path, ''), '/')) = ?",
+                [$normalized]
+            )
+            ->orderBy('id')
+            ->first();
     }
 
     /**
@@ -638,7 +736,9 @@ class StorageSyncService
                     'size' => $entry['size'] ?? 0,
                     'mime_type' => $entry['mime_type'] ?? 'application/octet-stream',
                     'storage_provider_id' => $moreSpecificStorage->id,
-                    'owner_id' => $moreSpecificStorage->userStorages()->first()?->user_id ?? 1,
+                    // canonical-owner: usar owner canonico por storage (no userStorages()->first() sin orderBy)
+                    'owner_id' => StorageProvider::canonicalOwnerId($moreSpecificStorage->id)
+                        ?? throw new \RuntimeException("storage {$moreSpecificStorage->id} sin owner canonico, asigne permissions=full a un user_storages antes de sincronizar"),
                     'parent_id' => $subParentFolderId,
                     'is_folder' => false,
                     'file_modified_at' => isset($entry['modified_at'])
@@ -683,7 +783,9 @@ class StorageSyncService
             'size' => $entry['size'] ?? 0,
             'mime_type' => $entry['mime_type'] ?? ($entry['is_folder'] ? 'folder' : 'application/octet-stream'),
             'storage_provider_id' => $storage->id,
-            'owner_id' => $storage->userStorages()->first()?->user_id ?? 1,
+            // canonical-owner: usar owner canonico por storage (no userStorages()->first() sin orderBy)
+            'owner_id' => StorageProvider::canonicalOwnerId($storage->id)
+                ?? throw new \RuntimeException("storage {$storage->id} sin owner canonico, asigne permissions=full a un user_storages antes de sincronizar"),
             'parent_id' => $parentId,
             'is_folder' => $entry['is_folder'],
             'file_modified_at' => $modifiedAt,
@@ -795,7 +897,8 @@ class StorageSyncService
             return null;
         }
 
-        $ownerId = $storage->userStorages()->first()?->user_id ?? $userId ?? 1;
+        $ownerId = StorageProvider::canonicalOwnerId($storage->id)
+            ?? throw new \RuntimeException("storage {$storage->id} sin owner canonico, asigne permissions=full a un user_storages antes de sincronizar");
         $currentParentId = null;
         $accumulatedPath = '';
 
@@ -871,8 +974,15 @@ class StorageSyncService
     {
         // 1. Detectar candidatos: files en este folder cuyo absolute path cae bajo
         //    un sub-storage mas especifico. Sin cross-join: usamos position() + LIKE.
+        // El prefilter es case-INSENSITIVE: hay filas historicas con case
+        // distinto al disco (st5 guarda `disco_c/prensa/...` cuando el
+        // directorio real es `Disco_C/Prensa`). Un LIKE sensible a case las
+        // descartaba silenciosamente y quedaban sin delegar para siempre.
+        // La resolucion exacta del case se hace despues contra el disco en
+        // `resolvePhysicalPath()`.
         $candidates = DB::select("
-            SELECT f.id AS file_id, f.path AS file_path, f.storage_provider_id AS origin_id,
+            SELECT DISTINCT ON (f.id)
+                   f.id AS file_id, f.path AS file_path, f.storage_provider_id AS origin_id,
                    s1.base_path AS origin_base,
                    s2.id AS target_id, s2.base_path AS target_base
             FROM files f
@@ -883,10 +993,12 @@ class StorageSyncService
               AND s2.id != f.storage_provider_id
               AND s2.id != s1.id
               AND s2.base_path != s1.base_path
-              AND (s1.base_path || '/' || f.path || '/') LIKE s2.base_path || '/%'
+              AND lower(s1.base_path || '/' || f.path || '/') LIKE lower(s2.base_path) || '/%'
+              AND length(rtrim(s2.base_path, '/')) > length(rtrim(s1.base_path, '/'))
               AND f.parent_id " . ($parentId === null ? "IS NULL" : "= " . (int)$parentId) . "
               AND f.storage_provider_id = ?
               AND NOT f.is_folder AND NOT f.is_trashed
+            ORDER BY f.id, length(rtrim(s2.base_path, '/')) DESC
             LIMIT 5000
         ", [$storageId]);
 
@@ -897,9 +1009,46 @@ class StorageSyncService
 
         foreach ($candidates as $cand) {
             $filePath = trim((string) $cand->file_path, '/');
+            $originBase = rtrim((string) $cand->origin_base, '/');
             $targetBase = rtrim((string) $cand->target_base, '/');
-            $relativeToTarget = ltrim(substr(strtolower($filePath), strlen(strtolower($targetBase)) + 1), '/.');
-            $subParentPath = trim(dirname($relativeToTarget), '/.');
+
+            // Bug historico (corregido 2026-09-19): antes se calculaba
+            //   substr($filePath, strlen($targetBase) + 1)
+            // restando la longitud de un base_path ABSOLUTO a un path RELATIVO
+            // al storage origen. El resultado era basura (normalmente el path
+            // entero) y el UPDATE no escribia `path`, asi que la fila quedaba
+            // en el sub-storage apuntando a una ruta inexistente:
+            //   st37 "20260918/imagenes/01.png" -> st44 (sin rebasar) -> disco 404
+            //
+            // Ahora: se reconstruye la ruta ABSOLUTA real del archivo, se
+            // resuelve su case exacto contra el disco y se rebasa al sub-storage.
+            $absolute = $this->resolvePhysicalPath($originBase, $filePath);
+
+            if ($absolute === null) {
+                // La fila no representa ningun archivo real en disco. No se
+                // delega: se deja intacta para que el prune/repair la trate
+                // (es un duplicado muerto, no informacion que perder).
+                Log::info('storage_sync.self_heal_unresolvable_path', [
+                    'file_id' => $cand->file_id,
+                    'storage_id' => $cand->origin_id,
+                    'path' => $filePath,
+                    'expected_absolute' => $originBase . '/' . $filePath,
+                ]);
+                continue;
+            }
+
+            $newPath = $this->rebasePath($absolute, $targetBase);
+
+            if ($newPath === null || $newPath === '') {
+                Log::info('storage_sync.self_heal_rebase_failed', [
+                    'file_id' => $cand->file_id,
+                    'absolute' => $absolute,
+                    'target_base' => $targetBase,
+                ]);
+                continue;
+            }
+
+            $subParentPath = trim(dirname($newPath), '/.');
 
             // Resolver parent_id en el sub-storage destino
             $parentFolderId = null;
@@ -919,9 +1068,10 @@ class StorageSyncService
                 }
             }
 
-            // Detectar colision: ya existe un file con mismo path en el destino
+            // Detectar colision: ya existe un file con el MISMO path nuevo en
+            // el destino (el cron del sub ya escaneo el archivo).
             $existingAtTarget = File::where('storage_provider_id', $cand->target_id)
-                ->where('path', $filePath)
+                ->where('path', $newPath)
                 ->where('is_trashed', false)
                 ->first();
 
@@ -937,10 +1087,13 @@ class StorageSyncService
                 continue;
             }
 
-            // UPDATE: migrar al sub-storage
+            // UPDATE: migrar al sub-storage Y rebasar el path. Sin rebasar el
+            // path la fila queda apuntando a una ruta que no existe.
             File::where('id', $cand->file_id)->update([
                 'storage_provider_id' => $cand->target_id,
                 'parent_id' => $parentFolderId,
+                'path' => $newPath,
+                'base_path_snapshot' => null,
             ]);
 
             $this->invalidateFolderCache((int) $cand->target_id, $parentFolderId);
@@ -950,13 +1103,109 @@ class StorageSyncService
                 'file_id' => $cand->file_id,
                 'from_storage_id' => $cand->origin_id,
                 'to_storage_id' => $cand->target_id,
-                'path' => $filePath,
+                'old_path' => $filePath,
+                'new_path' => $newPath,
             ]);
 
             $migrated++;
         }
 
         return $migrated;
+    }
+
+    /**
+     * Reconstruye la ruta absoluta real de un archivo a partir del `base_path`
+     * del storage que lo contiene y su `path` relativo, resolviendo el case
+     * exacto de cada segmento contra el disco.
+     *
+     * Necesario porque hay filas historicas con case incorrecto (st5 guarda
+     * `disco_c/prensa/...` cuando en disco es `Disco_C/Prensa/...`) y porque
+     * `file_exists()` sobre una ruta con case distinto en Linux da false.
+     *
+     * Devuelve null si algun segmento no existe en disco: la fila no
+     * representa un archivo fisico y no debe delegarse.
+     */
+    private function resolvePhysicalPath(string $base, string $relative): ?string
+    {
+        $realBase = realpath($base);
+
+        if ($realBase === false) {
+            // El base_path del storage no existe en disco: probar la ruta
+            // concatenada diretamente (puede ser un storage externo aun no
+            // montado, en cuyo caso devolvemos null).
+            $candidate = rtrim($base, '/') . '/' . ltrim($relative, '/');
+            return file_exists($candidate) ? $candidate : null;
+        }
+
+        $current = rtrim($realBase, '/');
+
+        foreach (explode('/', trim($relative, '/')) as $segment) {
+            if ($segment === '' || $segment === '.') {
+                continue;
+            }
+
+            $candidate = $current . '/' . $segment;
+
+            if (file_exists($candidate)) {
+                $current = $candidate;
+                continue;
+            }
+
+            // Case-insensitive: Linux distingue mayusculas, el usuario no.
+            $entry = $this->findEntryIgnoreCase($current, $segment);
+
+            if ($entry === null) {
+                return null;
+            }
+
+            $current = $current . '/' . $entry;
+        }
+
+        return file_exists($current) ? $current : null;
+    }
+
+    /**
+     * Busca en `$dir` una entrada que iguale `$name` sin distinguir case.
+     */
+    private function findEntryIgnoreCase(string $dir, string $name): ?string
+    {
+        $entries = @scandir($dir);
+
+        if ($entries === false) {
+            return null;
+        }
+
+        foreach ($entries as $entry) {
+            if ($entry === '.' || $entry === '..') {
+                continue;
+            }
+            if (strcasecmp($entry, $name) === 0) {
+                return $entry;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Rebasa una ruta absoluta al `base_path` de un sub-storage, devolviendo
+     * el path relativo que debe guardarse en `files.path`.
+     *
+     * Compara sin distinguir case (el base_path puede tener otro case que el
+     * disco) pero preserva el case real del archivo en el resultado.
+     *
+     * Devuelve null si la ruta no cae bajo el base_path.
+     */
+    private function rebasePath(string $absolute, string $targetBase): ?string
+    {
+        $absoluteNorm = rtrim($absolute, '/');
+        $targetNorm = rtrim($targetBase, '/');
+
+        if (stripos($absoluteNorm, $targetNorm . '/') !== 0) {
+            return null;
+        }
+
+        return ltrim(substr($absoluteNorm, strlen($targetNorm)), '/');
     }
 
     /**

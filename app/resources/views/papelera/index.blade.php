@@ -16,6 +16,20 @@
         </div>
         <div class="flex gap-2">
             <button type="button"
+                    @click="confirming = 'restoreAll'"
+                    :disabled="items.length === 0 || isExecuting"
+                    class="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 disabled:bg-slate-300 text-white text-sm font-medium rounded-lg transition-colors"
+                    title="Restaurar todos los elementos de la papelera">
+                <i class="fas fa-rotate-left mr-1"></i> Restaurar todo
+            </button>
+            <button type="button"
+                    @click="confirming = 'restoreMany'"
+                    :disabled="selectedIds.length === 0 || isExecuting"
+                    class="px-4 py-2 bg-brand-500 hover:bg-brand-600 disabled:bg-slate-300 text-white text-sm font-medium rounded-lg transition-colors"
+                    title="Restaurar solo los elementos seleccionados">
+                <i class="fas fa-undo mr-1"></i> Restaurar selección (<span x-text="selectedIds.length"></span>)
+            </button>
+            <button type="button"
                     @click="confirming = 'empty'"
                     :disabled="items.length === 0"
                     class="px-4 py-2 bg-red-500 hover:bg-red-600 disabled:bg-slate-300 text-white text-sm font-medium rounded-lg transition-colors">
@@ -214,6 +228,12 @@
             <table class="w-full">
                 <thead class="bg-slate-50 border-b border-slate-200">
                     <tr>
+                        <th class="px-3 py-3 text-left text-xs font-semibold text-slate-600 w-10">
+                            <input type="checkbox"
+                                   @change="toggleAll($event.target.checked)"
+                                   :checked="selectedIds.length > 0 && selectedIds.length === filteredItems().length"
+                                   class="rounded border-slate-300 text-brand-500 focus:ring-brand-500">
+                        </th>
                         <th class="px-4 py-3 text-left text-xs font-semibold text-slate-600">Nombre</th>
                         <th class="px-4 py-3 text-left text-xs font-semibold text-slate-600">Eliminado</th>
                         <th class="px-4 py-3 text-left text-xs font-semibold text-slate-600">Días restantes</th>
@@ -223,7 +243,15 @@
                 </thead>
                 <tbody class="divide-y divide-slate-100">
                     <template x-for="item in filteredItems()" :key="item.id">
-                        <tr class="hover:bg-slate-50">
+                        <tr class="hover:bg-slate-50"
+                            :class="selectedIds.includes(item.id) ? 'bg-brand-50' : ''">
+                            <td class="px-3 py-3">
+                                <input type="checkbox"
+                                       :value="item.id"
+                                       :checked="selectedIds.includes(item.id)"
+                                       @change="toggleSelected(item.id, $event.target.checked)"
+                                       class="rounded border-slate-300 text-brand-500 focus:ring-brand-500">
+                            </td>
                             <td class="px-4 py-3">
                                 <div class="flex items-center gap-2">
                                     <i :class="item.is_folder ? 'fas fa-folder text-amber-500' : 'fas fa-file text-slate-400'"></i>
@@ -267,9 +295,15 @@
         <!-- Móvil: cards -->
         <div class="sm:hidden divide-y divide-slate-100">
             <template x-for="item in filteredItems()" :key="item.id">
-                <div class="p-3">
+                <div class="p-3"
+                     :class="selectedIds.includes(item.id) ? 'bg-brand-50' : ''">
                     <div class="flex items-center justify-between gap-2">
                         <div class="flex items-center gap-2 min-w-0 flex-1">
+                            <input type="checkbox"
+                                   :value="item.id"
+                                   :checked="selectedIds.includes(item.id)"
+                                   @change="toggleSelected(item.id, $event.target.checked)"
+                                   class="rounded border-slate-300 text-brand-500 focus:ring-brand-500">
                             <i :class="item.is_folder ? 'fas fa-folder text-amber-500' : 'fas fa-file text-slate-400'"></i>
                             <span class="text-sm font-medium text-slate-800 truncate" x-text="item.name"></span>
                         </div>
@@ -306,16 +340,17 @@
          @click.self="confirming = null">
         <div class="bg-white rounded-lg shadow-xl max-w-md w-full p-6">
             <h3 class="text-lg font-bold text-slate-800 mb-2"
-                x-text="confirming === 'empty' ? '¿Vaciar toda la papelera?' : (confirming === 'restore' ? '¿Restaurar?' : '¿Eliminar definitivamente?')"></h3>
+                x-text="confirmingTitle()"></h3>
             <p class="text-sm text-slate-600 mb-4"
-               x-text="confirming === 'empty' ? 'Se borrarán permanentemente todos los elementos de tu papelera. Los archivos con transcripciones o compartidos se conservarán.' : (confirming === 'restore' ? 'El elemento volverá a su ubicación original. Si el padre ya no existe, irá al root.' : 'Esta acción no se puede deshacer.')"></p>
+               x-text="confirmingMessage()"></p>
             <p x-show="pendingItem" class="text-sm font-mono bg-slate-50 p-2 rounded mb-4" x-text="pendingItem?.name"></p>
             <div class="flex gap-2 justify-end">
                 <button type="button" @click="confirming = null" class="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-medium rounded">Cancelar</button>
                 <button type="button"
                         @click="executeConfirm()"
                         :disabled="isExecuting"
-                        class="px-4 py-2 bg-red-500 hover:bg-red-600 disabled:bg-slate-300 text-white text-sm font-medium rounded">
+                        :class="confirming === 'empty' || confirming === 'hardDelete' ? 'bg-red-500 hover:bg-red-600' : 'bg-emerald-500 hover:bg-emerald-600'"
+                        class="disabled:bg-slate-300 text-white text-sm font-medium rounded px-4 py-2">
                     <span x-show="!isExecuting">Confirmar</span>
                     <span x-show="isExecuting"><i class="fas fa-spinner fa-spin mr-1"></i> Procesando...</span>
                 </button>
@@ -332,6 +367,7 @@
 function papeleraApp() {
     return {
         items: [],
+        selectedIds: [],
         isLoading: true,
         isExecuting: false,
         confirming: null,
@@ -365,6 +401,7 @@ function papeleraApp() {
                 }
                 const data = await res.json();
                 this.items = Array.isArray(data?.items) ? data.items : [];
+                this.selectedIds = [];
                 if (data?.stats && typeof data.stats === 'object') {
                     this.stats = { ...this.stats, ...data.stats };
                 }
@@ -432,6 +469,47 @@ function papeleraApp() {
             this.pendingItem = item;
         },
 
+        toggleSelected(id, checked) {
+            if (checked) {
+                if (!this.selectedIds.includes(id)) this.selectedIds.push(id);
+            } else {
+                this.selectedIds = this.selectedIds.filter(x => x !== id);
+            }
+        },
+
+        toggleAll(checked) {
+            const ids = this.filteredItems().map(i => i.id);
+            this.selectedIds = checked ? Array.from(new Set(ids)) : [];
+        },
+
+        confirmingTitle() {
+            switch (this.confirming) {
+                case 'restoreAll':  return '¿Restaurar TODOS los elementos?';
+                case 'restoreMany': return `¿Restaurar ${this.selectedIds.length} elementos?`;
+                case 'restore':     return '¿Restaurar?';
+                case 'empty':       return '¿Vaciar toda la papelera?';
+                case 'hardDelete':  return '¿Eliminar definitivamente?';
+                default:            return '';
+            }
+        },
+
+        confirmingMessage() {
+            switch (this.confirming) {
+                case 'restoreAll':
+                    return `Vas a restaurar ${this.items.length} elementos de la papelera. Volverán a su ubicación original (o al root si el padre ya no existe). Esta acción puede tomar varios segundos si son muchos archivos.`;
+                case 'restoreMany':
+                    return `Vas a restaurar los ${this.selectedIds.length} elementos seleccionados. Volverán a su ubicación original (o al root si el padre ya no existe).`;
+                case 'restore':
+                    return 'El elemento volverá a su ubicación original. Si el padre ya no existe, irá al root.';
+                case 'empty':
+                    return 'Se borrarán permanentemente todos los elementos de tu papelera. Los archivos con transcripciones o compartidos se conservarán.';
+                case 'hardDelete':
+                    return 'Esta acción no se puede deshacer.';
+                default:
+                    return '';
+            }
+        },
+
         async executeConfirm() {
             if (this.isExecuting) return;
             this.isExecuting = true;
@@ -453,6 +531,48 @@ function papeleraApp() {
                         await this.loadItems();
                     } else {
                         this.showToast('Error al vaciar la papelera (' + res.status + ').');
+                    }
+                } else if (this.confirming === 'restoreAll') {
+                    const res = await fetch('/papelera/restore-all', {
+                        method: 'POST',
+                        credentials: 'include',
+                        headers: {
+                            'Accept': 'application/json',
+                            'X-Requested-With': 'XMLHttpRequest',
+                            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || ''
+                        }
+                    });
+                    if (res.ok) {
+                        const data = await res.json();
+                        const r = data.restored ?? 0;
+                        const s = data.skipped ?? 0;
+                        this.showToast(`Restaurados: ${r}` + (s > 0 ? `, omitidos: ${s}` : '') + '.');
+                        this.selectedIds = [];
+                        await this.loadItems();
+                    } else {
+                        this.showToast('Error al restaurar todo (' + res.status + ').');
+                    }
+                } else if (this.confirming === 'restoreMany' && this.selectedIds.length > 0) {
+                    const res = await fetch('/papelera/restore-many', {
+                        method: 'POST',
+                        credentials: 'include',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Accept': 'application/json',
+                            'X-Requested-With': 'XMLHttpRequest',
+                            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || ''
+                        },
+                        body: JSON.stringify({ ids: this.selectedIds })
+                    });
+                    if (res.ok) {
+                        const data = await res.json();
+                        const r = data.restored ?? 0;
+                        const s = data.skipped ?? 0;
+                        this.showToast(`Restaurados: ${r}` + (s > 0 ? `, omitidos: ${s}` : '') + '.');
+                        this.selectedIds = [];
+                        await this.loadItems();
+                    } else {
+                        this.showToast('Error al restaurar selección (' + res.status + ').');
                     }
                 } else if (this.confirming === 'restore' && this.pendingItem) {
                     const res = await fetch('/papelera/' + this.pendingItem.id + '/restore', {

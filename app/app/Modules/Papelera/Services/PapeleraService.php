@@ -63,7 +63,121 @@ class PapeleraService
             'actor_user_id' => $actorUserId,
         ]);
 
-        $this->invalidateSidebarCache($file->owner_id);
+        // canonical-owner: invalidar cache del actor (quien realizo la accion),
+        // no del owner del file (que ahora es canonico = admin para compartidos).
+        $this->invalidateSidebarCache($actorUserId);
+    }
+
+    /**
+     * Restaura un lote de archivos (por id). Devuelve ['restored' => N, 'skipped' => M].
+     *
+     * - Filtra por acceso al STORAGE si el usuario NO es admin (no por owner_id).
+     * - Itera en chunks para no cargar miles de modelos a memoria.
+     * - Cada fila pasa por la misma logica que restore(): resolvemos colision
+     *   de nombre, calculamos parent original (o root) y actualizamos flags.
+     * - Idempotente: si una fila ya no esta trashed, se cuenta como skipped.
+     */
+    public function restoreMany(array $fileIds, User $actorUser): array
+    {
+        if (empty($fileIds)) {
+            return ['restored' => 0, 'skipped' => 0];
+        }
+
+        $restored = 0;
+        $skipped = 0;
+        $ownersToInvalidate = [];
+
+        $query = File::trashed()->whereIn('id', $fileIds);
+        // canonical-owner: la papelera se filtra por acceso al STORAGE (user_storages),
+        // NO por files.owner_id (que ahora es canonico y = admin para storages compartidos).
+        // Cada user ve la papelera de los storages donde tiene cualquier permiso.
+        if (!$actorUser->isAdmin()) {
+            $userStorageIds = $actorUser->userStorages()->pluck('storage_provider_id')->all();
+            $query->whereIn('storage_provider_id', $userStorageIds);
+        }
+
+        $query->orderBy('id')->chunkById(200, function ($rows) use (&$restored, &$skipped, &$ownersToInvalidate, $actorUser) {
+            foreach ($rows as $row) {
+                try {
+                    $this->restore($row, $actorUser->id);
+                    $restored++;
+                    // canonical-owner: recolectar storage_provider_id para invalidar cache del actor + storage
+                    $ownersToInvalidate[$row->storage_provider_id] = true;
+                } catch (\Throwable $e) {
+                    Log::warning('papelera.restore_many.skipped', [
+                        'file_id' => $row->id,
+                        'reason' => $e->getMessage(),
+                        'actor_user_id' => $actorUser->id,
+                    ]);
+                    $skipped++;
+                }
+            }
+        });
+
+        // canonical-owner: invalidar cache del actor (sidebar cuenta storages donde tiene acceso)
+        $this->invalidateSidebarCache($actorUser->id);
+
+        Log::info('papelera.restore_many.completed', [
+            'actor_user_id' => $actorUser->id,
+            'requested' => count($fileIds),
+            'restored' => $restored,
+            'skipped' => $skipped,
+        ]);
+
+        return ['restored' => $restored, 'skipped' => $skipped];
+    }
+
+    /**
+     * Restaura TODOS los items en papelera del actor (o de todos si es admin).
+     * Misma semantica que restoreMany() pero sin filtro de ids; usa el set completo.
+     */
+    public function restoreAll(User $actorUser): array
+    {
+        $restored = 0;
+        $skipped = 0;
+        $ownersToInvalidate = [];
+
+        $query = File::trashed();
+        // canonical-owner: filtro por storage access (no owner_id)
+        if (!$actorUser->isAdmin()) {
+            $userStorageIds = $actorUser->userStorages()->pluck('storage_provider_id')->all();
+            $query->whereIn('storage_provider_id', $userStorageIds);
+        }
+
+        $totalCandidates = (clone $query)->count();
+        if ($totalCandidates === 0) {
+            return ['restored' => 0, 'skipped' => 0, 'total' => 0];
+        }
+
+        $query->orderBy('id')->chunkById(200, function ($rows) use (&$restored, &$skipped, &$ownersToInvalidate, $actorUser) {
+            foreach ($rows as $row) {
+                try {
+                    $this->restore($row, $actorUser->id);
+                    $restored++;
+                    // canonical-owner: recolectar storage_provider_id (no owner_id)
+                    $ownersToInvalidate[$row->storage_provider_id] = true;
+                } catch (\Throwable $e) {
+                    Log::warning('papelera.restore_all.skipped', [
+                        'file_id' => $row->id,
+                        'reason' => $e->getMessage(),
+                        'actor_user_id' => $actorUser->id,
+                    ]);
+                    $skipped++;
+                }
+            }
+        });
+
+        // canonical-owner: invalidar cache del actor
+        $this->invalidateSidebarCache($actorUser->id);
+
+        Log::info('papelera.restore_all.completed', [
+            'actor_user_id' => $actorUser->id,
+            'total' => $totalCandidates,
+            'restored' => $restored,
+            'skipped' => $skipped,
+        ]);
+
+        return ['restored' => $restored, 'skipped' => $skipped, 'total' => $totalCandidates];
     }
 
     public function restore(File $file, ?int $actorUserId = null): File
@@ -102,7 +216,8 @@ class PapeleraService
             'actor_user_id' => $actorUserId,
         ]);
 
-        $this->invalidateSidebarCache($file->owner_id);
+        // canonical-owner: invalidar cache del actor (quien restauro)
+        $this->invalidateSidebarCache($actorUserId);
 
         // fresh() puede devolver null en algunos edge cases (modelo detached),
         // asi que devolvemos el modelo en memoria directamente: el update()
@@ -134,8 +249,11 @@ class PapeleraService
             'actor_user_id' => $actorUserId,
         ]);
 
-        if ($ownerId) {
-            $this->invalidateSidebarCache($ownerId);
+        // canonical-owner: invalidar cache del actor (quien purgo); fallback a
+        // owner_id si no hay actor (caso cron de purga automatica).
+        $cacheKeyUserId = $actorUserId ?: $ownerId;
+        if ($cacheKeyUserId) {
+            $this->invalidateSidebarCache($cacheKeyUserId);
         }
 
         return true;
@@ -208,8 +326,10 @@ class PapeleraService
     public function emptyFor(User $user): int
     {
         $deleted = 0;
+        // canonical-owner: filtro por storage access del user (no owner_id)
+        $userStorageIds = $user->userStorages()->pluck('storage_provider_id')->all();
         File::trashed()
-            ->where('owner_id', $user->id)
+            ->whereIn('storage_provider_id', $userStorageIds)
             ->orderBy('id')
             ->chunkById(500, function ($rows) use (&$deleted, $user) {
                 foreach ($rows as $row) {
@@ -248,7 +368,9 @@ class PapeleraService
             $retentionDays = (int) config('trash.retention_days', 15);
             $urgentCutoff = now()->subDays($retentionDays - $urgentThreshold);
 
-            $base = File::trashed()->where('owner_id', $userId);
+            // canonical-owner: contar trash del user segun acceso al storage (no owner_id)
+            $userStorageIds = User::find($userId)?->userStorages()->pluck('storage_provider_id')->all() ?? [];
+            $base = File::trashed()->whereIn('storage_provider_id', $userStorageIds);
             $total = (clone $base)->count();
             $urgent = (clone $base)->where('deleted_at', '>=', $urgentCutoff)->count();
 
@@ -279,7 +401,9 @@ class PapeleraService
         $cutoff = now()->subDays($retentionDays);
         $urgentCutoff = now()->subDays($retentionDays - $urgentThreshold);
 
-        $base = File::trashed()->where('owner_id', $userId);
+        // canonical-owner: filtrar por acceso al storage del user (no owner_id)
+        $userStorageIds = User::find($userId)?->userStorages()->pluck('storage_provider_id')->all() ?? [];
+        $base = File::trashed()->whereIn('storage_provider_id', $userStorageIds);
         $total = (clone $base)->count();
         $urgent = (clone $base)->where('deleted_at', '>=', $urgentCutoff)->count();
         $critical = (clone $base)->where('deleted_at', '>=', now()->subDays($retentionDays - 1))->count();

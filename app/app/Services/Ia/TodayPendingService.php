@@ -108,7 +108,21 @@ class TodayPendingService
         $query = DB::table('files')
             ->join('storage_providers as sp', 'sp.id', '=', 'files.storage_provider_id')
             ->leftJoin('transcriptions as t', 't.file_id', '=', 'files.id')
-            ->where('sp.transcription_enabled', true)
+            // ELEGIBILIDAD POR CADENA DE ANCESTROS (design.md D9), no por
+            // `sp.transcription_enabled` del storage de la fila. Un archivo es
+            // target si ALGUN storage que cubre su ruta transcribe: medido
+            // 2026-09-16, filtrar por fila perdia 9.074 archivos de hoy (00
+            // Discos, tx=false, bajo ancestros habilitados).
+            ->whereExists(function ($sub) {
+                $sub->selectRaw('1')
+                    ->from('storage_providers as a')
+                    ->where('a.transcription_enabled', true)
+                    ->whereNotNull('a.base_path')
+                    ->whereRaw("rtrim(a.base_path, '/') <> ''")
+                    ->whereRaw(
+                        "(rtrim(sp.base_path, '/') || '/' || files.path) LIKE (rtrim(a.base_path, '/') || '/%')"
+                    );
+            })
             ->where('files.is_folder', false)
             ->where('files.is_trashed', false)
             ->whereNull('files.deleted_at')
@@ -243,7 +257,17 @@ class TodayPendingService
             return (int) DB::table('files')
                 ->join('storage_providers as sp', 'sp.id', '=', 'files.storage_provider_id')
                 ->leftJoin('transcriptions as t', 't.file_id', '=', 'files.id')
-                ->where('sp.transcription_enabled', true)
+                // Elegibilidad por cadena de ancestros (design.md D9).
+                ->whereExists(function ($sub) {
+                    $sub->selectRaw('1')
+                        ->from('storage_providers as a')
+                        ->where('a.transcription_enabled', true)
+                        ->whereNotNull('a.base_path')
+                        ->whereRaw("rtrim(a.base_path, '/') <> ''")
+                        ->whereRaw(
+                            "(rtrim(sp.base_path, '/') || '/' || files.path) LIKE (rtrim(a.base_path, '/') || '/%')"
+                        );
+                })
                 ->where('files.is_folder', false)
                 ->where('files.is_trashed', false)
                 ->whereNull('files.deleted_at')

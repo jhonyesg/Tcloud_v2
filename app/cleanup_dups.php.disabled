@@ -1,0 +1,185 @@
+<?php
+// Cleanup: consolida archivos mal-parentados en su sub-storage correcto.
+// Para cada file en storage padre X con path Y, busca el sub-storage mas
+// especifico cuyo base_path es prefijo del abs path. Si existe:
+//   - Si hay contraparte en el sub-storage: trashear el del padre (es duplicado)
+//   - Si NO hay contraparte: mover el file al sub-storage (cambiar storage_id Y path)
+
+require __DIR__ . '/vendor/autoload.php';
+$app = require __DIR__ . '/bootstrap/app.php';
+$kernel = $app->make(Illuminate\Contracts\Console\Kernel::class);
+$kernel->bootstrap();
+
+use App\Models\StorageProvider;
+use Illuminate\Support\Facades\Cache;
+
+$dryRun = in_array('--dry-run', $argv, true);
+
+echo "[" . date('H:i:s') . "] Cleanup duplicados (dryRun=" . ($dryRun ? 'true' : 'false') . ")\n";
+
+// Cargar todos los storages con transcription_enabled una sola vez
+$allStorages = StorageProvider::transcriptionEnabled()
+    ->orderByRaw('LENGTH(base_path) DESC')
+    ->get(['id', 'name', 'base_path'])
+    ->keyBy('id');
+
+// Para cada file del 16-sep mal-parentado (en storage padre con path de sub-storage)
+$rows = DB::table('files as f')
+    ->join('storage_providers as sp', 'sp.id', '=', 'f.storage_provider_id')
+    ->where('sp.transcription_enabled', true)
+    ->where('f.is_folder', false)
+    ->where('f.is_trashed', false)
+    ->whereNull('f.deleted_at')
+    ->where('f.file_modified_at', '>=', now()->subDays(2))
+    ->select('f.id', 'f.storage_provider_id', 'f.path', 'f.name', 'f.size', 'f.file_modified_at', 'f.parent_id', 'f.is_trashed', 'sp.base_path')
+    ->orderBy('f.id')
+    ->get();
+
+echo "[" . date('H:i:s') . "] Files a evaluar: " . count($rows) . "\n";
+
+$movesToTrash = [];
+$movesToSubstorage = [];
+
+foreach ($rows as $r) {
+    $abs = rtrim($r->base_path, '/') . '/' . ltrim($r->path, '/');
+    $bestSub = null;
+    $bestLen = 0;
+    foreach ($allStorages as $cand) {
+        if ($cand->id === (int) $r->storage_provider_id) continue;
+        $base = rtrim((string) $cand->base_path, '/');
+        if ($base === '' || $base === rtrim($abs, '/')) continue;
+        if (str_starts_with(rtrim($abs, '/') . '/', $base . '/') && strlen($base) > $bestLen) {
+            $bestSub = $cand;
+            $bestLen = strlen($base);
+        }
+    }
+    if ($bestSub === null) continue;
+
+    $newPath = ltrim(substr(rtrim($abs, '/'), strlen(rtrim((string) $bestSub->base_path, '/'))), '/');
+
+    // Existe contraparte en el sub-storage?
+    $counterpart = DB::table('files')
+        ->where('storage_provider_id', $bestSub->id)
+        ->where('path', $newPath)
+        ->where('is_folder', false)
+        ->whereNull('deleted_at')
+        ->first();
+
+    if ($counterpart) {
+        // Duplicado: trashear el del padre
+        $movesToTrash[(int) $r->id] = [
+            'reason' => 'duplicado con sub-storage',
+            'counterpart_id' => $counterpart->id,
+            'sub_id' => $bestSub->id,
+            'sub_name' => $bestSub->name,
+            'old_path' => $r->path,
+            'new_path' => $newPath,
+        ];
+    } else {
+        // No hay contraparte: mover
+        $movesToSubstorage[(int) $r->id] = [
+            'old_sid' => (int) $r->storage_provider_id,
+            'new_sid' => $bestSub->id,
+            'new_path' => $newPath,
+            'sub_name' => $bestSub->name,
+            'old_path' => $r->path,
+        ];
+    }
+}
+
+echo "[" . date('H:i:s') . "] Trash (duplicados): " . count($movesToTrash) . "\n";
+echo "[" . date('H:i:s') . "] Move to sub-storage (sin contraparte): " . count($movesToSubstorage) . "\n";
+
+if (count($movesToTrash) === 0 && count($movesToSubstorage) === 0) {
+    echo "Nada que hacer.\n";
+    exit(0);
+}
+
+if ($dryRun) {
+    foreach (array_slice($movesToSubstorage, 0, 5, true) as $id => $m) {
+        echo "  MOVE file $id: storage {$m['old_sid']} -> {$m['new_sid']} ({$m['sub_name']}); path '{$m['old_path']}' -> '{$m['new_path']}'\n";
+    }
+    foreach (array_slice($movesToTrash, 0, 5, true) as $id => $m) {
+        echo "  TRASH file $id (counterpart={$m['counterpart_id']} en sub {$m['sub_name']})\n";
+    }
+    echo "[DRY-RUN] No se aplicaron cambios.\n";
+    exit(0);
+}
+
+// Snapshots
+Cache::put('cleanup:trash:' . date('Ymd_His'), $movesToTrash, now()->addDays(7));
+Cache::put('cleanup:move:' . date('Ymd_His'), $movesToSubstorage, now()->addDays(7));
+echo "[" . date('H:i:s') . "] Snapshots guardados en cache\n";
+
+// Aplicar moves
+if (count($movesToSubstorage) > 0) {
+    $chunks = array_chunk($movesToSubstorage, 200, true);
+    $totalMoved = 0;
+    foreach ($chunks as $i => $chunk) {
+        $ids = array_keys($chunk);
+        // Verificar conflictos UNIQUE antes de mover
+        foreach ($chunk as $fid => $m) {
+            $exists = DB::table('files')
+                ->where('storage_provider_id', $m['new_sid'])
+                ->where('path', $m['new_path'])
+                ->where('is_folder', false)
+                ->whereNull('deleted_at')
+                ->exists();
+            if ($exists) {
+                // Otro proceso creo la contraparte, mejor trash
+                unset($movesToSubstorage[$fid]);
+                $movesToTrash[$fid] = ['reason' => 'race condition', 'old_path' => $m['old_path'], 'new_path' => $m['new_path']];
+                $ids = array_diff($ids, [$fid]);
+            }
+        }
+        if (empty($ids)) continue;
+
+        $cases = [];
+        $bindings = [];
+        foreach ($chunk as $fid => $m) {
+            if (!in_array($fid, $ids)) continue;
+            $cases[] = "WHEN ? THEN ?";
+            $bindings[] = $fid;
+            $bindings[] = $m['new_sid'];
+        }
+        if (empty($cases)) continue;
+
+        $idsStr = implode(',', array_fill(0, count($ids), '?'));
+        $sql = "UPDATE files SET storage_provider_id = CASE id " . implode(' ', $cases) . " END::bigint WHERE id IN ($idsStr)";
+        $bindings = array_merge($bindings, $ids);
+        try {
+            $affected = DB::update($sql, $bindings);
+            $totalMoved += $affected;
+
+            // Update path en segunda pasada
+            foreach ($chunk as $fid => $m) {
+                if (!in_array($fid, $ids)) continue;
+                DB::table('files')
+                    ->where('id', $fid)
+                    ->update(['path' => $m['new_path']]);
+            }
+            echo "[" . date('H:i:s') . "] Move chunk " . ($i + 1) . ": {$affected} files movidos a sub-storages\n";
+        } catch (\Throwable $e) {
+            echo "[" . date('H:i:s') . "] Move chunk error: " . $e->getMessage() . "\n";
+        }
+    }
+    echo "[" . date('H:i:s') . "] TOTAL movidos: $totalMoved\n";
+}
+
+// Aplicar trash a duplicados
+if (count($movesToTrash) > 0) {
+    $ids = array_keys($movesToTrash);
+    $chunks = array_chunk($ids, 500);
+    $totalTrashed = 0;
+    foreach ($chunks as $chunk) {
+        $idsStr = implode(',', array_fill(0, count($chunk), '?'));
+        $affected = DB::update(
+            "UPDATE files SET is_trashed = true, deleted_at = NOW() WHERE id IN ($idsStr)",
+            $chunk
+        );
+        $totalTrashed += $affected;
+    }
+    echo "[" . date('H:i:s') . "] TOTAL trashados: $totalTrashed\n";
+}
+
+echo "[" . date('H:i:s') . "] Cleanup completado.\n";

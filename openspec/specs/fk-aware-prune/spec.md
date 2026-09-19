@@ -52,3 +52,25 @@ Refuerza `PruneGuard` con una quinta regla que protege el trabajo terminado: una
 - **THEN** SHALL marcar 500 candidatas como `gone` y registrar log `prune_unlinked.marked { count, batch_id }`
 - **THEN** en una segunda corrida con `--confirm-batch={batch_id}` SHALL ejecutar el DELETE físico
 - **AND** SHALL emitir log con conteo real antes y después
+
+### Requirement: Flag `--only-missing` filtra a filas con `availability_state='missing'`
+
+`files:prune-unlinked-safe --only-missing` SHALL restringir la fase 1 a filas con `availability_state='missing'` Y `is_trashed=false`. Filas en estado `available` o `unknown` SHALL NO incluirse en el conteo ni en el mark, sin importar su FK count.
+
+#### Scenario: --only-missing limita la fase 1 a archivos missing confirmados
+
+- **WHEN** se ejecuta `files:prune-unlinked-safe --only-missing --storage=47 --dry-run` y storage 47 tiene 1154 archivos en estado `missing` (de los cuales 343 sin FKs) y 41038 en estado `available`
+- **THEN** SHALL reportar como candidatos solo los 343 (no los 41038 `available` ni los 97.232 `unknown`)
+- **AND** SHALL NO marcar ningún archivo en estado `available` o `unknown`
+
+#### Scenario: --only-missing sin --storage filtra toda la BD
+
+- **WHEN** se ejecuta `files:prune-unlinked-safe --only-missing --dry-run` sin scope de storage
+- **THEN** SHALL contar solo filas `availability_state='missing' AND NOT is_trashed AND is_folder=false` sin FKs, en cualquier storage
+
+#### Scenario: --only-missing respeta el contrato de dos fases
+
+- **WHEN** se ejecuta `files:prune-unlinked-safe --only-missing` (fase 1)
+- **THEN** SHALL marcar las candidatas como `gone` y registrar batch_id en `files_prune_batches`
+- **THEN** una segunda corrida con `--confirm-batch={batch_id}` SHALL ejecutar el DELETE físico solo sobre esas filas (NO toca disponibles ni unknown)
+- **AND** SHALL emitir los mismos logs `prune_unlinked.marked` / `prune_unlinked.deleted` que el comando sin flag

@@ -100,47 +100,80 @@ class FolderListingService
      */
     public function resolveFolderIds(File $folder): array
     {
-        $ids = [];
+        $ids = [$folder->id];
 
-        // 1) Mirror identity: canonical + mirrors vinculados.
-        $canonical = $folder->isFolderMirror()
-            ? File::find($folder->canonical_folder_id)
-            : $folder;
-
-        if ($canonical) {
-            $ids[] = $canonical->id;
-        }
-
+        // 1) Rows que declaran a este folder (o a su canónico por path) como
+        //    su `canonical_folder_id`. Es el linkage materializado; se conserva
+        //    mientras la columna exista (deprecada tras
+        //    `files-mirror-elimination`).
         $mirrorIds = File::where('canonical_folder_id', $folder->id)
-            ->orWhere('canonical_folder_id', $canonical?->id)
             ->pluck('id')
             ->all();
 
         $ids = array_merge($ids, $mirrorIds);
 
-        // 2) Physical-path equivalence: otros folders en otros storages que apuntan
-        // al MISMO path físico (base_path_snapshot + path). Esto cubre el caso
-        // real visto en share #764: el share apuntaba al folder en storage 5
-        // (vacío tras un sync), pero los archivos físicos viven en storage 34
-        // (sub-storage más específico) bajo un folder con el mismo path absoluto
-        // pero sin linkage de mirror. Sin este paso el listado del share sale vacío.
-        $targetNormalized = $folder->physicalPathNormalized();
-        if ($targetNormalized !== null && $targetNormalized !== '(orphan)') {
-            $equivalentIds = File::where('is_folder', true)
-                ->where('is_trashed', false)
-                ->whereNotNull('base_path_snapshot')
-                ->whereNotNull('path')
-                ->whereRaw(
-                    "LOWER(RTRIM(COALESCE(base_path_snapshot, '') || '/' || COALESCE(path, ''))) = ?",
-                    [$targetNormalized]
-                )
-                ->pluck('id')
-                ->all();
+        // 2) Equivalencia por identidad física (mecanismo primario). Cubre
+        //    carpetas en distintos storages con el mismo path absoluto que NO
+        //    fueron enlazadas como mirrors — el caso que deja listados vacíos.
+        //
+        //    `physicalPathOf()` resuelve el base_path con fallback a
+        //    `storage_providers.base_path` cuando falta el snapshot, así que
+        //    este paso ya no se pierde las 744k filas sin snapshot que antes
+        //    quedaban excluidas por el `whereNotNull('base_path_snapshot')`.
+        $identity = app(FilePhysicalIdentity::class);
+        $targetNormalized = $identity->physicalPathOf($folder);
 
+        if ($targetNormalized !== null) {
+            $equivalentIds = $this->equivalentFolderIds($targetNormalized);
             $ids = array_merge($ids, $equivalentIds);
         }
 
-        return array_map('intval', array_unique($ids));
+        return array_map('intval', array_values(array_unique($ids)));
+    }
+
+    /**
+     * Ids de todos los folders vivos que comparten la identidad física dada.
+     *
+     * Dos queries (misma razón que `FilePhysicalIdentity::equivalentIds()`):
+     * la primera usa el índice funcional sobre `base_path_snapshot`; la segunda
+     * cubre las filas sin snapshot con un JOIN a `storage_providers`.
+     *
+     * @return int[]
+     */
+    private function equivalentFolderIds(string $normalized): array
+    {
+        $withSnapshot = DB::select("
+            SELECT f.id
+            FROM files f
+            WHERE f.is_folder = true
+              AND f.is_trashed = false
+              AND f.deleted_at IS NULL
+              AND f.path IS NOT NULL
+              AND f.path <> ''
+              AND f.base_path_snapshot IS NOT NULL
+              AND f.base_path_snapshot <> ''
+              AND LOWER(RTRIM(f.base_path_snapshot, '/') || '/' || LTRIM(f.path, '/')) = ?
+        ", [$normalized]);
+
+        $withoutSnapshot = DB::select("
+            SELECT f.id
+            FROM files f
+            JOIN storage_providers sp ON sp.id = f.storage_provider_id
+            WHERE f.is_folder = true
+              AND f.is_trashed = false
+              AND f.deleted_at IS NULL
+              AND f.path IS NOT NULL
+              AND f.path <> ''
+              AND (f.base_path_snapshot IS NULL OR f.base_path_snapshot = '')
+              AND sp.base_path IS NOT NULL
+              AND sp.base_path <> ''
+              AND LOWER(RTRIM(sp.base_path, '/') || '/' || LTRIM(f.path, '/')) = ?
+        ", [$normalized]);
+
+        return array_merge(
+            array_map(fn ($r) => (int) $r->id, $withSnapshot),
+            array_map(fn ($r) => (int) $r->id, $withoutSnapshot)
+        );
     }
 
     /**

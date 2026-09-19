@@ -119,6 +119,8 @@ Route::middleware('auth')->group(function () {
     // Papelera de reciclaje
     Route::get('/papelera', [PapeleraController::class, 'index'])->name('papelera.index');
     Route::post('/papelera/{file}/restore', [PapeleraController::class, 'restore'])->name('papelera.restore');
+    Route::post('/papelera/restore-many', [PapeleraController::class, 'restoreMany'])->name('papelera.restore_many');
+    Route::post('/papelera/restore-all', [PapeleraController::class, 'restoreAll'])->name('papelera.restore_all');
     Route::delete('/papelera/{file}', [PapeleraController::class, 'destroy'])->whereNumber('file')->name('papelera.destroy');
     Route::post('/papelera/empty', [PapeleraController::class, 'empty'])->name('papelera.empty');
     Route::get('/user/storages', [App\Http\Controllers\FileController::class, 'storages']);

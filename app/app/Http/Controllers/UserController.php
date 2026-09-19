@@ -38,9 +38,7 @@ class UserController extends Controller
     public function index(Request $request)
     {
         if ($request->ajax()) {
-            $perPage = $request->input('per_page', 15);
-            $users = User::paginate($perPage);
-            return response()->json($users);
+            return response()->json(User::orderBy('id', 'asc')->get());
         }
         return view('admin.users');
     }

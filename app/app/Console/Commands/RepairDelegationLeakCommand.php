@@ -94,8 +94,13 @@ class RepairDelegationLeakCommand extends Command
                 'scanned' => 0,
                 'leaks_found' => 0,
                 'files_moved' => 0,
+                'duplicates_merged' => 0,
                 'folders_created' => 0,
                 'cache_invalidated' => 0,
+                'skipped_unresolvable' => 0,
+                'skipped_trashed_collision' => 0,
+                'skipped_tx_conflict' => 0,
+                'errors' => 0,
             ];
 
             foreach ($storages as $subStorage) {
@@ -128,8 +133,13 @@ class RepairDelegationLeakCommand extends Command
                 ['Archivos escaneados', $totals['scanned']],
                 ['Leaks detectados (path bajo sub-storage)', $totals['leaks_found']],
                 ['Archivos movidos al sub-storage correcto', $totals['files_moved']],
+                ['  de esos, duplicados colapsados', $totals['duplicates_merged']],
                 ['Folders creados en sub-storages', $totals['folders_created']],
                 ['Cache keys invalidadas', $totals['cache_invalidated']],
+                ['Omitidos: ruta no existe en disco', $totals['skipped_unresolvable']],
+                ['Omitidos: colision con papelera', $totals['skipped_trashed_collision']],
+                ['Omitidos: conflicto de transcripcion', $totals['skipped_tx_conflict']],
+                ['Errores por fila', $totals['errors']],
             ]);
 
             Log::info('files.delegation_leak_repaired', [
@@ -214,7 +224,58 @@ class RepairDelegationLeakCommand extends Command
         $ownerId = $leaks[0]->owner_id;
 
         if ($dryRun) {
-            $totals['files_moved'] += count($leaks);
+            // Clasificar igual que el apply pero sin mutar: asi el operador ve
+            // exactamente que pasara (movidos, colapsados, omitidos) antes de
+            // decidir. Un dry-run que solo cuenta leaks no anticipa las
+            // colisiones ni las rutas muertas.
+            foreach ($leaks as $leak) {
+                $path = trim((string) $leak->path, '/');
+                $ownerBase = rtrim((string) ($leak->owner_base ?? ''), '/');
+
+                if ($ownerBase === '' || $path === '') {
+                    $totals['skipped_unresolvable']++;
+                    continue;
+                }
+
+                $absolute = $this->resolvePhysicalPath($ownerBase, $path);
+                if ($absolute === null) {
+                    $totals['skipped_unresolvable']++;
+                    continue;
+                }
+
+                $newPath = $this->relativeToBase($absolute, $subStorage->base_path);
+                if ($newPath === null || $newPath === '') {
+                    $totals['skipped_unresolvable']++;
+                    continue;
+                }
+
+                $existingAtDest = DB::selectOne(
+                    'SELECT id, is_trashed FROM files WHERE storage_provider_id = ? AND path = ? LIMIT 1',
+                    [$subStorage->id, $newPath]
+                );
+
+                if ($existingAtDest !== null) {
+                    if ($existingAtDest->is_trashed) {
+                        $totals['skipped_trashed_collision']++;
+                        continue;
+                    }
+
+                    $leakHasTx = DB::selectOne('SELECT 1 AS ok FROM transcriptions WHERE file_id = ? LIMIT 1', [$leak->id]) !== null;
+                    $destHasTx = DB::selectOne('SELECT 1 AS ok FROM transcriptions WHERE file_id = ? LIMIT 1', [$existingAtDest->id]) !== null;
+
+                    if ($leakHasTx && $destHasTx) {
+                        $totals['skipped_tx_conflict']++;
+                        continue;
+                    }
+
+                    $totals['duplicates_merged']++;
+                    $totals['files_moved']++;
+                    continue;
+                }
+
+                $totals['files_moved']++;
+            }
+
             $totals['folders_created'] += $this->estimateFoldersCreated($leaks, $subStorage);
             return;
         }
@@ -225,60 +286,134 @@ class RepairDelegationLeakCommand extends Command
 
         foreach ($leaks as $leak) {
             $path = trim((string) $leak->path, '/');
-            if ($path === '' || !str_contains($path, '/')) {
-                // Archivo en raiz del sub-storage (no deberia pasar si hay delegation leak,
-                // pero por seguridad): parent_id = NULL
+            $ownerBase = rtrim((string) ($leak->owner_base ?? ''), '/');
+
+            if ($ownerBase === '' || $path === '') {
+                $totals['skipped_unresolvable']++;
+                continue;
+            }
+
+            try {
+                // 1. La fila debe representar un archivo REAL en disco. Sin este
+                //    chequeo el comando mueve filas huerfanas (paths corruptos de
+                //    backfills viejos) y las deja apuntando a rutas inexistentes.
+                $absolute = $this->resolvePhysicalPath($ownerBase, $path);
+
+                if ($absolute === null) {
+                    $totals['skipped_unresolvable']++;
+                    Log::info('files.repair_delegation_unresolvable', [
+                        'file_id' => $leak->id,
+                        'owner_base' => $ownerBase,
+                        'path' => $path,
+                    ]);
+                    continue;
+                }
+
+                // 2. Rebasear preservando el case REAL del disco.
+                $newPath = $this->relativeToBase($absolute, $subStorage->base_path);
+
+                if ($newPath === null || $newPath === '') {
+                    $totals['skipped_unresolvable']++;
+                    Log::info('files.repair_delegation_rebase_failed', [
+                        'file_id' => $leak->id,
+                        'absolute' => $absolute,
+                        'target_base' => $subStorage->base_path,
+                    ]);
+                    continue;
+                }
+
+                // 3. Colision: la constraint UNIQUE (storage_provider_id, path)
+                //    NO excluye papelera, asi que hay que chequear CUALQUIER fila.
+                $existingAtDest = DB::selectOne(
+                    'SELECT id, is_trashed FROM files WHERE storage_provider_id = ? AND path = ? LIMIT 1',
+                    [$subStorage->id, $newPath]
+                );
+
+                if ($existingAtDest !== null) {
+                    if ($existingAtDest->is_trashed) {
+                        // No resucitar papelera automaticamente: requiere
+                        // decision del operador. Se reporta y se sigue.
+                        $totals['skipped_trashed_collision']++;
+                        Log::info('files.repair_delegation_trashed_collision', [
+                            'file_id' => $leak->id,
+                            'storage_id' => $subStorage->id,
+                            'path' => $newPath,
+                            'trashed_id' => $existingAtDest->id,
+                        ]);
+                        continue;
+                    }
+
+                    // Hay copia viva en el destino. Antes de re-apuntar las FKs,
+                    // verificar que el repunte no viole el UNIQUE de
+                    // transcriptions.file_id (una transcripcion por archivo).
+                    $leakHasTx = DB::selectOne('SELECT 1 AS ok FROM transcriptions WHERE file_id = ? LIMIT 1', [$leak->id]) !== null;
+                    $destHasTx = DB::selectOne('SELECT 1 AS ok FROM transcriptions WHERE file_id = ? LIMIT 1', [$existingAtDest->id]) !== null;
+
+                    if ($leakHasTx && $destHasTx) {
+                        $totals['skipped_tx_conflict']++;
+                        $this->warn(sprintf(
+                            '  [tx-conflict] leak=%d dest=%d — ambos con transcripcion, requiere revision manual (%s)',
+                            $leak->id, $existingAtDest->id, $newPath
+                        ));
+                        Log::warning('files.repair_delegation_tx_conflict', [
+                            'leak_file_id' => $leak->id,
+                            'dest_file_id' => $existingAtDest->id,
+                            'path' => $newPath,
+                        ]);
+                        continue;
+                    }
+
+                    DB::transaction(function () use ($leak, $existingAtDest) {
+                        DB::table('transcriptions')->where('file_id', $leak->id)->update(['file_id' => $existingAtDest->id]);
+                        DB::table('shares')->where('file_id', $leak->id)->update(['file_id' => $existingAtDest->id]);
+                        DB::table('media_edit_jobs')->where('source_file_id', $leak->id)->update(['source_file_id' => $existingAtDest->id]);
+                        DB::table('files')->where('id', $leak->id)->delete();
+                    });
+
+                    $invalidatedKeys["folder_gen:{$subStorage->id}:null"] = true;
+                    $invalidatedKeys["folder_gen:{$subStorage->id}:{$leak->owner_id}"] = true;
+                    $totals['duplicates_merged']++;
+                    $totals['files_moved']++;
+                    continue;
+                }
+
+                // 4. Sin colision: crear la cadena de carpetas y mover+rebasear.
+                $subParentPath = trim(dirname($newPath), '/.');
+
+                $parentFolderId = null;
+                if ($subParentPath !== '' && $subParentPath !== '.') {
+                    $parentFolderId = $this->ensureFolderChain(
+                        $subStorage, $subParentPath, $registry, $foldersCreatedThisRun
+                    );
+
+                    if ($parentFolderId === null) {
+                        $totals['skipped_trashed_collision']++;
+                        continue;
+                    }
+                }
+
                 DB::table('files')->where('id', $leak->id)->update([
                     'storage_provider_id' => $subStorage->id,
-                    'parent_id' => null,
+                    'parent_id' => $parentFolderId,
+                    'path' => $newPath,
+                    'base_path_snapshot' => null,
                 ]);
-                $totals['files_moved']++;
-                continue;
-            }
 
-            $subParentPath = trim(dirname($path), '/.');
-
-            // Crear jerarquia de folders en el sub-storage
-            $parentFolderId = $this->ensureFolderChain(
-                $subStorage, $subParentPath, $registry, $foldersCreatedThisRun
-            );
-
-            if ($parentFolderId === null) {
-                // Collision con trashed; skip
-                continue;
-            }
-
-            // Verificar si ya existe un file con (sub_storage_id, file_path) — esto
-            // pasa cuando storage 132 (sub) ya tiene su propia copia del file porque
-            // el cron del sub-storage escaneo el mismo archivo. El UNIQUE constraint
-            // (storage_provider_id, path) impide el UPDATE directo.
-            $existingAtDest = File::where('storage_provider_id', $subStorage->id)
-                ->where('path', $path)
-                ->where('is_trashed', false)
-                ->first();
-            if ($existingAtDest !== null) {
-                // Hay una copia en el destino. Re-apuntar FKs del leak al file
-                // existente, luego borrar el leak. Esto preserva el historial.
-                $txUpdated = DB::table('transcriptions')->where('file_id', $leak->id)->update(['file_id' => $existingAtDest->id]);
-                $shUpdated = DB::table('shares')->where('file_id', $leak->id)->update(['file_id' => $existingAtDest->id]);
-                $jobUpdated = DB::table('media_edit_jobs')->where('source_file_id', $leak->id)->update(['source_file_id' => $existingAtDest->id]);
-                $fksRepointed = $txUpdated + $shUpdated + $jobUpdated;
+                $invalidatedKeys["folder_gen:{$leak->owner_id}:null"] = true;
                 $invalidatedKeys["folder_gen:{$subStorage->id}:{$parentFolderId}"] = true;
-                $invalidatedKeys["folder_gen:{$subStorage->id}:null"] = true;
-                File::where('id', $leak->id)->delete();
                 $totals['files_moved']++;
-                continue;
+            } catch (\Throwable $e) {
+                // Una fila que falla no debe abortar la corrida completa: el
+                // comando es idempotente y el operador puede reintentar.
+                $totals['errors']++;
+                Log::error('files.repair_delegation_row_failed', [
+                    'file_id' => $leak->id,
+                    'path' => $path,
+                    'target_storage_id' => $subStorage->id,
+                    'error' => $e->getMessage(),
+                ]);
+                $this->error(sprintf('  [error] file %d: %s', $leak->id, $e->getMessage()));
             }
-
-            DB::table('files')->where('id', $leak->id)->update([
-                'storage_provider_id' => $subStorage->id,
-                'parent_id' => $parentFolderId,
-            ]);
-
-            $invalidatedKeys["folder_gen:{$leak->owner_id}:null"] = true;
-            $invalidatedKeys["folder_gen:{$subStorage->id}:{$parentFolderId}"] = true;
-
-            $totals['files_moved']++;
         }
 
         $totals['folders_created'] += count($foldersCreatedThisRun);
@@ -338,7 +473,9 @@ class RepairDelegationLeakCommand extends Command
                 'size' => 0,
                 'mime_type' => 'folder',
                 'storage_provider_id' => $storage->id,
-                'owner_id' => $storage->userStorages()->first()?->user_id ?? 1,
+                // canonical-owner: usar owner canonico del storage
+                'owner_id' => StorageProvider::canonicalOwnerId($storage->id)
+                    ?? throw new \RuntimeException("storage {$storage->id} sin owner canonico"),
                 'parent_id' => $currentParentId,
                 'is_folder' => true,
                 'availability_state' => 'available',
@@ -350,6 +487,91 @@ class RepairDelegationLeakCommand extends Command
         }
 
         return $currentParentId;
+    }
+
+    /**
+     * Rebasea la ruta de un archivo al base_path del storage destino.
+     *
+     * Construye la ruta absoluta (ownerBase + path), la normaliza preservando
+     * el case real del disco cuando es posible, y devuelve el path relativo al
+     * base_path destino.
+     *
+     * Devuelve null si la ruta absoluta no cae bajo el base_path destino.
+     */
+    private function rebaseToStorage(string $ownerBase, string $relativePath, string $targetBase): ?string
+    {
+        if ($ownerBase === '') {
+            return null;
+        }
+
+        $absolute = rtrim($ownerBase, '/') . '/' . ltrim($relativePath, '/');
+        $absoluteNorm = rtrim($absolute, '/');
+        $targetNorm = rtrim($targetBase, '/');
+
+        if (stripos($absoluteNorm, $targetNorm . '/') !== 0) {
+            return null;
+        }
+
+        return ltrim(substr($absoluteNorm, strlen($targetNorm)), '/');
+    }
+
+    /**
+     * Reconstruye la ruta ABSOLUTA real del archivo resolviendo el case exacto
+     * de cada segmento contra el disco. Devuelve null si no existe.
+     */
+    private function resolvePhysicalPath(string $base, string $relative): ?string
+    {
+        $cur = rtrim($base, '/');
+
+        if (!is_dir($cur)) {
+            return null;
+        }
+
+        foreach (explode('/', trim($relative, '/')) as $segment) {
+            if ($segment === '' || $segment === '.') {
+                continue;
+            }
+
+            if (file_exists($cur . '/' . $segment)) {
+                $cur .= '/' . $segment;
+                continue;
+            }
+
+            $found = null;
+            foreach ((scandir($cur) ?: []) as $entry) {
+                if ($entry === '.' || $entry === '..') {
+                    continue;
+                }
+                if (strcasecmp($entry, $segment) === 0) {
+                    $found = $entry;
+                    break;
+                }
+            }
+
+            if ($found === null) {
+                return null;
+            }
+
+            $cur .= '/' . $found;
+        }
+
+        return file_exists($cur) ? $cur : null;
+    }
+
+    /**
+     * Devuelve el path relativo de `$absolute` respecto al base_path destino,
+     * o null si no cae bajo el.
+     */
+    private function relativeToBase(string $absolute, string $targetBase): ?string
+    {
+        $absoluteNorm = rtrim($absolute, '/');
+        $targetNorm = rtrim($targetBase, '/');
+
+        if (stripos($absoluteNorm, $targetNorm . '/') !== 0) {
+            return null;
+        }
+
+        return ltrim(substr($absoluteNorm, strlen($targetNorm)), '/');
     }
 
     private function estimateFoldersCreated(array $leaks, StorageProvider $subStorage): int

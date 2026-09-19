@@ -123,16 +123,43 @@
             body: JSON.stringify(data)
         });
         if (res.ok) {
+            const payload = await res.json().catch(() => ({}));
             this.showCreateModal = false;
             this.newStorageType = 'local';
             await this.loadStorages();
-            this.toast = { show: true, message: 'Storage creado correctamente', success: true };
-            this.showToast();
+            this.notifyHierarchy(payload.hierarchy, 'creado');
         } else {
             const err = await res.json().catch(() => ({}));
             this.toast = { show: true, message: err.error || err.message || 'Error al crear el storage', success: false };
             this.showToast();
         }
+    },
+
+    /**
+     * Avisa la jerarquia resultante tras guardar un storage.
+     *
+     * El backend (StorageProviderController::recomputeHierarchy) devuelve
+     * `hierarchy` con parent/ancestor/descendants/equivalent_nodes/
+     * overlap_warning. El solapamiento se deriva de la JERARQUIA, no del flag
+     * `allow_parent_overlap` (design.md Q1 del change
+     * 2026-09-16-transcriptor-physical-file-identity).
+     */
+    notifyHierarchy(h, verbo) {
+        const partes = [];
+        if (h && h.ancestor) {
+            partes.push(`hereda de '${h.ancestor.name}'`);
+        }
+        if (h && h.equivalent_nodes && h.equivalent_nodes.length) {
+            const nombres = h.equivalent_nodes.map(n => n.name).join(', ');
+            partes.push(`misma ruta que ${nombres} (nodos equivalentes: no se enlazan como padre/hijo)`);
+        }
+        if (h && h.overlap_warning) {
+            partes.push('AVISO: algun ancestro o descendiente también transcribe; el más específico tiene prioridad');
+        }
+
+        const msg = `Storage ${verbo} correctamente` + (partes.length ? ' — ' + partes.join('; ') : '');
+        this.toast = { show: true, message: msg, success: !(h && h.overlap_warning) };
+        this.showToast();
     },
 
     async updateStorage(formData, id) {
@@ -152,11 +179,11 @@
             body: JSON.stringify(data)
         });
         if (res.ok) {
+            const payload = await res.json().catch(() => ({}));
             this.showEditModal = false;
             this.editingStorage = null;
             await this.loadStorages();
-            this.toast = { show: true, message: 'Storage actualizado correctamente', success: true };
-            this.showToast();
+            this.notifyHierarchy(payload.hierarchy, 'actualizado');
         } else {
             const err = await res.json().catch(() => ({}));
             this.toast = { show: true, message: err.error || err.message || 'Error al actualizar el storage', success: false };

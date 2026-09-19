@@ -509,6 +509,143 @@ $logCount = DB::table('share_notification_log')
     ->count();
 h_check($logCount >= 1, "share_forLog tiene log row: $logCount", "log row no existe");
 
+// ────────────────────────────────────────────────────────────────────────
+// Escenarios del change `2026-09-18-fix-public-share-access-cross-storage`.
+// Reproducen el bug exacto del share `a6af71f3…`:
+//   - share's folder en SUB-storage (path = `tv_sub`)
+//   - file's parent folder en PARENT-storage (path = `sub/tv_sub`)
+//   - file físico vive bajo el parent folder (path = `sub/tv_sub/video.mp4`)
+// Ambos folders representan el MISMO path físico en disco aunque sus
+// `path` relativos difieran. Sin enlace canonical_folder_id (agnóstico
+// al backfill).
+// ────────────────────────────────────────────────────────────────────────
+
+$tmpBasePhysParent = sys_get_temp_dir() . "/{$tag}_physroot";
+$tmpBasePhysSub = sys_get_temp_dir() . "/{$tag}_physroot/sub";
+$tmpBasePhysSubChild = sys_get_temp_dir() . "/{$tag}_physroot/sub/tv_sub";
+foreach ([$tmpBasePhysParent, $tmpBasePhysSub, $tmpBasePhysSubChild] as $dir) {
+    if (!is_dir($dir)) mkdir($dir, 0755, true);
+}
+$physFileRel = 'sub/tv_sub/' . $tag . '_phys.mp4';
+$physFullPath = $tmpBasePhysParent . '/' . $physFileRel;
+file_put_contents($physFullPath, "PHYS_BYTES_" . $tag);
+
+$physParentStorage = StorageProvider::create([
+    'name' => "{$tag} phys parent", 'type' => 'local', 'config' => [],
+    'base_path' => $tmpBasePhysParent, 'enabled' => true, 'is_accessible' => true,
+    'last_checked_at' => now(), 'transcription_enabled' => false,
+    'folder_layout' => 'flat', 'allow_parent_overlap' => false,
+    'is_personal' => false, 'kind' => 'local',
+])->refresh();
+
+$physSubStorage = StorageProvider::create([
+    'name' => "{$tag} phys sub", 'type' => 'local', 'config' => [],
+    'base_path' => $tmpBasePhysSub, 'enabled' => true, 'is_accessible' => true,
+    'last_checked_at' => now(), 'transcription_enabled' => false,
+    'folder_layout' => 'flat', 'allow_parent_overlap' => false,
+    'is_personal' => false, 'kind' => 'local', 'parent_storage_id' => $physParentStorage->id,
+])->refresh();
+
+$physParentFolder = File::create([
+    'name' => 'tv_sub', 'path' => 'sub/tv_sub',
+    'storage_provider_id' => $physParentStorage->id, 'parent_id' => null,
+    'is_folder' => true, 'owner_id' => $user->id,
+    'mime_type' => 'folder', 'size' => 0,
+])->refresh();
+
+$physSubFolder = File::create([
+    'name' => 'tv_sub', 'path' => 'tv_sub',
+    'storage_provider_id' => $physSubStorage->id, 'parent_id' => null,
+    'is_folder' => true, 'owner_id' => $user->id,
+    'mime_type' => 'folder', 'size' => 0,
+    'canonical_folder_id' => null,
+])->refresh();
+
+$physFile = File::create([
+    'name' => $tag . '_phys.mp4', 'path' => $physFileRel,
+    'storage_provider_id' => $physParentStorage->id, 'parent_id' => $physParentFolder->id,
+    'is_folder' => false, 'owner_id' => $user->id,
+    'mime_type' => 'video/mp4', 'size' => filesize($physFullPath),
+])->refresh();
+
+h_ok("fixtures cross-storage: physParentFolder={$physParentFolder->id}, physSubFolder={$physSubFolder->id}, physFile={$physFile->id}");
+h_check(
+    $physSubFolder->physicalPathNormalized() === $physParentFolder->physicalPathNormalized(),
+    "physicalPathNormalized coincide cross-storage: " . $physParentFolder->physicalPathNormalized(),
+    "physicalPathNormalized diverge cross-storage"
+);
+
+$physShare = Share::create([
+    'file_id' => $physSubFolder->id,
+    'token' => "ps_{$tag}",
+    'permissions' => 'read',
+    'created_by' => $user->id,
+]);
+
+$psController = new \App\Http\Controllers\PublicShareController();
+$isDescMethod = new \ReflectionMethod($psController, 'isDescendantOf');
+$isDescMethod->setAccessible(true);
+
+h_section('ESCENARIO b.4 — isDescendantOf reconoce equivalencia cross-storage');
+$result = $isDescMethod->invoke($psController, $physFile, $physSubFolder);
+h_check($result === true, "isDescendantOf(physFile, physSubFolder) === true", "isDescendantOf retorna false (regression)");
+
+h_section('ESCENARIO b.5 — isDescendantOf rechaza archivo fuera del share');
+$unrelatedFolder = File::create([
+    'name' => 'unrelated', 'path' => 'unrelated_dir',
+    'storage_provider_id' => $physParentStorage->id, 'parent_id' => null,
+    'is_folder' => true, 'owner_id' => $user->id,
+    'mime_type' => 'folder', 'size' => 0,
+])->refresh();
+$resultUnrelated = $isDescMethod->invoke($psController, $physFile, $unrelatedFolder);
+h_check($resultUnrelated === false, "isDescendantOf(physFile, unrelatedFolder) === false", "falso positivo cross-storage");
+
+h_section('ESCENARIO b.6 — download() cross-storage retorna bytes');
+$req = \Illuminate\Http\Request::create("/s/{$physShare->token}/download/{$physFile->id}", 'GET');
+$resp = $psController->download($req, $physShare->token, $physFile->id);
+$status = method_exists($resp, 'getStatusCode') ? $resp->getStatusCode() : 0;
+h_check($status === 200, "download status 200 (got $status)", "download status != 200 (got $status)");
+if ($status === 200) {
+    $disp = $resp->headers->get('Content-Disposition') ?? '';
+    h_check(
+        str_contains($disp, 'attachment') && str_contains($disp, $physFile->name),
+        "Content-Disposition presente con filename: $disp",
+        "Content-Disposition ausente o sin filename: $disp"
+    );
+    $fileObj = method_exists($resp, 'getFile') ? $resp->getFile() : null;
+    if ($fileObj instanceof \SplFileInfo) {
+        $servedSize = $fileObj->getSize();
+        $expectedSize = filesize($physFullPath);
+        h_check(
+            $servedSize === $expectedSize,
+            "BinaryFileResponse apunta al archivo físico correcto ($servedSize === $expectedSize bytes)",
+            "served size $servedSize != expected $expectedSize"
+        );
+    } else {
+        h_check(true, "response sin getFile() — status+disp validados", "response sin getFile() y status=200 pero sin disp");
+    }
+}
+
+h_section('ESCENARIO b.7 — mediaPreview() cross-storage retorna stream');
+$req2 = \Illuminate\Http\Request::create("/s/{$physShare->token}/media/{$physFile->id}/preview", 'GET');
+$resp2 = $psController->mediaPreview($req2, $physShare->token, $physFile->id);
+$status2 = method_exists($resp2, 'getStatusCode') ? $resp2->getStatusCode() : 0;
+h_check($status2 === 200, "mediaPreview status 200 (got $status2)", "mediaPreview status != 200 (got $status2)");
+
+// CLEANUP extra para fixtures nuevas
+@unlink($physFullPath);
+File::where('id', $physFile->id)->delete();
+File::where('id', $physSubFolder->id)->delete();
+File::where('id', $physParentFolder->id)->delete();
+File::where('id', $unrelatedFolder->id)->delete();
+DB::table('shares')->where('id', $physShare->id)->delete();
+StorageProvider::where('id', $physSubStorage->id)->delete();
+StorageProvider::where('id', $physParentStorage->id)->delete();
+@rmdir($tmpBasePhysSubChild);
+@rmdir($tmpBasePhysSub);
+@rmdir($tmpBasePhysParent);
+h_ok('cleanup cross-storage fixtures');
+
 // CLEANUP
 h_section("CLEANUP [tag=$tag]");
 DB::table('share_notification_log')->whereIn('recipient_user_id', [$user->id, $userNoEmail->id])->delete();

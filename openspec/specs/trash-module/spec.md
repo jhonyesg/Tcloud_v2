@@ -153,6 +153,31 @@ The system MUST let the original owner (or admin) restore a trashed item. Restor
 - **WHEN** the restore renames the file due to name collision and the original (pre-restore) cache key pointed to the destination
 - **THEN** the cache for that destination folder is regenerated on the next browser load (the old cache is invalidated, not just orphaned)
 
+### Requirement: Bulk restore from the trash view
+
+The system MUST let the original owner (or an admin) restore multiple trashed items in one action from the trash view: either a selected subset or all trashed items. Restoration of the bulk MUST reuse the individual restore semantics (see "Restore semantics": original parent or root, name-collision suffix `-restored-<ts>`). An actor that is NOT an admin MUST only restore items they own (`owner_id`); an admin MAY restore all. The bulk endpoints MUST return counts of restored and skipped items, and MUST invalidate the sidebar cache for each affected owner so the trash badge updates.
+
+#### Scenario: Restore selected subset
+- **WHEN** the user selects N trashed items and confirms "Restaurar selección"
+- **THEN** the system restores exactly those N items using the individual restore semantics
+- **AND** responds with the count of restored and skipped items
+- **AND** the trash badge is invalidated for each affected owner
+
+#### Scenario: Restore all
+- **WHEN** the user confirms "Restaurar todo"
+- **THEN** the system restores all trashed items the actor owns (or all items if the actor is admin)
+- **AND** responds with restored, skipped and total counts
+
+#### Scenario: Non-admin bulk restore is scoped to owner
+- **GIVEN** a non-admin actor with trashed items owned by multiple users
+- **WHEN** the actor invokes the bulk restore all endpoint
+- **THEN** only the actor's own items are restored (filter by `owner_id`), leaving others untouched
+
+#### Scenario: Bulk restore is idempotent
+- **WHEN** the bulk restore runs a second time with no new trashed items
+- **THEN** every already-restored item is counted as skipped
+- **AND** no data is changed
+
 ### Requirement: Sidebar entry with badge
 
 The system MUST render a sidebar entry labeled "Papelera" with a numeric badge showing the count of the current user's trashed items. If any item has fewer than 3 days remaining until purge, the badge MUST use a warning color.

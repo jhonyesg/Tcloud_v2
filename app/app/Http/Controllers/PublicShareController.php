@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Share;
 use App\Models\ShareAccessLog;
 use App\Models\File;
+use App\Models\StorageProvider;
 use App\Services\StorageSyncService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
@@ -238,6 +239,20 @@ class PublicShareController extends Controller
             return response()->json(['error' => 'File not found'], 404);
         }
 
+        // Defense-in-depth 2026-09-18-fix-public-share-access-cross-storage.
+        if ($file->canonical_folder_id !== null) {
+            $canonical = $file->canonicalFolder();
+            if ($canonical) {
+                $file = $canonical;
+            } else {
+                \Log::warning('share.preview.canonical_dangling', [
+                    'share_id' => $share->id,
+                    'file_id' => $file->id,
+                    'canonical_folder_id' => $file->canonical_folder_id,
+                ]);
+            }
+        }
+
         if (!$this->isDescendantOf($file, $rootFolder)) {
             return response()->json(['error' => 'File not in shared folder'], 403);
         }
@@ -285,6 +300,24 @@ class PublicShareController extends Controller
 
         if (!$file || $file->availability_state === 'missing') {
             return response()->json(['error' => 'File not found'], 404);
+        }
+
+        // Defense-in-depth 2026-09-18-fix-public-share-access-cross-storage:
+        // canonizar antes del check para que `isDescendantOf` opere contra el
+        // row correcto y `$storage`/`$fullPath` apunten al archivo físico real.
+        // Si la FK quedó dangling (canónico borrado), log warning y continuar
+        // con el row original.
+        if ($file->canonical_folder_id !== null) {
+            $canonical = $file->canonicalFolder();
+            if ($canonical) {
+                $file = $canonical;
+            } else {
+                \Log::warning('share.mediaPreview.canonical_dangling', [
+                    'share_id' => $share->id,
+                    'file_id' => $file->id,
+                    'canonical_folder_id' => $file->canonical_folder_id,
+                ]);
+            }
         }
 
         if (!$this->isDescendantOf($file, $rootFolder)) {
@@ -439,6 +472,21 @@ class PublicShareController extends Controller
         if ($fileId) {
             $file = File::findOrFail($fileId);
             $rootFolder = File::findOrFail($share->file_id);
+
+            // Defense-in-depth 2026-09-18-fix-public-share-access-cross-storage.
+            if ($file->canonical_folder_id !== null) {
+                $canonical = $file->canonicalFolder();
+                if ($canonical) {
+                    $file = $canonical;
+                } else {
+                    \Log::warning('share.download.canonical_dangling', [
+                        'share_id' => $share->id,
+                        'file_id' => $file->id,
+                        'canonical_folder_id' => $file->canonical_folder_id,
+                    ]);
+                }
+            }
+
             if (!$this->isDescendantOf($file, $rootFolder)) {
                 return response()->json(['error' => 'File not in shared folder'], 403);
             }
@@ -550,7 +598,9 @@ class PublicShareController extends Controller
             'size' => filesize($fullPath),
             'mime_type' => $uploadedFile->getMimeType(),
             'storage_provider_id' => $storageProvider->id,
-            'owner_id' => $targetFolder->owner_id,
+            // canonical-owner: usar owner canonico del storage directo (no $targetFolder->owner_id)
+            'owner_id' => StorageProvider::canonicalOwnerId($storageProvider->id)
+                ?? throw new \RuntimeException("storage {$storageProvider->id} sin owner canonico"),
             'parent_id' => $targetFolder->id,
             'is_folder' => false,
             'availability_state' => 'available',
@@ -630,7 +680,9 @@ class PublicShareController extends Controller
             'size' => 0,
             'mime_type' => null,
             'storage_provider_id' => $storageProvider->id,
-            'owner_id' => $targetFolder->owner_id,
+            // canonical-owner: usar owner canonico del storage directo (no $targetFolder->owner_id)
+            'owner_id' => StorageProvider::canonicalOwnerId($storageProvider->id)
+                ?? throw new \RuntimeException("storage {$storageProvider->id} sin owner canonico"),
             'parent_id' => $targetFolder->id,
             'is_folder' => true,
             'availability_state' => 'available',
@@ -816,21 +868,28 @@ class PublicShareController extends Controller
         }
 
         // Fallback: chain roto antes de llegar al ancestor (parent_id NULL o
-        // huérfano). El archivo está "bajo" el ancestor si su path es descendiente
-        // del path del ancestor: `ancestor.path/...` empieza con `ancestor.path`.
+        // huérfano). El archivo está "bajo" el ancestor si su PATH FÍSICO
+        // normalizado es descendiente del path físico del ancestor.
         //
-        // NOTA: NO usamos `storage_provider_id` igual como fallback porque dos
-        // archivos hermanos (ambos en el root del mismo storage, ambos con
-        // parent_id=NULL) pasarían incorrectamente — son siblings, no
-        // descendientes uno del otro. Solo el path-based check es correcto para
-        // distinguir jerarquía de subcarpetas dentro del mismo storage.
+        // Cambio 2026-09-18-fix-public-share-access-cross-storage: pasamos de
+        // comparar `path` relativo a comparar `physicalPathNormalized()`
+        // (= `lower(rtrim(base_path_snapshot || '/' || path))`). El chequeo
+        // relativo falla cuando el share's rootFolder está en storage A
+        // (p.ej. sub-storage con `base_path = /data/root/sub`) y el file vive
+        // en storage B (parent storage con `base_path = /data/root`), porque
+        // sus `path` relativos son distintos aunque el path físico sea idéntico.
+        // El mismo algoritmo lo usa `FolderListingService::resolveFolderIds()`
+        // para descubrir equivalencias — alinear aquí evita 403 falsos en
+        // `mediaPreview`, `preview`, `download` y los 5 métodos restantes que
+        // dependen de este helper.
         //
-        // Esto evita "Invalid parent folder" en uploads/downloads de shared links
-        // cuando el parent_id chain esta roto pero los paths aún indican la
-        // jerarquía lógica.
-        if ($file->path && $ancestor->path) {
-            $ancestorPrefix = rtrim($ancestor->path, '/') . '/';
-            if ($ancestorPrefix !== '/' && str_starts_with($file->path . '/', $ancestorPrefix)) {
+        // `base_path_snapshot` es único por storage, así que el prefijo
+        // compartido solo ocurre cuando ambos rows apuntan al mismo directorio
+        // físico real. Falsos positivos son imposibles salvo bug de config.
+        $fileNorm = $file->physicalPathNormalized();
+        $ancNorm  = $ancestor->physicalPathNormalized();
+        if ($fileNorm !== null && $ancNorm !== null && $ancNorm !== '' && $ancNorm !== '/') {
+            if (str_starts_with($fileNorm . '/', $ancNorm . '/')) {
                 return true;
             }
         }

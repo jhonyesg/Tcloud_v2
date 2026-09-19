@@ -70,6 +70,7 @@ document.addEventListener('alpine:init', () => {
     viewerFiles: [],
     viewerTextContent: '',
     viewerTextLoading: false,
+    viewerTextEditable: true,
     viewerTextDirty: false,
     viewerTextSaving: false,
     viewerTextSaved: false,
@@ -492,6 +493,22 @@ deleteConfirmFile: null,
             if (!skipBreadcrumbs) {
                 this.breadcrumbs = serverBreadcrumbs;
             }
+
+            // El folder listado puede pertenecer a un storage distinto del
+            // navegado (listado cross-storage). El backend lo reporta en
+            // `folder_storage_*`; adoptarlo alinea `currentStorage` con la fila
+            // real, así el próximo request y el banner del disco usan el
+            // storage correcto. Change `files-mirror-elimination`.
+            if (data && data.folder_storage_id) {
+                this.currentStorage = Number(data.folder_storage_id);
+                if (data.folder_storage_name) {
+                    this.currentStorageName = data.folder_storage_name;
+                }
+                if (data.folder_storage_permission) {
+                    this.currentStoragePermission = data.folder_storage_permission;
+                }
+                this.saveNavState();
+            }
             if (forceSync) {
                 this.reportSync(data?.stats, serverData);
             }
@@ -665,7 +682,13 @@ deleteConfirmFile: null,
         } catch (_) {}
     },
 
-    navigateToFolder(folderId, folderName) {
+    // `storageId` es el storage de la fila listada. En el listado cross-storage
+    // puede diferir del storage navegado: la carpeta física vive en un
+    // sub-storage más específico. Adoptarlo es obligatorio, porque el listado
+    // filtra por `storage_provider_id` del folder; consultar el storage viejo
+    // con el `parent_id` nuevo devuelve vacío (bug reportado 2026-09-19,
+    // change `files-mirror-elimination`).
+    navigateToFolder(folderId, folderName, storageId = null) {
         if (this.isNavigating || folderId === this.currentFolder) return;
         this.highlightFileId = null;
         this._navGen++;
@@ -675,6 +698,29 @@ deleteConfirmFile: null,
         if (this.currentFolder !== null) {
             this.breadcrumbs.push({ id: this.currentFolder, name: this.currentFolderName || 'Raíz' });
         }
+
+        const targetStorage = storageId !== null && storageId !== undefined
+            ? Number(storageId)
+            : null;
+
+        let storageChanged = false;
+
+        if (targetStorage !== null && targetStorage !== this.currentStorage) {
+            const storage = this.availableStorages.find(s => Number(s.id) === targetStorage);
+
+            // Adoptar el storage aunque no esté en `availableStorages`: un admin
+            // ve contenidos de storages sobre los que no tiene `user_storages`
+            // (bypass de permisos), y el listado cross-storage puede devolver
+            // filas de esos storages. Sin esta rama, el request siguiente seguía
+            // consultando el storage viejo y devolvía vacío.
+            this.currentStorage = targetStorage;
+            this.currentStorageName = storage ? storage.name : (this.currentStorageName || null);
+            this.currentStoragePermission = storage ? (storage.permissions || 'read') : 'read';
+            this.currentStorageCanShare = storage ? !!storage.can_create_shares : false;
+            this.currentStorageTranscriptionAccess = storage ? !!storage.transcription_access : false;
+            storageChanged = true;
+        }
+
         this.currentFolder = folderId;
         this.currentFolderName = folderName;
         this.selectedFiles = [];
@@ -685,7 +731,16 @@ deleteConfirmFile: null,
         this.hasMore = false;
         this.isNavigating = true;
         this.navigatingToId = folderId;
-        this.loadFiles(false, true, true);
+
+        // Al cambiar de storage, la cadena de breadcrumbs del cliente pertenece
+        // al árbol anterior (los ids son de otro storage). Se descarta y se
+        // deja que el servidor mande la cadena del folder destino.
+        if (storageChanged) {
+            this.breadcrumbs = [];
+            this.loadFiles(false, false, true);
+        } else {
+            this.loadFiles(false, true, true);
+        }
         this.saveNavState();
     },
 
@@ -1078,8 +1133,15 @@ deleteConfirmFile: null,
                 this.viewerTextLoading = true;
                 apiFetch('/files/' + file.id + '/text-content', { credentials: 'include', headers: { 'Accept': 'application/json' } })
                     .then(r => r.json())
-                    .then(d => { this.viewerTextContent = d.content ?? d.error ?? 'Error al cargar'; this.viewerTextLoading = false; })
-                    .catch(() => { this.viewerTextContent = 'Error al cargar el archivo'; this.viewerTextLoading = false; });
+                    .then(d => {
+                        this.viewerTextContent = d.content ?? d.error ?? 'Error al cargar';
+                        this.viewerTextEditable = d.editable === true;
+                        this.viewerTextLoading = false;
+                    })
+                    .catch(() => {
+                        this.viewerTextContent = 'Error al cargar el archivo';
+                        this.viewerTextLoading = false;
+                    });
             }
         });
     },
@@ -2749,7 +2811,7 @@ deleteConfirmFile: null,
                                        class="w-4 h-4 rounded accent-blue-600 cursor-pointer shadow-sm"
                                        @click.stop="toggleSelect(file)">
                             </div>
-                            <div class="flex flex-col items-center text-center" @click="file.is_folder ? navigateToFolder(file.id, file.name) : openViewer(file)">
+                            <div class="flex flex-col items-center text-center" @click="file.is_folder ? navigateToFolder(file.id, file.name, file.storage_provider_id) : openViewer(file)">
                                 <div class="relative w-11 h-11 sm:w-16 sm:h-16 rounded-xl flex items-center justify-center mb-1.5 sm:mb-3" :class="getFileIcon(file).bg">
                                     <template x-if="getFileIcon(file).icon === 'folder' && navigatingToId !== file.id">
                                         <svg class="w-10 h-10 text-amber-500" fill="currentColor" viewBox="0 0 20 20">
@@ -2904,7 +2966,7 @@ deleteConfirmFile: null,
                                 <tr :id="'file-row-' + file.id"
                                     class="cursor-pointer transition-colors"
                                     :class="[isSelected(file) ? 'bg-blue-50' : 'hover:bg-slate-50', highlightFileId === file.id ? 'bg-amber-50 ring-1 ring-inset ring-amber-400' : '', navigatingToId === file.id ? 'opacity-60 pointer-events-none' : '']"
-                                    @click="file.is_folder ? navigateToFolder(file.id, file.name) : openViewer(file)"
+                                    @click="file.is_folder ? navigateToFolder(file.id, file.name, file.storage_provider_id) : openViewer(file)"
                                     @click.ctrl.prevent.stop="toggleSelect(file)">
                                     <td class="px-2 sm:px-3 py-2 sm:py-3 text-center w-8" @click.stop>
                                         <input type="checkbox" :checked="isSelected(file)"
@@ -3574,10 +3636,10 @@ deleteConfirmFile: null,
                         </button>
                         <!-- Save button -->
                         <button @click="saveTextContent()"
-                                :disabled="viewerTextSaving || !viewerTextDirty"
-                                :class="viewerTextSaved ? 'bg-green-600 hover:bg-green-700 text-white' : (viewerTextDirty ? 'bg-blue-600 hover:bg-blue-700 text-white' : 'bg-slate-200 text-slate-400 cursor-default')"
+                                :disabled="!viewerTextEditable || viewerTextSaving || !viewerTextDirty"
+                                :class="!viewerTextEditable ? 'bg-slate-100 text-slate-400 cursor-not-allowed' : (viewerTextSaved ? 'bg-green-600 hover:bg-green-700 text-white' : (viewerTextDirty ? 'bg-blue-600 hover:bg-blue-700 text-white' : 'bg-slate-200 text-slate-400 cursor-default'))"
                                 class="flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition-colors"
-                                title="Guardar (Ctrl+S)">
+                                :title="!viewerTextEditable ? 'Sin permisos de escritura' : 'Guardar (Ctrl+S)'">
                             <template x-if="viewerTextSaving">
                                 <svg class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
                                     <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -3619,15 +3681,16 @@ deleteConfirmFile: null,
                         </div>
                         <!-- Textarea -->
                         <textarea x-ref="editorArea"
-                                  x-model="viewerTextContent"
-                                  @input="viewerTextDirty = true"
-                                  @scroll="$refs.lineGutter.scrollTop = $event.target.scrollTop"
-                                  :class="viewerWrap ? 'txt-editor-wrap' : 'txt-editor-nowrap'"
-                                  class="flex-1 font-mono text-sm leading-6 py-3 px-4 resize-none border-0 outline-none"
-                                  style="background:#fff;color:#1a1a1a;tab-size:4;min-height:100%;"
-                                  spellcheck="false"
-                                  autocorrect="off"
-                                  autocapitalize="off"></textarea>
+                                   x-model="viewerTextContent"
+                                   @input="viewerTextDirty = true"
+                                   @scroll="$refs.lineGutter.scrollTop = $event.target.scrollTop"
+                                   :readonly="!viewerTextEditable"
+                                   :class="viewerWrap ? 'txt-editor-wrap' : 'txt-editor-nowrap'"
+                                   class="flex-1 font-mono text-sm leading-6 py-3 px-4 resize-none border-0 outline-none"
+                                   style="background:#fff;color:#1a1a1a;tab-size:4;min-height:100%;"
+                                   spellcheck="false"
+                                   autocorrect="off"
+                                   autocapitalize="off"></textarea>
                     </div>
                 </div>
                 <!-- Status bar -->

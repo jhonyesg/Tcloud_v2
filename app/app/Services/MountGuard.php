@@ -87,6 +87,21 @@ class MountGuard
             return true; // la raiz siempre esta montada
         }
 
+        // PRIMERO /proc/self/mounts, que es una lectura LOCAL y nunca bloquea.
+        // `stat()` sobre un punto de montaje NFS caido SI bloquea (mount en
+        // modo `hard`: la syscall espera indefinidamente y no hay timeout que
+        // la corte). Medido 2026-09-16: con Disco_D/E/G/H caidos, un `stat`
+        // dejaba procesos artisan colgados >90 s y freezeaba el render de
+        // /ia/api-transcriptor (StorageFunnelService::cantidadFor recorre el
+        // filesystem de 190 storages).
+        //
+        // Si /proc/self/mounts conoce el path, esa es la respuesta (sin I/O al
+        // dispositivo). El `stat` queda SOLO como fallback para paths que no
+        // figuran en la tabla de montajes (bind mounts raros, overlayfs).
+        if (array_key_exists($path, $this->mounts())) {
+            return true;
+        }
+
         clearstatcache(true, $path);
         clearstatcache(true, $parent);
 
