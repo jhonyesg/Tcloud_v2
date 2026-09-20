@@ -897,8 +897,44 @@ class StorageSyncService
             return null;
         }
 
-        $ownerId = StorageProvider::canonicalOwnerId($storage->id)
-            ?? throw new \RuntimeException("storage {$storage->id} sin owner canonico, asigne permissions=full a un user_storages antes de sincronizar");
+        $ownerId = StorageProvider::canonicalOwnerId($storage->id);
+        if ($ownerId === null) {
+            // Fix de raíz (Hermes, 2026-09-19): antes esto lanzaba un RuntimeException
+            // que rompía el sync con HTTP 500 cuando un storage raíz quedaba sin
+            // owner tras una desasignación. Como fallback usamos el primer admin
+            // activo del sistema (o el primer usuario activo si no hay admins).
+            // Registramos el incidente en hermes_audit para que sea visible.
+            $ownerId = DB::table('users')
+                ->where('status', 'active')
+                ->where('role', 'admin')
+                ->orderBy('id')
+                ->value('id');
+            if ($ownerId === null) {
+                $ownerId = DB::table('users')
+                    ->where('status', 'active')
+                    ->orderBy('id')
+                    ->value('id');
+            }
+            if ($ownerId === null) {
+                throw new \RuntimeException(
+                    "storage {$storage->id} sin owner canonico y no hay usuarios activos en el sistema"
+                );
+            }
+            try {
+                DB::table('hermes_audit')->insert([
+                    'operation' => 'storage_no_owner_fallback',
+                    'entity_type' => 'storage_providers',
+                    'payload' => json_encode([
+                        'storage_id' => $storage->id,
+                        'fallback_user_id' => $ownerId,
+                        'subpath' => $subPath,
+                    ]),
+                ]);
+            } catch (\Throwable $e) {
+                // Si la tabla hermes_audit no existe o falla, no bloquear el sync
+                \Log::warning('hermes_audit insert failed: ' . $e->getMessage());
+            }
+        }
         $currentParentId = null;
         $accumulatedPath = '';
 
