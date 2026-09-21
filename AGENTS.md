@@ -1435,225 +1435,61 @@ systemctl restart 'tcloud-transcription-*'
 `down()` de la FK `SET NULL` **aborta** si quedaron transcripciones con
 `file_id IS NULL` (archivos borrados): hay que resolverlas antes.
 
-## Folder identity canónica para shares (`files-physical-folder-identity` + `share-folder-canonical-wiring`)
 
-### El problema
+## Runbook: limpieza de datos corruptos en Mis Archivos (`mis-archivos-depurar-registros-fantasma`, 2026-09-21)
 
-Folder shares de Mis Archivos aparecían vacíos en el 51% de los casos (36 de 70 al spike del 2026-09-17) cuando el operador seleccionaba una carpeta del storage padre que existía también como mirror vacío en el sub-storage más específico. Caso origen: share `ffbaedfcfe6cfe28e7421eccc398c10e` sobre carpeta 7244491 (storage 5 "00 Discos") mostraba 0 archivos aunque los 35 MP4 vivían en folder 7244379 (storage 7 "02 RCN Tv").
+Tras el restore de agosto (`restore-mis-archivos-august`) el código quedó sano pero quedaron **datos corruptos** que solo se purgan con comandos:
 
-### Cómo está resuelto hoy (2026-09-17)
+1. **Carpetas fantasma en `files`**: carpetas con `file_modified_at IS NULL` y `parent_id IS NULL` cuyo path no existe en disco. Creadas en masa por el sync pre-restore. Detectadas originalmente en storage 5 (`00 Discos`) pero pueden aparecer en cualquier storage (storage 59 = 00 Aplicaciones reportado con 54 candidatas adicionales).
+2. **`user_storages` con permisos cruzados en personales**: un storage personal con `is_personal=true` puede tener filas de usuarios no-canonicos (ej. `Personal - StakeholdersPrensa` con jsuarez asignado). El filtro de visibilidad los oculta pero la fila persiste.
 
-**Modelo de datos** (PR 1, change `files-physical-folder-identity`):
-- `files.base_path_snapshot varchar(500)`: copia denormalizada de `storage_providers.base_path`. La copia la hace `App\Observers\FileObserver` en `File::saving`.
-- `files.merged_into_id bigint FK self-ref ON DELETE SET NULL`: NULL = canónico, NOT NULL = mirror (apunta al canónico).
-- `files.merged_at` + `files.merged_reason`: auditoría del link.
-- `file_mirror_audit_log`: tabla append-only (trigger rechaza UPDATE/DELETE).
-
-**Wiring en controllers** (PR 2, change `share-folder-canonical-wiring`):
-- `App\Services\FolderListingService::listContents(File $folder)`: lista cross-storage. Usado por `PublicShareController::show` y `showFolder`.
-- `ShareController::store` canónica el `file_id` antes de crear el share (defense-in-depth).
-- `PublicShareController::destroy` aplica 3 políticas: mirror → metadata-only; canónico + read → metadata-only; canónico + write/full → destructivo en disco.
-
-### Comandos operativos
+### Comandos
 
 ```bash
-# Dry-run del backfill de folder mirrors (no muta)
-cd app && php artisan files:repair-folder-mirrors --dry-run
+cd /www/wwwroot/cloud.mediaserver.com.co/Tcloud_v2/app
 
-# Aplicar el backfill (setes merged_into_id en parent views, ~23.821 links)
-cd app && php artisan files:repair-folder-mirrors --apply
+# 1) Limpiar user_storages de personales con permisos cruzados
+php artisan user-storages:fix-personal-visibility          # dry-run (default)
+php artisan user-storages:fix-personal-visibility --apply --yes [--user=ID]
 
-# Repuntar folder shares históricos al canónico (default excluye conflictos)
-cd app && php artisan shares:repair-mirror-targets --dry-run
-cd app && php artisan shares:repair-mirror-targets --apply
-
-# Re-sync de base_path_snapshot tras cambios masivos de storage
-cd app && php artisan files:resync-base-path-snapshots --dry-run
-cd app && php artisan files:resync-base-path-snapshots --apply [--storage=ID]
-
-# Notificar a creadores de shares write/full repuntados (window 7 días)
-cd app && php artisan shares:notify-repointed --dry-run
-cd app && php artisan shares:notify-repointed --apply [--days=N]
-
-# Revertir repoints (respeta --storage para evitar afectar producción desde harness)
-cd app && php artisan shares:repair-mirror-targets --revert [--storage=ID]
+# 2) Limpiar carpetas fantasma de files
+php artisan files:purge-ghost-folders                       # dry-run (default), todos los storages
+php artisan files:purge-ghost-folders --storage=5          # dry-run, un storage
+php artisan files:purge-ghost-folders --apply --yes --storage=5
 ```
 
-### Verificación operacional
+### Patrón de snapshot
+
+`files:purge-ghost-folders --apply` crea ANTES del DELETE una tabla snapshot:
+
+```
+files_ghost_pre_purge_<YYYYMMDD_HHMMSS>
+```
+
+con copia exacta de las filas borradas. La tabla persiste (no se borra automáticamente) para auditoría/rollback. Para restaurar:
 
 ```bash
-# Estado actual
 PGPASSWORD=cloud123 psql -h 127.0.0.1 -U cloud -d tcloudstorage -c "
-SELECT
-  (SELECT COUNT(*) FROM files WHERE merged_into_id IS NOT NULL AND is_folder=true AND deleted_at IS NULL) AS folder_mirrors,
-  (SELECT COUNT(*) FROM shares WHERE file_id IN (SELECT id FROM files WHERE merged_into_id IS NOT NULL)) AS shares_on_mirrors,
-  (SELECT COUNT(*) FROM file_mirror_audit_log WHERE action='link_mirror') AS link_audits,
-  (SELECT COUNT(*) FROM file_mirror_audit_log WHERE action='repoint_share') AS repoint_audits;
+INSERT INTO files SELECT * FROM files_ghost_pre_purge_<ts>
+ON CONFLICT (id) DO NOTHING;
 "
-
-# Harnesses
-cd app && php tests/harness_files_folder_mirror.php        # 15 escenarios, modelo de identidad
-cd app && php tests/harness_share_folder_canonical.php     # 10 escenarios, wiring + notification
 ```
 
-### Invariantes a mantener
-
-- `shares_on_mirrors` debe ser **0**.
-- `folder_mirrors` debería estabilizarse (no crecer post PR 1).
-- `file_mirror_audit_log` es **append-only** (trigger activo). NO UPDATE/DELETE.
-- `merged_into_id IS NOT NULL` = mirror; `IS NULL` = canónico. La identidad del file es esa columna.
-
-### Rollback
-
-```bash
-# Rollback total (PR 1 + PR 2 vía git revert)
-git revert <commit-hash-pr-1>
-git revert <commit-hash-pr-2>
-cd app && php artisan migrate:rollback --step=3   # drop files columns + share_notification_log
-cd app && php artisan shares:repair-mirror-targets --revert  # restaura file_id de los shares
-```
-
-Tras rollback, los 35+ shares vuelven a apuntar a mirrors vacíos (estado pre-fix). El comportamiento del controller vuelve a `$file->children()` (HasMany crudo, sin cross-storage).
-
-## Permission checks strict per storage_id (`fix-self-healing-permission-leak`, 2026-09-17)
-
-**Change:** `fix-self-healing-permission-leak`. `FileController::checkFilePermission()` ahora aplica **política estricta por storage_id**: el user solo puede acceder al file si tiene permiso explícito sobre el storage del file (`files.storage_provider_id`). **No hay fallback a descendants ni a ancestors** del storage del file.
-
-**Por qué:** un fallback anterior concedía acceso via descendientes del storage, lo cual producía dos bugs:
-- (a) **Veo el archivo en la lista pero no lo puedo descargar**: el listado filtraba por storage_id pero el download usaba el fallback, dando un listado correcto pero un acceso incorrecto.
-- (b) **Acceso cruzado**: un user con acceso al sub-storage específico podía descargar archivos del parent general sin tener acceso explícito al parent, exponiendo contenido que el operador no había autorizado.
-
-### Comportamiento actual (estricto)
+### Helpers de StorageProvider
 
 ```php
-private function checkFilePermission(File $file, string $permission): bool
-{
-    $user = $this->getUser();
-    if (!$user) return false;
-    if ($user->isAdmin()) return true;
-    if ($file->storage_provider_id) {
-        return $user->hasStoragePermission($file->storage_provider_id, $permission);
-    }
-    return $file->owner_id === $user->id;
-}
+StorageProvider::personalCanonicalUsername(): ?string  // 'jsuarez' para personal, null en otro caso
+StorageProvider::isOwnedBy(User $user): bool           // true si user es dueno canonico del personal
 ```
 
-Solo 3 caminos para acceder:
-1. **Admin bypass**: cualquier `role='admin'` retorna true inmediatamente.
-2. **Direct permission**: `user.hasStoragePermission(file.storage_provider_id, $perm)` retorna true.
-3. **Owner**: el user es `file.owner_id`.
+El segundo es consumido por `FileController::storages()` para excluir personales ajenos del listado de Mis Archivos (admin bypass).
 
-### Verificación operacional
+### Verificación
 
 ```bash
-# Caso 1: file en storage 5 (root), user con acceso a storage 6 (sub) → debe retornar 403
-SESSION_COOKIE=$(grep -oP 'tcloud_session=[^;]+' /tmp/cookies.txt | head -c 200)
-curl -sb "$SESSION_COOKIE" -o /tmp/dl.bin -w "Status: %{http_code}\n" \
-  "https://cloud.mediaserver.com.co/files/6657832/download"
-# Esperado: 403 Forbidden {"error":"Forbidden"}
-
-# Caso 2: file en storage 6, mismo user → debe retornar 200
-# (necesita un file que realmente esté en storage 6; ver `files:repair-delegation-leak --to-storage=6`)
-
-# Caso 3: admin → debe retornar 200 (bypass)
-ADMIN_COOKIE=...  # sesión de jsuariez u otro admin
-curl -sb "$ADMIN_COOKIE" -o /tmp/dl.bin -w "Status: %{http_code}\n" \
-  "https://cloud.mediaserver.com.co/files/6657832/download"
-# Esperado: 200 OK
+cd app
+php tests/harness_mis_archivos_personal_visibility.php   # 18+ aserciones
+php tests/harness_purge_ghost_folders.php                # 12+ aserciones
 ```
 
-### Diagnóstico de regresiones
-
-```bash
-# Si un user reporta "veo el archivo pero no puedo descargarlo":
-PGPASSWORD=cloud123 psql -h 127.0.0.1 -U cloud -d tcloudstorage -c "
-SELECT f.id, f.name, f.storage_provider_id AS file_storage,
-  s1.name AS file_storage_name,
-  EXISTS (SELECT 1 FROM user_storages us WHERE us.user_id = <USER_ID> AND us.storage_provider_id = f.storage_provider_id) AS has_direct_perm
-FROM files f
-JOIN storage_providers s1 ON s1.id = f.storage_provider_id
-WHERE f.id = <FILE_ID>;
-"
-# Si `has_direct_perm=false`, el user NO tiene acceso. El file debería estar
-# en un storage descendiente del que el user SÍ tiene acceso — usar
-# `files:repair-delegation-leak --apply --to-storage=<sub_storage_id>` para
-# re-forkear el file al storage correcto (self-healing sync lo hace en
-# cron nightly a partir de hoy).
-```
-
-### Invariantes a mantener
-
-- `checkFilePermission` **NO** debe tener fallback a descendants ni ancestors del storage del file. Cualquier PR que proponga agregar un fallback debe justificar por qué el fallback no causa los bugs (a) o (b) mencionados arriba.
-- El `self-healing sync` en `StorageSyncService::selfHealDelegationLeak` (cron nightly via `files:repair-delegation-leak --apply`) es el mecanismo primario para corregir delegation leaks antes de que se manifiesten como downloads fallidos.
-
-### Rollback
-
-```bash
-# Revertir el PR: trae de vuelta el fallback (NO recomendado — vuelve los bugs)
-git revert <commit-hash-de-fix-self-healing-permission-leak>
-systemctl reload php84-php-fpm
-
-# Alternativa preferida (sin deploy): corregir el data drift que causa el
-# problema raiz. La "no permission" es la politica correcta; el data drift es
-# el bug. El usuario deberia tener acceso al sub-storage especifico, y el
-# file row deberia ser del sub-storage, no del parent general.
-cd app && php artisan files:repair-delegation-leak --dry-run --storage=5  # ver scope
-cd app && php artisan files:repair-delegation-leak --apply --to-storage=6  # reparar
-```
-
-## Cross-storage access verification en shares públicos
-
-**Change:** `2026-09-18-fix-public-share-access-cross-storage`.
-
-`PublicShareController::isDescendantOf($file, $ancestor)` ahora hace
-dos chequeos, en orden:
-
-1. **Walk de `parent_id`**: barato, cubre el caso común (archivo en el
-   mismo storage que el folder).
-2. **Fallback por `physicalPathNormalized()`** (= `lower(rtrim(base_path_snapshot || '/' || path))`):
-   cubre el caso cross-storage donde el archivo vive en un storage distinto
-   pero representa el mismo path físico.
-
-`base_path_snapshot` se mantiene sincronizado vía `FileObserver::saving()`
-con `storage_providers.base_path` del row. Es único por storage, así que
-dos folders con `physical_path_normalized` compartido representan el mismo
-directorio físico real — el fallback no produce falsos positivos.
-
-**Regla para nuevos métodos que operen con un `$file` dentro de un share:**
-
-- Si el método lee contenido del disco (`mediaPreview`, `preview`,
-  `download`, o similar): canonizar `$file` vía `FilePhysicalIdentity::canonicalFor()`
-  antes del cálculo de `$storage`/`$fullPath`. Defense-in-depth para el
-  caso donde un mirror row se cuele.
-- Si el método opera solo metadata (`folder`, `upload`, `createFolder`,
-  `rename`, `delete`): no hace falta canonicalizar — `isDescendantOf`
-  ya reconoce equivalencia cross-storage.
-
-### Rollback del change `2026-09-18-fix-public-share-access-cross-storage`
-
-```bash
-git revert <commit-hash-de-fix-public-share-access-cross-storage>
-systemctl reload php84-php-fpm
-```
-
-No hay estado persistente que limpiar. El fallback de `isDescendantOf()`
-vuelve a comparar `path` relativo (comportamiento pre-fix). Las
-canonicalizaciones defense-in-depth en `mediaPreview`/`preview`/`download`
-también se revocan.
-
-Si el operador nota regresión en un share específico (algún caso que el
-fix rompe), el primer paso diagnóstico es:
-
-```bash
-# Verificar si los folders tienen physical_path_normalized compartido:
-PGPASSWORD=cloud123 psql -h 127.0.0.1 -U cloud -d tcloudstorage -c "
-SELECT f.id, f.name, f.path, f.storage_provider_id,
-       f.base_path_snapshot,
-       lower(rtrim(coalesce(f.base_path_snapshot,'') || '/' || coalesce(f.path,''))) AS phys_norm
-FROM files f
-WHERE f.id IN (<share_file_id>, <folder_id>);
-"
-# Si phys_norm del file NO empieza con phys_norm del folder + '/',
-# el 403 es correcto y debe investigarse (probablemente el file no
-# debería ser visible en ese share).
-```
+Ambos harnesses crean fixtures con tag unico (`hmpv_<hex>` / `hmfg_<hex>`) y limpian en `finally`.
