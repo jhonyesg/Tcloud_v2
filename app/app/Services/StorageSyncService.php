@@ -6,21 +6,12 @@ use App\Models\File;
 use App\Models\StorageProvider;
 use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 class StorageSyncService
 {
     /** Segundos que el camino manual espera por el lock antes de rendirse. */
     private const MANUAL_LOCK_WAIT = 3;
-
-    /**
-     * Cache por instancia de los storages ordenados por profundidad de
-     * base_path. La llena `findMoreSpecificStorage()` en su primera llamada.
-     *
-     * @var \Illuminate\Support\Collection<int,StorageProvider>|null
-     */
-    private ?\Illuminate\Support\Collection $moreSpecificCache = null;
 
     public function __construct(
         private FileScannerService $scanner,
@@ -123,7 +114,6 @@ class StorageSyncService
 
         $realPath = realpath($scanPath);
         if (!$realPath || !is_dir($realPath)) {
-            $this->markFolderUnknown($storage, $parentId);
             return $this->report($this->currentListing($storage->id, $parentId), 'path_missing');
         }
 
@@ -140,7 +130,6 @@ class StorageSyncService
                 'mount_point' => $detached,
             ]);
             $this->markInaccessible($storage);
-            $this->markFolderUnknown($storage, $parentId);
 
             return $this->report(
                 $this->currentListing($storage->id, $parentId),
@@ -159,7 +148,6 @@ class StorageSyncService
                 'parent_id' => $parentId,
             ] + $scan->context());
             $this->markInaccessible($storage);
-            $this->markFolderUnknown($storage, $parentId);
 
             return $this->report(
                 $this->currentListing($storage->id, $parentId),
@@ -184,13 +172,8 @@ class StorageSyncService
         // limpiarlos nunca. Aqui se toma el primero como canonico y los extras se
         // registran — borrarlos corresponde a `files:dedupe`, que re-parenta
         // antes (la FK parent_id es ON DELETE CASCADE).
-        // Papelera: excluimos filas trashadas del matching para que el sync
-        // no las toque, no las actualice ni las considere candidatas a prune.
-        // El indice parcial files_trash_sweep_idx + el WHERE is_trashed=false
-        // aqui mantienen este escaneo O(no-trash) incluso con papelera llena.
         $grouped = File::where('storage_provider_id', $storage->id)
             ->where('parent_id', $parentId)
-            ->where('is_trashed', false)
             ->get()
             ->groupBy('path');
 
@@ -222,33 +205,6 @@ class StorageSyncService
         $created = 0;
         $updated = 0;
         $deleted = 0;
-        $migrated = 0;
-
-        // Self-healing delegation (change `2026-09-17-self-healing-sync-permissions`).
-        // Se ejecuta ANTES del loop principal para que los files en este folder que
-        // deberian pertenecer a un sub-storage se migren antes de que el prune los
-        // vea como "orphans" (que aparecen en disco pero no en el storage correcto).
-        // Sin este orden, el prune borraria archivos legitimos que solo tienen mal
-        // el `storage_provider_id`. El self-healing preserva FKs porque solo cambia
-        // `storage_provider_id` y `parent_id`, NO `file_id`.
-        $migrated = $this->selfHealDelegationLeak($storage->id, $parentId);
-        if ($migrated > 0) {
-            $this->invalidateFolderCache($storage->id, $parentId);
-            // Re-leer bdFiles porque la migracion pudo mover files fuera de este folder.
-            $grouped = File::where('storage_provider_id', $storage->id)
-                ->where('parent_id', $parentId)
-                ->where('is_trashed', false)
-                ->get()
-                ->groupBy('path');
-            $bdFiles = collect();
-            foreach ($grouped as $path => $rows) {
-                $bdFiles[$path] = $rows->first();
-                if ($rows->count() > 1) {
-                    $duplicatesSeen += $rows->count() - 1;
-                }
-            }
-            $totalDbRows = $bdFiles->count();
-        }
 
         foreach ($realEntries as $entry) {
             $relativePath = $entry['is_folder'] 
@@ -268,22 +224,11 @@ class StorageSyncService
                     $changes['size'] = $entry['size'];
                 }
                 if (isset($entry['modified_at'])) {
-                    // createFromTimestamp() SIN zona devuelve un Carbon en UTC
-                    // (su default). Con la sesion PostgreSQL en America/Bogota
-                    // (config database.connections.pgsql.timezone), el binding se
-                    // formatea con `Y-m-d H:i:s` y PostgreSQL lo interpreta en la
-                    // zona de la sesion: hay que entregarlo ya en la zona de la
-                    // app o el instante queda corrido +5h. Ver fix 2026-09-16.
-                    $entryModified = \Carbon\Carbon::createFromTimestamp($entry['modified_at'], config('app.timezone'));
+                    $entryModified = \Carbon\Carbon::createFromTimestamp($entry['modified_at']);
                     if (!$existingFile->file_modified_at || !$existingFile->file_modified_at->eq($entryModified)) {
                         $changes['file_modified_at'] = $entryModified;
                     }
                 }
-                if ($existingFile->availability_state !== 'available') {
-                    $changes['availability_state'] = 'available';
-                }
-                $changes['last_verified_at'] = now();
-                $changes['missing_since_at'] = null;
                 if ($changes) {
                     $existingFile->update($changes);
                     $updated++;
@@ -308,31 +253,14 @@ class StorageSyncService
         // desaparecido del disco. Ni siquiera $forcePrune levanta ese rechazo.
         $orphanCount = $bdFiles->count();
 
-        // Regla 5: cuentas FK antes de pasar el veredicto a PruneGuard. Esto se
-        // hace ANTES del decision() para que el rechazo por orphan_linked sepa
-        // cuantos vinculos hay. Cada consulta es un EXISTS acotado, no una
-        // agregacion: no satura el server aunque haya 700k candidatos.
-        $linkedCount = 0;
-        foreach ($bdFiles as $orphan) {
-            if ($this->isFileLinked($orphan->id)) {
-                $linkedCount++;
-            }
-        }
-
         $decision = $this->pruneGuard->decide(
             dbCount: $totalDbRows,
             diskCount: count($realEntries),
             scanOk: $scan->ok,
-            linkedCount: $linkedCount,
             forced: $forcePrune,
         );
 
         if ($decision->refused()) {
-            if ($decision->reason === 'orphan_linked') {
-                $this->markOrphansMissing($bdFiles, $storage->id, $parentId);
-            } else {
-                $this->markOrphansUnknown($bdFiles);
-            }
             Log::warning('storage_sync.prune_refused', [
                 'storage_id' => $storage->id,
                 'parent_id' => $parentId,
@@ -340,7 +268,6 @@ class StorageSyncService
                 'db_count' => $totalDbRows,
                 'disk_count' => count($realEntries),
                 'orphans' => $orphanCount,
-                'orphans_linked' => $linkedCount,
                 'reason' => $decision->reason,
             ] + $decision->context);
         } else {
@@ -359,8 +286,7 @@ class StorageSyncService
 
         if ($parentId !== null && $parentFolder) {
             // store directory mtime so fullSync can skip it next time when nothing changed
-            // (zona de la app: ver nota en el otro createFromTimestamp de este archivo)
-            $dirMtime = \Carbon\Carbon::createFromTimestamp(filemtime($realPath), config('app.timezone'));
+            $dirMtime = \Carbon\Carbon::createFromTimestamp(filemtime($realPath));
             $parentFolder->update(['file_modified_at' => $dirMtime]);
         }
 
@@ -372,7 +298,6 @@ class StorageSyncService
             'created' => $created,
             'updated' => $updated,
             'deleted' => $deleted,
-            'migrated' => $migrated,
             'disk_count' => count($realEntries),
             'orphans' => $orphanCount,
             'pruned' => !$decision->refused(),
@@ -387,239 +312,15 @@ class StorageSyncService
      * Es lo que se devuelve cuando no se puede o no se debe escanear (sync
      * desactivado, lock ocupado, escaneo no fiable, montaje caido): el usuario ve
      * lo ultimo conocido en vez de una lista vacia enganosa.
-     *
-     * Ademas incluye archivos que pertenezcan a un SUB-storage mas especifico
-     * cuya base_path sea prefijo de la carpeta que el usuario esta viendo.
-     * Sin esto, navegar Disco_B/television/Canal_Rcn/16092026 desde "00 Discos"
-     * (storage padre) mostraba los archivos viejos pero no los nuevos: el sync
-     * delega los archivos nuevos al sub-storage (Canal_Rcn) y la carpeta padre
-     * quedaba desincronizada respecto al disco. Ver resolveListingTargets().
-     *
-     * Dedup por nombre: si la misma ruta fisica existe en padre e hijo
-     * (estado legado, ver migration pendiente), gana la fila del storage mas
-     * especifico (base_path mas largo). Asi el usuario no ve duplicados del
-     * mismo archivo.
      */
     private function currentListing(int $storageId, ?int $parentId): array
     {
-        $targets = $this->resolveListingTargets($storageId, $parentId);
-
-        $rowsByStorage = [];
-        foreach ($targets as $t) {
-            // Defense in depth: aunque `resolveListingTargets` ya filtra por
-            // `duplicate_of_storage_id`, esta consulta evita que un storage mergeado
-            // aparezca en el listado si el cache de targets quedo stale (TTL
-            // 60s hoy, 300s para folders de hoy, 86400s para folders
-            // historicos). Cambio `storage-physical-path-normalization`.
-            if (StorageProvider::where('id', $t['storage_id'])->whereNotNull('duplicate_of_storage_id')->exists()) {
-                continue;
-            }
-            $rowsByStorage[$t['storage_id']] = File::where('storage_provider_id', $t['storage_id'])
-                ->where('parent_id', $t['parent_id'])
-                ->where('is_trashed', false)
-                ->get();
-        }
-
-        // Orden de especificidad descendente: el sub-storage gana sobre el padre.
-        // Asignamos peso = longitud de base_path; al desempate por nombre, gana
-        // el de mayor peso.
-        $weights = [];
-        foreach (array_keys($rowsByStorage) as $sid) {
-            $sp = StorageProvider::find($sid);
-            $weights[$sid] = $sp ? strlen((string) $sp->base_path) : 0;
-        }
-
-        $merged = collect();
-        foreach ($rowsByStorage as $sid => $rows) {
-            foreach ($rows as $r) {
-                $merged->push((object) ['weight' => $weights[$sid], 'row' => $r]);
-            }
-        }
-
-        // Dedup por nombre: el de mayor peso gana.
-        $byName = [];
-        foreach ($merged as $entry) {
-            $name = $entry->row->name;
-            if (!isset($byName[$name]) || $entry->weight > $byName[$name]->weight) {
-                $byName[$name] = $entry;
-            }
-        }
-
-        return collect(array_values($byName))
-            ->map(fn ($e) => (array) $e->row->toArray())
-            ->sortBy([['is_folder', 'desc'], ['created_at', 'desc']])
-            ->values()
+        return File::where('storage_provider_id', $storageId)
+            ->where('parent_id', $parentId)
+            ->orderBy('is_folder', 'desc')
+            ->orderBy('created_at', 'desc')
+            ->get()
             ->toArray();
-    }
-
-    /**
-     * Resuelve los pares (storage_id, parent_id) cuyos archivos deben aparecer
-     * cuando el usuario navega la carpeta ($storageId, $parentId).
-     *
-     * Caso normal: solo el par pedido.
-     * Caso sub-storage: si existe un sub-storage mas especifico cuya base_path
-     * es prefijo de la carpeta que el usuario ve, tambien se incluyen los
-     * archivos del folder correspondiente en ese sub-storage (resuelto por
-     * path, no por id, porque el id cambia entre storages).
-     *
-     * Esto es lo que arregla "le doy a Actualizar y Mis Archivos no muestra los
-     * archivos nuevos": la delegation logic del sync es correcta (los archivos
-     * son del sub-storage), pero el listado del padre debe mergearlos para que
-     * la UI no quede desfasada respecto al disco.
-     *
-     * @return list<array{storage_id:int, parent_id:?int}>
-     */
-    public function resolveListingTargets(int $storageId, ?int $parentId): array
-    {
-        // Change `storage-physical-path-normalization` (2026-09-17):
-        // si el storage navegado es un duplicate no mergeado todavia, log
-        // warning para que el operador sepa que el listado podria estar
-        // incompleto. La deduplicacion real entre duplicados se hace en
-        // `currentListing` por peso (`strlen(base_path)`); la normalizacion
-        // completa llega via `storages:merge-duplicates --apply`.
-        if (StorageProvider::where('id', $storageId)->whereNotNull('duplicate_of_storage_id')->exists()) {
-            \Illuminate\Support\Facades\Log::info('storage_sync.listing_merged_storage', [
-                'storage_id' => $storageId,
-                'parent_id' => $parentId,
-                'hint' => 'storage mergeado en otro; contenido listado via currentListing dedup',
-            ]);
-        }
-
-        $targets = [['storage_id' => $storageId, 'parent_id' => $parentId]];
-
-        if ($parentId === null) {
-            return $targets;
-        }
-
-        $parentFolder = File::find($parentId);
-        if (!$parentFolder) {
-            return $targets;
-        }
-
-        // Change `files-mirror-elimination` (Task 2.1): el row del folder puede
-        // pertenecer a OTRO storage que el navegado. Pasa cuando el listado
-        // cross-storage devolvió la fila canónica de un sub-storage y el cliente
-        // todavía no adoptó ese storage (fix de frontend es el Grupo 3). Sin
-        // esto, `$parentFolder->storage_provider_id !== $storageId` abortaba y el
-        // listado salía vacío — el bug reportado.
-        $parentStorageId = $parentFolder->storage_provider_id ?: $storageId;
-
-        // El target primario debe usar el storage del propio row: `currentListing`
-        // consulta `where('storage_provider_id', ...)`, así que un target con el
-        // storage equivocado devuelve 0 filas.
-        if ($parentStorageId !== $storageId) {
-            $targets = [['storage_id' => $parentStorageId, 'parent_id' => $parentId]];
-        }
-
-        $parentStorage = StorageProvider::find($parentStorageId);
-        if (!$parentStorage || empty($parentStorage->base_path)) {
-            return $targets;
-        }
-
-        $absolutePath = rtrim($parentStorage->base_path, '/') . '/' . ltrim((string) $parentFolder->path, '/');
-        $parentBase = rtrim((string) $parentStorage->base_path, '/');
-
-        // Task 2.1: si el path absoluto ES exactamente el base_path de un
-        // sub-storage, la carpeta navegada es la RAÍZ de ese sub-storage. Sus
-        // hijos cuelgan de `parent_id IS NULL`, no de un folder con `path = ''`.
-        //
-        // `findMoreSpecificStorage()` NO sirve para este caso: descarta
-        // candidatos cuyo base_path iguala el path absoluto (los trata como "el
-        // mismo storage"). Por eso se resuelve aparte.
-        $exact = $this->findStorageByExactBasePath($absolutePath, $parentStorageId);
-        if ($exact !== null) {
-            $targets[] = ['storage_id' => $exact->id, 'parent_id' => null];
-            return $targets;
-        }
-
-        $sub = $this->findMoreSpecificStorage($absolutePath, $parentStorageId);
-        if ($sub === null) {
-            return $targets;
-        }
-
-        $subBase = rtrim((string) $sub->base_path, '/');
-
-        // `findMoreSpecificStorage` solo garantiza "prefijo más largo que 0":
-        // puede devolver un ANCESTRO del storage actual (ej. navegando storage
-        // 44 `.../Prensa/Portafolio`, devuelve 37 `.../Prensa` o 5 `.../Tcloud`).
-        // Añadirlo como target duplicaría el listado con las filas del padre.
-        // El sub-storage real es estrictamente más específico que el navegado.
-        if (strlen($subBase) <= strlen($parentBase)) {
-            return $targets;
-        }
-
-        $relativeToSub = ltrim(substr($absolutePath, strlen($subBase)), '/');
-
-        if ($relativeToSub === '') {
-            $targets[] = ['storage_id' => $sub->id, 'parent_id' => null];
-            return $targets;
-        }
-
-        $subFolder = $this->findEquivalentFolderInStorage($absolutePath, $sub->id, $relativeToSub);
-
-        if (!$subFolder) {
-            return $targets;
-        }
-
-        $targets[] = ['storage_id' => $sub->id, 'parent_id' => $subFolder->id];
-
-        return $targets;
-    }
-
-    /**
-     * Busca un storage (no mergeado) cuyo `base_path` sea EXACTAMENTE la ruta
-     * física dada. Es el caso "carpeta navegada = raíz del sub-storage".
-     *
-     * Change `files-mirror-elimination` (Task 2.1).
-     */
-    private function findStorageByExactBasePath(string $absolutePath, int $excludeStorageId): ?StorageProvider
-    {
-        $normalized = strtolower(rtrim($absolutePath, '/'));
-
-        return StorageProvider::query()
-            ->whereNotNull('base_path')
-            ->whereRaw("rtrim(base_path, '/') <> ''")
-            ->whereNull('duplicate_of_storage_id')
-            ->where('id', '<>', $excludeStorageId)
-            ->whereRaw("LOWER(RTRIM(base_path, '/')) = ?", [$normalized])
-            ->first(['id', 'name', 'base_path', 'parent_storage_id']);
-    }
-
-    /**
-     * Resuelve la fila de carpeta en `$subStorageId` que representa el mismo
-     * directorio físico que `$absolutePath`.
-     *
-     * Dos caminos:
-     *  1. `path` relativo exacto al base_path del sub-storage (caso normal).
-     *  2. Equivalencia por identidad física — cubre filas cuyo `path` quedó con
-     *     una base distinta (drift histórico de backfills).
-     *
-     * Change `files-mirror-elimination` (Task 2.3).
-     */
-    private function findEquivalentFolderInStorage(string $absolutePath, int $subStorageId, string $relativePath): ?File
-    {
-        $byPath = File::where('storage_provider_id', $subStorageId)
-            ->where('path', $relativePath)
-            ->where('is_folder', true)
-            ->where('is_trashed', false)
-            ->orderBy('id')
-            ->first();
-
-        if ($byPath !== null) {
-            return $byPath;
-        }
-
-        $normalized = strtolower(rtrim($absolutePath, '/'));
-
-        return File::where('storage_provider_id', $subStorageId)
-            ->where('is_folder', true)
-            ->where('is_trashed', false)
-            ->whereRaw(
-                "LOWER(RTRIM(COALESCE(base_path_snapshot, ''), '/') || '/' || LTRIM(COALESCE(path, ''), '/')) = ?",
-                [$normalized]
-            )
-            ->orderBy('id')
-            ->first();
     }
 
     /**
@@ -681,99 +382,7 @@ class StorageSyncService
             }
         }
 
-        // Fix mal-parenting (causa raiz #1 del bug del Sin indexar):
-        // Si el cliente esta navegando una carpeta del storage PADRE pero esa
-        // carpeta pertenece a un SUB-storage mas especifico, NO crear el file
-        // bajo el padre — delegar al sub-storage para que sea el dueno real.
-        // Esto evita que el padre reclame archivos que logicamente son del hijo.
-        //
-        // Ademas resuelve el parent_id dentro del sub-storage: el archivo debe
-        // colgar del folder correspondiente en el sub-storage (mismo path
-        // relativo), no quedar huerfano en la raiz del sub-storage con
-        // parent_id=NULL. Sin eso, "Mis Archivos" no muestra los archivos
-        // nuevos aunque el sync reporte created>0 (ver resolveListingTargets
-        // y el bug "le doy a Actualizar y no actualiza").
-        if (!$entry['is_folder']) {
-            $absolutePath = rtrim($storage->base_path, '/') . '/' . ltrim($path, '/');
-            $moreSpecificStorage = $this->findMoreSpecificStorage($absolutePath, $storage->id);
-            if ($moreSpecificStorage !== null) {
-                Log::info('storage_sync.delegated_to_substorage', [
-                    'parent_storage_id' => $storage->id,
-                    'parent_name' => $storage->name,
-                    'sub_storage_id' => $moreSpecificStorage->id,
-                    'sub_name' => $moreSpecificStorage->name,
-                    'path' => $path,
-                    'absolute_path' => $absolutePath,
-                ]);
-                $subBase = rtrim((string) $moreSpecificStorage->base_path, '/');
-                $relativeToSub = ltrim(substr($absolutePath, strlen($subBase)), '/');
-                $subParentPath = trim(dirname($relativeToSub), '/.');
-
-                // Fix bug `mis-archivos-substorage-orphan-repair` (2026-09-17):
-                // antes, si el folder intermedio no existia en el sub-storage,
-                // $subParentFolderId quedaba NULL y el archivo delegado quedaba
-                // huerfano en la raiz del sub-storage. Eso rompe el listing:
-                // resolveListingTargets() no encuentra el folder intermedio y
-                // devuelve solo el target del storage padre, asi que la UI ve
-                // la carpeta vacia aunque el archivo fisico este en disco.
-                //
-                // Ahora: si la cadena de folders no existe en el sub-storage,
-                // crearla con el mismo FileRegistry::ensure() que se usa para
-                // los archivos. ensure() es idempotente por (storage_id, path)
-                // asi que es seguro bajo concurrencia.
-                $subParentFolderId = null;
-                if ($subParentPath !== '' && $subParentPath !== '.') {
-                    $subParentFolderId = $this->ensureSubstorageFolderChain(
-                        $moreSpecificStorage,
-                        $subParentPath,
-                        $userId,
-                    );
-                }
-
-                return $this->registry->ensure($moreSpecificStorage, $relativeToSub, [
-                    'name' => $name,
-                    'path' => $relativeToSub,
-                    'size' => $entry['size'] ?? 0,
-                    'mime_type' => $entry['mime_type'] ?? 'application/octet-stream',
-                    'storage_provider_id' => $moreSpecificStorage->id,
-                    // canonical-owner: usar owner canonico por storage (no userStorages()->first() sin orderBy)
-                    'owner_id' => StorageProvider::canonicalOwnerId($moreSpecificStorage->id)
-                        ?? throw new \RuntimeException("storage {$moreSpecificStorage->id} sin owner canonico, asigne permissions=full a un user_storages antes de sincronizar"),
-                    'parent_id' => $subParentFolderId,
-                    'is_folder' => false,
-                    'file_modified_at' => isset($entry['modified_at'])
-                        ? \Carbon\Carbon::createFromTimestamp($entry['modified_at'], config('app.timezone'))
-                        : null,
-                    'availability_state' => 'available',
-                    'last_verified_at' => now(),
-                    'missing_since_at' => null,
-                ]);
-            }
-        }
-
-        // Papelera: si ya existe una fila trashada con este path, no creamos
-        // una nueva — la fila trashada es la canonica hasta que se restaure
-        // o se purgue. Esto evita que el sync "recree" items que el usuario
-        // acaba de mover a papelera (bug original reportado 2026-09-06).
-        $existingTrashed = File::where('storage_provider_id', $storage->id)
-            ->where('path', $path)
-            ->where('is_trashed', true)
-            ->first();
-        if ($existingTrashed) {
-            Log::info('storage_sync.skipped_trashed_collision', [
-                'storage_id' => $storage->id,
-                'path' => $path,
-                'trashed_file_id' => $existingTrashed->id,
-                'parent_id' => $parentId,
-            ]);
-            return $existingTrashed;
-        }
-
-        // Zona de la app: con la sesion PG en America/Bogota, entregar un Carbon
-        // en UTC desplazaria el instante +5h. Ver fix 2026-09-16.
-        $modifiedAt = isset($entry['modified_at'])
-            ? \Carbon\Carbon::createFromTimestamp($entry['modified_at'], config('app.timezone'))
-            : null;
+        $modifiedAt = isset($entry['modified_at']) ? \Carbon\Carbon::createFromTimestamp($entry['modified_at']) : null;
 
         // Via FileRegistry: si otro proceso gana la carrera, se lee al ganador en
         // vez de insertar una copia. Antes era un File::create() pelado.
@@ -783,559 +392,12 @@ class StorageSyncService
             'size' => $entry['size'] ?? 0,
             'mime_type' => $entry['mime_type'] ?? ($entry['is_folder'] ? 'folder' : 'application/octet-stream'),
             'storage_provider_id' => $storage->id,
-            // canonical-owner: usar owner canonico por storage (no userStorages()->first() sin orderBy)
-            'owner_id' => StorageProvider::canonicalOwnerId($storage->id)
-                ?? throw new \RuntimeException("storage {$storage->id} sin owner canonico, asigne permissions=full a un user_storages antes de sincronizar"),
+            'owner_id' => $storage->userStorages()->first()?->user_id ?? 1,
             'parent_id' => $parentId,
             'is_folder' => $entry['is_folder'],
+            'is_personal' => false,
             'file_modified_at' => $modifiedAt,
-            'availability_state' => 'available',
-            'last_verified_at' => now(),
-            'missing_since_at' => null,
         ]);
-    }
-
-    private function markFolderUnknown(StorageProvider $storage, ?int $parentId): void
-    {
-        if ($parentId !== null) {
-            File::where('id', $parentId)
-                ->where('storage_provider_id', $storage->id)
-                ->update([
-                    'availability_state' => 'unknown',
-                    'last_verified_at' => null,
-                    'missing_since_at' => null,
-                ]);
-        }
-
-        File::where('storage_provider_id', $storage->id)
-            ->where('parent_id', $parentId)
-            ->where('availability_state', '!=', 'unknown')
-            ->update([
-                'availability_state' => 'unknown',
-                'last_verified_at' => null,
-                'missing_since_at' => null,
-            ]);
-    }
-
-    /**
-     * Busca un sub-storage mas especifico cuyo base_path sea prefijo del
-     * absolutePath dado. Usado por createFileFromScan() para evitar que el
-     * padre reclame archivos del hijo cuando el cliente navega carpetas
-     * anidadas (ej. cliente en Mis Archivos abre Emisoras 01 / Atlantico /
-     * Blu — esos archivos son de storage 91 Blu Barranquilla, no de 49).
-     *
-     * FRONTERA (change `transcriptor-physical-file-identity`, design.md D7):
-     * la delegacion es GEOMETRICA. Antes filtraba por
-     * `StorageProvider::transcriptionEnabled()`, lo que violaba la
-     * independencia de los modulos: apagar `transcription_enabled` de un
-     * storage hijo hacia que Mis Archivos dejara de delegarle archivos y el
-     * padre se los quedara. Eso produjo cientos de miles de filas duplicadas
-     * (los hijos 36/59/37/46 con tx=false nunca recibieron la delegacion).
-     *
-     * Ahora decide solo por PROFUNDIDAD de ruta: el sub-storage mas especifico
-     * gana, transcriba o no. Con el CASCADE roto en `transcriptions.file_id`
-     * (migracion 2026_09_16_200200), esta delegacion tampoco puede destruir
-     * transcripciones.
-     *
-     * @return StorageProvider|null el sub-storage mas especifico encontrado, o null
-     */
-    private function findMoreSpecificStorage(string $absolutePath, int $excludeStorageId): ?StorageProvider
-    {
-        // Cache por instancia (antes era `static`, que sobrevivia entre
-        // requests de un worker PHP-FPM y podia servir datos rancios tras
-        // cambiar un base_path). El servicio se resuelve por request, asi que
-        // esto acota la vida de la cache al trabajo actual.
-        //
-        // Change `storage-physical-path-normalization` (2026-09-17):
-        // excluimos storages mergeados (`duplicate_of_storage_id IS NOT NULL`) para que
-        // el sync no delegue archivos a un storage que esta marcado como
-        // duplicado de otro. Sin esta exclusion, el cron seguiria creando
-        // filas en el duplicate tras el merge, anulando el efecto del comando.
-        if ($this->moreSpecificCache === null) {
-            $this->moreSpecificCache = StorageProvider::query()
-                ->whereNotNull('base_path')
-                ->whereRaw("rtrim(base_path, '/') <> ''")
-                ->whereNull('duplicate_of_storage_id')
-                ->orderByRaw("LENGTH(rtrim(base_path, '/')) DESC")
-                ->get(['id', 'name', 'base_path', 'parent_storage_id'])
-                ->keyBy('id');
-        }
-
-        $absolutePath = rtrim($absolutePath, '/');
-        $best = null;
-        $bestLen = 0;
-        foreach ($this->moreSpecificCache as $candidate) {
-            if ($candidate->id === $excludeStorageId) continue;
-            $base = rtrim((string) $candidate->base_path, '/');
-            if ($base === '' || $base === $absolutePath) continue;
-            if (str_starts_with($absolutePath . '/', $base . '/') && strlen($base) > $bestLen) {
-                $best = $candidate;
-                $bestLen = strlen($base);
-            }
-        }
-        return $best;
-    }
-
-    /**
-     * Garantiza que existe la cadena de folders que contiene $subPath en el
-     * sub-storage, creando los segmentos faltantes. Usado por
-     * createFileFromScan() al delegar un archivo a un sub-storage: si el
-     * folder intermedio no existe, antes el archivo quedaba con parent_id=NULL
-     * (huerfano en la raiz), lo que rompia el listado de Mis Archivos.
-     *
-     * Idempotente por (storage_id, path): si el folder ya existe, lo retorna;
-     * si no, lo crea. Recorre el path segmento por segmento de la raiz hacia
-     * abajo para que la creacion siempre respete la jerarquia.
-     *
-     * Devuelve el id del folder hoja (= el folder correspondiente a $subPath),
-     * o NULL si $subPath esta vacio (la raiz del sub-storage).
-     */
-    private function ensureSubstorageFolderChain(StorageProvider $storage, string $subPath, ?int $userId): ?int
-    {
-        $segments = array_values(array_filter(explode('/', $subPath), fn($s) => $s !== ''));
-        if (empty($segments)) {
-            return null;
-        }
-
-        $ownerId = StorageProvider::canonicalOwnerId($storage->id);
-        if ($ownerId === null) {
-            // Fix de raíz (Hermes, 2026-09-19): antes esto lanzaba un RuntimeException
-            // que rompía el sync con HTTP 500 cuando un storage raíz quedaba sin
-            // owner tras una desasignación. Como fallback usamos el primer admin
-            // activo del sistema (o el primer usuario activo si no hay admins).
-            // Registramos el incidente en hermes_audit para que sea visible.
-            $ownerId = DB::table('users')
-                ->where('status', 'active')
-                ->where('role', 'admin')
-                ->orderBy('id')
-                ->value('id');
-            if ($ownerId === null) {
-                $ownerId = DB::table('users')
-                    ->where('status', 'active')
-                    ->orderBy('id')
-                    ->value('id');
-            }
-            if ($ownerId === null) {
-                throw new \RuntimeException(
-                    "storage {$storage->id} sin owner canonico y no hay usuarios activos en el sistema"
-                );
-            }
-            try {
-                DB::table('hermes_audit')->insert([
-                    'operation' => 'storage_no_owner_fallback',
-                    'entity_type' => 'storage_providers',
-                    'payload' => json_encode([
-                        'storage_id' => $storage->id,
-                        'fallback_user_id' => $ownerId,
-                        'subpath' => $subPath,
-                    ]),
-                ]);
-            } catch (\Throwable $e) {
-                // Si la tabla hermes_audit no existe o falla, no bloquear el sync
-                \Log::warning('hermes_audit insert failed: ' . $e->getMessage());
-            }
-        }
-        $currentParentId = null;
-        $accumulatedPath = '';
-
-        foreach ($segments as $segment) {
-            $accumulatedPath = $accumulatedPath === '' ? $segment : $accumulatedPath . '/' . $segment;
-
-            $folder = File::where('storage_provider_id', $storage->id)
-                ->where('path', $accumulatedPath)
-                ->where('is_folder', true)
-                ->first();
-
-            if ($folder !== null) {
-                $currentParentId = $folder->id;
-                continue;
-            }
-
-            // Trash check: si hay una fila trashada con este path, NO crear
-            // una nueva (la fila trashada es canonica hasta restauracion o
-            // purga). Ver logica equivalente en createFileFromScan() linea ~610.
-            $existingTrashed = File::where('storage_provider_id', $storage->id)
-                ->where('path', $accumulatedPath)
-                ->where('is_trashed', true)
-                ->first();
-            if ($existingTrashed) {
-                Log::info('storage_sync.skipped_trashed_collision_folder', [
-                    'storage_id' => $storage->id,
-                    'path' => $accumulatedPath,
-                    'trashed_file_id' => $existingTrashed->id,
-                ]);
-                // No podemos crear la cadena limpia; abortamos y devolvemos NULL
-                // para que el caller sepa que la delegacion no encontro padre.
-                return null;
-            }
-
-            $created = $this->registry->ensure($storage, $accumulatedPath, [
-                'name' => $segment,
-                'path' => $accumulatedPath,
-                'size' => 0,
-                'mime_type' => 'folder',
-                'storage_provider_id' => $storage->id,
-                'owner_id' => $ownerId,
-                'parent_id' => $currentParentId,
-                'is_folder' => true,
-                'file_modified_at' => null,
-                'availability_state' => 'available',
-                'last_verified_at' => now(),
-                'missing_since_at' => null,
-            ]);
-
-            $currentParentId = $created->id;
-        }
-
-        return $currentParentId;
-    }
-
-    /**
-     * Self-healing delegation (change `2026-09-17-self-healing-sync-permissions`).
-     *
-     * Para cada file row existente en el folder ($storage_id, $parent_id) cuyo
-     * absolute path cae bajo un sub-storage mas especifico, lo migra al
-     * sub-storage correcto via una sola query SQL bulk.
-     *
-     * Casos manejados:
-     *   - File sin destino: no se toca (ya esta bien delegado)
-     *   - File con destino y folder chain limpio: UPDATE storage_provider_id + parent_id
-     *   - File con destino que ya tiene file con mismo path: re-apuntar FKs
-     *     (transcriptions/shares/media_edit_jobs) al file existente, borrar leak
-     *   - File con destino y folder trashed en el chain: skip + log warning
-     *
-     * Devuelve el numero de files migrados (incluye los borrados por colision).
-     */
-    private function selfHealDelegationLeak(int $storageId, ?int $parentId): int
-    {
-        // 1. Detectar candidatos: files en este folder cuyo absolute path cae bajo
-        //    un sub-storage mas especifico. Sin cross-join: usamos position() + LIKE.
-        // El prefilter es case-INSENSITIVE: hay filas historicas con case
-        // distinto al disco (st5 guarda `disco_c/prensa/...` cuando el
-        // directorio real es `Disco_C/Prensa`). Un LIKE sensible a case las
-        // descartaba silenciosamente y quedaban sin delegar para siempre.
-        // La resolucion exacta del case se hace despues contra el disco en
-        // `resolvePhysicalPath()`.
-        $candidates = DB::select("
-            SELECT DISTINCT ON (f.id)
-                   f.id AS file_id, f.path AS file_path, f.storage_provider_id AS origin_id,
-                   s1.base_path AS origin_base,
-                   s2.id AS target_id, s2.base_path AS target_base
-            FROM files f
-            JOIN storage_providers s1 ON s1.id = f.storage_provider_id
-            CROSS JOIN storage_providers s2
-            WHERE s2.duplicate_of_storage_id IS NULL
-              AND s2.base_path IS NOT NULL AND s2.base_path <> ''
-              AND s2.id != f.storage_provider_id
-              AND s2.id != s1.id
-              AND s2.base_path != s1.base_path
-              AND lower(s1.base_path || '/' || f.path || '/') LIKE lower(s2.base_path) || '/%'
-              AND length(rtrim(s2.base_path, '/')) > length(rtrim(s1.base_path, '/'))
-              AND f.parent_id " . ($parentId === null ? "IS NULL" : "= " . (int)$parentId) . "
-              AND f.storage_provider_id = ?
-              AND NOT f.is_folder AND NOT f.is_trashed
-            ORDER BY f.id, length(rtrim(s2.base_path, '/')) DESC
-            LIMIT 5000
-        ", [$storageId]);
-
-        if (empty($candidates)) return 0;
-
-        $migrated = 0;
-        $registry = app(FileRegistry::class);
-
-        foreach ($candidates as $cand) {
-            $filePath = trim((string) $cand->file_path, '/');
-            $originBase = rtrim((string) $cand->origin_base, '/');
-            $targetBase = rtrim((string) $cand->target_base, '/');
-
-            // Bug historico (corregido 2026-09-19): antes se calculaba
-            //   substr($filePath, strlen($targetBase) + 1)
-            // restando la longitud de un base_path ABSOLUTO a un path RELATIVO
-            // al storage origen. El resultado era basura (normalmente el path
-            // entero) y el UPDATE no escribia `path`, asi que la fila quedaba
-            // en el sub-storage apuntando a una ruta inexistente:
-            //   st37 "20260918/imagenes/01.png" -> st44 (sin rebasar) -> disco 404
-            //
-            // Ahora: se reconstruye la ruta ABSOLUTA real del archivo, se
-            // resuelve su case exacto contra el disco y se rebasa al sub-storage.
-            $absolute = $this->resolvePhysicalPath($originBase, $filePath);
-
-            if ($absolute === null) {
-                // La fila no representa ningun archivo real en disco. No se
-                // delega: se deja intacta para que el prune/repair la trate
-                // (es un duplicado muerto, no informacion que perder).
-                Log::info('storage_sync.self_heal_unresolvable_path', [
-                    'file_id' => $cand->file_id,
-                    'storage_id' => $cand->origin_id,
-                    'path' => $filePath,
-                    'expected_absolute' => $originBase . '/' . $filePath,
-                ]);
-                continue;
-            }
-
-            $newPath = $this->rebasePath($absolute, $targetBase);
-
-            if ($newPath === null || $newPath === '') {
-                Log::info('storage_sync.self_heal_rebase_failed', [
-                    'file_id' => $cand->file_id,
-                    'absolute' => $absolute,
-                    'target_base' => $targetBase,
-                ]);
-                continue;
-            }
-
-            $subParentPath = trim(dirname($newPath), '/.');
-
-            // Resolver parent_id en el sub-storage destino
-            $parentFolderId = null;
-            if ($subParentPath !== '' && $subParentPath !== '.') {
-                $parentFolderId = $this->ensureSubstorageFolderChainPublic(
-                    (int) $cand->target_id,
-                    $subParentPath,
-                    null
-                );
-                if ($parentFolderId === null) {
-                    Log::info('storage_sync.self_heal_trashed_collision', [
-                        'file_id' => $cand->file_id,
-                        'storage_id' => $cand->target_id,
-                        'path' => $subParentPath,
-                    ]);
-                    continue;
-                }
-            }
-
-            // Detectar colision: ya existe un file con el MISMO path nuevo en
-            // el destino (el cron del sub ya escaneo el archivo).
-            $existingAtTarget = File::where('storage_provider_id', $cand->target_id)
-                ->where('path', $newPath)
-                ->where('is_trashed', false)
-                ->first();
-
-            if ($existingAtTarget !== null) {
-                // Re-apuntar FKs al file existente, luego borrar el leak
-                DB::table('transcriptions')->where('file_id', $cand->file_id)->update(['file_id' => $existingAtTarget->id]);
-                DB::table('shares')->where('file_id', $cand->file_id)->update(['file_id' => $existingAtTarget->id]);
-                DB::table('media_edit_jobs')->where('source_file_id', $cand->file_id)->update(['source_file_id' => $existingAtTarget->id]);
-                File::where('id', $cand->file_id)->delete();
-                $this->invalidateFolderCache((int) $cand->target_id, $parentFolderId);
-                $this->invalidateFolderCache((int) $cand->origin_id, $parentId);
-                $migrated++;
-                continue;
-            }
-
-            // UPDATE: migrar al sub-storage Y rebasar el path. Sin rebasar el
-            // path la fila queda apuntando a una ruta que no existe.
-            File::where('id', $cand->file_id)->update([
-                'storage_provider_id' => $cand->target_id,
-                'parent_id' => $parentFolderId,
-                'path' => $newPath,
-                'base_path_snapshot' => null,
-            ]);
-
-            $this->invalidateFolderCache((int) $cand->target_id, $parentFolderId);
-            $this->invalidateFolderCache((int) $cand->origin_id, $parentId);
-
-            Log::info('storage_sync.file_migrated_to_substorage', [
-                'file_id' => $cand->file_id,
-                'from_storage_id' => $cand->origin_id,
-                'to_storage_id' => $cand->target_id,
-                'old_path' => $filePath,
-                'new_path' => $newPath,
-            ]);
-
-            $migrated++;
-        }
-
-        return $migrated;
-    }
-
-    /**
-     * Reconstruye la ruta absoluta real de un archivo a partir del `base_path`
-     * del storage que lo contiene y su `path` relativo, resolviendo el case
-     * exacto de cada segmento contra el disco.
-     *
-     * Necesario porque hay filas historicas con case incorrecto (st5 guarda
-     * `disco_c/prensa/...` cuando en disco es `Disco_C/Prensa/...`) y porque
-     * `file_exists()` sobre una ruta con case distinto en Linux da false.
-     *
-     * Devuelve null si algun segmento no existe en disco: la fila no
-     * representa un archivo fisico y no debe delegarse.
-     */
-    private function resolvePhysicalPath(string $base, string $relative): ?string
-    {
-        $realBase = realpath($base);
-
-        if ($realBase === false) {
-            // El base_path del storage no existe en disco: probar la ruta
-            // concatenada diretamente (puede ser un storage externo aun no
-            // montado, en cuyo caso devolvemos null).
-            $candidate = rtrim($base, '/') . '/' . ltrim($relative, '/');
-            return file_exists($candidate) ? $candidate : null;
-        }
-
-        $current = rtrim($realBase, '/');
-
-        foreach (explode('/', trim($relative, '/')) as $segment) {
-            if ($segment === '' || $segment === '.') {
-                continue;
-            }
-
-            $candidate = $current . '/' . $segment;
-
-            if (file_exists($candidate)) {
-                $current = $candidate;
-                continue;
-            }
-
-            // Case-insensitive: Linux distingue mayusculas, el usuario no.
-            $entry = $this->findEntryIgnoreCase($current, $segment);
-
-            if ($entry === null) {
-                return null;
-            }
-
-            $current = $current . '/' . $entry;
-        }
-
-        return file_exists($current) ? $current : null;
-    }
-
-    /**
-     * Busca en `$dir` una entrada que iguale `$name` sin distinguir case.
-     */
-    private function findEntryIgnoreCase(string $dir, string $name): ?string
-    {
-        $entries = @scandir($dir);
-
-        if ($entries === false) {
-            return null;
-        }
-
-        foreach ($entries as $entry) {
-            if ($entry === '.' || $entry === '..') {
-                continue;
-            }
-            if (strcasecmp($entry, $name) === 0) {
-                return $entry;
-            }
-        }
-
-        return null;
-    }
-
-    /**
-     * Rebasa una ruta absoluta al `base_path` de un sub-storage, devolviendo
-     * el path relativo que debe guardarse en `files.path`.
-     *
-     * Compara sin distinguir case (el base_path puede tener otro case que el
-     * disco) pero preserva el case real del archivo en el resultado.
-     *
-     * Devuelve null si la ruta no cae bajo el base_path.
-     */
-    private function rebasePath(string $absolute, string $targetBase): ?string
-    {
-        $absoluteNorm = rtrim($absolute, '/');
-        $targetNorm = rtrim($targetBase, '/');
-
-        if (stripos($absoluteNorm, $targetNorm . '/') !== 0) {
-            return null;
-        }
-
-        return ltrim(substr($absoluteNorm, strlen($targetNorm)), '/');
-    }
-
-    /**
-     * Wrapper publico para ensureSubstorageFolderChain. Usado por
-     * `selfHealDelegationLeak()` que necesita el mismo comportamiento.
-     */
-    private function ensureSubstorageFolderChainPublic(int $storageId, string $subPath, ?int $userId): ?int
-    {
-        $storage = StorageProvider::find($storageId);
-        if ($storage === null) return null;
-        return $this->ensureSubstorageFolderChain($storage, $subPath, $userId);
-    }
-
-    private function markOrphansUnknown(iterable $orphans): void
-    {
-        foreach ($orphans as $orphan) {
-            if ($orphan->availability_state !== 'unknown') {
-                $orphan->update([
-                    'availability_state' => 'unknown',
-                    'last_verified_at' => null,
-                    'missing_since_at' => null,
-                ]);
-            }
-        }
-    }
-
-    /**
-     * Marca huérfanos como 'missing' cuando PruneGuard rechaza por
-     * orphan_linked. Preserva el file_id y, con él, la trazabilidad de
-     * transcripciones, shares y media_edit_jobs. `missing_since_at` se
-     * establece para que la UI pueda mostrar "no disponible desde X".
-     */
-    private function markOrphansMissing(iterable $orphans, int $storageId, ?int $parentId): void
-    {
-        $count = 0;
-        foreach ($orphans as $orphan) {
-            if ($orphan->availability_state === 'missing') {
-                continue;
-            }
-            $orphan->update([
-                'availability_state' => 'missing',
-                'missing_since_at' => now(),
-                'last_verified_at' => now(),
-            ]);
-            $count++;
-        }
-
-        if ($count > 0) {
-            Log::info('storage_sync.orphan_marked_missing', [
-                'storage_id' => $storageId,
-                'parent_id' => $parentId,
-                'marked' => $count,
-                'reason' => 'orphan_linked — preservando FKs aguas abajo',
-            ]);
-        }
-    }
-
-    /**
-     * Detecta si una fila de files esta enlazada por FKs aguas abajo.
-     * Las consultas son EXISTS acotados (LIMIT 1): no agregan ni ordenan,
-     * asi que un lote de 700k filas no satura el server.
-     *
-     * Las 3 tablas que enlazan son:
-     *  - transcriptions.file_id           (UNIQUE: una por archivo)
-     *  - shares.file_id                   (0..N comparticiones)
-     *  - media_edit_jobs.source_file_id   (0..N ediciones)
-     */
-    private function isFileLinked(int $fileId): bool
-    {
-        static $hasMediaJobsColumn = null;
-        if ($hasMediaJobsColumn === null) {
-            $hasMediaJobsColumn = DB::selectOne(
-                "SELECT 1 AS ok FROM information_schema.columns WHERE table_name = 'media_edit_jobs' AND column_name = 'source_file_id'"
-            ) !== null;
-        }
-
-        $hasTx = DB::selectOne('SELECT 1 AS ok FROM transcriptions WHERE file_id = ? LIMIT 1', [$fileId]) !== null;
-        if ($hasTx) {
-            return true;
-        }
-
-        $hasShare = DB::selectOne('SELECT 1 AS ok FROM shares WHERE file_id = ? LIMIT 1', [$fileId]) !== null;
-        if ($hasShare) {
-            return true;
-        }
-
-        if ($hasMediaJobsColumn) {
-            $hasJob = DB::selectOne('SELECT 1 AS ok FROM media_edit_jobs WHERE source_file_id = ? LIMIT 1', [$fileId]) !== null;
-            if ($hasJob) {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     private function detectOrphans(StorageProvider $storage, int $parentId, array $realPaths): array
@@ -1425,45 +487,8 @@ class StorageSyncService
                             continue;
                         }
 
-                        // skip si el directorio no cambio desde el ultimo sync (solo si no es force).
-                        //
-                        // Cambio `mis-archivos-substorage-orphan-repair` (2026-09-17):
-                        // el `<=` original tenia un agujero. Cuando una carpeta-dia
-                        // se crea con todas sus subcarpetas en el mismo burst (ej.
-                        // `20260917/` con `imagenes/` y `pdf_paginas_ocr/` adentro),
-                        // el `dirMtime` se setea al final del sync con el mtime del
-                        // directorio (= momento del ultimo subdir agregado). En el
-                        // siguiente cron, `filemtime == file_modified_at`, asi que
-                        // el skip se cumplia aunque el contenido nunca se hubiera
-                        // escaneado en serio. Cambio a `<` (estricto): si son
-                        // iguales, se re-escanea por si acaso.
-                        //
-                        // Ademas defensa en profundidad: si BD tiene 0 filas
-                        // no-trashed bajo el folder pero el disco tiene entradas,
-                        // el sync NUNCA paso por aqui (caso reportado). Forzamos
-                        // el sync aunque mtime coincida.
-                        if (!$force && $folder->file_modified_at !== null && filemtime($realPath) < $folder->file_modified_at->timestamp) {
-                            $stats['skipped']++;
-                            continue;
-                        }
-                        if (!$force
-                            && File::where('storage_provider_id', $storage->id)
-                                ->where('parent_id', $folder->id)
-                                ->where('is_trashed', false)
-                                ->count() === 0
-                            && iterator_count(new \FilesystemIterator($realPath, \FilesystemIterator::SKIP_DOTS)) > 0
-                        ) {
-                            // BD dice vacio, disco tiene entradas: nunca se escaneo.
-                            // Log para auditoria y caemos al sync de abajo.
-                            Log::info('storage_sync.cardinality_zero_force_sync', [
-                                'storage_id' => $storage->id,
-                                'folder_id' => $folder->id,
-                                'path' => $folder->path,
-                                'reason' => 'bd_count=0 + disk has entries',
-                            ]);
-                        } elseif (!$force && $folder->file_modified_at !== null && filemtime($realPath) >= $folder->file_modified_at->timestamp) {
-                            // mtime coincide o es posterior al file_modified_at y la BD tiene
-                            // entradas: skip tradicional (comportamiento previo preservado).
+                        // skip si el directorio no cambio desde el ultimo sync (solo si no es force)
+                        if (!$force && $folder->file_modified_at !== null && filemtime($realPath) <= $folder->file_modified_at->timestamp) {
                             $stats['skipped']++;
                             continue;
                         }

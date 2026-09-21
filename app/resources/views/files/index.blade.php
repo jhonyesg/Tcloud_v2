@@ -19,17 +19,10 @@ document.addEventListener('alpine:init', () => {
     storageSortDirection: 'asc',
     currentFolder: null,
     currentFolderName: null,
-    highlightFileId: null,
-    cameFromAvisos: false,
     currentStorage: null,
     currentStorageName: null,
     currentStoragePermission: 'read',
     currentStorageCanShare: false,
-    currentStorageTranscriptionAccess: false,
-    storageAccessible: true,
-    storageKind: 'local',
-    storageBannerMessage: '',
-    searchUnreliable: false,
     viewMode: 'storages',
     filesViewMode: localStorage.getItem('files_view_mode') || 'grid',
     selectedFiles: [],
@@ -70,7 +63,6 @@ document.addEventListener('alpine:init', () => {
     viewerFiles: [],
     viewerTextContent: '',
     viewerTextLoading: false,
-    viewerTextEditable: true,
     viewerTextDirty: false,
     viewerTextSaving: false,
     viewerTextSaved: false,
@@ -135,7 +127,6 @@ deleteConfirmFile: null,
         hasMore: false,
         _fetchController: null,
         _fetchMoreController: null,
-        _navGen: 0,
         _prevFolder: null,
         _prevFolderName: null,
         _prevBreadcrumbs: [],
@@ -143,11 +134,6 @@ deleteConfirmFile: null,
         showEmptyState: false,
 
         async init() {
-            // Alpine ejecuta init() dos veces (auto por el objeto + x-init):
-            // la segunda pasada, con availableStorages aún en carrera, caía en
-            // restoreNavState y pizotaba la carpeta del deep-link de mis-avisos.
-            if (this._initDone) return;
-            this._initDone = true;
             await Promise.all([
                 this.loadStorages(),
                 apiFetch('/auth/me', { credentials: 'include', headers: { 'Accept': 'application/json' } })
@@ -156,34 +142,11 @@ deleteConfirmFile: null,
             ]);
             const urlParams = new URLSearchParams(window.location.search);
             const urlStorageId = urlParams.get('storage_id');
-            // Deep-link desde /mis-avisos: ?storage_id=X&clip_file=Y&clip_start=S&clip_end=E
-            const deepClip = {
-                fileId: urlParams.get('clip_file') ? parseInt(urlParams.get('clip_file'), 10) : null,
-                start:  urlParams.get('clip_start') !== null ? parseFloat(urlParams.get('clip_start')) : null,
-                end:    urlParams.get('clip_end') !== null ? parseFloat(urlParams.get('clip_end')) : null,
-            };
             if (urlStorageId) {
                 const sid = parseInt(urlStorageId);
                 const storage = this.availableStorages.find(s => s.id === sid);
                 if (storage) {
-                    // El deep-link manda: restoreNavState no debe pisarlo.
-                    this._deepLinkActive = true;
                     this.enterStorage(storage.id, storage.name);
-                    // Deep-link extendido desde mis-avisos: caer en la carpeta
-                    // del medio y resaltar el archivo de la mención.
-                    const urlFolder = urlParams.get('folder') ? parseInt(urlParams.get('folder'), 10) : null;
-                    if (urlFolder) {
-                        this.currentFolder = urlFolder;
-                        this.currentFolderName = urlParams.get('folder_name') || null;
-                        this.loadFiles(false, false, true);
-                    }
-                    const urlHighlight = urlParams.get('highlight_file') ? parseInt(urlParams.get('highlight_file'), 10) : null;
-                    if (urlHighlight) {
-                        this.highlightFileId = urlHighlight;
-                        // Origen mis-avisos (deep-link de Archivos): el editor
-                        // de corte ofrecerá volver al módulo.
-                        this.cameFromAvisos = true;
-                    }
                     history.replaceState(null, '', '/files');
                 } else {
                     await this.restoreNavState();
@@ -192,12 +155,6 @@ deleteConfirmFile: null,
                 await this.restoreNavState();
             }
             this.ready = true;
-            // Si hay deep-link, esperar a que carguen los archivos y abrir editor
-            if (deepClip.fileId) {
-                // Origen mis-avisos (deep-link legacy de corte).
-                this.cameFromAvisos = true;
-                this.$nextTick(() => this.applyDeepClipLink(deepClip));
-            }
             this.$watch('searchQuery', (val) => {
                 clearTimeout(this.searchTimer);
                 if (val.length >= 2) {
@@ -236,14 +193,6 @@ deleteConfirmFile: null,
 
     canCopyMove() {
         return this.currentStoragePermission === 'full';
-    },
-
-    // change mis-archivos-transcript-viewer: feature flag operacional. Default ON.
-    // Si está apagado (env: FEATURE_MIS_ARCHIVOS_TRANSCRIPT_VIEWER=false), el botón
-    // "Ver transcripción" en Mis Archivos se oculta aunque haya transcripción.
-    // El visor en Mis Avisos NO se ve afectado — sigue funcionando siempre.
-    transcriptViewerFeatureEnabled() {
-        return (typeof window !== 'undefined' && window.tcloudFeatures && window.tcloudFeatures.mis_archivos_transcript_viewer_enabled === false) ? false : true;
     },
 
     isSelected(file) {
@@ -301,20 +250,16 @@ deleteConfirmFile: null,
     },
 
     async restoreNavState() {
-        // Con deep-link activo, el estado de localStorage es obsoleto.
-        if (this._deepLinkActive) return;
         try {
             const saved = localStorage.getItem('tcloud_files_nav');
             if (!saved) return;
             const state = JSON.parse(saved);
             if (!state.storageId) return;
-            if (state.folderId) this._navGen++;
             this.currentStorage = state.storageId;
             this.currentStorageName = state.storageName;
             const storage = this.availableStorages.find(s => s.id === state.storageId);
             this.currentStoragePermission = storage ? storage.permissions : 'read';
             this.currentStorageCanShare = storage ? !!storage.can_create_shares : false;
-            this.currentStorageTranscriptionAccess = storage ? !!storage.transcription_access : false;
             this.currentFolder = state.folderId || null;
             this.currentFolderName = state.folderName || null;
             this.breadcrumbs = state.breadcrumbs || [];
@@ -389,42 +334,24 @@ deleteConfirmFile: null,
     },
 
     enterStorage(storageId, storageName) {
-        this._navGen++;
         this.currentStorage = storageId;
         this.currentStorageName = storageName;
         const storage = this.availableStorages.find(s => s.id === storageId);
         this.currentStoragePermission = storage ? storage.permissions : 'read';
         this.currentStorageCanShare = storage ? !!storage.can_create_shares : false;
-        this.currentStorageTranscriptionAccess = storage ? !!storage.transcription_access : false;
         this.currentFolder = null;
         this.currentFolderName = null;
         this.breadcrumbs = [];
         this.currentPage = 1;
         this.hasMore = false;
         this.viewMode = 'files';
-        this.highlightFileId = null;
         this.loadFiles(false, false, true);
         this.saveNavState();
     },
 
-    // Deep-link de mis-avisos: localiza la fila resaltada aunque el render
-    // tarde (reintenta); deja de intentarlo cuando el usuario navega solo.
-    scrollToHighlightedFile() {
-        if (!this.highlightFileId) return;
-        const tryScroll = (attempt) => {
-            if (!this.highlightFileId) return;
-            const el = document.getElementById('file-row-' + this.highlightFileId);
-            if (el) { el.scrollIntoView({ block: 'center' }); return; }
-            if (attempt < 8) setTimeout(() => tryScroll(attempt + 1), 250);
-        };
-        tryScroll(0);
-    },
-
     navigateToRoot() {
-        this._navGen++;
         this.currentStorage = null;
         this.currentStorageName = null;
-        this.highlightFileId = null;
         this.currentFolder = null;
         this.currentFolderName = null;
         this.breadcrumbs = [];
@@ -450,17 +377,6 @@ deleteConfirmFile: null,
         // guardas de borrado masivo en ese caso. silentSync manda sync=1 a secas.
         if (forceSync) url += '&sync=1&prune=1';
         if (skipBreadcrumbs) url += '&nb=1';
-        const myGen = this._navGen;
-        const capturedFolder = this.currentFolder;
-        const capturedStorage = this.currentStorage;
-        const staleCleanup = () => {
-            this.isNavigating = false;
-            this.navigatingToId = null;
-            this.isLoadingFiles = false;
-            this.showEmptyState = false;
-            if (this._emptyStateTimer) { clearTimeout(this._emptyStateTimer); this._emptyStateTimer = null; }
-        };
-        const isStale = () => this._navGen !== myGen || this.currentFolder !== capturedFolder || this.currentStorage !== capturedStorage;
 
         apiFetch(url, {
             credentials: 'include',
@@ -474,17 +390,17 @@ deleteConfirmFile: null,
                 this.currentFolder = this._prevFolder;
                 this.currentFolderName = this._prevFolderName;
                 this.breadcrumbs = [...this._prevBreadcrumbs];
-                staleCleanup();
+                this.isNavigating = false;
+                this.navigatingToId = null;
+                this.isLoadingFiles = false;
+                this.showEmptyState = false;
+                if (this._emptyStateTimer) { clearTimeout(this._emptyStateTimer); this._emptyStateTimer = null; }
                 this.showToast('No se pudo cargar la carpeta (' + res.status + '). Intenta de nuevo.', 'error');
                 return null;
             }
             return res.json();
         }).then(data => {
             if (data === null) return;
-            if (isStale()) {
-                staleCleanup();
-                return;
-            }
             const serverData = Array.isArray(data?.files) ? data.files : (Array.isArray(data) ? data : []);
             const serverBreadcrumbs = data?.breadcrumbs ?? [];
             this.files = serverData;
@@ -493,47 +409,12 @@ deleteConfirmFile: null,
             if (!skipBreadcrumbs) {
                 this.breadcrumbs = serverBreadcrumbs;
             }
-
-            // El folder listado puede pertenecer a un storage distinto del
-            // navegado (listado cross-storage). El backend lo reporta en
-            // `folder_storage_*`; adoptarlo alinea `currentStorage` con la fila
-            // real, así el próximo request y el banner del disco usan el
-            // storage correcto. Change `files-mirror-elimination`.
-            if (data && data.folder_storage_id) {
-                this.currentStorage = Number(data.folder_storage_id);
-                if (data.folder_storage_name) {
-                    this.currentStorageName = data.folder_storage_name;
-                }
-                if (data.folder_storage_permission) {
-                    this.currentStoragePermission = data.folder_storage_permission;
-                }
-                this.saveNavState();
-            }
             if (forceSync) {
                 this.reportSync(data?.stats, serverData);
             }
-
-            // Banner de accesibilidad del storage activo.
-            // El backend inyecta storage_accessible + storage_kind en cada
-            // respuesta. El banner se actualiza reactivamente al navegar, sin
-            // recarga completa.
-            if ('storage_accessible' in (data ?? {})) {
-                const accessible = data.storage_accessible !== false;
-                this.storageAccessible = accessible;
-                this.storageKind = data.storage_kind || 'local';
-                this.searchUnreliable = data.search_unreliable === true;
-                this.storageBannerMessage = accessible
-                    ? ''
-                    : `Disco "${data.storage_name || ''}" no disponible — los datos pueden estar desactualizados.`;
-            }
-
             this.isNavigating = false;
             this.navigatingToId = null;
             this.isLoadingFiles = false;
-            // Deep-link de mis-avisos: llevar la vista al archivo de la
-            // mención. Reintenta: el silentSync y los re-renders pueden
-            // llegar después de la primera pasada.
-            if (this.highlightFileId) this.scrollToHighlightedFile();
             if (serverData.length === 0) {
                 this._emptyStateTimer = setTimeout(() => { this.showEmptyState = true; }, 1500);
             } else {
@@ -550,7 +431,6 @@ deleteConfirmFile: null,
             this.isLoadingFiles = false;
             this.showEmptyState = false;
             if (this._emptyStateTimer) { clearTimeout(this._emptyStateTimer); this._emptyStateTimer = null; }
-            if (isStale()) return;
             this.showToast('Error de red al navegar. Intenta de nuevo.', 'error');
         });
     },
@@ -565,9 +445,6 @@ deleteConfirmFile: null,
         if (this.currentFolder) url += '&parent_id=' + this.currentFolder;
         if (this.currentStorage) url += '&storage_id=' + this.currentStorage;
         url += '&nb=1';
-        const myGen = this._navGen;
-        const capturedFolder = this.currentFolder;
-        const capturedStorage = this.currentStorage;
         apiFetch(url, {
             credentials: 'include',
             signal: this._fetchMoreController.signal,
@@ -575,10 +452,6 @@ deleteConfirmFile: null,
         }).then(r => r.ok ? r.json() : null)
         .then(data => {
             if (!data) { this.isLoadingMore = false; return; }
-            if (this._navGen !== myGen || this.currentFolder !== capturedFolder || this.currentStorage !== capturedStorage) {
-                this.isLoadingMore = false;
-                return;
-            }
             const newFiles = Array.isArray(data?.files) ? data.files : [];
             this.files = [...this.files, ...newFiles];
             this.currentPage = data?.pagination?.page ?? nextPage;
@@ -660,9 +533,6 @@ deleteConfirmFile: null,
         let url = '/files?page=1&sync=1&nb=1';
         if (this.currentFolder) url += '&parent_id=' + this.currentFolder;
         if (this.currentStorage) url += '&storage_id=' + this.currentStorage;
-        const myGen = this._navGen;
-        const capturedFolder = this.currentFolder;
-        const capturedStorage = this.currentStorage;
         try {
             const res = await apiFetch(url, {
                 credentials: 'include',
@@ -670,7 +540,6 @@ deleteConfirmFile: null,
             });
             if (!res.ok) return;
             const data = await res.json();
-            if (this._navGen !== myGen || this.currentFolder !== capturedFolder || this.currentStorage !== capturedStorage) return;
             const newFiles = Array.isArray(data?.files) ? data.files : [];
             const fingerprint = (files) =>
                 files.map(f => f.id + ':' + f.name + ':' + (f.size ?? 0) + ':' + (f.updated_at ?? '')).join('|');
@@ -682,45 +551,14 @@ deleteConfirmFile: null,
         } catch (_) {}
     },
 
-    // `storageId` es el storage de la fila listada. En el listado cross-storage
-    // puede diferir del storage navegado: la carpeta física vive en un
-    // sub-storage más específico. Adoptarlo es obligatorio, porque el listado
-    // filtra por `storage_provider_id` del folder; consultar el storage viejo
-    // con el `parent_id` nuevo devuelve vacío (bug reportado 2026-09-19,
-    // change `files-mirror-elimination`).
-    navigateToFolder(folderId, folderName, storageId = null) {
+    navigateToFolder(folderId, folderName) {
         if (this.isNavigating || folderId === this.currentFolder) return;
-        this.highlightFileId = null;
-        this._navGen++;
         this._prevFolder = this.currentFolder;
         this._prevFolderName = this.currentFolderName;
         this._prevBreadcrumbs = [...this.breadcrumbs];
         if (this.currentFolder !== null) {
             this.breadcrumbs.push({ id: this.currentFolder, name: this.currentFolderName || 'Raíz' });
         }
-
-        const targetStorage = storageId !== null && storageId !== undefined
-            ? Number(storageId)
-            : null;
-
-        let storageChanged = false;
-
-        if (targetStorage !== null && targetStorage !== this.currentStorage) {
-            const storage = this.availableStorages.find(s => Number(s.id) === targetStorage);
-
-            // Adoptar el storage aunque no esté en `availableStorages`: un admin
-            // ve contenidos de storages sobre los que no tiene `user_storages`
-            // (bypass de permisos), y el listado cross-storage puede devolver
-            // filas de esos storages. Sin esta rama, el request siguiente seguía
-            // consultando el storage viejo y devolvía vacío.
-            this.currentStorage = targetStorage;
-            this.currentStorageName = storage ? storage.name : (this.currentStorageName || null);
-            this.currentStoragePermission = storage ? (storage.permissions || 'read') : 'read';
-            this.currentStorageCanShare = storage ? !!storage.can_create_shares : false;
-            this.currentStorageTranscriptionAccess = storage ? !!storage.transcription_access : false;
-            storageChanged = true;
-        }
-
         this.currentFolder = folderId;
         this.currentFolderName = folderName;
         this.selectedFiles = [];
@@ -731,21 +569,11 @@ deleteConfirmFile: null,
         this.hasMore = false;
         this.isNavigating = true;
         this.navigatingToId = folderId;
-
-        // Al cambiar de storage, la cadena de breadcrumbs del cliente pertenece
-        // al árbol anterior (los ids son de otro storage). Se descarta y se
-        // deja que el servidor mande la cadena del folder destino.
-        if (storageChanged) {
-            this.breadcrumbs = [];
-            this.loadFiles(false, false, true);
-        } else {
-            this.loadFiles(false, true, true);
-        }
+        this.loadFiles(false, true, true);
         this.saveNavState();
     },
 
     goToStorageRoot() {
-        this._navGen++;
         this.currentFolder = null;
         this.currentFolderName = null;
         this.breadcrumbs = [];
@@ -757,7 +585,6 @@ deleteConfirmFile: null,
 
     navigateToBreadcrumb(breadcrumb, index) {
         if (this.isNavigating) return;
-        this._navGen++;
         this.breadcrumbs = this.breadcrumbs.slice(0, index);
         this.currentFolder = breadcrumb.id;
         this.currentFolderName = breadcrumb.id === null ? null : breadcrumb.name;
@@ -1048,7 +875,7 @@ deleteConfirmFile: null,
         this.selectedShareIds = [];
         this.bulkDeleteLoading = false;
         this.editingShareId = null;
-        this.shareForm = { permissions: 'read', password: '', expires_at: '', never_expires: false };
+        this.shareForm = { permissions: 'read', password: '', expires_at: '' };
         this.shareFeedback = { type: '', message: '' };
         await this.loadFileShares(file.id);
     },
@@ -1133,15 +960,8 @@ deleteConfirmFile: null,
                 this.viewerTextLoading = true;
                 apiFetch('/files/' + file.id + '/text-content', { credentials: 'include', headers: { 'Accept': 'application/json' } })
                     .then(r => r.json())
-                    .then(d => {
-                        this.viewerTextContent = d.content ?? d.error ?? 'Error al cargar';
-                        this.viewerTextEditable = d.editable === true;
-                        this.viewerTextLoading = false;
-                    })
-                    .catch(() => {
-                        this.viewerTextContent = 'Error al cargar el archivo';
-                        this.viewerTextLoading = false;
-                    });
+                    .then(d => { this.viewerTextContent = d.content ?? d.error ?? 'Error al cargar'; this.viewerTextLoading = false; })
+                    .catch(() => { this.viewerTextContent = 'Error al cargar el archivo'; this.viewerTextLoading = false; });
             }
         });
     },
@@ -1372,9 +1192,7 @@ deleteConfirmFile: null,
             }
         }
         if (errors > 0) {
-            this.showToast(errors + ' elemento(s) no se pudieron mover a la papelera.');
-        } else if (toDelete.length > 1) {
-            this.showToast(toDelete.length + ' elementos movidos a la papelera.', 'success', 3500);
+            this.showToast(errors + ' elemento(s) no se pudieron eliminar.');
         }
     },
 
@@ -1400,7 +1218,7 @@ deleteConfirmFile: null,
         });
         if (res.ok) {
             const data = await res.json();
-            this.fileShares = Array.isArray(data) ? data : (data.data || data.shares || []);
+            this.fileShares = Array.isArray(data) ? data : (data.shares || []);
         }
     },
 
@@ -1419,15 +1237,14 @@ deleteConfirmFile: null,
                 file_id: this.selectedFile.id,
                 permissions: this.shareForm.permissions,
                 password: this.shareForm.password || null,
-                expires_at: this.shareForm.expires_at || null,
-                never_expires: !!this.shareForm.never_expires
+                expires_at: this.shareForm.expires_at || null
             })
         });
 
         if (res.ok) {
             const newShare = await res.json();
             this.fileShares.push(newShare);
-            this.shareForm = { permissions: 'read', password: '', expires_at: '', never_expires: false };
+            this.shareForm = { permissions: 'read', password: '', expires_at: '' };
             this.shareFeedback = { type: 'success', message: 'Enlace generado correctamente' };
             setTimeout(() => this.shareFeedback = { type: '', message: '' }, 3000);
         } else {
@@ -1483,30 +1300,22 @@ deleteConfirmFile: null,
         if (!this.selectedShareIds.length) return;
         this.bulkDeleteLoading = true;
         const ids = [...this.selectedShareIds];
-        try {
-            const headers = { 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content, 'Accept': 'application/json', 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' };
-            const previewRes = await apiFetch('/shares/bulk-preview', {
-                method: 'POST', credentials: 'include', headers,
-                body: JSON.stringify({ ids })
-            });
-            const preview = await previewRes.json().catch(() => ({}));
-            if (!previewRes.ok) throw new Error(preview.error || 'No se pudo previsualizar la eliminación');
-            if (!confirm('Se eliminarán definitivamente ' + preview.count + ' enlace(s). Los archivos no serán eliminados. ¿Continuar?')) return;
-
-            const res = await apiFetch('/shares/bulk-delete', {
-                method: 'POST', credentials: 'include', headers,
-                body: JSON.stringify({ ids, confirm_count: preview.count })
-            });
-            const result = await res.json().catch(() => ({}));
-            if (!res.ok) throw new Error(result.error || 'No se pudo completar la depuración');
-            const succeeded = ids.filter(id => !(result.omitted_ids || []).includes(id));
-            this.fileShares = this.fileShares.filter(s => !succeeded.includes(s.id));
-            this.selectedShareIds = this.selectedShareIds.filter(id => !succeeded.includes(id));
-            this.showToast((result.deleted_count || 0) + ' enlace(s) eliminado(s)', 'success');
-        } catch (e) {
-            this.showToast(e.message, 'error');
-        } finally {
-            this.bulkDeleteLoading = false;
+        const results = await Promise.all(ids.map(id =>
+            apiFetch('/shares/' + id, {
+                method: 'DELETE',
+                credentials: 'include',
+                headers: { 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content, 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+            }).then(r => ({ id, ok: r.ok }))
+        ));
+        const succeeded = results.filter(r => r.ok).map(r => r.id);
+        const failed = results.filter(r => !r.ok).length;
+        this.fileShares = this.fileShares.filter(s => !succeeded.includes(s.id));
+        this.selectedShareIds = this.selectedShareIds.filter(id => !succeeded.includes(id));
+        this.bulkDeleteLoading = false;
+        if (failed > 0) {
+            this.showToast(succeeded.length + ' eliminados, ' + failed + ' fallaron', 'error');
+        } else {
+            this.showToast(succeeded.length + ' enlace(s) eliminado(s)', 'success');
         }
     },
 
@@ -1534,8 +1343,7 @@ deleteConfirmFile: null,
         this.editingShareId = share.id;
         this.editingShareData = {
             permissions: share.permissions,
-            expires_at: share.expires_at ? share.expires_at.slice(0, 16) : '',
-            never_expires: !share.expires_at
+            expires_at: share.expires_at ? share.expires_at.slice(0, 16) : ''
         };
     },
 
@@ -1551,8 +1359,7 @@ deleteConfirmFile: null,
             },
             body: JSON.stringify({
                 permissions: this.editingShareData.permissions,
-                expires_at: this.editingShareData.expires_at || null,
-                never_expires: !!this.editingShareData.never_expires
+                expires_at: this.editingShareData.expires_at || null
             })
         });
 
@@ -1721,67 +1528,6 @@ deleteConfirmFile: null,
         this.clipOutTimeInput = '';
         this.showClipModal = true;
         this.$nextTick(() => this.initClipPlayer(file));
-    },
-
-    /**
-     * Deep-link desde /mis-avisos: dado {fileId, start, end}, abre el
-     * MISMO editor que "openClipEditor" (un solo lugar para mantenerlo)
-     * con los puntos de inicio/fin pre-llenados. Si el archivo está en
-     * una subcarpeta, navega al padre y luego lo busca en this.files.
-     */
-    async applyDeepClipLink(deepClip) {
-        if (!this.canUseMediaEditor) return;
-        try {
-            const resp = await apiFetch('/files/' + deepClip.fileId, {
-                headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-                credentials: 'include',
-            });
-            if (!resp.ok) { console.warn('deep-clip: file fetch failed', resp.status); return; }
-            const fileData = await resp.json();
-            const parentId = fileData.parent_id || null;
-            // Si está en una subcarpeta, navega al padre (alpine state) y
-            // refresca this.files; si está en la raíz, los archivos ya están
-            // cargados y podemos abrir directo.
-            const openFromCurrent = () => {
-                this.$nextTick(() => {
-                    let filesDone = false;
-                    let readyDone = false;
-                    this.$watch('files', (files) => {
-                        if (filesDone) return;
-                        const f = (files || []).find(x => !x.is_folder && x.id === deepClip.fileId);
-                        if (!f) return;
-                        filesDone = true;
-                        this.openClipEditor(f);
-                        this.$watch('clipReady', (ready) => {
-                            if (readyDone || !ready) return;
-                            readyDone = true;
-                            if (deepClip.start !== null && !Number.isNaN(deepClip.start)) {
-                                this.clipSelStart = deepClip.start;
-                                this.clipInTimeInput = this.formatClipTime(deepClip.start);
-                            }
-                            if (deepClip.end !== null && !Number.isNaN(deepClip.end)) {
-                                this.clipSelEnd = deepClip.end;
-                                this.clipOutTimeInput = this.formatClipTime(deepClip.end);
-                            }
-                        });
-                    });
-                    // Seguridad: si el archivo no aparece, soltamos el flag
-                    setTimeout(() => { filesDone = true; }, 15000);
-                });
-            };
-            if (parentId && parentId !== this.currentFolder) {
-                // Navega al padre. setCurrentFolder/setBreadcrumb internos
-                // pueden variar; lo más portable es llamar loadFiles con el
-                // parent y reconstruir breadcrumb manualmente.
-                this.currentFolder = parentId;
-                this.currentFolderName = fileData.name ? '(padre)' : '';
-                this.breadcrumbs = [{ id: parentId, name: this.currentFolderName }];
-                await this.loadFiles(false, false, true);
-            }
-            openFromCurrent();
-        } catch (e) {
-            console.warn('deep-clip: error', e);
-        }
     },
 
     closeClipModal() {
@@ -2522,31 +2268,6 @@ deleteConfirmFile: null,
                 </button>
             </div>
         </div>
-
-        {{-- Banner de accesibilidad del storage activo. Visible solo cuando
-             el storage existe, está en viewMode 'files' y NO está accesible.
-             kind='external' (NFS/SMB) colorea ámbar; kind='local' colorea rojo. --}}
-        <div class="px-3 py-2 sm:px-6 sm:py-3"
-             x-show="viewMode === 'files' && !storageAccessible && storageBannerMessage"
-             x-transition>
-            <div :class="storageKind === 'external'
-                          ? 'bg-amber-50 border border-amber-300 text-amber-900'
-                          : 'bg-red-50 border border-red-300 text-red-900'"
-                 class="flex items-start gap-3 rounded-lg p-3 text-sm">
-                <svg class="w-5 h-5 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                          d="M12 9v2m0 4h.01M4.93 19h14.14c1.54 0 2.5-1.67 1.73-3L13.73 4a2 2 0 00-3.46 0L3.2 16c-.77 1.33.19 3 1.73 3z"/>
-                </svg>
-                <div class="flex-1">
-                    <p class="font-medium" x-text="storageBannerMessage"></p>
-                    <p class="text-xs mt-1 opacity-80"
-                       x-show="searchUnreliable">
-                        Los resultados de búsqueda pueden no corresponderse con el disco actual.
-                    </p>
-                </div>
-            </div>
-        </div>
-
         <div class="px-3 py-2 sm:px-6 sm:py-3 bg-slate-50 border-t border-slate-100" x-show="viewMode === 'files'">
             <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-4">
                 <!-- Breadcrumb normal -->
@@ -2800,9 +2521,8 @@ deleteConfirmFile: null,
                 <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2 sm:gap-4" x-show="viewMode === 'files' && files.length > 0 && filesViewMode === 'grid'"
                      @click.self="clearSelection()">
                     <template x-for="file in sortedFiles()" :key="file.id">
-                        <div :id="'file-row-' + file.id"
-                             class="group relative bg-slate-50 hover:bg-blue-50 border border-slate-200 hover:border-blue-300 rounded-xl p-2 sm:p-4 cursor-pointer transition-all"
-                             :class="[isSelected(file) ? 'ring-2 ring-blue-500 bg-blue-50 border-blue-300' : '', highlightFileId === file.id ? 'ring-2 ring-amber-400 bg-amber-50 border-amber-300' : '', navigatingToId === file.id ? 'opacity-60 pointer-events-none' : '']"
+                        <div class="group relative bg-slate-50 hover:bg-blue-50 border border-slate-200 hover:border-blue-300 rounded-xl p-2 sm:p-4 cursor-pointer transition-all"
+                             :class="[isSelected(file) ? 'ring-2 ring-blue-500 bg-blue-50 border-blue-300' : '', navigatingToId === file.id ? 'opacity-60 pointer-events-none' : '']"
                              @click.ctrl.prevent.stop="toggleSelect(file)">
                             <div class="absolute top-1.5 left-1.5 z-10 opacity-0 group-hover:opacity-100 transition-opacity"
                                  :class="isSelected(file) ? 'opacity-100' : ''"
@@ -2811,7 +2531,7 @@ deleteConfirmFile: null,
                                        class="w-4 h-4 rounded accent-blue-600 cursor-pointer shadow-sm"
                                        @click.stop="toggleSelect(file)">
                             </div>
-                            <div class="flex flex-col items-center text-center" @click="file.is_folder ? navigateToFolder(file.id, file.name, file.storage_provider_id) : openViewer(file)">
+                            <div class="flex flex-col items-center text-center" @click="file.is_folder ? navigateToFolder(file.id, file.name) : openViewer(file)">
                                 <div class="relative w-11 h-11 sm:w-16 sm:h-16 rounded-xl flex items-center justify-center mb-1.5 sm:mb-3" :class="getFileIcon(file).bg">
                                     <template x-if="getFileIcon(file).icon === 'folder' && navigatingToId !== file.id">
                                         <svg class="w-10 h-10 text-amber-500" fill="currentColor" viewBox="0 0 20 20">
@@ -2963,10 +2683,9 @@ deleteConfirmFile: null,
                         </thead>
                         <tbody class="divide-y divide-slate-200">
                             <template x-for="file in sortedFiles()" :key="file.id">
-                                <tr :id="'file-row-' + file.id"
-                                    class="cursor-pointer transition-colors"
-                                    :class="[isSelected(file) ? 'bg-blue-50' : 'hover:bg-slate-50', highlightFileId === file.id ? 'bg-amber-50 ring-1 ring-inset ring-amber-400' : '', navigatingToId === file.id ? 'opacity-60 pointer-events-none' : '']"
-                                    @click="file.is_folder ? navigateToFolder(file.id, file.name, file.storage_provider_id) : openViewer(file)"
+                                <tr class="cursor-pointer transition-colors"
+                                    :class="[isSelected(file) ? 'bg-blue-50' : 'hover:bg-slate-50', navigatingToId === file.id ? 'opacity-60 pointer-events-none' : '']"
+                                    @click="file.is_folder ? navigateToFolder(file.id, file.name) : openViewer(file)"
                                     @click.ctrl.prevent.stop="toggleSelect(file)">
                                     <td class="px-2 sm:px-3 py-2 sm:py-3 text-center w-8" @click.stop>
                                         <input type="checkbox" :checked="isSelected(file)"
@@ -3056,18 +2775,6 @@ deleteConfirmFile: null,
                                             <button x-show="currentStorageCanShare" @click.stop="openDetailModal(file)" class="p-1.5 sm:p-2 hover:bg-slate-200 rounded-lg transition-colors" title="Compartir">
                                                 <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z"/>
-                                                </svg>
-                                            </button>
-                                            {{-- Botón "Ver transcripción" (change mis-archivos-transcript-viewer):
-                                                 aparece solo si el cliente tiene acceso a la transcripción
-                                                 del storage activo, el archivo es video/audio y existe una
-                                                 transcripción done. --}}
-                                            <button x-show="transcriptViewerFeatureEnabled() && !file.is_folder && (isVideo(file.mime_type) || isAudio(file.mime_type)) && file.transcription_id && currentStorageTranscriptionAccess"
-                                                    @click.stop="Alpine.store('transcriptViewer').openFor({ file_id: file.id, transcription_id: file.transcription_id })"
-                                                    class="p-1.5 sm:p-2 bg-amber-100 hover:bg-amber-200 text-amber-700 rounded-lg transition-colors"
-                                                    title="Ver transcripción">
-                                                <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2zM12 8v4m0 0v4m0-4h4m-4 0H8"/>
                                                 </svg>
                                             </button>
                                             <button x-show="isClippable(file)" @click.stop="openClipEditor(file)" class="p-1.5 sm:p-2 bg-violet-100 hover:bg-violet-200 text-violet-600 rounded-lg transition-colors" title="Editor de corte">
@@ -3344,10 +3051,7 @@ deleteConfirmFile: null,
                                     <option value="upload">Subida</option>
                                     <option value="full">Completo</option>
                                 </select>
-                                 <div class="flex items-center gap-2">
-                                     <input type="datetime-local" x-model="shareForm.expires_at" :disabled="shareForm.never_expires" class="w-full border border-purple-200 px-3 py-1.5 rounded-lg text-sm focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none" placeholder="Expira">
-                                     <label class="flex items-center gap-1 text-[11px] text-purple-700 whitespace-nowrap"><input type="checkbox" x-model="shareForm.never_expires" class="rounded text-purple-600"> Nunca</label>
-                                 </div>
+                                <input type="datetime-local" x-model="shareForm.expires_at" class="w-full border border-purple-200 px-3 py-1.5 rounded-lg text-sm focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none" placeholder="Expira (opcional)">
                             </div>
                             <input type="password" x-model="shareForm.password" autocomplete="new-password" class="w-full border border-purple-200 px-3 py-1.5 rounded-lg text-sm mb-2 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none" placeholder="Contraseña (opcional)">
                             <button @click="generateShareLink()" class="w-full bg-purple-600 hover:bg-purple-700 text-white px-3 py-1.5 rounded-lg text-sm transition-colors flex items-center justify-center gap-2">
@@ -3428,14 +3132,11 @@ deleteConfirmFile: null,
                                                         'bg-yellow-100 text-yellow-800': share.permissions === 'upload',
                                                         'bg-green-100 text-green-800': share.permissions === 'full'
                                                     }" x-text="share.permissions"></span>
-                                                     <span class="text-xs text-slate-500" x-text="share.expiry_status === 'expired' ? 'Expirado' : (share.expires_at ? formatDate(share.expires_at) : 'Sin vencimiento')"></span>
+                                                    <span class="text-xs text-slate-500" x-text="formatDate(share.created_at)"></span>
                                                 </div>
                                             </div>
                                             <p class="text-sm text-slate-600 mb-2 truncate" :title="window.location.origin + '/s/' + share.token" x-text="truncateUrl(window.location.origin + '/s/' + share.token, 40)"></p>
-                                             <div class="flex items-center gap-2 mb-2 text-xs">
-                                                 <span :class="share.file?.availability_state === 'missing' ? 'text-orange-600' : (share.file?.availability_state === 'available' ? 'text-green-600' : 'text-slate-400')" x-text="share.file?.availability_state === 'missing' ? 'Archivo no disponible' : (share.file?.availability_state === 'available' ? 'Archivo disponible' : 'Archivo no verificado')"></span>
-                                             </div>
-                                             <div class="flex gap-2">
+                                            <div class="flex gap-2">
                                                 <button @click="copyShareLink(share.token)" class="flex-1 flex items-center justify-center gap-1 bg-blue-100 hover:bg-blue-200 text-blue-700 px-2 py-1 rounded text-xs transition-colors">
                                                     <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
@@ -3465,10 +3166,7 @@ deleteConfirmFile: null,
                                                     <option value="upload">Subida</option>
                                                     <option value="full">Completo</option>
                                                 </select>
-                                                 <div class="flex items-center gap-2">
-                                                     <input type="datetime-local" x-model="editingShareData.expires_at" :disabled="editingShareData.never_expires" class="w-full border border-slate-300 px-2 py-1 rounded text-sm">
-                                                     <label class="flex items-center gap-1 text-[11px] whitespace-nowrap"><input type="checkbox" x-model="editingShareData.never_expires" class="rounded text-blue-600"> Nunca</label>
-                                                 </div>
+                                                <input type="datetime-local" x-model="editingShareData.expires_at" class="w-full border border-slate-300 px-2 py-1 rounded text-sm">
                                             </div>
                                             <div class="flex gap-2">
                                                 <button @click="saveShareLink(share.id)" class="flex-1 bg-green-600 hover:bg-green-700 text-white px-2 py-1 rounded text-xs transition-colors">
@@ -3636,10 +3334,10 @@ deleteConfirmFile: null,
                         </button>
                         <!-- Save button -->
                         <button @click="saveTextContent()"
-                                :disabled="!viewerTextEditable || viewerTextSaving || !viewerTextDirty"
-                                :class="!viewerTextEditable ? 'bg-slate-100 text-slate-400 cursor-not-allowed' : (viewerTextSaved ? 'bg-green-600 hover:bg-green-700 text-white' : (viewerTextDirty ? 'bg-blue-600 hover:bg-blue-700 text-white' : 'bg-slate-200 text-slate-400 cursor-default'))"
+                                :disabled="viewerTextSaving || !viewerTextDirty"
+                                :class="viewerTextSaved ? 'bg-green-600 hover:bg-green-700 text-white' : (viewerTextDirty ? 'bg-blue-600 hover:bg-blue-700 text-white' : 'bg-slate-200 text-slate-400 cursor-default')"
                                 class="flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition-colors"
-                                :title="!viewerTextEditable ? 'Sin permisos de escritura' : 'Guardar (Ctrl+S)'">
+                                title="Guardar (Ctrl+S)">
                             <template x-if="viewerTextSaving">
                                 <svg class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
                                     <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -3681,16 +3379,15 @@ deleteConfirmFile: null,
                         </div>
                         <!-- Textarea -->
                         <textarea x-ref="editorArea"
-                                   x-model="viewerTextContent"
-                                   @input="viewerTextDirty = true"
-                                   @scroll="$refs.lineGutter.scrollTop = $event.target.scrollTop"
-                                   :readonly="!viewerTextEditable"
-                                   :class="viewerWrap ? 'txt-editor-wrap' : 'txt-editor-nowrap'"
-                                   class="flex-1 font-mono text-sm leading-6 py-3 px-4 resize-none border-0 outline-none"
-                                   style="background:#fff;color:#1a1a1a;tab-size:4;min-height:100%;"
-                                   spellcheck="false"
-                                   autocorrect="off"
-                                   autocapitalize="off"></textarea>
+                                  x-model="viewerTextContent"
+                                  @input="viewerTextDirty = true"
+                                  @scroll="$refs.lineGutter.scrollTop = $event.target.scrollTop"
+                                  :class="viewerWrap ? 'txt-editor-wrap' : 'txt-editor-nowrap'"
+                                  class="flex-1 font-mono text-sm leading-6 py-3 px-4 resize-none border-0 outline-none"
+                                  style="background:#fff;color:#1a1a1a;tab-size:4;min-height:100%;"
+                                  spellcheck="false"
+                                  autocorrect="off"
+                                  autocapitalize="off"></textarea>
                     </div>
                 </div>
                 <!-- Status bar -->
@@ -3863,15 +3560,6 @@ deleteConfirmFile: null,
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
                 </svg>
                 Salir
-            </button>
-            <!-- Volver al módulo de avisos: solo si la sesión entró desde allí -->
-            <button x-show="cameFromAvisos" @click="window.location.href = '/mis-avisos'"
-                    class="flex items-center gap-1.5 text-xs sm:text-sm font-medium text-brand-700 hover:text-brand-900 transition-colors px-2.5 sm:px-4 py-1.5 sm:py-2 rounded-lg hover:bg-brand-50 border border-brand-300 flex-shrink-0"
-                    title="Volver al módulo de Mis Avisos">
-                <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
-                </svg>
-                Volver a Mis Avisos
             </button>
             <div class="w-px h-5 bg-slate-200 hidden sm:block"></div>
             <svg class="w-4 h-4 text-violet-600 flex-shrink-0 hidden sm:block" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -5242,8 +4930,4 @@ function startFilesTour() {
     });
 }
 </script>
-
-{{-- Visor de transcripción compartido (change mis-archivos-transcript-viewer).
-     Alpine.store('transcriptViewer') se registra una sola vez en el layout. --}}
-@include('components.transcript-viewer')
 @endsection

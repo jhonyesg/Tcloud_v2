@@ -10,8 +10,6 @@ class Share extends Model
 {
     protected $fillable = ['file_id', 'token', 'password_hash', 'expires_at', 'permissions', 'created_by'];
 
-    protected $hidden = ['password_hash'];
-
     protected $casts = ['expires_at' => 'datetime'];
 
     public function file(): BelongsTo
@@ -31,7 +29,7 @@ class Share extends Model
 
     public function isExpired(): bool
     {
-        return $this->expires_at !== null && $this->expires_at->isPast();
+        return $this->expires_at && $this->expires_at->isPast();
     }
 
     public static function generateToken(): string

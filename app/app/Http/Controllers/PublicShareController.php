@@ -5,7 +5,6 @@ namespace App\Http\Controllers;
 use App\Models\Share;
 use App\Models\ShareAccessLog;
 use App\Models\File;
-use App\Models\StorageProvider;
 use App\Services\StorageSyncService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
@@ -17,9 +16,19 @@ class PublicShareController extends Controller
 {
     public function show(Request $request, string $token)
     {
-        // Always load current metadata. Caching the serialized File graph allowed
-        // renamed or revoked resources to remain visible for up to an hour.
-        $share = Share::where('token', $token)->with(['file', 'creator'])->first();
+        $cacheKey = "share:meta:{$token}";
+
+        $share = Cache::remember($cacheKey, 3600, function () use ($token) {
+            return Share::where('token', $token)->with(['file', 'creator'])->first();
+        });
+
+        if ($share && !Share::where('id', $share->id)->exists()) {
+            Cache::forget($cacheKey);
+            $share = Share::where('token', $token)->with(['file', 'creator'])->first();
+            if ($share) {
+                Cache::put($cacheKey, $share, 3600);
+            }
+        }
 
         if (!$share) {
             if ($request->ajax() || $request->wantsJson()) {
@@ -55,34 +64,13 @@ class PublicShareController extends Controller
             }
         }
 
-        $file = $share->file;
-
-        // Papelera: si el archivo del share esta trashado, respondemos 410 Gone
-        // con mensaje claro. 410 (no 404) porque el recurso existio y el share
-        // token es valido: solo el archivo se movio a papelera por su dueno.
-        $trashResp = $this->rejectIfTrashed($file, $request);
-        if ($trashResp !== null) {
-            return $trashResp;
-        }
-
-        if (!$file || $file->availability_state === 'missing') {
-            if ($request->ajax() || $request->wantsJson()) {
-                return response()->json(['error' => 'File not found'], 404);
-            }
-
-            return view('shares.public-not-found');
-        }
-
         $this->logAccess($share->id, $request->ip());
+
+        $file = $share->file;
 
         if ($file->is_folder) {
             $this->autoSyncFolder($file, $request->boolean('refresh'));
-
-            // change 2026-09-17-share-folder-canonical-wiring: usar FolderListingService
-            // en vez de $file->children() para soportar cross-storage. Un share
-            // apuntando a un mirror ahora lista los archivos del canónico (que es
-            // donde están los archivos físicos post-`files:repair-folder-mirrors`).
-            $folderContents = app(\App\Services\FolderListingService::class)->listContents($file);
+            $folderContents = $file->children()->orderBy('is_folder', 'desc')->orderBy('name')->get();
             $mimeType = 'folder';
             $isPreviewable = false;
             $fileUrl = null;
@@ -123,40 +111,6 @@ class PublicShareController extends Controller
         ]);
     }
 
-    public function authenticate(Request $request, string $token)
-    {
-        $share = Share::where('token', $token)->with('file')->first();
-
-        if (!$share) {
-            return $this->publicError($request, 'Share not found', 404);
-        }
-
-        if ($share->expires_at && $share->expires_at->isPast()) {
-            return $this->publicError($request, 'Share has expired', 410, 'shares.public-expired');
-        }
-
-        if (!$share->password_hash) {
-            return redirect('/s/' . $token);
-        }
-
-        $request->validate(['password' => 'required|string']);
-
-        if (!Hash::check($request->input('password'), $share->password_hash)) {
-            if ($request->ajax() || $request->wantsJson()) {
-                return response()->json(['error' => 'Invalid password'], 401);
-            }
-
-            return response()->view('shares.public-password', [
-                'token' => $token,
-                'error' => 'Contraseña incorrecta',
-            ], 401);
-        }
-
-        $request->session()->put("share_auth_{$token}", true);
-
-        return redirect('/s/' . $token);
-    }
-
     public function folder(Request $request, string $token, int $folder_id)
     {
         $share = Share::where('token', $token)->first();
@@ -169,17 +123,17 @@ class PublicShareController extends Controller
             return view('shares.public-expired');
         }
 
-        if ($share->password_hash && !$this->passwordAuthorized($request, $share, $token)) {
+        if ($share->password_hash && !$request->session()->has("share_auth_{$token}")) {
             return view('shares.public-password', ['token' => $token]);
         }
 
         $rootFolder = File::find($share->file_id);
-        if (!$rootFolder || $rootFolder->availability_state === 'missing') {
+        if (!$rootFolder) {
             return view('shares.public-not-found');
         }
 
         $currentFolder = File::find($folder_id);
-        if (!$currentFolder || !$currentFolder->is_folder || $currentFolder->availability_state === 'missing') {
+        if (!$currentFolder || !$currentFolder->is_folder) {
             return view('shares.public-not-found');
         }
 
@@ -188,17 +142,10 @@ class PublicShareController extends Controller
         }
 
         $this->autoSyncFolder($currentFolder, $request->boolean('refresh'));
-
-        // change 2026-09-17-share-folder-canonical-wiring: si el visitante navega
-        // a un sub-folder que es mirror, canonicar antes de listar para que vea
-        // los archivos físicos reales (que viven en el canónico).
-        $resolver = app(\App\Services\FilePhysicalIdentity::class);
-        $canonicalFolder = $resolver->canonicalFor($currentFolder) ?? $currentFolder;
-
-        $folderContents = app(\App\Services\FolderListingService::class)->listContents($canonicalFolder);
+        $folderContents = $currentFolder->children()->orderBy('is_folder', 'desc')->orderBy('name')->get();
 
         $breadcrumbs = [];
-        $crumb = $canonicalFolder;
+        $crumb = $currentFolder;
         while ($crumb && $crumb->id !== $rootFolder->id) {
             array_unshift($breadcrumbs, $crumb);
             $crumb = $crumb->parent;
@@ -207,7 +154,7 @@ class PublicShareController extends Controller
 
         return view('shares.public', [
             'share' => $share,
-            'file' => $canonicalFolder,
+            'file' => $currentFolder,
             'mimeType' => 'folder',
             'isPreviewable' => false,
             'fileUrl' => null,
@@ -228,38 +175,19 @@ class PublicShareController extends Controller
             return response()->json(['error' => 'Share has expired'], 410);
         }
 
-        if ($share->password_hash && !$this->passwordAuthorized($request, $share, $token)) {
+        if ($share->password_hash && !$request->session()->has("share_auth_{$token}")) {
             return response()->json(['error' => 'Password required'], 401);
         }
 
         $rootFolder = File::find($share->file_id);
         $file = File::find($file_id);
 
-        if (!$file || $file->availability_state === 'missing') {
+        if (!$file) {
             return response()->json(['error' => 'File not found'], 404);
-        }
-
-        // Defense-in-depth 2026-09-18-fix-public-share-access-cross-storage.
-        if ($file->canonical_folder_id !== null) {
-            $canonical = $file->canonicalFolder();
-            if ($canonical) {
-                $file = $canonical;
-            } else {
-                \Log::warning('share.preview.canonical_dangling', [
-                    'share_id' => $share->id,
-                    'file_id' => $file->id,
-                    'canonical_folder_id' => $file->canonical_folder_id,
-                ]);
-            }
         }
 
         if (!$this->isDescendantOf($file, $rootFolder)) {
             return response()->json(['error' => 'File not in shared folder'], 403);
-        }
-
-        $trashResp = $this->rejectIfTrashed($file, $request);
-        if ($trashResp !== null) {
-            return $trashResp;
         }
 
         $mimeType = $file->mime_type ?? 'application/octet-stream';
@@ -291,42 +219,19 @@ class PublicShareController extends Controller
             return response()->json(['error' => 'Share has expired'], 410);
         }
 
-        if ($share->password_hash && !$this->passwordAuthorized($request, $share, $token)) {
+        if ($share->password_hash && !$request->session()->has("share_auth_{$token}")) {
             return response()->json(['error' => 'Password required'], 401);
         }
 
         $rootFolder = File::find($share->file_id);
         $file = File::find($file_id);
 
-        if (!$file || $file->availability_state === 'missing') {
+        if (!$file) {
             return response()->json(['error' => 'File not found'], 404);
-        }
-
-        // Defense-in-depth 2026-09-18-fix-public-share-access-cross-storage:
-        // canonizar antes del check para que `isDescendantOf` opere contra el
-        // row correcto y `$storage`/`$fullPath` apunten al archivo físico real.
-        // Si la FK quedó dangling (canónico borrado), log warning y continuar
-        // con el row original.
-        if ($file->canonical_folder_id !== null) {
-            $canonical = $file->canonicalFolder();
-            if ($canonical) {
-                $file = $canonical;
-            } else {
-                \Log::warning('share.mediaPreview.canonical_dangling', [
-                    'share_id' => $share->id,
-                    'file_id' => $file->id,
-                    'canonical_folder_id' => $file->canonical_folder_id,
-                ]);
-            }
         }
 
         if (!$this->isDescendantOf($file, $rootFolder)) {
             return response()->json(['error' => 'File not in shared folder'], 403);
-        }
-
-        $trashResp = $this->rejectIfTrashed($file, $request);
-        if ($trashResp !== null) {
-            return $trashResp;
         }
 
         $mimeType = $file->mime_type ?? 'application/octet-stream';
@@ -423,32 +328,6 @@ class PublicShareController extends Controller
         return false;
     }
 
-    /**
-     * Papelera: si el File esta trashado, devuelve una respuesta 410 Gone
-     * para JSON o HTML. Devuelve null si NO esta trashado (sigue el flujo).
-     * Centraliza la regla para no duplicar la misma respuesta en cada metodo.
-     * Return type: cualquier subclase de Symfony Response (JsonResponse o
-     * view response). JsonResponse NO extiende Illuminate\Http\Response
-     * directamente, asi que usamos el ancestro comun.
-     */
-    private function rejectIfTrashed(?File $file, Request $request): ?\Symfony\Component\HttpFoundation\Response
-    {
-        if (!$file || !$file->is_trashed) {
-            return null;
-        }
-
-        if ($request->ajax() || $request->wantsJson()) {
-            return response()->json([
-                'error' => 'file_in_trash',
-                'message' => 'El archivo fue movido a la papelera por su propietario.',
-            ], 410);
-        }
-
-        return response()->view('shares.public-not-found', [
-            'message' => 'El archivo fue movido a la papelera por su propietario.',
-        ], 410);
-    }
-
     public function download(Request $request, string $token, ?int $fileId = null)
     {
         $share = Share::where('token', $token)->first();
@@ -465,42 +344,18 @@ class PublicShareController extends Controller
             return response()->json(['error' => 'Download not allowed'], 403);
         }
 
-        if ($share->password_hash && !$this->passwordAuthorized($request, $share, $token)) {
+        if ($share->password_hash && !$request->session()->has("share_auth_{$token}")) {
             return response()->json(['error' => 'Password required'], 401);
         }
 
         if ($fileId) {
             $file = File::findOrFail($fileId);
             $rootFolder = File::findOrFail($share->file_id);
-
-            // Defense-in-depth 2026-09-18-fix-public-share-access-cross-storage.
-            if ($file->canonical_folder_id !== null) {
-                $canonical = $file->canonicalFolder();
-                if ($canonical) {
-                    $file = $canonical;
-                } else {
-                    \Log::warning('share.download.canonical_dangling', [
-                        'share_id' => $share->id,
-                        'file_id' => $file->id,
-                        'canonical_folder_id' => $file->canonical_folder_id,
-                    ]);
-                }
-            }
-
             if (!$this->isDescendantOf($file, $rootFolder)) {
                 return response()->json(['error' => 'File not in shared folder'], 403);
             }
         } else {
             $file = File::findOrFail($share->file_id);
-        }
-
-        $trashResp = $this->rejectIfTrashed($file, $request);
-        if ($trashResp !== null) {
-            return $trashResp;
-        }
-
-        if ($file->availability_state === 'missing') {
-            return response()->json(['error' => 'File not found on storage'], 404);
         }
 
         if ($file->is_folder) {
@@ -544,7 +399,7 @@ class PublicShareController extends Controller
             return response()->json(['error' => 'Upload not allowed'], 403);
         }
 
-        if ($share->password_hash && !$this->passwordAuthorized($request, $share, $token)) {
+        if ($share->password_hash && !$request->session()->has("share_auth_{$token}")) {
             return response()->json(['error' => 'Password required'], 401);
         }
 
@@ -598,14 +453,10 @@ class PublicShareController extends Controller
             'size' => filesize($fullPath),
             'mime_type' => $uploadedFile->getMimeType(),
             'storage_provider_id' => $storageProvider->id,
-            // canonical-owner: usar owner canonico del storage directo (no $targetFolder->owner_id)
-            'owner_id' => StorageProvider::canonicalOwnerId($storageProvider->id)
-                ?? throw new \RuntimeException("storage {$storageProvider->id} sin owner canonico"),
+            'owner_id' => $targetFolder->owner_id,
             'parent_id' => $targetFolder->id,
             'is_folder' => false,
-            'availability_state' => 'available',
-            'last_verified_at' => now(),
-            'missing_since_at' => null,
+            'is_personal' => false,
         ]);
 
         $this->logAccess($share->id, $request->ip());
@@ -629,7 +480,7 @@ class PublicShareController extends Controller
             return response()->json(['error' => 'Create folder not allowed'], 403);
         }
 
-        if ($share->password_hash && !$this->passwordAuthorized($request, $share, $token)) {
+        if ($share->password_hash && !$request->session()->has("share_auth_{$token}")) {
             return response()->json(['error' => 'Password required'], 401);
         }
 
@@ -680,14 +531,10 @@ class PublicShareController extends Controller
             'size' => 0,
             'mime_type' => null,
             'storage_provider_id' => $storageProvider->id,
-            // canonical-owner: usar owner canonico del storage directo (no $targetFolder->owner_id)
-            'owner_id' => StorageProvider::canonicalOwnerId($storageProvider->id)
-                ?? throw new \RuntimeException("storage {$storageProvider->id} sin owner canonico"),
+            'owner_id' => $targetFolder->owner_id,
             'parent_id' => $targetFolder->id,
             'is_folder' => true,
-            'availability_state' => 'available',
-            'last_verified_at' => now(),
-            'missing_since_at' => null,
+            'is_personal' => false,
         ]);
 
         $this->logAccess($share->id, $request->ip());
@@ -711,7 +558,7 @@ class PublicShareController extends Controller
             return response()->json(['error' => 'Rename not allowed'], 403);
         }
 
-        if ($share->password_hash && !$this->passwordAuthorized($request, $share, $token)) {
+        if ($share->password_hash && !$request->session()->has("share_auth_{$token}")) {
             return response()->json(['error' => 'Password required'], 401);
         }
 
@@ -777,7 +624,7 @@ class PublicShareController extends Controller
             return response()->json(['error' => 'Delete not allowed'], 403);
         }
 
-        if ($share->password_hash && !$this->passwordAuthorized($request, $share, $token)) {
+        if ($share->password_hash && !$request->session()->has("share_auth_{$token}")) {
             return response()->json(['error' => 'Password required'], 401);
         }
 
@@ -788,49 +635,14 @@ class PublicShareController extends Controller
             return response()->json(['error' => 'File not in shared folder'], 403);
         }
 
-        // Papelera: si el archivo esta trashado no permitimos operaciones de
-        // mutacion desde un share publico. El dueno tendria que restaurarlo
-        // primero desde su papelera.
-        $trashResp = $this->rejectIfTrashed($file, $request);
-        if ($trashResp !== null) {
-            return $trashResp;
-        }
-
         $fullPath = $file->storageProvider->base_path . '/' . $file->path;
 
-        // change 2026-09-17-share-folder-canonical-wiring: 3-case delete policy.
-        // Caso 1: el target es un MIRROR (canonical_folder_id NOT NULL).
-        //   No tocamos disco ni canónico. Solo eliminamos el row mirror y el share.
-        //   El canónico (donde están los archivos reales) sigue intacto.
-        //
-        // Caso 2: el target es CANÓNICO + permissions='read'.
-        //   Inconsistente con la API pero por defense-in-depth: solo eliminamos
-        //   el row canónico + cascade a sus hijos rows (no disco). El share ya
-        //   pasó el guard de línea 724 que solo permite write/full.
-        //
-        // Caso 3: el target es CANÓNICO + permissions IN (write, full).
-        //   deleteRecursive() disco + cascade delete a files rows + delete share.
-        //   Esta es la semántica correcta esperada por el visitante con permisos
-        //   destructivos (ver change `share-write-notification-canonical`).
         if ($file->is_folder) {
-            if ($file->isFolderMirror()) {
-                \Log::info('share.destroy.mirror_only', [
-                    'share_id' => $share->id,
-                    'mirror_file_id' => $file->id,
-                    'canonical_file_id' => $file->canonical_folder_id,
-                ]);
-            } else {
-                $this->deleteRecursive($fullPath);
-                $file->children()->each(function ($child) {
-                    $child->shares()->delete();
-                    $child->delete();
-                });
-                \Log::info('share.destroy.canonical_destructive', [
-                    'share_id' => $share->id,
-                    'file_id' => $file->id,
-                    'permissions' => $share->permissions,
-                ]);
-            }
+            $this->deleteRecursive($fullPath);
+            $file->children()->each(function ($child) {
+                $child->shares()->delete();
+                $child->delete();
+            });
         } else {
             if (file_exists($fullPath)) {
                 unlink($fullPath);
@@ -847,53 +659,13 @@ class PublicShareController extends Controller
 
     private function isDescendantOf(File $file, File $ancestor): bool
     {
-        // Recorrer la cadena de parent_id hacia arriba. Si llegamos al ancestor,
-        // es descendiente legitimo.
         $current = $file;
-        $visited = [$file->id => true];
         while ($current) {
             if ($current->id === $ancestor->id) {
                 return true;
             }
-            $next = $current->parent;
-            if ($next === null) {
-                break;
-            }
-            if (isset($visited[$next->id])) {
-                // Ciclo defensivo: si el chain tiene un loop, salimos.
-                break;
-            }
-            $visited[$next->id] = true;
-            $current = $next;
+            $current = $current->parent;
         }
-
-        // Fallback: chain roto antes de llegar al ancestor (parent_id NULL o
-        // huérfano). El archivo está "bajo" el ancestor si su PATH FÍSICO
-        // normalizado es descendiente del path físico del ancestor.
-        //
-        // Cambio 2026-09-18-fix-public-share-access-cross-storage: pasamos de
-        // comparar `path` relativo a comparar `physicalPathNormalized()`
-        // (= `lower(rtrim(base_path_snapshot || '/' || path))`). El chequeo
-        // relativo falla cuando el share's rootFolder está en storage A
-        // (p.ej. sub-storage con `base_path = /data/root/sub`) y el file vive
-        // en storage B (parent storage con `base_path = /data/root`), porque
-        // sus `path` relativos son distintos aunque el path físico sea idéntico.
-        // El mismo algoritmo lo usa `FolderListingService::resolveFolderIds()`
-        // para descubrir equivalencias — alinear aquí evita 403 falsos en
-        // `mediaPreview`, `preview`, `download` y los 5 métodos restantes que
-        // dependen de este helper.
-        //
-        // `base_path_snapshot` es único por storage, así que el prefijo
-        // compartido solo ocurre cuando ambos rows apuntan al mismo directorio
-        // físico real. Falsos positivos son imposibles salvo bug de config.
-        $fileNorm = $file->physicalPathNormalized();
-        $ancNorm  = $ancestor->physicalPathNormalized();
-        if ($fileNorm !== null && $ancNorm !== null && $ancNorm !== '' && $ancNorm !== '/') {
-            if (str_starts_with($fileNorm . '/', $ancNorm . '/')) {
-                return true;
-            }
-        }
-
         return false;
     }
 
@@ -955,33 +727,6 @@ class PublicShareController extends Controller
         } catch (\Exception $e) {
             // Never let sync crash the share view
         }
-    }
-
-    private function publicError(Request $request, string $message, int $status, ?string $view = null)
-    {
-        if ($request->ajax() || $request->wantsJson()) {
-            return response()->json(['error' => $message], $status);
-        }
-
-        return $view
-            ? response()->view($view, [], $status)
-            : response()->view('shares.public-not-found', [], $status);
-    }
-
-    private function passwordAuthorized(Request $request, Share $share, string $token): bool
-    {
-        if ($request->session()->has("share_auth_{$token}")) {
-            return true;
-        }
-
-        $headerPassword = $request->header('X-Share-Password');
-        if (!$headerPassword || !Hash::check($headerPassword, $share->password_hash)) {
-            return false;
-        }
-
-        $request->session()->put("share_auth_{$token}", true);
-
-        return true;
     }
 
     private function logAccess(int $shareId, ?string $ip): void
