@@ -82,16 +82,14 @@ class DashboardController extends Controller
             ->where(function ($query) {
                 $query->whereNull('expires_at')->orWhere('expires_at', '>=', now());
             })
-            ->whereHas('file', fn ($query) => $query->where(function ($fileQuery) {
-                $fileQuery->whereNull('availability_state')->orWhere('availability_state', '!=', 'missing');
-            }))
+            ->whereHas('file')
             ->count();
         $expiredShares = $user->shares()
             ->whereNotNull('expires_at')
             ->where('expires_at', '<', now())
             ->count();
         $unavailableShares = $user->shares()
-            ->whereHas('file', fn ($query) => $query->where('availability_state', 'missing'))
+            ->whereDoesntHave('file')
             ->count();
 
         $blocks = $this->dataProvider->buildClient($user);

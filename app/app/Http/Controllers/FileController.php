@@ -889,18 +889,30 @@ class FileController extends Controller
 
         $userStorages = $user->userStorages()->with('storageProvider')->get();
 
-        $storages = $userStorages->map(function ($us) {
-            return [
-                'id' => $us->storageProvider->id,
-                'name' => $us->storageProvider->name,
-                'type' => $us->storageProvider->type,
-                'permissions' => $us->permissions,
-                'can_create_shares' => (bool) $us->can_create_shares,
-                'accessible' => $us->storageProvider->is_accessible,
-                'last_checked' => $us->storageProvider->last_checked_at?->format('d M, H:i'),
-                'is_personal' => str_starts_with($us->storageProvider->base_path ?? '', '/home/www/Usuarios_tcloud/'),
-            ];
-        });
+        $storages = $userStorages
+            ->filter(function ($us) use ($user) {
+                $sp = $us->storageProvider;
+                if ($user->isAdmin()) {
+                    return true;
+                }
+                if (!$sp->isOwnedBy($user)) {
+                    return false;
+                }
+                return true;
+            })
+            ->map(function ($us) {
+                return [
+                    'id' => $us->storageProvider->id,
+                    'name' => $us->storageProvider->name,
+                    'type' => $us->storageProvider->type,
+                    'permissions' => $us->permissions,
+                    'can_create_shares' => (bool) $us->can_create_shares,
+                    'accessible' => $us->storageProvider->is_accessible,
+                    'last_checked' => $us->storageProvider->last_checked_at?->format('d M, H:i'),
+                    'is_personal' => str_starts_with($us->storageProvider->base_path ?? '', '/home/www/Usuarios_tcloud/'),
+                ];
+            })
+            ->values();
 
         return response()->json(['storages' => $storages]);
     }

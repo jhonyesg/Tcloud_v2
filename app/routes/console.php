@@ -15,34 +15,6 @@ Artisan::command('inspire', function () {
 // avisar. 30 min deja margen holgado sobre los ~4 min de ejecucion real.
 Schedule::command('storage:sync --all')->everyFifteenMinutes()->withoutOverlapping(30);
 
-// Auditoria diaria de storages con base_path duplicado (change
-// `storage-physical-path-normalization`, 2026-09-17). El comando es read-only
-// (no muta nada), solo actualiza `SystemSetting(storage.duplicates_remaining)`
-// y loguea `storages.duplicates_detected`. La migration `enforce_unique_physical_path`
-// (Stage 3) aborta si duplicates_remaining > 0, asi que el operador ve
-// cuantos pares faltan por mergear via `php artisan storages:detect-duplicate-paths`.
-Schedule::command('storages:detect-duplicate-paths')->dailyAt('04:30')->withoutOverlapping(10);
-
-// Auto-repair diario de archivos con parent_id NULL en sub-storages (change
-// `2026-09-17-self-healing-sync-permissions`, 2026-09-17). El self-healing en
-// doSyncFolder() corrige los leaks durante el sync; este cron es la red de
-// seguridad para cualquier orphan residual que el cron regular no haya visto.
-// withoutOverlapping(60) evita que se solape con ejecuciones manuales del operador.
-Schedule::command('files:repair-orphan-subtree')
-    ->dailyAt('03:30')
-    ->withoutOverlapping(60)
-    ->runInBackground();
-
-// Auto-repair diario de delegation leaks desde el root (storage 5). Mismo
-// proposito que el anterior pero apunta al bug especifico de `storage_provider_id`
-// incorrecto. Corre 15 min despues del repair de orphans para no competir por
-// I/O. Sin este cron, el self-healing sync migraria los files pero los legacy
-// leaks (pre-existentes al deploy) seguirian en disco hasta el proximo sync.
-Schedule::command('files:repair-delegation-leak', ['--apply', '--storage=5'])
-    ->dailyAt('03:45')
-    ->withoutOverlapping(60)
-    ->runInBackground();
-
 // Watchdog de accesibilidad: detecta remontajes de discos externos y dispara
 // storage:reconcile paced. withoutOverlapping TTL 4 min: si el tick se cuelga,
 // el siguiente cae y libera el lock antes de los 5 min del schedule.
@@ -87,13 +59,6 @@ Schedule::command('correo:cleanup-logs --days=90')->weekly()->sundays()->at('03:
 
 // Corrección de cuotas personales — detecta y corrige drift (corre 1 vez/semana)
 Schedule::command('files:recalc-personal-quota')->weekly()->sundays()->at('03:30');
-
-// Papelera — purga diaria de items trashados que superaron retention_days.
-// Hora rara (03:17) para no coincidir con shares/correo/quota. withoutOverlapping
-// con TTL 30 min: si la purga se cuelga en NFS caido, el siguiente tick cae
-// y libera el lock antes de las 24h. runInBackground: la salida del comando
-// no bloquea el scheduler mientras dura.
-Schedule::command('trash:purge')->dailyAt('03:17')->withoutOverlapping(30)->runInBackground();
 
 // Modulo IA — transcripción
 //

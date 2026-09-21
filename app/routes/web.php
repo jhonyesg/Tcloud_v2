@@ -4,7 +4,6 @@ use Illuminate\Support\Facades\Route;
 use App\Modules\Correo\Http\Controllers\CorreoConfigController;
 use App\Modules\Correo\Http\Controllers\CorreoPlantillaController;
 use App\Modules\Correo\Http\Controllers\CorreoLogController;
-use App\Modules\Papelera\Http\Controllers\PapeleraController;
 
 Route::get('/', fn() => redirect('/login'));
 
@@ -116,13 +115,9 @@ Route::middleware('auth')->group(function () {
     Route::post('/files/download-multi', [App\Http\Controllers\FileController::class, 'downloadMulti']);
     Route::resource('files', App\Http\Controllers\FileController::class)->only(['index', 'store', 'show', 'update', 'destroy']);
 
-    // Papelera de reciclaje
-    Route::get('/papelera', [PapeleraController::class, 'index'])->name('papelera.index');
-    Route::post('/papelera/{file}/restore', [PapeleraController::class, 'restore'])->name('papelera.restore');
-    Route::post('/papelera/restore-many', [PapeleraController::class, 'restoreMany'])->name('papelera.restore_many');
-    Route::post('/papelera/restore-all', [PapeleraController::class, 'restoreAll'])->name('papelera.restore_all');
-    Route::delete('/papelera/{file}', [PapeleraController::class, 'destroy'])->whereNumber('file')->name('papelera.destroy');
-    Route::post('/papelera/empty', [PapeleraController::class, 'empty'])->name('papelera.empty');
+    // Papelera removida en change restore-mis-archivos-august
+    // (la columna files.is_trashed ya no existe).
+
     Route::get('/user/storages', [App\Http\Controllers\FileController::class, 'storages']);
     Route::get('/files/{file}/download', [App\Http\Controllers\FileController::class, 'download']);
     Route::get('/files/{file}/download-folder', [App\Http\Controllers\FileController::class, 'downloadFolder']);

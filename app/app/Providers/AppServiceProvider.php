@@ -17,14 +17,11 @@ use App\Services\Ia\TranscriptionProcessor;
 use App\Services\Ia\TranscriptorApiClient;
 use App\Services\Ia\TranscriptorSettings;
 use App\Modules\Correo\Services\EmailValidationService;
-use App\Modules\Papelera\Services\PapeleraService;
-use App\Observers\FileObserver;
 use App\Observers\TranscriptionObserver;
 use App\Observers\UserObserver;
 use App\Observers\UserStorageObserver;
 use App\Models\UserStorage;
 use App\Services\Auth\PasswordTokenService;
-use App\Services\FolderListingService;
 use Illuminate\Support\Facades\Session;
 use Illuminate\Support\ServiceProvider;
 
@@ -45,10 +42,6 @@ class AppServiceProvider extends ServiceProvider
         $this->app->singleton(AlertDispatcher::class);
         $this->app->singleton(EmailValidationService::class);
         $this->app->singleton(PasswordTokenService::class);
-        $this->app->singleton(PapeleraService::class);
-        // change 2026-09-17-share-folder-canonical-wiring: servicio de listado
-        // cross-storage usado por PublicShareController y futuras extensiones.
-        $this->app->singleton(FolderListingService::class);
 
         // Motor de menciones seleccionable (mis-avisos-menciones): universal
         // por defecto; legacy preservado como fallback de rollback. La costura
@@ -70,9 +63,6 @@ class AppServiceProvider extends ServiceProvider
         // automáticamente al crear y la hace inmutable después.
         Transcription::observe(TranscriptionObserver::class);
         // change 2026-09-17-files-physical-folder-identity: mantiene
-        // files.base_path_snapshot sincronizado con storage_providers.base_path
-        // para que File::physicalPathNormalized() no pague un JOIN por lookup.
-        File::observe(FileObserver::class);
         // change files-canonical-owner-by-storage (2026-09-18): invalida la
         // cache del owner canonico cuando un user_storages se crea/edita/borra.
         UserStorage::observe(UserStorageObserver::class);
@@ -117,14 +107,8 @@ class AppServiceProvider extends ServiceProvider
             $view->with('misAvisosEnabled', $misAvisosEnabled);
             $view->with('correctionsPendingCount', $correctionsPendingCount);
 
-            // Papelera: conteos para el badge del sidebar. Cacheado 60s en
-            // PapeleraService::countFor(); aqui solo delegamos.
-            try {
-                $trashCounts = app(PapeleraService::class)->countFor((int) $userId);
-            } catch (\Throwable $e) {
-                $trashCounts = ['total' => 0, 'urgent' => 0];
-            }
-            $view->with('trashCounts', $trashCounts);
+            // Papelera: removida en change restore-mis-archivos-august.
+            $view->with('trashCounts', ['total' => 0, 'urgent' => 0]);
 
             $used  = (int) $user->personal_used_bytes;
             $limit = (int) $user->personal_quota_bytes;

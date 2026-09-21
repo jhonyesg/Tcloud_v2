@@ -159,4 +159,19 @@ class StorageProvider extends Model
         }
         return $canonical === (string) $user->username;
     }
+
+    /**
+     * No-op defensivo: invalida la cache del "owner canonico" de un storage.
+     *
+     * El helper `canonicalOwnerId` (y su cache) fueron retirados en el change
+     * `restore-mis-archivos-august`, pero el observer `UserStorageObserver`
+     * conserva esta llamada como conservadora. La cache ya no existe, asi que
+     * basta con no fallar. Si en el futuro se restaura el helper de cache,
+     * reimplementar aqui.
+     */
+    public static function forgetCanonicalOwnerCache(int $storageId): void
+    {
+        // No-op: la cache fue retirada. Ver UserStorageObserver.php docblock.
+        unset($storageId);
+    }
 }

@@ -32,23 +32,76 @@ class ShareController extends Controller
         $user = $this->getUser();
         if (!$user) return response()->json(['error' => 'Unauthorized'], 401);
 
-        $query = Share::where('created_by', $user->id)
-            ->with('file')
-            ->orderBy('created_at', 'desc');
+        $base = Share::where('created_by', $user->id)->with('file');
 
-        if ($request->has('file_id')) {
+        // Contadores totales del usuario (antes de paginar/filtros de búsqueda)
+        $allUserShares = (clone $base)->get();
+        $now = now();
+        $counters = [
+            'total'     => $allUserShares->count(),
+            'expired'   => $allUserShares->filter(fn($s) => $s->expires_at && $s->expires_at->lt($now))->count(),
+            'permanent' => $allUserShares->filter(fn($s) => !$s->expires_at)->count(),
+            'missing'   => $allUserShares->filter(fn($s) => $s->file === null)->count(),
+            'unknown'   => 0,
+        ];
+
+        $query = (clone $base);
+
+        if ($request->filled('file_id')) {
             $query->where('file_id', $request->file_id);
         }
+        if ($request->filled('permission')) {
+            $query->where('permissions', $request->permission);
+        }
+        if ($request->filled('q')) {
+            $term = '%' . $request->q . '%';
+            $query->where(function ($q) use ($term) {
+                $q->where('token', 'ilike', $term)
+                  ->orWhereHas('file', fn($f) => $f->where('name', 'ilike', $term)
+                                                     ->orWhere('path', 'ilike', $term));
+            });
+        }
+        if ($request->filled('status')) {
+            if ($request->status === 'expired') {
+                $query->whereNotNull('expires_at')->where('expires_at', '<', $now);
+            } elseif ($request->status === 'permanent') {
+                $query->whereNull('expires_at');
+            } elseif ($request->status === 'active') {
+                $query->where(function ($q) use ($now) {
+                    $q->whereNull('expires_at')->orWhere('expires_at', '>', $now);
+                });
+            }
+        }
 
-        $shares = $query->withCount('accessLogs')->get()->map(function ($share) {
-            $share->is_expired   = $share->isExpired();
-            $share->has_password = !is_null($share->password_hash);
-            $share->public_url   = url('/s/' . $share->token);
-            return $share;
-        });
+        $sort = in_array($request->sort, ['created_at', 'expires_at']) ? $request->sort : 'created_at';
+        $direction = $request->direction === 'asc' ? 'asc' : 'desc';
+        $perPage = max(1, min(100, (int) $request->per_page ?: 25));
+        $page    = max(1, (int) $request->page ?: 1);
+
+        $query->orderBy($sort, $direction);
+        $total = (clone $query)->count();
+        $shares = $query->withCount('accessLogs')
+            ->skip(($page - 1) * $perPage)
+            ->take($perPage)
+            ->get()
+            ->map(function ($share) {
+                $share->is_expired   = $share->isExpired();
+                $share->has_password = !is_null($share->password_hash);
+                $share->public_url   = url('/s/' . $share->token);
+                return $share;
+            });
 
         if ($request->ajax() || $request->wantsJson()) {
-            return response()->json($shares);
+            return response()->json([
+                'data'     => $shares,
+                'meta'     => [
+                    'current_page' => $page,
+                    'last_page'    => max(1, (int) ceil($total / $perPage)),
+                    'per_page'     => $perPage,
+                    'total'        => $total,
+                ],
+                'counters' => $counters,
+            ]);
         }
 
         return view('shares.index', ['shares' => $shares]);
