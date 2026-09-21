@@ -1452,28 +1452,44 @@ cd /www/wwwroot/cloud.mediaserver.com.co/Tcloud_v2/app
 php artisan user-storages:fix-personal-visibility          # dry-run (default)
 php artisan user-storages:fix-personal-visibility --apply --yes [--user=ID]
 
-# 2) Limpiar carpetas fantasma de files
+# 2) Limpiar carpetas fantasma (file_modified_at IS NULL + path no en disco)
 php artisan files:purge-ghost-folders                       # dry-run (default), todos los storages
 php artisan files:purge-ghost-folders --storage=5          # dry-run, un storage
 php artisan files:purge-ghost-folders --apply --yes --storage=5
+
+# 3) Limpiar archivos (no carpetas) con parent_id IS NULL en el root de un storage.
+#    Para cada uno: si tiene duplicado en OTRO storage -> drop. Si duplicado
+#    en el mismo storage con path distinto -> drop. Si el path encaja con un
+#    sub-storage -> reasignar storage_provider_id. Resto -> keep_root.
+php artisan files:purge-orphan-roots                        # dry-run
+php artisan files:purge-orphan-roots --apply --yes --storage=5
+
+# 4) Limpiar archivos cuyo path completo en BD NO existe en disco. Cubre
+#    archivos movidos/borrados sin re-sync, carpetas padre desmontadas, etc.
+php artisan files:cleanup-disappeared                       # dry-run
+php artisan files:cleanup-disappeared --apply --yes --storage=5
 ```
 
 ### Patrón de snapshot
 
-`files:purge-ghost-folders --apply` crea ANTES del DELETE una tabla snapshot:
+Los cuatro comandos `--apply` crean ANTES del DELETE una tabla snapshot persistente:
 
-```
-files_ghost_pre_purge_<YYYYMMDD_HHMMSS>
-```
+- `files:purge-ghost-folders` → `files_ghost_pre_purge_<YYYYMMDD_HHMMSS>`
+- `files:purge-orphan-roots` → `files_orphan_roots_pre_purge_<YYYYMMDD_HHMMSS>`
+- `files:cleanup-disappeared` → `files_disappeared_pre_purge_<YYYYMMDD_HHMMSS>`
 
-con copia exacta de las filas borradas. La tabla persiste (no se borra automáticamente) para auditoría/rollback. Para restaurar:
+Cada una contiene copia exacta de las filas a borrar. Para restaurar (rollback granular de una pasada):
 
 ```bash
 PGPASSWORD=cloud123 psql -h 127.0.0.1 -U cloud -d tcloudstorage -c "
-INSERT INTO files SELECT * FROM files_ghost_pre_purge_<ts>
+INSERT INTO files SELECT * FROM files_<comando>_pre_purge_<ts>
 ON CONFLICT (id) DO NOTHING;
 "
 ```
+
+Las tablas persisten (no se borran automáticamente). Backups completos de referencia:
+- `backups/mis-archivos-depura-pre-20260921_104436.sql.gz` (44MB, files + user_storages).
+- `backups/mis-archivos-depura-files-only-20260921_111623.sql.gz` (44MB, files).
 
 ### Helpers de StorageProvider
 

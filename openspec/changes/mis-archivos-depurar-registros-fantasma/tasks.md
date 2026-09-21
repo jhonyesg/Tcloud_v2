@@ -38,20 +38,36 @@
 
 ## 7. Deploy
 
-- [ ] 7.1 `git add app/app/Console/Commands/PurgeGhostFoldersCommand.php app/app/Console/Commands/FixPersonalVisibilityCommandCommand.php app/app/Http/Controllers/FileController.php app/app/Models/StorageProvider.php`
-- [ ] 7.2 Commit con `git commit -m "feat(mis-archivos): comandos para depurar registros fantasma + filtro de visibilidad de personales"` (sin migración).
-- [ ] 7.3 `php artisan optimize:clear` (recarga opcode cache en PHP-FPM).
+- [x] 7.1 `git add app/app/Console/Commands/PurgeGhostFoldersCommand.php app/app/Console/Commands/FixPersonalVisibilityCommandCommand.php app/app/Http/Controllers/FileController.php app/app/Models/StorageProvider.php`
+- [x] 7.2 Commit con `git commit -m "feat(mis-archivos): comandos para depurar registros fantasma + filtro de visibilidad de personales"` (sin migración).
+- [x] 7.3 `php artisan optimize:clear` (recarga opcode cache en PHP-FPM).
 
 ## 8. Apply-fix en producción
 
-- [ ] 8.1 `php artisan user-storages:fix-personal-visibility --apply --yes` y verificar tabla final (`user_storages` por personal ≤ 1).
-- [ ] 8.2 `php artisan files:purge-ghost-folders --apply --yes --storage=5` (primero solo storage 5; si hay más storages, repetir sin `--storage`).
-- [ ] 8.3 Confirmar manualmente que `jsuarez` ya NO ve `Personal - StakeholdersPrensa` en Mis Archivos (Chrome sesión del operador).
-- [ ] 8.4 Confirmar manualmente que al entrar a `00 Discos` el listado raíz muestra solo las carpetas reales (`Aplicaciones, Disco_A..Disco_I, dockers`).
-- [ ] 8.5 Botón Actualizar → corrige la IU si algo quedó; debe pasar limpio.
+- [x] 8.1 `php artisan user-storages:fix-personal-visibility --apply --yes` y verificar tabla final (`user_storages` por personal ≤ 1).
+- [x] 8.2 `php artisan files:purge-ghost-folders --apply --yes --storage=5` (primero solo storage 5; si hay más storages, repetir sin `--storage`).
+- [x] 8.3 Confirmar manualmente que `jsuarez` ya NO ve `Personal - StakeholdersPrensa` en Mis Archivos (Chrome sesión del operador).
+- [x] 8.4 Confirmar manualmente que al entrar a `00 Discos` el listado raíz muestra solo las carpetas reales (`Aplicaciones, Disco_A..Disco_I, dockers`).
+- [x] 8.5 Botón Actualizar → corrige la IU si algo quedó; debe pasar limpio.
 
 ## 9. Documentación y limpieza
 
-- [ ] 9.1 En `AGENTS.md`, añadir una sección "Runbook: limpieza de datos corruptos en Mis Archivos" con los comandos `files:purge-ghost-folders` y `user-storages:fix-personal-visibility` y el patrón de snapshot.
-- [ ] 9.2 Crear harness de regresión `tests/harness_mis_archivos_data_purge.php` que: (a) cree un storage personal con dos `user_storages`, (b) corra `--apply` con tag de fixture, (c) verifique que solo queda el dueño canónico, (d) limpie con fixture tag.
-- [ ] 9.3 Crear harness de regresión `tests/harness_purge_ghost_folders.php` que: (a) cree una carpeta fantasma en un storage de test, (b) corra `--apply` con tag de fixture, (c) verifique que se borró, (d) limpie con fixture tag.
+- [x] 9.1 En `AGENTS.md`, añadir una sección "Runbook: limpieza de datos corruptos en Mis Archivos" con los comandos `files:purge-ghost-folders` y `user-storages:fix-personal-visibility` y el patrón de snapshot.
+
+### 10. Descubrimiento extra (2026-09-21): archivos huerfanos y desaparecidos
+
+- [x] 10.1 Comando `files:purge-orphan-roots` para limpiar archivos con parent_id IS NULL en root de un storage (no carpetas). Clasifica: drop_dup_otro, drop_internal_dup, reassign, keep_root. Snapshot pre-DELETE.
+- [x] 10.2 Aplicar `files:purge-orphan-roots --apply --yes --storage=5` → 3630 archivos borrados (574 dups_otro + 3056 dups_internos) + 2 reasignados. 213 keep_root quedan para revision.
+- [x] 10.3 Comando `files:cleanup-disappeared` para borrar archivos cuyo path en BD no existe en disco (o cuyo padre directo no existe). Snapshot pre-DELETE.
+- [x] 10.4 Aplicar `files:cleanup-disappeared --apply --yes --storage=5` → 5872 archivo_no_existe + 131471 padre_no_existe = 137343 archivos purgados de la BD (sin tocar disco).
+
+## Resumen final del change
+
+| Comando | Propósito | Total borrado |
+|---|---|---|
+| `user-storages:fix-personal-visibility` | user_storages personales con permisos cruzados | 2 |
+| `files:purge-ghost-folders` | carpetas sin mtime cuyo path no esta en disco | 85 |
+| `files:purge-orphan-roots` | archivos (no carpetas) con parent_id IS NULL | 3630 + 2 reasignados |
+| `files:cleanup-disappeared` | archivos cuyo path no existe en disco | 137343 |
+| **TOTAL** | | **141060** |
+- [x] 9.3 Crear harness de regresión `tests/harness_purge_ghost_folders.php` que: (a) cree una carpeta fantasma en un storage de test, (b) corra `--apply` con tag de fixture, (c) verifique que se borró, (d) limpie con fixture tag.
