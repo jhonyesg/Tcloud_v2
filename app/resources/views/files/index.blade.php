@@ -607,7 +607,11 @@ deleteConfirmFile: null,
         this.hasMore = false;
         this.isNavigating = true;
         this.navigatingToId = folderId;
-        this.loadFiles(false, true, true);
+        // skipBreadcrumbs=false para que la respuesta del server popule el breadcrumb
+        // completo cuando entramos desde root (currentFolder era null). El handler
+        // ya concatena el padre al chain devuelto por el server, así que no se rompe
+        // la UX cuando ya habia carpetas navegadas.
+        this.loadFiles(false, false, true);
         this.saveNavState();
     },
 
