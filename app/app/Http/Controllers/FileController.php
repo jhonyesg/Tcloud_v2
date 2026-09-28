@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\File;
 use App\Models\User;
 use App\Models\StorageProvider;
+use App\Services\FileBreadcrumbIntegrityService;
 use App\Services\StorageSyncService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -106,7 +107,11 @@ class FileController extends Controller
                     ", [$parentId]);
                     if ($chain) {
                         $storageId = $storageId ?? (int) $chain[0]->storage_provider_id;
-                        $breadcrumbs = array_reverse(array_map(fn($r) => ['id' => $r->id, 'name' => $r->name], $chain));
+                        $segments = array_reverse(array_map(
+                            fn($r) => ['id' => (int) $r->id, 'name' => $r->name, 'storage_provider_id' => (int) $r->storage_provider_id],
+                            $chain
+                        ));
+                        $breadcrumbs = self::dedupBreadcrumbSegments($segments);
                     }
                 }
             }
@@ -1213,5 +1218,57 @@ class FileController extends Controller
         ", [$ancestorId, $targetId]);
 
         return count($rows) > 0;
+    }
+
+    private static function dedupBreadcrumbSegments(array $segments): array
+    {
+        if (count($segments) < 2) {
+            return $segments;
+        }
+
+        $deduped = [];
+        $dedupedCount = count($segments);
+        for ($i = 0; $i < $dedupedCount; $i++) {
+            $isLast = ($i === $dedupedCount - 1);
+            $prev = end($deduped);
+            if (!$prev) {
+                $deduped[] = $segments[$i];
+                continue;
+            }
+
+            if ($prev['name'] === $segments[$i]['name']) {
+                $segmentId = $segments[$i]['id'];
+                $storageId = $segments[$i]['storage_provider_id'] ?? null;
+                \Illuminate\Support\Facades\Log::warning('breadcrumb.dedup_consecutive', [
+                    'storage_id' => $storageId,
+                    'segment_id' => $segmentId,
+                    'segment_name' => $segments[$i]['name'],
+                    'is_last_segment' => $isLast,
+                ]);
+
+                if (!$isLast) {
+                    try {
+                        $result = FileBreadcrumbIntegrityService::repairInPlace($segmentId);
+                        if (!empty($result['repaired'])) {
+                            \Illuminate\Support\Facades\Cache::increment(
+                                "folder_gen:{$storageId}:" . ($result['new_parent_id'] ?? 'null')
+                            );
+                        }
+                    } catch (\Throwable $e) {
+                        \Illuminate\Support\Facades\Log::error('breadcrumb.repair_failed', [
+                            'segment_id' => $segmentId,
+                            'error' => $e->getMessage(),
+                        ]);
+                    }
+                } else {
+                    $deduped[] = $segments[$i];
+                }
+                continue;
+            }
+
+            $deduped[] = $segments[$i];
+        }
+
+        return $deduped;
     }
 }

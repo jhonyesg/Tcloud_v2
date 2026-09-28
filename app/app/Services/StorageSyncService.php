@@ -382,10 +382,27 @@ class StorageSyncService
             }
         }
 
+        $gate = FileBreadcrumbIntegrityService::assertNoSelfNestedName(
+            $storage->id,
+            $parentId,
+            $name,
+        );
+        if (!$gate['ok']) {
+            Log::error('storage_sync.parent_id_cycle_refused', [
+                'storage_id' => $storage->id,
+                'parent_id' => $parentId,
+                'name' => $name,
+                'reason' => $gate['reason'],
+                'existing_id' => $gate['existing_id'] ?? null,
+                'hint' => "ejecutar php artisan files:repair-breadcrumb-cycles --apply --storage={$storage->id}",
+            ]);
+            $existingId = $gate['existing_id'] ?? null;
+            $fallback = $existingId ? File::find($existingId) : null;
+            return $fallback ?? File::find($parentId) ?? new File();
+        }
+
         $modifiedAt = isset($entry['modified_at']) ? \Carbon\Carbon::createFromTimestamp($entry['modified_at']) : null;
 
-        // Via FileRegistry: si otro proceso gana la carrera, se lee al ganador en
-        // vez de insertar una copia. Antes era un File::create() pelado.
         return $this->registry->ensure($storage, $path, [
             'name' => $name,
             'path' => $path,
