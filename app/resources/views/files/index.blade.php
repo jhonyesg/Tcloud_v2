@@ -1049,10 +1049,14 @@ deleteConfirmFile: null,
     },
 
     startRename(file) {
+        if (!file.id) {
+            this.showToast('Espera a que el matcher sincronice el archivo antes de renombrarlo.', 'info');
+            return;
+        }
         this.renamingFileId = file.id;
         this.renamingFileName = file.name;
         this.$nextTick(() => {
-            const input = document.getElementById('rename-input-' + file.id);
+            const input = document.getElementById('rename-input-' + (file.id ?? file.path ?? ''));
             if (input) { input.focus(); input.select(); }
         });
     },
@@ -2673,8 +2677,8 @@ deleteConfirmFile: null,
                                     </template>
                                 </div>
                                 <p x-show="renamingFileId !== file.id" class="font-medium text-slate-700 text-sm truncate w-full" x-text="file.name" :title="file.name"></p>
-                                <input x-show="renamingFileId === file.id"
-                                       :id="'rename-input-' + file.id"
+                                <input x-show="renamingFileId !== null && renamingFileId === file.id"
+                                       :id="'rename-input-' + (file.id ?? file.path ?? Math.random())"
                                        x-model="renamingFileName"
                                        @click.stop
                                        @keydown.enter.stop="saveRename(file)"
@@ -2834,8 +2838,8 @@ deleteConfirmFile: null,
                                                 </template>
                                             </div>
                                             <span x-show="renamingFileId !== file.id" class="font-medium text-slate-700 truncate text-sm min-w-0" x-text="file.name"></span>
-                                            <input x-show="renamingFileId === file.id"
-                                                   :id="'rename-input-' + file.id"
+                                            <input x-show="renamingFileId !== null && renamingFileId === file.id"
+                                                   :id="'rename-input-' + (file.id ?? file.path ?? Math.random())"
                                                    x-model="renamingFileName"
                                                    @click.stop
                                                    @keydown.enter.stop="saveRename(file)"
