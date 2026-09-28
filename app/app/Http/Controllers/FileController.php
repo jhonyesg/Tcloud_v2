@@ -6,6 +6,7 @@ use App\Models\File;
 use App\Models\User;
 use App\Models\StorageProvider;
 use App\Services\FileBreadcrumbIntegrityService;
+use App\Services\MisArchivos\FilesystemListingService;
 use App\Services\StorageSyncService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -48,6 +49,14 @@ class FileController extends Controller
         }
 
         if ($request->ajax() || $request->wantsJson()) {
+            $storageIdForRoute = $request->has('storage_id') ? (int) $request->storage_id : null;
+            if ($storageIdForRoute === null && $request->has('parent_id')) {
+                $storageIdForRoute = (int) (DB::table('files')->where('id', (int) $request->parent_id)->value('storage_provider_id') ?? 0) ?: null;
+            }
+            if ($storageIdForRoute !== null && self::fsPrimaryEnabled($storageIdForRoute)) {
+                return $this->indexFilesystemPrimary($request, $user, $storageIdForRoute);
+            }
+
             $searchTerm = $request->has('q') && strlen(trim($request->q)) >= 2 ? trim($request->q) : null;
 
             if ($searchTerm !== null) {
@@ -1270,5 +1279,47 @@ class FileController extends Controller
         }
 
         return $deduped;
+    }
+
+    private static function fsPrimaryEnabled(int $storageId): bool
+    {
+        if (!config('mis_archivos.fs_primary_enabled', false)) {
+            return false;
+        }
+        $canary = config('mis_archivos.fs_primary_canary_storage_ids', []);
+        if (empty($canary)) {
+            return true;
+        }
+        return in_array($storageId, $canary, true);
+    }
+
+    private function indexFilesystemPrimary(Request $request, User $user, int $storageId)
+    {
+        $parentId = $request->has('parent_id') ? (int) $request->parent_id : null;
+        $subPath = null;
+
+        if ($parentId !== null) {
+            $service = app(FilesystemListingService::class);
+            $chain = $service->parentChain($storageId, null);
+            $fileId = null;
+            $resolved = DB::table('files')->where('id', $parentId)->value('path');
+            $subPath = $resolved;
+        }
+
+        $limit = (int) $request->get('limit', config('mis_archivos.listing_limit', 500));
+        $limit = max(10, min(2000, $limit));
+
+        $response = app(FilesystemListingService::class)->list(
+            storageId: $storageId,
+            subPath: $subPath,
+            userId: $user->id,
+            limit: $limit,
+        );
+
+        if (($response['error'] ?? null) === 'permission_denied') {
+            return response()->json(['error' => 'permission_denied'], 403);
+        }
+
+        return response()->json($response);
     }
 }

@@ -20,6 +20,14 @@ Schedule::command('storage:sync --all')->everyFifteenMinutes()->withoutOverlappi
 // el siguiente cae y libera el lock antes de los 5 min del schedule.
 Schedule::command('storage:health')->everyFiveMinutes()->withoutOverlapping(4);
 
+// Matcher FS↔BD para el modo FS-primero de Mis Archivos.
+// withoutOverlapping(4): el matcher es rapido (no toca disco remoto en modo hot_only),
+// 4 min evita overlap con el siguiente tick si una corrida se cuelga.
+Schedule::command('mis-archivos:match-fs-db --mode=hot_warm')->everyFiveMinutes()->withoutOverlapping(4);
+
+// Full sweep diario a las 03:00 Bogota para purgar pending_deletion_at vencidos.
+Schedule::command('mis-archivos:match-fs-db --mode=hot_warm_cold')->dailyAt('03:00')->withoutOverlapping(120);
+
 // Limpieza de sesiones huérfanas y expiradas. La frecuencia (default 30 min)
 // es la del scheduler; el setting `sessions_cleanup_interval_minutes` se
 // consulta DENTRO del closure solo para emitir un warning si es demasiado
