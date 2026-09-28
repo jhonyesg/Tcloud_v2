@@ -414,8 +414,15 @@ deleteConfirmFile: null,
                 }[data.error] || ('Error: ' + data.error);
                 this.files = data?.files ?? [];
                 this.breadcrumbs = data?.breadcrumbs ?? [];
+                this.currentPage = 1;
                 this.hasMore = false;
+                this.dataMode = (data?.meta?.fs_primary === true) ? 'fs' : 'bd';
                 this.showToast(friendlyError, data.error === 'io_error' ? 'error' : 'warning', 6000);
+                if (this.files.length === 0) {
+                    this._emptyStateTimer = setTimeout(() => { this.showEmptyState = true; }, 1500);
+                } else {
+                    this.showEmptyState = false;
+                }
             } else {
                 const serverData = Array.isArray(data?.files) ? data.files : (Array.isArray(data) ? data : []);
                 const serverBreadcrumbs = data?.breadcrumbs ?? [];
@@ -429,15 +436,15 @@ deleteConfirmFile: null,
                 if (forceSync) {
                     this.reportSync(data?.stats, serverData);
                 }
+                if (serverData.length === 0) {
+                    this._emptyStateTimer = setTimeout(() => { this.showEmptyState = true; }, 1500);
+                } else {
+                    this.showEmptyState = false;
+                }
             }
             this.isNavigating = false;
             this.navigatingToId = null;
             this.isLoadingFiles = false;
-            if (serverData.length === 0) {
-                this._emptyStateTimer = setTimeout(() => { this.showEmptyState = true; }, 1500);
-            } else {
-                this.showEmptyState = false;
-            }
             if (thenSync) this.silentSync();
         }).catch(err => {
             if (err && err.name === 'AbortError') return;
