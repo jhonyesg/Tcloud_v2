@@ -406,6 +406,7 @@ deleteConfirmFile: null,
                 const friendlyError = {
                     'mount_detached': 'El disco no está montado. Reintentaremos cuando vuelva.',
                     'path_missing': 'La carpeta ya no existe en disco.',
+                    'io_error': 'Error de I/O en el disco (el driver NFS reportó EIO). Algunas carpetas no son legibles en este momento.',
                     'permission_denied': 'No tienes permisos para acceder a este storage.',
                     'path_outside_base': 'Ruta inválida.',
                     'storage_not_found': 'Storage no encontrado.',
@@ -414,7 +415,7 @@ deleteConfirmFile: null,
                 this.files = data?.files ?? [];
                 this.breadcrumbs = data?.breadcrumbs ?? [];
                 this.hasMore = false;
-                this.showToast(friendlyError, 'warning', 6000);
+                this.showToast(friendlyError, data.error === 'io_error' ? 'error' : 'warning', 6000);
             } else {
                 const serverData = Array.isArray(data?.files) ? data.files : (Array.isArray(data) ? data : []);
                 const serverBreadcrumbs = data?.breadcrumbs ?? [];

@@ -66,12 +66,13 @@ class FilesystemListingService
         }
 
         if (!$this->isPathAccessible($absolute)) {
+            $errCode = $this->probePathError($absolute);
             Log::warning('mis_archivos.fs_io_error', [
                 'storage_id' => $storageId,
                 'absolute' => $absolute,
-                'reason' => 'path_missing_or_unreadable',
+                'reason' => $errCode ?? 'path_missing_or_unreadable',
             ]);
-            return $this->emptyResponseWithBreadcrumbs($storageId, $subPath, 'path_missing');
+            return $this->emptyResponseWithBreadcrumbs($storageId, $subPath, $errCode ?? 'path_missing');
         }
 
         $maxLimit = $limit ?? (int) config('mis_archivos.listing_limit', 500);
@@ -282,6 +283,40 @@ class FilesystemListingService
     {
         $entries = @scandir($absolute);
         return $entries === false ? null : $entries;
+    }
+
+    /**
+     * scandir con diagnóstico: distingue ENOENT (no existe) de EIO (legible
+     * parcialmente o driver reportando error). Usado cuando isPathAccessible
+     * devuelve false para dar mensaje correcto al usuario.
+     */
+    public function probePathError(string $absolute): string
+    {
+        $normalized = rtrim($absolute, '/');
+
+        clearstatcache(true, $normalized);
+        error_clear_last();
+
+        $entries = @scandir($normalized);
+        if ($entries !== false) {
+            return 'path_missing';
+        }
+
+        $err = error_get_last();
+        $msg = strtolower($err['message'] ?? '');
+
+        if (str_contains($msg, 'no such file') || str_contains($msg, 'not found') || str_contains($msg, 'enoent')) {
+            return 'path_missing';
+        }
+        if (str_contains($msg, 'input/output') || str_contains($msg, 'eio') || str_contains($msg, 'i/o error')) {
+            return 'io_error';
+        }
+        if (str_contains($msg, 'permission') || str_contains($msg, 'eacces')) {
+            return 'permission_denied';
+        }
+
+        // Default conservador: io_error (es lo más probable en NFS degradado)
+        return 'io_error';
     }
 
     private function guessMime(string $name): ?string
