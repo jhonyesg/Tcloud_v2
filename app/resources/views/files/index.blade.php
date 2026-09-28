@@ -143,12 +143,25 @@ deleteConfirmFile: null,
             ]);
             const urlParams = new URLSearchParams(window.location.search);
             const urlStorageId = urlParams.get('storage_id');
+            const urlParentId = urlParams.get('parent_id');
             if (urlStorageId) {
                 const sid = parseInt(urlStorageId);
                 const storage = this.availableStorages.find(s => s.id === sid);
                 if (storage) {
-                    this.enterStorage(storage.id, storage.name);
-                    history.replaceState(null, '', '/files');
+                    if (urlParentId) {
+                        const pid = parseInt(urlParentId);
+                        this.currentStorage = storage.id;
+                        this.currentStorageName = storage.name;
+                        this.currentStoragePermission = storage.permissions || 'read';
+                        this.currentStorageCanShare = !!storage.can_create_shares;
+                        this.viewMode = 'files';
+                        this.currentFolder = pid;
+                        this.loadFiles(false, false, true);
+                        history.replaceState(null, '', '/files');
+                    } else {
+                        this.enterStorage(storage.id, storage.name);
+                        history.replaceState(null, '', '/files');
+                    }
                 } else {
                     await this.restoreNavState();
                 }
@@ -958,6 +971,27 @@ deleteConfirmFile: null,
     },
 
     getViewerUrl(file) {
+        // Para audio/video el visor es /files/{id}/view (HTML con player).
+        // Para imagen es /files/{id}/preview (raw con Content-Disposition inline).
+        if (file && file.preview_url) {
+            const mime = file.mime_type || '';
+            if (mime.startsWith('audio/') || mime.startsWith('video/')) {
+                // El backend emite preview_url con /preview — pero para audio/video
+                // necesitamos /view. Si file.id está disponible, usamos /view;
+                // si no, recurrimos a /preview (que al menos falla limpio).
+                if (file.id !== null && file.id !== undefined) {
+                    return '/files/' + file.id + '/view';
+                }
+            }
+            return file.preview_url + (file._v ? '?v=' + file._v : '');
+        }
+        if (!file || file.id === null || file.id === undefined) {
+            return '';
+        }
+        const mime = file.mime_type || '';
+        if (mime.startsWith('audio/') || mime.startsWith('video/')) {
+            return '/files/' + file.id + '/view';
+        }
         return '/media/' + file.id + '/preview' + (file._v ? '?v=' + file._v : '');
     },
 
@@ -2558,7 +2592,7 @@ deleteConfirmFile: null,
 
                 <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2 sm:gap-4" x-show="viewMode === 'files' && files.length > 0 && filesViewMode === 'grid'"
                      @click.self="clearSelection()">
-                    <template x-for="file in sortedFiles()" :key="file.id">
+                    <template x-for="file in sortedFiles()" :key="file.path || Math.random()">
                         <div class="group relative bg-slate-50 hover:bg-blue-50 border border-slate-200 hover:border-blue-300 rounded-xl p-2 sm:p-4 cursor-pointer transition-all"
                              :class="[isSelected(file) ? 'ring-2 ring-blue-500 bg-blue-50 border-blue-300' : '', navigatingToId === file.id ? 'opacity-60 pointer-events-none' : '']"
                              @click.ctrl.prevent.stop="toggleSelect(file)">
@@ -2720,7 +2754,7 @@ deleteConfirmFile: null,
                             </tr>
                         </thead>
                         <tbody class="divide-y divide-slate-200">
-                            <template x-for="file in sortedFiles()" :key="file.id">
+                            <template x-for="file in sortedFiles()" :key="file.path || Math.random()">
                                 <tr class="cursor-pointer transition-colors"
                                     :class="[isSelected(file) ? 'bg-blue-50' : 'hover:bg-slate-50', navigatingToId === file.id ? 'opacity-60 pointer-events-none' : '']"
                                     @click="file.is_folder ? navigateToFolder(file.id, file.name) : openViewer(file)"

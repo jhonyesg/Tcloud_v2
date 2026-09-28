@@ -119,6 +119,8 @@ Route::middleware('auth')->group(function () {
     // (la columna files.is_trashed ya no existe).
 
     Route::get('/user/storages', [App\Http\Controllers\FileController::class, 'storages']);
+    Route::get('/files/path/preview', [App\Http\Controllers\FileController::class, 'previewByPath']);
+    Route::get('/files/path/download', [App\Http\Controllers\FileController::class, 'downloadByPath']);
     Route::get('/files/{file}/download', [App\Http\Controllers\FileController::class, 'download']);
     Route::get('/files/{file}/download-folder', [App\Http\Controllers\FileController::class, 'downloadFolder']);
     Route::get('/files/{file}/preview', [App\Http\Controllers\FileController::class, 'preview']);

@@ -233,6 +233,16 @@ class FilesystemListingService
             'storage_provider_id' => $storageId,
             'permissions' => $permission,
             'actions' => $this->permissions->actionsFor($permission, $isFolder),
+            // URLs que funcionan tanto si hay file_id como si NO: el endpoint por-path
+            // crea la fila lazy en BD al primer hit. Esto evita el "stale id" después
+            // del rollout FS-first donde los archivos profundos (depth>=3) aún no
+            // tienen fila en BD porque el matcher solo sincroniza folders depth<=2.
+            'preview_url' => $fileId
+                ? "/files/{$fileId}/preview"
+                : "/files/path/preview?storage_id={$storageId}&path=" . rawurlencode($relPath),
+            'download_url' => $fileId
+                ? "/files/{$fileId}/download"
+                : "/files/path/download?storage_id={$storageId}&path=" . rawurlencode($relPath),
         ];
     }
 
