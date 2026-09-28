@@ -56,54 +56,163 @@ class FilesystemDbMatcher
     private function matchHot(StorageProvider $storage, array &$stats): void
     {
         $recent = Cache::get("mis_archivos:recent_paths:{$storage->id}", []);
-        if (!is_array($recent)) return;
-
+        if (!is_array($recent) || empty($recent)) {
+            return;
+        }
+        $existingMap = $this->loadExistingPathMap($storage->id, $recent);
         foreach ($recent as $relPath) {
-            $this->matchOne($storage, (string) $relPath, $stats);
+            $this->matchOneFromMap($storage, (string) $relPath, $existingMap, $stats);
         }
     }
 
     private function matchWarm(StorageProvider $storage, int $depth, array &$stats): void
     {
-        $this->matchRecursive($storage, rtrim($storage->base_path, '/'), '', 0, $depth, $stats);
+        $discovered = [];
+        $this->collectFromFilesystem($storage, '', 0, $depth, $discovered);
+
+        $existingMap = $this->loadExistingPathMap($storage->id, array_keys($discovered));
+
+        $toInsert = [];
+        $toUpdate = [];
+        $now = CarbonImmutable::now();
+
+        foreach ($discovered as $relPath => $info) {
+            $existingId = $existingMap[$relPath] ?? null;
+
+            if ($existingId) {
+                $toUpdate[] = [
+                    'id' => (int) $existingId,
+                    'size' => $info['is_folder'] ? 0 : (int) ($info['size'] ?? 0),
+                    'is_folder' => $info['is_folder'],
+                    'file_modified_at' => $info['mtime'],
+                    'pending_deletion_at' => null,
+                    'updated_at' => $now,
+                ];
+            } else {
+                $toInsert[] = [
+                    'name' => $info['name'],
+                    'path' => $relPath,
+                    'storage_provider_id' => $storage->id,
+                    'owner_id' => $this->resolveOwnerId($storage),
+                    'parent_id' => null,
+                    'is_folder' => $info['is_folder'],
+                    'size' => $info['is_folder'] ? 0 : (int) ($info['size'] ?? 0),
+                    'mime_type' => $info['is_folder'] ? 'folder' : $this->guessMime($info['name']),
+                    'pending_deletion_at' => null,
+                    'file_modified_at' => $info['mtime'],
+                    'is_personal' => false,
+                    'created_at' => $now,
+                    'updated_at' => $now,
+                ];
+            }
+        }
+
+        $this->bulkInsert($toInsert, $storage, $stats);
+        $this->bulkUpdate($toUpdate, $stats);
+
+        $stats['scanned'] += count($discovered);
+
+        foreach (array_keys($discovered) as $relPath) {
+            if (!isset($existingMap[$relPath])) {
+                $this->listingService->invalidateFileIdCache($storage->id, $relPath);
+            }
+        }
     }
 
-    private function matchRecursive(StorageProvider $storage, string $baseAbs, string $relPath, int $level, int $maxDepth, array &$stats): void
-    {
+    private function collectFromFilesystem(
+        StorageProvider $storage,
+        string $relPath,
+        int $level,
+        int $maxDepth,
+        array &$discovered,
+    ): void {
         if ($level > $maxDepth) return;
 
-        $abs = $baseAbs . ($relPath === '' ? '' : '/' . $relPath);
-        $entries = @scandir($abs) ?: [];
+        $abs = rtrim($storage->base_path, '/') . ($relPath === '' ? '' : '/' . $relPath);
+
+        $mountGuard = app(\App\Services\MountGuard::class);
+        if (($detached = $mountGuard->detachedAncestor($abs)) !== null) {
+            Log::warning('mis_archivos.matcher_mount_detached', [
+                'storage_id' => $storage->id,
+                'mount_point' => $detached,
+            ]);
+            return;
+        }
+
+        $entries = @scandir($abs);
+        if ($entries === false) return;
+
         foreach ($entries as $name) {
             if ($name === '.' || $name === '..') continue;
             if (str_starts_with($name, '.')) continue;
             if ($name === 'node_modules' || $name === '.git') continue;
 
+            $childAbs = $abs . '/' . $name;
             $childRel = $relPath === '' ? $name : ($relPath . '/' . $name);
-            $this->matchOne($storage, $childRel, $stats);
+
+            $stat = @stat($childAbs);
+            if ($stat === false) continue;
+
+            $isFolder = ($stat['mode'] & 040000) === 040000;
+
+            // En warm solo registramos folders: los archivos (m4a etc.) los cubre
+            // el modo cold via chunkById sobre files existentes. Mantener la lista
+            // en folders-only baja 10-100x el tiempo de walk para emisoras con miles
+            // de grabaciones por carpeta-dia.
+            if (!$isFolder) continue;
+
+            $discovered[$childRel] = [
+                'name' => $name,
+                'is_folder' => true,
+                'size' => 0,
+                'mtime' => CarbonImmutable::createFromTimestamp($stat['mtime'] ?? time()),
+            ];
 
             if ($level < $maxDepth) {
-                $childAbs = $abs . '/' . $name;
-                if (is_dir($childAbs)) {
-                    $this->matchRecursive($storage, $baseAbs, $childRel, $level + 1, $maxDepth, $stats);
-                }
+                $this->collectFromFilesystem($storage, $childRel, $level + 1, $maxDepth, $discovered);
             }
         }
     }
 
     private function matchCold(StorageProvider $storage, array &$stats): void
     {
-        $graceDays = (int) config('mis_archivos.missing_grace_days', 7);
         $now = CarbonImmutable::now();
+        $graceDays = (int) config('mis_archivos.missing_grace_days', 7);
 
         DB::table('files')
             ->where('storage_provider_id', $storage->id)
             ->whereNull('pending_deletion_at')
             ->where('is_folder', true)
             ->chunkById(500, function ($rows) use ($storage, &$stats) {
+                if ($rows->isEmpty()) return;
+                $paths = $rows->pluck('path')->all();
+                $existingMap = $this->loadExistingPathMap($storage->id, $paths);
+
+                $toUpdate = [];
+                $now = CarbonImmutable::now();
                 foreach ($rows as $row) {
-                    $this->matchOne($storage, $row->path, $stats);
+                    $info = $this->checkOnDisk($storage, $row->path);
+                    if ($info === null) {
+                        $marked = DB::table('files')
+                            ->where('id', $row->id)
+                            ->whereNull('pending_deletion_at')
+                            ->update(['pending_deletion_at' => $now]);
+                        if ($marked > 0) {
+                            $stats['missing_marked']++;
+                        }
+                    } else {
+                        $toUpdate[] = [
+                            'id' => (int) $row->id,
+                            'size' => $info['is_folder'] ? 0 : (int) ($info['size'] ?? 0),
+                            'is_folder' => $info['is_folder'],
+                            'file_modified_at' => $info['mtime'],
+                            'pending_deletion_at' => null,
+                            'updated_at' => $now,
+                        ];
+                    }
                 }
+                $this->bulkUpdate($toUpdate, $stats);
+                $stats['scanned'] += count($rows);
             }, 'id');
 
         $purgeCutoff = $now->subDays($graceDays);
@@ -115,60 +224,135 @@ class FilesystemDbMatcher
         $stats['missing_purged'] += (int) $purgeCount;
     }
 
-    private function matchOne(StorageProvider $storage, string $relPath, array &$stats): void
-    {
-        $absPath = rtrim($storage->base_path, '/') . '/' . ltrim($relPath, '/');
-        $exists = file_exists($absPath);
-
-        if (!$exists) {
-            $marked = DB::table('files')
-                ->where('storage_provider_id', $storage->id)
-                ->where('path', $relPath)
-                ->whereNull('pending_deletion_at')
-                ->update(['pending_deletion_at' => CarbonImmutable::now()]);
-            if ($marked > 0) {
-                $stats['missing_marked']++;
+    private function matchOneFromMap(
+        StorageProvider $storage,
+        string $relPath,
+        array $existingMap,
+        array &$stats,
+    ): void {
+        $info = $this->checkOnDisk($storage, $relPath);
+        if ($info === null) {
+            $existingId = $existingMap[$relPath] ?? null;
+            if ($existingId) {
+                $marked = DB::table('files')
+                    ->where('id', $existingId)
+                    ->whereNull('pending_deletion_at')
+                    ->update(['pending_deletion_at' => CarbonImmutable::now()]);
+                if ($marked > 0) {
+                    $stats['missing_marked']++;
+                }
             }
             return;
         }
 
-        $stat = @stat($absPath);
-        if ($stat === false) {
-            return;
-        }
-
-        $isFolder = ($stat['mode'] & 040000) === 040000;
-        $existingId = DB::table('files')
-            ->where('storage_provider_id', $storage->id)
-            ->where('path', $relPath)
-            ->value('id');
-
-        $name = basename($relPath);
-        $payload = [
-            'name' => $name,
-            'size' => $isFolder ? 0 : (int) ($stat['size'] ?? 0),
-            'is_folder' => $isFolder,
-            'file_modified_at' => CarbonImmutable::createFromTimestamp($stat['mtime'] ?? time()),
-            'pending_deletion_at' => null,
-            'updated_at' => CarbonImmutable::now(),
-        ];
-
+        $existingId = $existingMap[$relPath] ?? null;
+        $now = CarbonImmutable::now();
         if ($existingId) {
-            DB::table('files')->where('id', $existingId)->update($payload);
-            $stats['updated']++;
+            $this->bulkUpdate([[
+                'id' => (int) $existingId,
+                'size' => $info['is_folder'] ? 0 : (int) ($info['size'] ?? 0),
+                'is_folder' => $info['is_folder'],
+                'file_modified_at' => $info['mtime'],
+                'pending_deletion_at' => null,
+                'updated_at' => $now,
+            ]], $stats);
         } else {
-            $payload['path'] = $relPath;
-            $payload['storage_provider_id'] = $storage->id;
-            $payload['owner_id'] = $this->resolveOwnerId($storage);
-            $payload['mime_type'] = $isFolder ? 'folder' : $this->guessMime($name);
-            $payload['is_personal'] = false;
-            $payload['parent_id'] = null;
-            $payload['created_at'] = CarbonImmutable::now();
-            DB::table('files')->insert($payload);
-            $stats['created']++;
+            $this->bulkInsert([[
+                'name' => $info['name'],
+                'path' => $relPath,
+                'storage_provider_id' => $storage->id,
+                'owner_id' => $this->resolveOwnerId($storage),
+                'parent_id' => null,
+                'is_folder' => $info['is_folder'],
+                'size' => $info['is_folder'] ? 0 : (int) ($info['size'] ?? 0),
+                'mime_type' => $info['is_folder'] ? 'folder' : $this->guessMime($info['name']),
+                'pending_deletion_at' => null,
+                'file_modified_at' => $info['mtime'],
+                'is_personal' => false,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]], $storage, $stats);
             $this->listingService->invalidateFileIdCache($storage->id, $relPath);
         }
         $stats['scanned']++;
+    }
+
+    /** @return array<string,int> map de path => id */
+    private function loadExistingPathMap(int $storageId, array $paths): array
+    {
+        if (empty($paths)) return [];
+
+        $chunks = array_chunk($paths, 500);
+        $map = [];
+        foreach ($chunks as $chunk) {
+            $rows = DB::table('files')
+                ->where('storage_provider_id', $storageId)
+                ->whereIn('path', $chunk)
+                ->select(['id', 'path'])
+                ->get();
+            foreach ($rows as $row) {
+                $map[$row->path] = (int) $row->id;
+            }
+        }
+        return $map;
+    }
+
+    private function checkOnDisk(StorageProvider $storage, string $relPath): ?array
+    {
+        $absPath = rtrim($storage->base_path, '/') . '/' . ltrim($relPath, '/');
+
+        // CRITICO: stat() sobre NFS hard puede bloquear. Verificamos primero
+        // que el mount siga reportado por /proc/self/mounts (lectura local).
+        $mountGuard = app(\App\Services\MountGuard::class);
+        if (($detached = $mountGuard->detachedAncestor($absPath)) !== null) {
+            Log::warning('mis_archivos.matcher_mount_detached', [
+                'storage_id' => $storage->id,
+                'mount_point' => $detached,
+            ]);
+            return null;
+        }
+
+        // isMounted() verifica /proc/self/mounts primero (rapido, local).
+        // Solo hace stat() si el path NO está en mounts.
+        if (!$mountGuard->isMounted($absPath) && !@is_dir($absPath)) {
+            return null;
+        }
+
+        $stat = @stat($absPath);
+        if ($stat === false) return null;
+
+        $isFolder = ($stat['mode'] & 040000) === 040000;
+        return [
+            'name' => basename($relPath),
+            'is_folder' => $isFolder,
+            'size' => $stat['size'] ?? 0,
+            'mtime' => CarbonImmutable::createFromTimestamp($stat['mtime'] ?? time()),
+        ];
+    }
+
+    private function bulkInsert(array $rows, StorageProvider $storage, array &$stats): void
+    {
+        if (empty($rows)) return;
+        foreach (array_chunk($rows, 200) as $chunk) {
+            DB::table('files')->insert($chunk);
+        }
+        $stats['created'] += count($rows);
+    }
+
+    private function bulkUpdate(array $rows, array &$stats): void
+    {
+        if (empty($rows)) return;
+        $now = CarbonImmutable::now();
+        foreach ($rows as $row) {
+            DB::table('files')->where('id', $row['id'])->update([
+                'size' => $row['size'],
+                'is_folder' => $row['is_folder'],
+                'file_modified_at' => $row['file_modified_at'],
+                'pending_deletion_at' => $row['pending_deletion_at'],
+                'updated_at' => $row['updated_at'] ?? $now,
+            ]);
+        }
+        $stats['updated'] += count($rows);
     }
 
     private function resolveOwnerId(StorageProvider $storage): int

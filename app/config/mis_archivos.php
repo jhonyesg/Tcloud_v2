@@ -19,7 +19,7 @@ return [
 
     'matcher_rows_per_minute' => (int) env('MIS_ARCHIVOS_MATCHER_ROWS_PER_MIN', 2000),
 
-    'matcher_warm_depth' => (int) env('MIS_ARCHIVOS_MATCHER_WARM_DEPTH', 3),
+    'matcher_warm_depth' => (int) env('MIS_ARCHIVOS_MATCHER_WARM_DEPTH', 2),
 
     'benchmark_samples' => (int) env('MIS_ARCHIVOS_BENCHMARK_SAMPLES', 20),
 ];

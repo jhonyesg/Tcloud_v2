@@ -348,14 +348,21 @@ class PublicShareController extends Controller
             return response()->json(['error' => 'Password required'], 401);
         }
 
+        $rootFolder = File::find($share->file_id);
+        if (!$rootFolder) {
+            return response()->json(['error' => 'Shared folder not found in DB; the matcher may need to run'], 404);
+        }
+
         if ($fileId) {
-            $file = File::findOrFail($fileId);
-            $rootFolder = File::findOrFail($share->file_id);
+            $file = File::find($fileId);
+            if (!$file) {
+                return response()->json(['error' => 'File not found'], 404);
+            }
             if (!$this->isDescendantOf($file, $rootFolder)) {
                 return response()->json(['error' => 'File not in shared folder'], 403);
             }
         } else {
-            $file = File::findOrFail($share->file_id);
+            $file = $rootFolder;
         }
 
         if ($file->is_folder) {
@@ -374,8 +381,6 @@ class PublicShareController extends Controller
 
         $this->logAccess($share->id, $request->ip());
 
-        // Use null name to skip Laravel's Str::ascii() call (broken vendor data files),
-        // and set Content-Disposition manually with RFC 5987 UTF-8 encoding.
         $asciiName = preg_replace('/[^\x20-\x7E]/', '_', $file->name);
         $encodedName = rawurlencode($file->name);
         return response()->download($fullPath, null, [

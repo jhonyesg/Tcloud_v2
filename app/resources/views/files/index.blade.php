@@ -33,6 +33,7 @@ document.addEventListener('alpine:init', () => {
     showNewFolderModal: false,
     selectedFile: null,
     breadcrumbs: [],
+    dataMode: 'bd',
     fileShares: [],
     shareActiveTab: 'all',
     selectedShareIds: [],
@@ -401,16 +402,32 @@ deleteConfirmFile: null,
             return res.json();
         }).then(data => {
             if (data === null) return;
-            const serverData = Array.isArray(data?.files) ? data.files : (Array.isArray(data) ? data : []);
-            const serverBreadcrumbs = data?.breadcrumbs ?? [];
-            this.files = serverData;
-            this.currentPage = data?.pagination?.page ?? 1;
-            this.hasMore = data?.pagination?.has_more ?? false;
-            if (!skipBreadcrumbs) {
-                this.breadcrumbs = serverBreadcrumbs;
-            }
-            if (forceSync) {
-                this.reportSync(data?.stats, serverData);
+            if (data?.error) {
+                const friendlyError = {
+                    'mount_detached': 'El disco no está montado. Reintentaremos cuando vuelva.',
+                    'path_missing': 'La carpeta ya no existe en disco.',
+                    'permission_denied': 'No tienes permisos para acceder a este storage.',
+                    'path_outside_base': 'Ruta inválida.',
+                    'storage_not_found': 'Storage no encontrado.',
+                    'user_not_found': 'Sesión inválida.',
+                }[data.error] || ('Error: ' + data.error);
+                this.files = data?.files ?? [];
+                this.breadcrumbs = data?.breadcrumbs ?? [];
+                this.hasMore = false;
+                this.showToast(friendlyError, 'warning', 6000);
+            } else {
+                const serverData = Array.isArray(data?.files) ? data.files : (Array.isArray(data) ? data : []);
+                const serverBreadcrumbs = data?.breadcrumbs ?? [];
+                this.files = serverData;
+                this.currentPage = data?.pagination?.page ?? 1;
+                this.hasMore = data?.pagination?.has_more ?? false;
+                this.dataMode = (data?.meta?.fs_primary === true) ? 'fs' : 'bd';
+                if (!skipBreadcrumbs) {
+                    this.breadcrumbs = serverBreadcrumbs;
+                }
+                if (forceSync) {
+                    this.reportSync(data?.stats, serverData);
+                }
             }
             this.isNavigating = false;
             this.navigatingToId = null;
@@ -2201,7 +2218,20 @@ deleteConfirmFile: null,
                     </svg>
                 </div>
                 <div class="min-w-0">
-                    <h1 class="text-base sm:text-xl font-bold text-slate-800 truncate">Mis Archivos</h1>
+                    <h1 class="text-base sm:text-xl font-bold text-slate-800 truncate flex items-center gap-2">
+                        <span>Mis Archivos</span>
+                        <template x-if="dataMode === 'fs'">
+                            <span class="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 border border-emerald-200" title="Listado en tiempo real desde el filesystem (BD como cache de metadata)">
+                                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+                                FS directo
+                            </span>
+                        </template>
+                        <template x-if="dataMode === 'bd'">
+                            <span class="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200" title="Listado vía BD (puede tener hasta 15 min de lag si sync no ha corrido)">
+                                BD
+                            </span>
+                        </template>
+                    </h1>
                     <p class="text-xs text-slate-500 truncate" x-text="viewMode === 'storages' ? 'Selecciona un storage' : currentStorageName"></p>
                 </div>
             </div>

@@ -1283,14 +1283,16 @@ class FileController extends Controller
 
     private static function fsPrimaryEnabled(int $storageId): bool
     {
-        if (!config('mis_archivos.fs_primary_enabled', false)) {
+        $enabled = (bool) \App\Models\SystemSetting::get('mis_archivos.fs_primary_enabled', false);
+        if (!$enabled) {
             return false;
         }
-        $canary = config('mis_archivos.fs_primary_canary_storage_ids', []);
+        $canaryRaw = (string) \App\Models\SystemSetting::get('mis_archivos.fs_primary_canary_storage_ids', '');
+        $canary = ($canaryRaw === '') ? [] : (json_decode($canaryRaw, true) ?: []);
         if (empty($canary)) {
             return true;
         }
-        return in_array($storageId, $canary, true);
+        return in_array($storageId, array_map('intval', $canary), true);
     }
 
     private function indexFilesystemPrimary(Request $request, User $user, int $storageId)

@@ -144,6 +144,7 @@ class ShareController extends Controller
 
         $share = Share::create([
             'file_id' => $file->id,
+            'path_snapshot' => $file->path,
             'token' => Str::random(32),
             'password_hash' => $request->password ? Hash::make($request->password) : null,
             'expires_at' => $request->expires_at,

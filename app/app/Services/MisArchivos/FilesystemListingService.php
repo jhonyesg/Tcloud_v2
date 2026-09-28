@@ -54,15 +54,9 @@ class FilesystemListingService
             return $this->emptyResponse('path_outside_base');
         }
 
-        if (!is_dir($absolute) || !is_readable($absolute)) {
-            Log::warning('mis_archivos.fs_io_error', [
-                'storage_id' => $storageId,
-                'absolute' => $absolute,
-                'reason' => 'path_missing_or_unreadable',
-            ]);
-            return $this->emptyResponseWithBreadcrumbs($storageId, $subPath, 'path_missing');
-        }
-
+        // CRITICO: en NFS con mount "hard", stat()/is_dir() pueden bloquear PHP-FPM
+        // indefinidamente. MountGuard ya valida /proc/self/mounts primero y evita el
+        // stat() en mounts conocidos. Lo invocamos ANTES de tocar el filesystem.
         if (($detached = $this->mountGuard->detachedAncestor($absolute)) !== null) {
             Log::warning('mis_archivos.mount_detached', [
                 'storage_id' => $storageId,
@@ -71,8 +65,25 @@ class FilesystemListingService
             return $this->emptyResponseWithBreadcrumbs($storageId, $subPath, 'mount_detached');
         }
 
+        if (!$this->isPathAccessible($absolute)) {
+            Log::warning('mis_archivos.fs_io_error', [
+                'storage_id' => $storageId,
+                'absolute' => $absolute,
+                'reason' => 'path_missing_or_unreadable',
+            ]);
+            return $this->emptyResponseWithBreadcrumbs($storageId, $subPath, 'path_missing');
+        }
+
         $maxLimit = $limit ?? (int) config('mis_archivos.listing_limit', 500);
-        $entries = @scandir($absolute) ?: [];
+        $entries = $this->scanSafely($absolute);
+        if ($entries === null) {
+            Log::warning('mis_archivos.fs_io_error', [
+                'storage_id' => $storageId,
+                'absolute' => $absolute,
+                'reason' => 'scandir_failed_or_timeout',
+            ]);
+            return $this->emptyResponseWithBreadcrumbs($storageId, $subPath, 'path_missing');
+        }
 
         $total = 0;
         $files = [];
@@ -234,14 +245,43 @@ class FilesystemListingService
 
     private function isPathWithinBase(string $base, string $absolute): bool
     {
-        $baseReal = realpath($base);
-        $targetReal = realpath($absolute);
-        if ($baseReal === false || $targetReal === false) {
-            $targetReal = $absolute;
+        // CRITICO: NO llamar realpath() sobre el absolute path: en NFS hard-mount
+        // puede bloquear PHP-FPM indefinidamente. Verificamos containment solo
+        // con strings (las dos rutas ya vienen normalizadas del caller).
+        $baseClean = rtrim($base, '/');
+        $targetClean = rtrim($absolute, '/');
+
+        if ($targetClean === $baseClean) return true;
+        return str_starts_with($targetClean . '/', $baseClean . '/');
+    }
+
+    private function isPathAccessible(string $absolute): bool
+    {
+        $normalized = rtrim($absolute, '/');
+
+        // Walk up looking for any path that IS a known mount point in
+        // /proc/self/mounts (lectura LOCAL, nunca bloquea). Si lo encontramos,
+        // asumimos que la sub-ruta es accesible. Si NO, es path puramente local
+        // y podemos hacer is_dir() sin riesgo de NFS hard-mount blocking.
+        $mounts = $this->mountGuard->mounts();
+        $cursor = $normalized;
+        while ($cursor !== '' && $cursor !== '/') {
+            if (array_key_exists($cursor, $mounts)) {
+                return true;
+            }
+            $parent = dirname($cursor);
+            if ($parent === $cursor) break;
+            $cursor = $parent;
         }
-        $baseReal = rtrim($baseReal ?: $base, '/') . '/';
-        $targetReal = rtrim($targetReal, '/') . '/';
-        return str_starts_with($targetReal, $baseReal) || $targetReal === rtrim($baseReal, '/');
+
+        // No está dentro de ningún mount conocido: probablemente local. stat() es seguro.
+        return @is_dir($normalized);
+    }
+
+    private function scanSafely(string $absolute): ?array
+    {
+        $entries = @scandir($absolute);
+        return $entries === false ? null : $entries;
     }
 
     private function guessMime(string $name): ?string
