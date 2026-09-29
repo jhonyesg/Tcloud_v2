@@ -2495,7 +2495,7 @@ deleteConfirmFile: null,
                                 <tr>
                                     <th class="px-2 sm:px-4 py-2 sm:py-3 text-center text-xs font-medium text-slate-400 uppercase tracking-wider w-8 sm:w-10 select-none"
                                         :title="filteredStorages().length + ' storages'">#</th>
-                                    <th @click="toggleStorageSort('name')" class="px-2 sm:px-4 py-2 sm:py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider cursor-pointer hover:bg-slate-100 select-none">
+                                    <th @click="toggleStorageSort('name')" class="px-2 sm:px-4 py-2 sm:py-3 text-left text-xs font-medium text-slate-600 uppercase tracking-wider cursor-pointer hover:bg-slate-100 select-none">
                                         <div class="flex items-center gap-1">
                                             Nombre
                                             <svg x-show="storageSortField === 'name'" class="w-4 h-4" :class="storageSortDirection === 'asc' ? '' : 'rotate-180'" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -2503,7 +2503,7 @@ deleteConfirmFile: null,
                                             </svg>
                                         </div>
                                     </th>
-                                    <th @click="toggleStorageSort('permissions')" class="px-2 sm:px-4 py-2 sm:py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider cursor-pointer hover:bg-slate-100 select-none hidden sm:table-cell">
+                                    <th @click="toggleStorageSort('permissions')" class="px-2 sm:px-4 py-2 sm:py-3 text-left text-xs font-medium text-slate-600 uppercase tracking-wider cursor-pointer hover:bg-slate-100 select-none hidden sm:table-cell">
                                         <div class="flex items-center gap-1">
                                             Permisos
                                             <svg x-show="storageSortField === 'permissions'" class="w-4 h-4" :class="storageSortDirection === 'asc' ? '' : 'rotate-180'" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -2511,7 +2511,7 @@ deleteConfirmFile: null,
                                             </svg>
                                         </div>
                                     </th>
-                                    <th @click="toggleStorageSort('accessible')" class="px-2 sm:px-4 py-2 sm:py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider cursor-pointer hover:bg-slate-100 select-none">
+                                    <th @click="toggleStorageSort('accessible')" class="px-2 sm:px-4 py-2 sm:py-3 text-left text-xs font-medium text-slate-600 uppercase tracking-wider cursor-pointer hover:bg-slate-100 select-none">
                                         <div class="flex items-center gap-1">
                                             Accesible
                                             <svg x-show="storageSortField === 'accessible'" class="w-4 h-4" :class="storageSortDirection === 'asc' ? '' : 'rotate-180'" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -2740,25 +2740,25 @@ deleteConfirmFile: null,
                                            @click.stop="selectAll()"
                                            class="w-4 h-4 rounded accent-blue-600 cursor-pointer">
                                 </th>
-                                <th class="px-2 sm:px-4 py-2 sm:py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider cursor-pointer select-none hover:bg-slate-100" @click="sortFiles('name')">
+                                <th class="px-2 sm:px-4 py-2 sm:py-3 text-left text-xs font-medium text-slate-600 uppercase tracking-wider cursor-pointer select-none hover:bg-slate-100" @click="sortFiles('name')">
                                     <span class="flex items-center gap-1">
                                         Nombre
                                         <span x-show="sortField === 'name'" x-text="sortDir === 'asc' ? '↑' : '↓'" class="text-blue-500"></span>
                                     </span>
                                 </th>
-                                <th class="px-2 sm:px-4 py-2 sm:py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider hidden md:table-cell cursor-pointer select-none hover:bg-slate-100" @click="sortFiles('size')">
+                                <th class="px-2 sm:px-4 py-2 sm:py-3 text-left text-xs font-medium text-slate-600 uppercase tracking-wider hidden md:table-cell cursor-pointer select-none hover:bg-slate-100" @click="sortFiles('size')">
                                     <span class="flex items-center gap-1">
                                         Tamaño
                                         <span x-show="sortField === 'size'" x-text="sortDir === 'asc' ? '↑' : '↓'" class="text-blue-500"></span>
                                     </span>
                                 </th>
-                                <th class="px-2 sm:px-4 py-2 sm:py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider hidden lg:table-cell cursor-pointer select-none hover:bg-slate-100" @click="sortFiles('date')">
+                                <th class="px-2 sm:px-4 py-2 sm:py-3 text-left text-xs font-medium text-slate-600 uppercase tracking-wider hidden lg:table-cell cursor-pointer select-none hover:bg-slate-100" @click="sortFiles('date')">
                                     <span class="flex items-center gap-1">
                                         Fecha
                                         <span x-show="sortField === 'date'" x-text="sortDir === 'asc' ? '↑' : '↓'" class="text-blue-500"></span>
                                     </span>
                                 </th>
-                                <th class="px-2 sm:px-4 py-2 sm:py-3 text-right text-xs font-medium text-slate-500 uppercase tracking-wider">Acciones</th>
+                                <th class="px-2 sm:px-4 py-2 sm:py-3 text-right text-xs font-medium text-slate-600 uppercase tracking-wider">Acciones</th>
                             </tr>
                         </thead>
                         <tbody class="divide-y divide-slate-200">
@@ -2848,8 +2848,8 @@ deleteConfirmFile: null,
                                                    class="border border-blue-400 px-2 py-0.5 rounded text-sm w-32 sm:w-40 font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500">
                                         </div>
                                     </td>
-                                    <td class="px-2 sm:px-4 py-2 sm:py-3 text-slate-500 text-sm hidden md:table-cell" x-text="file.is_folder ? '-' : formatSize(file.size)"></td>
-                                    <td class="px-2 sm:px-4 py-2 sm:py-3 text-slate-500 text-sm hidden lg:table-cell" x-text="file.file_modified_at ? formatDate(file.file_modified_at) : '—'"></td>
+                                    <td class="px-2 sm:px-4 py-2 sm:py-3 text-slate-700 text-sm hidden md:table-cell" x-text="file.is_folder ? '-' : formatSize(file.size)"></td>
+                                    <td class="px-2 sm:px-4 py-2 sm:py-3 text-slate-700 text-sm hidden lg:table-cell" x-text="file.file_modified_at ? formatDate(file.file_modified_at) : '—'"></td>
                                     <td class="px-2 sm:px-4 py-2 sm:py-3 text-right">
                                         <div class="flex items-center justify-end gap-0.5 sm:gap-1">
                                             <button x-show="currentStorageCanShare" @click.stop="openDetailModal(file)" class="p-1.5 sm:p-2 hover:bg-slate-200 rounded-lg transition-colors" title="Compartir">
