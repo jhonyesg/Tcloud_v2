@@ -15,6 +15,7 @@ class FilesystemListingService
     public function __construct(
         private FilesystemPermissionGuard $permissions,
         private MountGuard $mountGuard,
+        private FilesystemDbMatcher $matcher,
     ) {}
 
     /**
@@ -88,6 +89,7 @@ class FilesystemListingService
 
         $total = 0;
         $files = [];
+        $entriesForSync = [];
         foreach ($entries as $name) {
             if ($name === '.' || $name === '..') continue;
             $total++;
@@ -104,7 +106,28 @@ class FilesystemListingService
                 continue;
             }
 
-            $files[] = $this->entryToArray($storageId, $subPath, $name, $stat, $entryAbs, $userId);
+            $relPath = ($subPath === null || $subPath === '') ? $name : ($subPath . '/' . $name);
+            $isFolder = ($stat['mode'] & 040000) === 040000;
+            $entriesForSync[] = [
+                'name' => $name,
+                'path' => $relPath,
+                'is_folder' => $isFolder,
+                'stat' => $stat,
+            ];
+        }
+
+        $idMap = $this->matcher->ensureFolderSync($storage, $entriesForSync);
+
+        foreach ($entriesForSync as $idx => $es) {
+            $files[] = $this->entryToArray(
+                $storageId,
+                $subPath,
+                $es['name'],
+                $es['stat'],
+                $absolute . '/' . $es['name'],
+                $userId,
+                $idMap[$es['path']] ?? null,
+            );
         }
 
         $permission = $this->permissions->permissionsFor($storageId, $userId);
@@ -212,9 +235,12 @@ class FilesystemListingService
         array $stat,
         string $absolute,
         int $userId,
+        ?int $fileIdFromSync = null,
     ): array {
         $relPath = ($subPath === null || $subPath === '') ? $name : ($subPath . '/' . $name);
-        $fileId = $this->resolveFileId($storageId, $relPath);
+        // Preferir el file_id que el sync ya resolvió/persistió. Solo caer al cache
+        // si por alguna razón no llegó uno (caso edge: listar archivo borrado en disco).
+        $fileId = $fileIdFromSync ?? $this->resolveFileId($storageId, $relPath);
         $isFolder = ($stat['mode'] & 040000) === 040000;
 
         $permission = $this->permissions->permissionsFor($storageId, $userId);
@@ -233,16 +259,6 @@ class FilesystemListingService
             'storage_provider_id' => $storageId,
             'permissions' => $permission,
             'actions' => $this->permissions->actionsFor($permission, $isFolder),
-            // URLs que funcionan tanto si hay file_id como si NO: el endpoint por-path
-            // crea la fila lazy en BD al primer hit. Esto evita el "stale id" después
-            // del rollout FS-first donde los archivos profundos (depth>=3) aún no
-            // tienen fila en BD porque el matcher solo sincroniza folders depth<=2.
-            'preview_url' => $fileId
-                ? "/files/{$fileId}/preview"
-                : "/files/path/preview?storage_id={$storageId}&path=" . rawurlencode($relPath),
-            'download_url' => $fileId
-                ? "/files/{$fileId}/download"
-                : "/files/path/download?storage_id={$storageId}&path=" . rawurlencode($relPath),
         ];
     }
 

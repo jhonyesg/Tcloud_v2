@@ -975,20 +975,6 @@ deleteConfirmFile: null,
     },
 
     getViewerUrl(file) {
-        // Para audio/video el visor es /files/{id}/view (HTML con player).
-        // Para imagen es /files/{id}/preview (raw con Content-Disposition inline).
-        if (file && file.preview_url) {
-            const mime = file.mime_type || '';
-            if (mime.startsWith('audio/') || mime.startsWith('video/')) {
-                // El backend emite preview_url con /preview — pero para audio/video
-                // necesitamos /view. Si file.id está disponible, usamos /view;
-                // si no, recurrimos a /preview (que al menos falla limpio).
-                if (file.id !== null && file.id !== undefined) {
-                    return '/files/' + file.id + '/view';
-                }
-            }
-            return file.preview_url + (file._v ? '?v=' + file._v : '');
-        }
         if (!file || file.id === null || file.id === undefined) {
             return '';
         }
@@ -1050,7 +1036,7 @@ deleteConfirmFile: null,
 
     startRename(file) {
         if (!file.id) {
-            this.showToast('Espera a que el matcher sincronice el archivo antes de renombrarlo.', 'info');
+            this.showToast('Recarga la carpeta para registrar el archivo.', 'info');
             return;
         }
         this.renamingFileId = file.id;

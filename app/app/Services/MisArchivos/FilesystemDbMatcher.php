@@ -10,9 +10,7 @@ use Illuminate\Support\Facades\Log;
 
 class FilesystemDbMatcher
 {
-    public function __construct(
-        private FilesystemListingService $listingService,
-    ) {}
+    public function __construct() {}
 
     /**
      * @return array{scanned:int, created:int, updated:int, missing_marked:int, missing_purged:int, skipped:int}
@@ -114,7 +112,7 @@ class FilesystemDbMatcher
 
         foreach (array_keys($discovered) as $relPath) {
             if (!isset($existingMap[$relPath])) {
-                $this->listingService->invalidateFileIdCache($storage->id, $relPath);
+                Cache::forget("mis_archivos:path_lookup:" . $storage->id . ":" . md5($relPath));
             }
         }
     }
@@ -272,7 +270,7 @@ class FilesystemDbMatcher
                 'created_at' => $now,
                 'updated_at' => $now,
             ]], $storage, $stats);
-            $this->listingService->invalidateFileIdCache($storage->id, $relPath);
+            Cache::forget("mis_archivos:path_lookup:" . $storage->id . ":" . md5($relPath));
         }
         $stats['scanned']++;
     }
@@ -353,6 +351,83 @@ class FilesystemDbMatcher
             ]);
         }
         $stats['updated'] += count($rows);
+    }
+
+    /**
+     * Eager sync: asegura que TODAS las entries de una carpeta listada
+     * existan en BD. Llamado por FilesystemListingService::list() justo
+     * después del scandir() para que cada file tenga file_id y se pueda
+     * ver/editar/compartir sin lazy-create ni endpoints especiales.
+     *
+     * Devuelve map `path => id` para que el caller pueda popular
+     * `file.id` en cada entry antes de serializar al cliente.
+     *
+     * @param array<int, array{name:string, path:string, is_folder:bool, stat:array}> $entries
+     * @return array<string, int>
+     */
+    public function ensureFolderSync(StorageProvider $storage, array $entries): array
+    {
+        if (empty($entries)) {
+            return [];
+        }
+
+        $paths = array_column($entries, 'path');
+        $existingMap = $this->loadExistingPathMap($storage->id, $paths);
+
+        $now = CarbonImmutable::now();
+        $ownerId = $this->resolveOwnerId($storage);
+        $toInsert = [];
+        $toUpdate = [];
+
+        foreach ($entries as $entry) {
+            $relPath = $entry['path'];
+            $isFolder = $entry['is_folder'];
+            $stat = $entry['stat'];
+
+            if (isset($existingMap[$relPath])) {
+                $toUpdate[] = [
+                    'id' => (int) $existingMap[$relPath],
+                    'size' => $isFolder ? 0 : (int) ($stat['size'] ?? 0),
+                    'is_folder' => $isFolder,
+                    'file_modified_at' => CarbonImmutable::createFromTimestamp($stat['mtime'] ?? time()),
+                    'pending_deletion_at' => null,
+                    'updated_at' => $now,
+                ];
+            } else {
+                $toInsert[] = [
+                    'name' => $entry['name'],
+                    'path' => $relPath,
+                    'storage_provider_id' => $storage->id,
+                    'owner_id' => $ownerId,
+                    'parent_id' => null,
+                    'is_folder' => $isFolder,
+                    'size' => $isFolder ? 0 : (int) ($stat['size'] ?? 0),
+                    'mime_type' => $isFolder ? 'folder' : $this->guessMime($entry['name']),
+                    'pending_deletion_at' => null,
+                    'file_modified_at' => CarbonImmutable::createFromTimestamp($stat['mtime'] ?? time()),
+                    'is_personal' => false,
+                    'created_at' => $now,
+                    'updated_at' => $now,
+                ];
+            }
+        }
+
+        if (!empty($toInsert)) {
+            $stats = ['created' => 0];
+            $this->bulkInsert($toInsert, $storage, $stats);
+        }
+        if (!empty($toUpdate)) {
+            $stats = ['updated' => 0];
+            $this->bulkUpdate($toUpdate, $stats);
+        }
+
+        $newMap = $this->loadExistingPathMap($storage->id, $paths);
+
+        foreach ($paths as $p) {
+            Cache::forget("mis_archivos:path_lookup:" . $storage->id . ":" . md5($p));
+        }
+
+        return $newMap;
     }
 
     private function resolveOwnerId(StorageProvider $storage): int
