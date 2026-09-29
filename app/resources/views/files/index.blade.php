@@ -2676,7 +2676,7 @@ deleteConfirmFile: null,
                                         </svg>
                                     </template>
                                 </div>
-                                <p x-show="renamingFileId !== file.id" class="font-medium text-slate-700 text-sm truncate w-full" x-text="file.name" :title="file.name"></p>
+                                <p x-show="renamingFileId === null || renamingFileId !== file.id" class="font-medium text-slate-700 text-sm truncate w-full" x-text="file.name" :title="file.name"></p>
                                 <input x-show="renamingFileId !== null && renamingFileId === file.id"
                                        :id="'rename-input-' + (file.id ?? file.path ?? Math.random())"
                                        x-model="renamingFileName"
@@ -2837,7 +2837,7 @@ deleteConfirmFile: null,
                                                     </svg>
                                                 </template>
                                             </div>
-                                            <span x-show="renamingFileId !== file.id" class="font-medium text-slate-700 truncate text-sm min-w-0" x-text="file.name"></span>
+                                            <span x-show="renamingFileId === null || renamingFileId !== file.id" class="font-medium text-slate-700 truncate text-sm min-w-0" x-text="file.name"></span>
                                             <input x-show="renamingFileId !== null && renamingFileId === file.id"
                                                    :id="'rename-input-' + (file.id ?? file.path ?? Math.random())"
                                                    x-model="renamingFileName"
