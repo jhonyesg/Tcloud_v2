@@ -867,16 +867,27 @@ class FileController extends Controller
             return response()->json(['error' => 'Forbidden'], 403);
         }
 
-        $mimeType = $file->mime_type;
-
-        if (str_starts_with($mimeType, 'image/')) {
-            return response()->file($file->path, [
-                'Content-Type' => $mimeType,
-                'Content-Disposition' => 'inline',
-            ]);
+        $storage = $file->storageProvider;
+        if (!$storage || $storage->type !== 'local') {
+            return response()->json(['error' => 'Preview not supported for this storage type'], 400);
         }
 
-        return response()->json(['error' => 'Preview not supported for this file type'], 400);
+        $realBasePath = realpath($storage->base_path);
+        $realFullPath = realpath($storage->base_path . '/' . $file->path);
+        if (!$realFullPath || !$realBasePath || !str_starts_with($realFullPath, $realBasePath)) {
+            return response()->json(['error' => 'Invalid file path'], 400);
+        }
+        if (!file_exists($realFullPath)) {
+            return response()->json(['error' => 'File not found'], 404);
+        }
+
+        $mimeType = $file->mime_type ?: 'application/octet-stream';
+        $disposition = str_starts_with($mimeType, 'image/') ? 'inline' : 'attachment';
+
+        return response()->file($realFullPath, [
+            'Content-Type' => $mimeType,
+            'Content-Disposition' => $disposition,
+        ]);
     }
 
     public function view(int $id)
