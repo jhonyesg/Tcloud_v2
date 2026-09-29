@@ -978,10 +978,9 @@ deleteConfirmFile: null,
         if (!file || file.id === null || file.id === undefined) {
             return '';
         }
-        const mime = file.mime_type || '';
-        if (mime.startsWith('audio/') || mime.startsWith('video/')) {
-            return '/files/' + file.id + '/view';
-        }
+        // Usar SIEMPRE /media/{id}/preview como URL del recurso multimedia (raw
+        // bytes con Content-Type real). Funciona tanto en el <video> inline
+        // de la modal como en el <source> del iframe /files/{id}/view.
         return '/media/' + file.id + '/preview' + (file._v ? '?v=' + file._v : '');
     },
 
