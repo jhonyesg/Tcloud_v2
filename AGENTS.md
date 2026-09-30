@@ -1509,3 +1509,50 @@ php tests/harness_purge_ghost_folders.php                # 12+ aserciones
 ```
 
 Ambos harnesses crean fixtures con tag unico (`hmpv_<hex>` / `hmfg_<hex>`) y limpian en `finally`.
+
+## Contrato del breadcrumb de Mis Archivos (change `fix-mis-archivos-breadcrumb-current-folder-double-render`, 2026-09-30)
+
+El array `breadcrumbs` que devuelve `/files` (AJAX) en respuesta a la navegación de una carpeta SHALL contener **únicamente los ancestros** del folder solicitado, ordenados desde el storage root hasta el padre inmediato. La carpeta actual (el folder solicitado) SHALL **NO** aparecer en el array. La UI renderiza la carpeta actual por separado desde `currentFolderName` / `currentFolder` (bloque `x-if` separado en `index.blade.php:2368`).
+
+Esto aplica en ambos modos:
+
+- **BD-first** (`FileController::index` líneas 117-129): el CTE recursivo arranca con la fila del `parent_id`; esa primera fila se descarta (`array_shift`) antes de invertir el array.
+- **FS-first** (`FilesystemListingService::parentChain`): el último segmento (último elemento de `subPath`) se descarta (`array_pop`) tras construir la cadena.
+
+### Cache de listado afectado
+
+Las claves `folder_listing:{storageId}:{pid}:{gen}:{page}` en Redis cachean el payload completo (incluido `breadcrumbs`). Al cambiar el shape de `breadcrumbs`, las claves cacheadas siguen mostrando el breadcrumb viejo hasta que el TTL venza (60s para root, 300s para folders de hoy, 86400s para folders antiguos).
+
+**Operación obligatoria al deploy de cualquier cambio que afecte la forma de `breadcrumbs`**:
+
+```bash
+cd /www/wwwroot/cloud.mediaserver.com.co/Tcloud_v2/app
+php -r '
+require "vendor/autoload.php";
+$app = require_once "bootstrap/app.php";
+$kernel = $app->make(Illuminate\Contracts\Console\Kernel::class);
+$kernel->bootstrap();
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
+foreach (DB::select("SELECT DISTINCT storage_provider_id FROM files WHERE is_folder=true") as $r) {
+    Cache::increment("folder_gen:{$r->storage_provider_id}:null");
+    echo "bumped folder_gen:{$r->storage_provider_id}:null\n";
+}
+'
+```
+
+Esto incrementa la generación (`gen`) en una sola pasada, dejando inalcanzables las claves cacheadas con el shape viejo. Sin este paso, los usuarios ven el breadcrumb con el bug hasta que el TTL expire naturalmente (hasta 24h para los folders más cacheados).
+
+### Verificación manual
+
+Navegar a una carpeta profunda (ej. `Disco_I > television > Telemedellin > 30092026` en storage 5 `00 Discos`). El breadcrumb debe mostrar **una sola vez** cada nombre: `Home > 00 Discos > Disco_I > television > Telemedellin > 30092026`.
+
+### Diagnóstico
+
+```bash
+# Inspeccionar el shape actual del breadcrumb (debe NO incluir la carpeta actual):
+curl -sk -b /tmp/cookies.txt -H "Accept: application/json" -H "X-Requested-With: XMLHttpRequest" \
+  "https://cloud.mediaserver.com.co/files?parent_id=8499102&storage_id=5&nb=0" \
+  | python3 -c "import json,sys; d=json.load(sys.stdin); print('len:', len(d['breadcrumbs']), 'names:', [b['name'] for b in d['breadcrumbs']])"
+# Esperado: len: 3, names: ['Disco_I', 'television', 'Telemedellin']
+```

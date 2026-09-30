@@ -116,10 +116,16 @@ class FileController extends Controller
                     ", [$parentId]);
                     if ($chain) {
                         $storageId = $storageId ?? (int) $chain[0]->storage_provider_id;
-                        $segments = array_reverse(array_map(
+                        $segments = array_map(
                             fn($r) => ['id' => (int) $r->id, 'name' => $r->name, 'storage_provider_id' => (int) $r->storage_provider_id],
                             $chain
-                        ));
+                        );
+                        // El CTE arranca con la fila del folder solicitado (current).
+                        // Descartamos esa primera fila para que `breadcrumbs` represente
+                        // solo ancestros; el cliente renderiza la carpeta actual por
+                        // separado desde `currentFolderName` / `currentFolder`.
+                        array_shift($segments);
+                        $segments = array_reverse($segments);
                         $breadcrumbs = self::dedupBreadcrumbSegments($segments);
                     }
                 }

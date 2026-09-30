@@ -163,14 +163,10 @@ class FilesystemListingService
         $segments = [];
         $clean = trim((string) $subPath, '/');
         if ($clean === '') {
-            return [[
-                'name' => $storage->name,
-                'path' => '',
-                'storage_provider_id' => $storageId,
-                'has_file_id' => false,
-                'file_id' => null,
-                'is_root' => true,
-            ]];
+            // En la raíz del storage no hay ancestros que mostrar: la UI ya renderiza
+            // el nombre del storage vía `currentStorageName`, así que devolver el root
+            // aquí duplicaría el render. Consistente con BD mode (parent_id=null -> []).
+            return [];
         }
 
         $parts = explode('/', $clean);
@@ -197,6 +193,12 @@ class FilesystemListingService
             'file_id' => null,
             'is_root' => true,
         ]);
+
+        // El último segmento es el folder actual (último elemento de `subPath`).
+        // Lo descartamos para que `breadcrumbs` represente solo ancestros; el cliente
+        // renderiza la carpeta actual por separado desde `currentFolderName` /
+        // `currentFolder`.
+        array_pop($segments);
 
         return $segments;
     }
