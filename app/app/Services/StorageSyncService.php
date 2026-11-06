@@ -117,6 +117,10 @@ class StorageSyncService
             return $this->report($this->currentListing($storage->id, $parentId), 'path_missing');
         }
 
+        if (!is_readable($realPath)) {
+            return $this->report($this->currentListing($storage->id, $parentId), 'path_unreadable');
+        }
+
         if (!$this->scanner->isPathWithinBase($basePath, $realPath)) {
             return $this->report([], 'path_outside_base');
         }
@@ -224,7 +228,9 @@ class StorageSyncService
                     $changes['size'] = $entry['size'];
                 }
                 if (isset($entry['modified_at'])) {
-                    $entryModified = \Carbon\Carbon::createFromTimestamp($entry['modified_at']);
+                    // Zona explicita: createFromTimestamp() sin zona devuelve UTC y
+                    // el binding se persiste 5 h adelantado (ver FilesystemTime).
+                    $entryModified = \App\Support\FilesystemTime::fromTimestamp($entry['modified_at']);
                     if (!$existingFile->file_modified_at || !$existingFile->file_modified_at->eq($entryModified)) {
                         $changes['file_modified_at'] = $entryModified;
                     }
@@ -286,7 +292,7 @@ class StorageSyncService
 
         if ($parentId !== null && $parentFolder) {
             // store directory mtime so fullSync can skip it next time when nothing changed
-            $dirMtime = \Carbon\Carbon::createFromTimestamp(filemtime($realPath));
+            $dirMtime = \App\Support\FilesystemTime::fromPath($realPath);
             $parentFolder->update(['file_modified_at' => $dirMtime]);
         }
 
@@ -401,7 +407,7 @@ class StorageSyncService
             return $fallback ?? File::find($parentId) ?? new File();
         }
 
-        $modifiedAt = isset($entry['modified_at']) ? \Carbon\Carbon::createFromTimestamp($entry['modified_at']) : null;
+        $modifiedAt = \App\Support\FilesystemTime::fromTimestamp($entry['modified_at'] ?? null);
 
         return $this->registry->ensure($storage, $path, [
             'name' => $name,

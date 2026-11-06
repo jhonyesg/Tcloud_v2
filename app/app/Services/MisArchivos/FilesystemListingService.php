@@ -5,7 +5,6 @@ namespace App\Services\MisArchivos;
 use App\Models\StorageProvider;
 use App\Models\User;
 use App\Services\MountGuard;
-use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -256,7 +255,7 @@ class FilesystemListingService
             'size' => $isFolder ? null : (int) $stat['size'],
             'mime_type' => $isFolder ? 'folder' : $this->guessMime($name),
             'is_folder' => $isFolder,
-            'file_modified_at' => CarbonImmutable::createFromTimestamp($stat['mtime'])->toIso8601String(),
+            'file_modified_at' => \App\Support\FilesystemTime::fromTimestamp($stat['mtime'])?->toIso8601String(),
             'source' => $fileId ? 'mixed' : 'filesystem',
             'storage_provider_id' => $storageId,
             'permissions' => $permission,

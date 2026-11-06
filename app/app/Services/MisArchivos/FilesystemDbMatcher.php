@@ -163,7 +163,7 @@ class FilesystemDbMatcher
                 'name' => $name,
                 'is_folder' => true,
                 'size' => 0,
-                'mtime' => CarbonImmutable::createFromTimestamp($stat['mtime'] ?? time()),
+                'mtime' => \App\Support\FilesystemTime::fromTimestamp($stat['mtime'] ?? time()),
             ];
 
             if ($level < $maxDepth) {
@@ -324,7 +324,7 @@ class FilesystemDbMatcher
             'name' => basename($relPath),
             'is_folder' => $isFolder,
             'size' => $stat['size'] ?? 0,
-            'mtime' => CarbonImmutable::createFromTimestamp($stat['mtime'] ?? time()),
+            'mtime' => \App\Support\FilesystemTime::fromTimestamp($stat['mtime'] ?? time()),
         ];
     }
 
@@ -389,7 +389,7 @@ class FilesystemDbMatcher
                     'id' => (int) $existingMap[$relPath],
                     'size' => $isFolder ? 0 : (int) ($stat['size'] ?? 0),
                     'is_folder' => $isFolder,
-                    'file_modified_at' => CarbonImmutable::createFromTimestamp($stat['mtime'] ?? time()),
+                    'file_modified_at' => \App\Support\FilesystemTime::fromTimestamp($stat['mtime'] ?? time()),
                     'pending_deletion_at' => null,
                     'updated_at' => $now,
                 ];
@@ -404,7 +404,7 @@ class FilesystemDbMatcher
                     'size' => $isFolder ? 0 : (int) ($stat['size'] ?? 0),
                     'mime_type' => $isFolder ? 'folder' : $this->guessMime($entry['name']),
                     'pending_deletion_at' => null,
-                    'file_modified_at' => CarbonImmutable::createFromTimestamp($stat['mtime'] ?? time()),
+                    'file_modified_at' => \App\Support\FilesystemTime::fromTimestamp($stat['mtime'] ?? time()),
                     'is_personal' => false,
                     'created_at' => $now,
                     'updated_at' => $now,
