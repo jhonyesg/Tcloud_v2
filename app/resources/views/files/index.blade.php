@@ -150,6 +150,7 @@ deleteConfirmFile: null,
         async init() {
             await Promise.all([
                 this.loadStorages(),
+                this.loadBackupRequests(),
                 apiFetch('/auth/me', { credentials: 'include', headers: { 'Accept': 'application/json' } })
                     .then(r => r.ok ? r.json() : null)
                     .then(d => { if (d) this.canUseMediaEditor = !!d.can_use_media_editor; })
@@ -357,6 +358,11 @@ deleteConfirmFile: null,
         this.loadBackupRequests();
     },
 
+    /** Solicitudes con enlace vivo: las que el operador ve de un vistazo. */
+    backupLiveCount() {
+        return this.backupRequests.filter(r => r.status === 'ready').length;
+    },
+
     async revokeBackupRequest(request) {
         if (!confirm('¿Revocar esta solicitud? El enlace dejará de funcionar.')) return;
 
@@ -456,6 +462,14 @@ deleteConfirmFile: null,
             this.currentFolder = state.folderId || null;
             this.currentFolderName = state.folderName || null;
             this.breadcrumbs = state.breadcrumbs || [];
+            // El historial de backups es una vista transitoria: solo se restaura
+            // si el usuario la dejó abierta. Cualquier otro valor conserva la
+            // restauración actual (volver a la última carpeta visitada).
+            if (state.viewMode === 'backups') {
+                this.viewMode = 'backups';
+                this.loadBackupRequests();
+                return;
+            }
             this.viewMode = 'files';
             this.loadFiles(false, true, true);
         } catch (e) {
@@ -2571,11 +2585,14 @@ deleteConfirmFile: null,
                         </button>
                     </div>
                 </template>
-                <button @click="showBackupRequests()" x-show="viewMode !== 'backups'" class="flex items-center gap-1 sm:gap-2 bg-teal-600 hover:bg-teal-700 active:bg-teal-800 text-white px-2 sm:px-4 py-2 rounded-lg font-medium shadow-sm transition-colors" title="Mis solicitudes de backup">
+                <button @click="showBackupRequests()" x-show="viewMode !== 'backups'" class="flex items-center gap-1 sm:gap-2 bg-teal-600 hover:bg-teal-700 active:bg-teal-800 text-white px-2 sm:px-4 py-2 rounded-lg font-medium shadow-sm transition-colors relative" title="Mis solicitudes de backup">
                     <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h6"/>
                     </svg>
                     <span class="hidden sm:inline">Backups</span>
+                    <span x-show="backupLiveCount() > 0"
+                          class="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 rounded-full bg-amber-400 text-amber-950 text-[10px] font-bold flex items-center justify-center"
+                          x-text="backupLiveCount()"></span>
                 </button>
                 <button @click="navigateToRoot()" x-show="viewMode === 'backups'" class="flex items-center gap-1 sm:gap-2 bg-slate-100 hover:bg-slate-200 text-slate-700 px-2 sm:px-4 py-2 rounded-lg transition-colors" title="Volver a Storages">
                     <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">

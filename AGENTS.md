@@ -2197,6 +2197,133 @@ Verificación E2E: `tests/playwright_mis_archivos_fechas.py` asserta que el inpu
 nace habilitado, que el toggle deshabilita/rehabilita, y que una fecha
 personalizada (`2026-12-20T21:29`) se persiste tal cual en `shares.expires_at`.
 
+## Solicitud de backup de producción (change `solicitud-backup-mis-archivos`, 2026-11-06)
+
+Submódulo de Mis Archivos: el cliente pide el material del árbol de
+producción ("Producción") de una carpeta-día y recibe un enlace público de
+solo lectura con 2 días de vigencia.
+
+### Los dos árboles
+
+| | Origen | Producción |
+|---|---|---|
+| Raíz | `Tcloud/Disco_{A,B,C,E,F,H,I}/…/<canal>/<DDMMYYYY>/` | `Tcloud/Disco_D/backup/<NN_Canal_BK>/<DDMMYYYY>/` |
+| Storage | p. ej. `01 Caracol Tv` (id 6) | `30 Television Bk` (id 34) |
+| Origen | discos locales | **NFS** `192.168.0.131:/media/difusor02/Backup_TV` (nfs4, modo `hard`) |
+
+La producción **no la genera Tcloud**: la escribe el sistema de difusor02.
+Tcloud solo la localiza y la comparte. No hay que copiar nada.
+
+### El vínculo NO se deduce del nombre
+
+`09 Redmas` ↔ `05_Redmas`, `05 Institucional` ↔ `22_Institucional_BK`,
+`13_Telecafe_BK` y `13_Telepacifico_Bk` comparten prefijo. El vínculo se
+declara en el **storage de origen**:
+
+```sql
+storage_providers.backup_storage_id   -- → id del storage raíz del backup (34)
+storage_providers.backup_folder_name  -- → '01_Caracol_BK'
+```
+
+Se administra con:
+
+```bash
+cd app
+php artisan backups:map-storages --root=34                 # reporte (dry-run)
+php artisan backups:map-storages --root=34 --apply --yes   # escribe los pares confiables
+php artisan backups:map-storages --root=34 --map=6:01_Caracol_BK --apply --yes
+```
+
+El comando solo escribe los pares con un token compartido **único** (nombre
+normalizado sin el prefijo numérico ni el sufijo `BK`). El resto queda
+pendiente de mapeo explícito con `--map=<storage_id>:<carpeta>`: son 21 de 28
+canales con mapeo automático; los que faltan por ambigüedad de nombre
+(`01_Caracol_BK`, `01_Caracol_internacional`, `02_Canal_Rcn_bk`,
+`04_Canal_UNO_BK`, `14_Cosmovicion_bk`, `19_Capital_BK`, `30_Calitv`,
+`51_Blu_BK`) los declara el operador.
+
+### Invariantes del resolver (`App\Services\MisArchivos\BackupResolver`)
+
+1. **Anclaje**: la fila del día se busca por
+   `(storage_provider_id = backup_storage_id, path = '<carpeta>/<DDMMYYYY>')`.
+   NUNCA por nombre entre storages: `files` tiene **dos catálogos paralelos**
+   del mismo árbol (el 34 con los días recientes y el 5 `00 Discos` con días
+   viejos) porque el índice UNIQUE es `(storage_provider_id, path)`.
+2. **Disponibilidad EN DISCO, nunca en el catálogo**: 536 carpetas-día
+   catalogadas frente a 368 en disco (168 fantasma, 31 %). Resolver desde
+   `files` entregaría enlaces a carpetas que ya no existen.
+3. **Contención por cadena**, sin `realpath()`: los exports NFS son `hard` y
+   un `realpath()` colgado bloquea PHP-FPM.
+4. **Guarda de montaje**: `MountGuard::isNetworkMountDown()`. OJO:
+   `isNetworkMount()` solo reconoce el punto de montaje **exacto** y devuelve
+   false para `Disco_D/backup/01_Caracol_BK/05112026`; la resolución por
+   ancestro vive en `MountGuard::enclosingNetworkMount()`.
+5. **El catálogo no se escribe con SQL**: si la fila del día falta, se
+   materializa con `StorageSyncService::syncFolder()` (la vía canónica del
+   módulo).
+
+### El share lo crea el servicio, no `ShareController::store()`
+
+El cliente **no** tiene permiso sobre el storage 34 (escala de privilegio
+deliberada y acotada). `ShareController::store()` autoriza con `read` sobre el
+`storage_provider_id` del archivo, así que la ruta normal daría 403.
+**No se debilita ese endpoint**: `BackupRequestService` valida por su cuenta
+(`read` sobre el storage de ORIGEN) y crea el `Share` con `permissions=read`,
+`expires_at = now + config('backups.link_validity_days')` (2 días) y
+`created_by = solicitante`.
+
+El cliente **no** recibe filas en `user_storages` para el storage de backup:
+el árbol de producción no aparece en su listado de storages y el acceso es
+solo el enlace temporal.
+
+### `backup_requests` es la fuente de verdad, no el share
+
+`shares.file_id` es FK `ON DELETE CASCADE` y el árbol rota (~13 carpetas-día
+rodantes): cuando la carpeta-día sale del disco, el prune borra su fila de
+`files` y el share **muere solo**, dejando un 404 mudo. `backup_requests`
+sobrevive y reporta el material como no disponible.
+
+### API
+
+| Endpoint | Notas |
+|---|---|
+| `GET /files/backup-requests/eligibility?file_id=` | ficha resuelta del modal |
+| `GET /files/backup-requests` | historial del usuario (`{data: [...]}`) |
+| `POST /files/backup-requests` | `{file_id, motivo}` → `{request, share}` |
+| `DELETE /files/backup-requests/{id}` | revoca la solicitud |
+
+**Orden de registro obligatorio**: estas rutas se declaran **antes** de
+`Route::resource('files')` en `routes/web.php`, porque el resource declara
+`GET /files/{file}` y ese comodín se tragaría `GET /files/backup-requests`.
+No reordenar esas líneas.
+
+### Verificación
+
+```bash
+cd app
+php tests/harness_backup_requests.php   # 38 aserciones (PG + NFS reales)
+php vendor/bin/phpunit tests/Unit/BackupResolverTest.php --no-coverage
+php tests/harness_route_contract.php
+php tests/harness_shares_module.php
+```
+
+E2E en navegador (script local, no versionado: el repo ignora `/tests/`):
+`python3 tests/playwright_backup_request.py` — botón, modal, validación del
+motivo, día sin backup, envío, historial, enlace público que responde 200,
+revocación y cero errores de JavaScript.
+
+### Rollback
+
+```bash
+cd /www/wwwroot/cloud.mediaserver.com.co/Tcloud_v2
+git revert <commit>            # el change va en 3 commits
+cd app && php artisan migrate:rollback --step=2   # quita tabla y columnas
+```
+
+Las dos columnas y la tabla son aditivas. Si se borra `backup_requests`, los
+shares ya creados siguen sirviendo hasta vencer su vigencia (son filas de
+`shares`, tabla aparte).
+
 <!-- ODD:BEGIN -->
 ## Organic Driven Development (ODD)
 

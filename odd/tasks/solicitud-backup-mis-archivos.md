@@ -62,20 +62,20 @@
 
 ## Tasks
 
-- [ ] **T1 — Esquema: dos columnas en `storage_providers` + tabla `backup_requests`** (S3,S5,S7) — inline — pending — commit: - — evidence: - — risk: item 1 (migración de esquema; aditiva y reversible)
-- [ ] **T2 — Config `backups.php` + modelo `BackupRequest`** (S5) — inline — pending — commit: - — evidence: - — risk: none
-- [ ] **T3 — Helpers de mapeo en `StorageProvider`** (S7,S9) — inline — pending — commit: - — evidence: - — risk: none
-- [ ] **T4 — `BackupResolver`: día válido, resolución anclada en `backup_storage_id`, contención por cadena, `MountGuard`** (S1,S3,S4) — inline — pending — commit: - — evidence: - — risk: item 2 (decide a qué material se da acceso)
-- [ ] **T5 — `BackupRequestService`: create/revoke/listFor, idempotencia, auditoría** (S4,S5,S6,S8,S9) — inline — pending — commit: - — evidence: - — risk: item 2 (crea un enlace público al master de producción)
-- [ ] **T6 — API: endpoints + rutas bajo `auth`** (S4,S6,S9) — inline — pending — commit: - — evidence: - — risk: item 2 (nueva superficie HTTP que emite enlaces públicos)
-- [ ] **T7 — UI: botón en ACCIONES + modal de solicitud** (S1,S2,S4) — inline — pending — commit: - — evidence: - — risk: none
-- [ ] **T8 — UI: tercer `viewMode` `backups` + historial** (S6) — inline — pending — commit: - — evidence: - — risk: none
-- [ ] **T9 — Comando `backups:map-storages` (dry-run por defecto)** (S3,S7) — inline — pending — commit: - — evidence: - — risk: item 1 (escribe `storage_providers`; dry-run por defecto y snapshot)
-- [ ] **T10 — Harness `tests/harness_backup_requests.php`** (S2,S4,S5,S6,S8,S9) — inline — pending — commit: - — evidence: - — risk: none
-- [ ] **T11 — Verificación: harnesses existentes + `openspec validate`** (S1,S2,S3,S4,S5,S6,S7,S8,S9) — inline — pending — commit: - — evidence: - — risk: none
-- [ ] **T12 — Documentar el contrato en `AGENTS.md`** (S1,S2,S3,S4,S5,S6,S7,S8,S9) — inline — pending — commit: - — evidence: - — risk: none
-- [ ] **T13 — Verificador independiente del flujo de escalada** (S4,S5,S9) — delegated — pending — commit: - — evidence: - — risk: item 2 (revisión de seguridad obligatoria)
-- [ ] **T14 — Mapeo real de los storages de origen** (S3,S7) — inline — pending — commit: - — evidence: - — risk: item 1 (UPDATE sobre `storage_providers`)
+- [x] **T1 — Esquema: dos columnas en `storage_providers` + tabla `backup_requests`** (S3,S5,S7) — inline — done — commit: dac0ce4 — evidence: `php artisan migrate --force` → 2 migraciones aplicadas; esquema verificado en BD — risk: item 1 (migración de esquema; aditiva y reversible)
+- [x] **T2 — Config `backups.php` + modelo `BackupRequest`** (S5) — inline — done — commit: dac0ce4 — evidence: `php -l` en los 2 archivos; modelo instanciado y STATUSES leídos — risk: none
+- [x] **T3 — Helpers de mapeo en `StorageProvider`** (S7,S9) — inline — done — commit: 69eefd3 — evidence: 21 storages mapeados en BD; `hasBackupMapping()` true en storage 6 — risk: none
+- [x] **T4 — `BackupResolver`: día válido, resolución anclada en `backup_storage_id`, contención por cadena, `MountGuard`** (S1,S3,S4) — inline — done — commit: 69eefd3 — evidence: Caracol 05112026 resuelve file_id 8619379; 20092026 → backup_expired_window; storage 11 → no_mapping — risk: item 2 (decide a qué material se da acceso)
+- [x] **T5 — `BackupRequestService`: create/revoke/listFor, idempotencia, auditoría** (S4,S5,S6,S8,S9) — inline — done — commit: 69eefd3 — evidence: `php tests/harness_backup_requests.php` → 38 ✓ — risk: item 2 (crea un enlace público al master de producción)
+- [x] **T6 — API: endpoints + rutas bajo `auth`** (S4,S6,S9) — inline — done — commit: 69eefd3 — evidence: `route:list --path=files/backup` → 4 rutas; `harness_route_contract.php` → 293 rutas, 0 huérfanas — risk: item 2 (nueva superficie HTTP que emite enlaces públicos)
+- [x] **T7 — UI: botón en ACCIONES + modal de solicitud** (S1,S2,S4) — inline — done — commit: 82fc227 — evidence: Playwright [2] y [3] PASS; modal con la ficha resuelta — risk: none
+- [x] **T8 — UI: tercer `viewMode` `backups` + historial** (S6) — inline — done — commit: 82fc227 — evidence: Playwright [5] PASS; enlace con target=_blank — risk: none
+- [x] **T9 — Comando `backups:map-storages` (dry-run por defecto)** (S3,S7) — inline — done — commit: 69eefd3 — evidence: `backups:map-storages --root=34` → 20 pares automáticos + 1 explícito; 21 escrituras — risk: item 1 (escribe `storage_providers`; dry-run por defecto)
+- [x] **T10 — Harness `tests/harness_backup_requests.php`** (S2,S4,S5,S6,S8,S9) — inline — done — commit: 69eefd3 — evidence: `harness_backup_requests.php` → 38 aserciones OK, 0 residuos en BD — risk: none
+- [x] **T11 — Verificación: harnesses existentes + `openspec validate`** (S1,S2,S3,S4,S5,S6,S7,S8,S9) — inline — done — commit: 82fc227 — evidence: 4 harnesses OK; `openspec validate --strict` válido; suite Unit sin regresiones — risk: none
+- [x] **T12 — Documentar el contrato en `AGENTS.md`** (S1,S2,S3,S4,S5,S6,S7,S8,S9) — inline — done — commit: 82fc227 — evidence: sección "Solicitud de backup de producción" en AGENTS.md — risk: none
+- [ ] **T13 — Verificador independiente del flujo de escalada** (S4,S5,S9) — delegated — in_progress — commit: - — evidence: subagente `ses_e50d9f1e4ffeKKygBvkza2HHJP` relanzado tras un error de API — risk: item 2 (revisión de seguridad obligatoria)
+- [x] **T14 — Mapeo real de los storages de origen** (S3,S7) — inline — done — commit: 69eefd3 — evidence: 21 filas con `backup_storage_id=34` verificadas en `storage_providers` — risk: item 1 (UPDATE sobre `storage_providers`)
 
 ## Acceptance Criteria
 
@@ -96,23 +96,32 @@ Checks observados (se completan a medida que avanza la implementación):
 
 | Check | Resultado |
 |---|---|
-| `openspec validate solicitud-backup-mis-archivos --strict` | pendiente |
-| `php tests/harness_backup_requests.php` | pendiente |
-| `php tests/harness_route_contract.php` | pendiente |
-| `php tests/harness_shares_module.php` | pendiente |
-| `php tests/harness_merged_into_rename_compat.php` | pendiente |
-| `php tests/harness_modules_rename_audit.php` | pendiente |
-| `php vendor/bin/phpunit tests/Unit/BackupResolverTest.php` | pendiente |
-| `php artisan backups:map-storages` (dry-run) | pendiente |
+| `openspec validate solicitud-backup-mis-archivos --strict` | OK — "Change 'solicitud-backup-mis-archivos' is valid" |
+| `php tests/harness_backup_requests.php` | OK — 38 aserciones, 0 fallos, 0 residuos en BD |
+| `php vendor/bin/phpunit tests/Unit/BackupResolverTest.php` | OK — 7 tests, 20 assertions |
+| `php tests/harness_route_contract.php` | OK — 293 rutas verificadas, 0 huérfanas |
+| `php tests/harness_shares_module.php` | OK |
+| `php tests/harness_merged_into_rename_compat.php` | OK |
+| `php tests/harness_modules_rename_audit.php` | OK |
+| `php artisan backups:map-storages --root=34` (dry-run) | 20 pares automáticos + 8 dudosos reportados; 21 mappings escritos con `--apply` |
+| `php artisan view:cache` | OK — Blade compila |
+| Playwright `tests/playwright_backup_request.py` | OK — 28 aserciones, 0 errores de JavaScript (incluye el día sin backup, el enlace público 200 y la revocación) |
+| Suite `phpunit --testsuite Unit` | 407 tests: 10 errores + 10 fallos **idénticos** al commit 69eefd3 con el mismo `.env` y `bootstrap/cache/config.php` → 0 regresiones del change |
+| Verificador independiente (T13) | EN CURSO — subagente `ses_e50d9f1e4ffeKKygBvkza2HHJP` |
 
 ## Progress
 
 - 2026-11-06 — Feature creada. Change OpenSpec `solicitud-backup-mis-archivos` con 4/4 artefactos y `openspec validate --strict` en verde. Decisiones del usuario ya resueltas: mapeo opción D, enlace automático, vigencia 2 días.
 - 2026-11-06 — T1 en curso.
+- 2026-11-06 — T1 a T7, T9, T10 y T14 completados y verificados (dos commits: `dac0ce4` esquema/modelo, `69eefd3` dominio + comando + harness).
+- 2026-11-06 — Hallazgo de una sesión paralela (L7) corregido en el resolver: la disponibilidad se verifica EN DISCO y el guard de montaje pasó a `MountGuard::isNetworkMountDown()` (la lógica de ancestro estaba duplicada como método privado en `FixFilesModifiedAtTimezoneCommand`; ahora es helper compartido). Spec `storage-backup-mapping` actualizada con el requisito de verificación en disco.
+- 2026-11-06 — T8, T11 y T12 completados (`82fc227`): interfaz, verificación y contrato en AGENTS.md.
+- 2026-11-06 — Playwright ampliado con el caso "día sin backup" (20092026): el modal lo explica y deshabilita el envío antes de escribir.
+- 2026-11-06 — T13 (verificador independiente) relanzado: la primera corrida murió con un error de API sin producir informe.
 
 ## Next Step
 
-T1: migraciones (`backup_storage_id` + `backup_folder_name` en `storage_providers`; tabla `backup_requests`).
+T13: cerrar el informe del verificador independiente y aplicar los hallazgos que bloqueen. Después: 7 canales de los 28 siguen sin mapeo y los declara el operador.
 
 ## Log
 
@@ -144,3 +153,17 @@ T1: migraciones (`backup_storage_id` + `backup_folder_name` en `storage_provider
   10. **El mapeo no es deducible del nombre** y sigue vacío (0 filas): la numeración del backup no corresponde a la de la plataforma (`09 Redmas` ↔ `05_Redmas`, `05 Institucional` ↔ `22_Institucional_BK`, `13_Telecafe_BK` y `13_Telepacifico_Bk` comparten prefijo). El vínculo tiene que ser explícito y confirmado por el operador.
 
   Consecuencia para T2: el resolver tiene que (a) anclar en `backup_storage_id`, (b) verificar en disco con el guard de ancestro de montaje, (c) parsear el día desde el **último segmento** del path (`03_City_BK/05112026`, no `^\d{8}$` sobre el path completo) y (d) no prometer calidad superior.
+
+- **L8** — 2026-11-06 — **Conflicto de trabajo detectado**: otra sesión estaba commiteando en este mismo directorio y dejó en este documento una entrada de bitácora (L7) con hallazgos de producción que NO yo había hecho. Verifiqué los dos materiales antes de tocarlos, sin aceptar la premisa:
+
+  - **L7.3 "el catálogo no sirve como disponibilidad"** → CONFIRMADO y corregido. Medido: 536 carpetas-día catalogadas bajo el storage 34 frente a **368 en disco** (168 fantasma, 31 %). La primera versión del resolver daba por disponible cualquier día con fila en `files`: habría entregado enlaces a carpetas inexistentes. Ahora la disponibilidad se verifica en disco (`is_dir`) y el catálogo se usa solo para el `files.id` que exige la FK de `shares`.
+  - **L7.9 "MountGuard::isNetworkMount() no reconoce el backup como NFS"** → CONFIRMADO y corregido. Medido: `isNetworkMount('/…/Disco_D/backup/01_Caracol_BK/05112026')` devuelve false (solo reconoce el punto exacto) y `detachedAncestor()` devuelve null: el guard NO protegía el path profundo. Se extrajo la lógica de ancestro a `MountGuard::enclosingNetworkMount()` / `isNetworkMountDown()` (la que estaba duplicada como método privado en `FixFilesModifiedAtTimezoneCommand`) y el resolver la usa antes de tocar el NFS.
+  - **L7.7 "la premisa 'copia de mayor calidad' no se sostiene"** → ACEPTADO. El texto del modal no promete calidad: dice "material de producción". La segmentación del backup es de ~1.230 s contra ~930 s de la fuente y el bitrate va por canal.
+  - **L7.8 "5 de 75 bloques del backup de hoy no son reproducibles"** → registrado como límite conocido, NO implementado: el módulo no valida integridad de medios (un `moov atom not found` no es un problema de disponibilidad). Queda anotado en el design comocaveat.
+  - **L7.10 "el mapeo no es deducible del nombre"** → CONFIRMADO: 21 de 28 canales con mapeo automático por token único; 7 pendientes de mapeo explícito del operador.
+
+  La verificación del subagente la hice yo, con lecturas acotadas: conteo de carpetas-día en disco contra el catálogo, y una prueba directa de los helpers de `MountGuard` sobre el path real del backup.
+
+- **L9** — 2026-11-06 — **Hallazgo colateral: la cache de configuración de producción está vieja.** `app/bootstrap/cache/config.php` tiene fecha 27 de octubre. Eso hace que 3 tests de `TranscriptorSettingsTest` fallen (`target_pg_queue` 800 en vez de 140, freno 200 en vez de 0) — expectativas viejas contra la configuración vigente — y que `resume_remote_queue` no exista en `config/transcriptor.php`. NO es una regresión de este change: se comprobó levantando el commit 69eefd3 en un worktree con el mismo `.env` y el mismo `bootstrap/cache/config.php`, y el conjunto de fallos resultó idéntico. Lo que cambia es que **cualquier cambio de `.env` posterior al 27 de octubre no está vivo** hasta que se corra `php artisan config:cache`. No se ejecutó: es una acción de despliegue y la decisión es del operador.
+
+- **L10** — 2026-11-06 — **Estrategia de entrega**: la feature ya iba en 1.298 líneas (1.274 de código) cuando cruzó el presupuesto de 400 del protocolo ODD. Se preguntó la estrategia de encadenamiento al usuario y la pregunta fue descartada sin respuesta; se continúa con `ask-on-risk` en su forma por defecto (preguntar cuando el acumulado cruce el presupuesto). No se hace push, ni PR, ni merge en ningún caso.
