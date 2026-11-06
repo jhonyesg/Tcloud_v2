@@ -31,7 +31,7 @@ class Grabador extends Model
     public function usuarios(): BelongsToMany
     {
         return $this->belongsToMany(User::class, 'grabador_usuario')
-            ->withPivot('limite_canales')
+            ->withPivot(['limite_canales', 'ruta_base'])
             ->withTimestamps();
     }
 

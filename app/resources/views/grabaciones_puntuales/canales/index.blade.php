@@ -3,7 +3,9 @@
 @section('content')
 <div class="p-3 sm:p-6 pb-24 sm:pb-8">
 
-{{-- Toast --}}
+@include('partials.flash-toast')
+
+{{-- Toast de AJAX (mostrarToast) --}}
 <div id="toast" class="fixed top-6 right-6 z-50 hidden max-w-sm px-4 py-3 rounded-xl shadow-lg text-white text-sm font-medium">
     <span id="toast-msg"></span>
 </div>
@@ -251,6 +253,101 @@
     </div>
 </div>
 
+{{-- ─── MODAL DE ADOPCIÓN DE CANALES REMOTOS ──────────────────────── --}}
+@if($user && $user->isAdmin())
+<div id="modal-adopcion" class="hidden fixed inset-0 bg-black/50 z-[60] items-center justify-center p-4">
+    <div class="bg-white rounded-2xl shadow-xl w-full max-w-3xl max-h-[90vh] flex flex-col">
+        <div class="flex items-start justify-between gap-4 px-5 py-4 border-b border-slate-200">
+            <div>
+                <h2 class="text-base font-bold text-slate-800 flex items-center gap-2">
+                    <i class="fas fa-download text-teal-600"></i>
+                    Canales en el grabador sin registrar
+                </h2>
+                <p class="text-xs text-slate-500 mt-1">
+                    Existen en el equipo y no en la plataforma. Integrarlos <strong>no modifica el grabador</strong>:
+                    solo crea el registro local para que aparezcan en Medios Puntuales y cuenten en el cupo.
+                </p>
+            </div>
+            <button id="adopcion-cerrar" class="text-slate-400 hover:text-slate-600 shrink-0" aria-label="Cerrar">
+                <i class="fas fa-times text-lg"></i>
+            </button>
+        </div>
+
+        <div class="px-5 py-4 overflow-y-auto flex-1">
+            <div id="adopcion-vacio" class="hidden text-center py-8">
+                <i class="fas fa-check-circle text-emerald-500 text-3xl mb-2"></i>
+                <p class="text-sm text-slate-600">Todos los canales del grabador están registrados.</p>
+            </div>
+
+            <div id="adopcion-adoptables-wrapper" class="hidden mb-5">
+                <h3 class="text-sm font-bold text-slate-700 mb-2 flex items-center gap-2">
+                    <i class="fas fa-magic text-emerald-600"></i>
+                    Coinciden con tu configuración
+                    <span id="adopcion-adoptables-count" class="text-xs font-normal text-slate-500"></span>
+                </h3>
+                <div class="rounded-xl border border-emerald-200 bg-emerald-50/40 overflow-hidden">
+                    <table class="w-full text-sm">
+                        <thead class="bg-emerald-50 border-b border-emerald-200">
+                            <tr>
+                                <th class="px-3 py-2 w-8"></th>
+                                <th class="px-3 py-2 text-left text-xs font-medium text-slate-500 uppercase">ID</th>
+                                <th class="px-3 py-2 text-left text-xs font-medium text-slate-500 uppercase">Canal</th>
+                                <th class="px-3 py-2 text-left text-xs font-medium text-slate-500 uppercase">Grabador</th>
+                                <th class="px-3 py-2 text-left text-xs font-medium text-slate-500 uppercase">Ruta</th>
+                            </tr>
+                        </thead>
+                        <tbody id="adopcion-adoptables-body"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div id="adopcion-sugeridos-wrapper" class="hidden">
+                <h3 class="text-sm font-bold text-slate-700 mb-1 flex items-center gap-2">
+                    <i class="fas fa-exclamation-triangle text-amber-500"></i>
+                    Otros canales del grabador
+                    <span id="adopcion-sugeridos-count" class="text-xs font-normal text-slate-500"></span>
+                </h3>
+                <p class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-2">
+                    No coinciden con el patrón de tus slots locales. Selecciónalos solo si sabes que deben
+                    gestionarse desde la plataforma. No se seleccionan automáticamente.
+                </p>
+                <div class="rounded-xl border border-slate-200 overflow-hidden">
+                    <table class="w-full text-sm">
+                        <thead class="bg-slate-50 border-b border-slate-200">
+                            <tr>
+                                <th class="px-3 py-2 w-8"></th>
+                                <th class="px-3 py-2 text-left text-xs font-medium text-slate-500 uppercase">ID</th>
+                                <th class="px-3 py-2 text-left text-xs font-medium text-slate-500 uppercase">Canal</th>
+                                <th class="px-3 py-2 text-left text-xs font-medium text-slate-500 uppercase">Grabador</th>
+                                <th class="px-3 py-2 text-left text-xs font-medium text-slate-500 uppercase">Ruta</th>
+                            </tr>
+                        </thead>
+                        <tbody id="adopcion-sugeridos-body"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div id="adopcion-resultado" class="hidden mt-4 rounded-xl border px-4 py-3 text-sm"></div>
+        </div>
+
+        <div class="px-5 py-4 border-t border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-3">
+            <p class="text-xs text-slate-500" id="adopcion-seleccion">0 seleccionados</p>
+            <div class="flex gap-2 w-full sm:w-auto">
+                <button id="adopcion-cancelar"
+                        class="flex-1 sm:flex-none px-4 py-2 rounded-xl border border-slate-300 text-slate-700 hover:bg-slate-50 text-sm font-medium transition-colors">
+                    Cerrar
+                </button>
+                <button id="adopcion-confirmar" disabled
+                        class="flex-1 sm:flex-none px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white text-sm font-medium transition-colors">
+                    <i class="fas fa-download text-xs mr-1"></i>
+                    Integrar seleccionados
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+@endif
+
 <script>
 (function () {
     const tabla = document.getElementById('tabla-canales');
@@ -443,6 +540,208 @@
         ? document.querySelector('meta[name="csrf-token"]').getAttribute('content')
         : '';
 
+    // --- Adopción de canales remotos ---
+    const modalAdopcion = document.getElementById('modal-adopcion');
+    const adoptablesBody = document.getElementById('adopcion-adoptables-body');
+    const sugeridosBody = document.getElementById('adopcion-sugeridos-body');
+    const adoptablesWrapper = document.getElementById('adopcion-adoptables-wrapper');
+    const sugeridosWrapper = document.getElementById('adopcion-sugeridos-wrapper');
+    const adopcionVacio = document.getElementById('adopcion-vacio');
+    const adopcionResultado = document.getElementById('adopcion-resultado');
+    const adopcionSeleccion = document.getElementById('adopcion-seleccion');
+    const btnAdopcionConfirmar = document.getElementById('adopcion-confirmar');
+    let detectadosActuales = [];
+
+    function filaAdopcion(d, indice, esAdoptable) {
+        const tr = document.createElement('tr');
+        tr.className = 'border-b border-slate-100 last:border-b-0 hover:bg-white/60';
+        const ruta = d.ruta_descarga || '—';
+        const corta = ruta.length > 58 ? '…' + ruta.slice(-58) : ruta;
+        tr.innerHTML =
+            '<td class="px-3 py-2 align-top">' +
+                '<input type="checkbox" class="adopcion-check" data-indice="' + indice + '"' +
+                (esAdoptable ? ' checked' : '') + '>' +
+            '</td>' +
+            '<td class="px-3 py-2 align-top text-xs font-mono text-slate-500">' + (d.api_canal_id || '') + '</td>' +
+            '<td class="px-3 py-2 align-top">' +
+                '<p class="font-medium text-slate-800 text-sm">' + (d.nombre || d.codigo || '') + '</p>' +
+                '<p class="text-xs text-slate-400 font-mono">' + (d.codigo || '') + '</p>' +
+            '</td>' +
+            '<td class="px-3 py-2 align-top text-xs text-slate-600">' + (d.grabador_nombre || '') + '</td>' +
+            '<td class="px-3 py-2 align-top text-xs text-slate-500 font-mono" title="' + ruta + '">' + corta + '</td>';
+        return tr;
+    }
+
+    function renderAdopcion(detectados) {
+        detectadosActuales = detectados;
+        const adoptables = detectados.filter(d => d.confianza === 'adoptable');
+        const sugeridos = detectados.filter(d => d.confianza !== 'adoptable');
+
+        adoptablesBody.innerHTML = '';
+        sugeridosBody.innerHTML = '';
+
+        adoptables.forEach(function (d) {
+            adoptablesBody.appendChild(filaAdopcion(d, detectados.indexOf(d), true));
+        });
+        sugeridos.forEach(function (d) {
+            sugeridosBody.appendChild(filaAdopcion(d, detectados.indexOf(d), false));
+        });
+
+        adoptablesWrapper.classList.toggle('hidden', adoptables.length === 0);
+        sugeridosWrapper.classList.toggle('hidden', sugeridos.length === 0);
+        adopcionVacio.classList.toggle('hidden', detectados.length > 0);
+
+        document.getElementById('adopcion-adoptables-count').textContent =
+            adoptables.length > 0 ? '(' + adoptables.length + ' listo(s) para integrar)' : '';
+        document.getElementById('adopcion-sugeridos-count').textContent =
+            sugeridos.length > 0 ? '(' + sugeridos.length + ')' : '';
+
+        adopcionResultado.classList.add('hidden');
+
+        modalAdopcion.querySelectorAll('.adopcion-check').forEach(function (chk) {
+            chk.addEventListener('change', actualizarSeleccionAdopcion);
+        });
+
+        actualizarSeleccionAdopcion();
+    }
+
+    function seleccionadosAdopcion() {
+        return Array.from(modalAdopcion.querySelectorAll('.adopcion-check:checked'))
+            .map(chk => detectadosActuales[Number(chk.dataset.indice)])
+            .filter(Boolean);
+    }
+
+    function actualizarSeleccionAdopcion() {
+        const n = seleccionadosAdopcion().length;
+        adopcionSeleccion.textContent = n + ' seleccionado(s)';
+        btnAdopcionConfirmar.disabled = n === 0;
+    }
+
+    function abrirModalAdopcion(detectados) {
+        if (!modalAdopcion) return;
+        renderAdopcion(detectados);
+        modalAdopcion.classList.remove('hidden');
+        modalAdopcion.classList.add('flex');
+    }
+
+    function cerrarModalAdopcion() {
+        if (!modalAdopcion) return;
+        modalAdopcion.classList.add('hidden');
+        modalAdopcion.classList.remove('flex');
+    }
+
+    if (modalAdopcion) {
+        document.getElementById('adopcion-cerrar').addEventListener('click', cerrarModalAdopcion);
+        document.getElementById('adopcion-cancelar').addEventListener('click', cerrarModalAdopcion);
+        modalAdopcion.addEventListener('click', function (e) {
+            if (e.target === modalAdopcion) cerrarModalAdopcion();
+        });
+
+        btnAdopcionConfirmar.addEventListener('click', function () {
+            const seleccion = seleccionadosAdopcion();
+            if (seleccion.length === 0) return;
+
+            // Una petición por par (grabador × usuario): el endpoint adopta
+            // para un par concreto. Se envían en serie para que un fallo no
+            // enmascare el estado de los demás.
+            const grupos = {};
+            seleccion.forEach(function (d) {
+                const clave = d.grabador_id + ':' + d.user_id;
+                if (!grupos[clave]) {
+                    grupos[clave] = { grabador_id: d.grabador_id, user_id: d.user_id, ids: [] };
+                }
+                grupos[clave].ids.push(d.api_canal_id);
+            });
+
+            const pares = Object.values(grupos);
+            btnAdopcionConfirmar.disabled = true;
+            btnAdopcionConfirmar.innerHTML = '<i class="fas fa-spinner fa-spin text-xs mr-1"></i>Integrando...';
+
+            adopcionResultado.classList.remove('hidden');
+            adopcionResultado.className = 'mt-4 rounded-xl border px-4 py-3 text-sm';
+
+            let adoptados = 0;
+            let yaOk = 0;
+            let omitidos = [];
+            let excedidos = [];
+
+            const enviarGrupo = function (i) {
+                if (i >= pares.length) {
+                    finalizarAdopcion(adoptados, yaOk, omitidos, excedidos);
+                    return;
+                }
+
+                const par = pares[i];
+
+                apiFetch('{{ route('canales.adoptar') }}', {
+                    method: 'POST',
+                    headers: {
+                        'X-CSRF-TOKEN': csrfToken,
+                        'X-Requested-With': 'XMLHttpRequest',
+                        'Accept': 'application/json',
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        grabador_id: par.grabador_id,
+                        user_id: par.user_id,
+                        api_canal_ids: par.ids,
+                    }),
+                })
+                .then(function (res) { return res.json().then(d => ({ ok: res.ok, data: d })); })
+                .then(function (r) {
+                    const data = r.data || {};
+
+                    if (!r.ok) {
+                        omitidos.push(data.error || data.message || 'Error al integrar');
+                        return;
+                    }
+
+                    adoptados += (data.adoptados || []).length;
+                    yaOk += (data.ya_ok || []).length;
+                    (data.omitidos || []).forEach(o => omitidos.push(o.mensaje));
+                    if (data.par && data.par.excedido) {
+                        excedidos.push(data.par.usados + '/' + data.par.limite);
+                    }
+                })
+                .catch(function () {
+                    omitidos.push('No se pudo conectar con el servidor');
+                })
+                .finally(function () { enviarGrupo(i + 1); });
+            };
+
+            const finalizarAdopcion = function (nAdoptados, nYaOk, nOmitidos, nExcedidos) {
+                adopcionResultado.classList.add(
+                    nOmitidos.length > 0 ? 'bg-amber-50' : 'bg-emerald-50',
+                    nOmitidos.length > 0 ? 'border-amber-200' : 'border-emerald-200',
+                    nOmitidos.length > 0 ? 'text-amber-900' : 'text-emerald-800'
+                );
+
+                let texto = nAdoptados + ' canal(es) integrado(s)';
+                if (nYaOk > 0) {
+                    texto += ' · ' + nYaOk + ' ya estaba(n) registrado(s)';
+                }
+                if (nOmitidos.length > 0) {
+                    texto += ' · ' + nOmitidos.length + ' omitido(s): ' + nOmitidos.join('; ');
+                }
+                if (nExcedidos.length > 0) {
+                    texto += ' · par(es) excedido(s): ' + nExcedidos.join(', ') +
+                             '. Sube el límite en Grabadores para permitir nuevos canales.';
+                }
+                adopcionResultado.textContent = texto;
+                mostrarToast(texto, nOmitidos.length === 0);
+
+                btnAdopcionConfirmar.innerHTML = '<i class="fas fa-download text-xs mr-1"></i>Integrar seleccionados';
+                actualizarSeleccionAdopcion();
+
+                if (nAdoptados > 0) {
+                    setTimeout(function () { window.location.reload(); }, 1800);
+                }
+            };
+
+            enviarGrupo(0);
+        });
+    }
+
     // --- Botón Sincronizar IDs ---
     const btnSync = document.getElementById('btn-sincronizar');
     if (btnSync) {
@@ -468,6 +767,13 @@
             .then(function (res) { return res.json(); })
             .then(function (data) {
                 mostrarToast(data.message || (data.success ? 'Sincronización completa' : 'Error en la sincronización'), data.success);
+
+                const detectados = Array.isArray(data.remotos_detectados) ? data.remotos_detectados : [];
+                if (data.success && detectados.length > 0) {
+                    abrirModalAdopcion(detectados);
+                    return;
+                }
+
                 if (data.success && data.actualizados > 0) {
                     setTimeout(function () { window.location.reload(); }, 1800);
                 }

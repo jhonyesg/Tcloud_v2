@@ -6,17 +6,29 @@ use App\Http\Controllers\Controller;
 use App\Models\Grabador;
 use App\Models\Canal;
 use App\Models\User;
+use App\Services\GrabacionesPuntuales\AdopcionRemotaService;
+use App\Services\GrabacionesPuntuales\CupoCanalesService;
 use App\Services\GrabacionesPuntuales\TcloudApiService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Session;
 
 class CanalController extends Controller
 {
     private TcloudApiService $apiService;
 
-    public function __construct(TcloudApiService $apiService)
-    {
+    private CupoCanalesService $cupo;
+
+    private AdopcionRemotaService $adopcion;
+
+    public function __construct(
+        TcloudApiService $apiService,
+        CupoCanalesService $cupo,
+        AdopcionRemotaService $adopcion
+    ) {
         $this->apiService = $apiService;
+        $this->cupo = $cupo;
+        $this->adopcion = $adopcion;
     }
 
     private function getUser(): ?\App\Models\User
@@ -52,27 +64,32 @@ class CanalController extends Controller
 
         $grabadores = $user->isAdmin()
             ? Grabador::where('activo', true)->get()
-            : $user->grabadores()->where('activo', true)->withPivot('limite_canales')->get();
-
-        $grabadorIds = $grabadores->pluck('id');
-        $canalCounts = Canal::where('usuario_id', $user->id)
-            ->whereIn('grabador_id', $grabadorIds)
-            ->selectRaw('grabador_id, count(*) as total')
-            ->groupBy('grabador_id')
-            ->pluck('total', 'grabador_id');
+            : $user->grabadores()->where('activo', true)->get();
 
         $asignaciones = [];
         foreach ($grabadores as $grabador) {
-            $limite = $user->isAdmin()
-                ? 999
-                : ($grabador->pivot->limite_canales ?? 0);
-            $creados = (int) ($canalCounts[$grabador->id] ?? 0);
+            if ($user->isAdmin()) {
+                $usados = Canal::where('grabador_id', $grabador->id)
+                    ->where('usuario_id', $user->id)
+                    ->count();
 
-            $asignaciones[$grabador->id] = [
-                'limite' => $limite,
-                'creados' => $creados,
-                'disponibles' => $limite - $creados,
-            ];
+                $asignaciones[$grabador->id] = [
+                    'limite' => 999,
+                    'creados' => $usados,
+                    'disponibles' => 999,
+                ];
+                continue;
+            }
+
+            $resumen = $this->cupo->resumen($grabador->id, $user->id);
+
+            $asignaciones[$grabador->id] = $resumen === null
+                ? ['limite' => 0, 'creados' => 0, 'disponibles' => 0]
+                : [
+                    'limite' => $resumen['limite'],
+                    'creados' => $resumen['usados'],
+                    'disponibles' => $resumen['disponibles'],
+                ];
         }
 
         return view('grabaciones_puntuales.canales.create', compact('grabadores', 'asignaciones'));
@@ -90,46 +107,87 @@ class CanalController extends Controller
 
         $grabador = Grabador::find($request->grabador_id);
 
-        if (!$user->isAdmin()) {
-            $acceso = $user->grabadores()->where('grabador_id', $grabador->id)->first();
-            if (!$acceso) {
-                return back()->with('error', 'No tienes acceso a este grabador');
-            }
-
-            $canalesCreados = Canal::where('grabador_id', $grabador->id)
-                ->where('usuario_id', $user->id)
-                ->count();
-
-            if ($canalesCreados >= $acceso->limite_canales) {
-                return back()->with('error', 'Has alcanzado tu límite de canales en este grabador');
-            }
+        if (!$grabador) {
+            return back()->with('error', 'El grabador seleccionado no existe')->withInput();
         }
 
-        $yaExiste = Canal::where('grabador_id', $grabador->id)
-            ->where('slot_nombre', $request->slot_nombre)
-            ->exists();
+        $slotNombre = trim((string) $request->slot_nombre);
 
-        if ($yaExiste) {
-            return back()->with('error', 'Ya existe un canal con ese nombre en este grabador');
+        // Chequeo de cupo + INSERT en una sola transacción con la fila del
+        // pivote bloqueada: dos POST concurrentes del mismo usuario no pueden
+        // exceder el límite por carrera.
+        try {
+            $canal = DB::transaction(function () use ($user, $grabador, $slotNombre) {
+                $resumen = null;
+
+                if (!$user->isAdmin()) {
+                    $resumen = $this->cupo->resumenBloqueado($grabador->id, $user->id);
+
+                    if ($resumen === null) {
+                        throw new \RuntimeException('sin_asignacion');
+                    }
+
+                    if ($resumen['disponibles'] <= 0) {
+                        throw new \RuntimeException(sprintf(
+                            'cupo_alcanzado:%d:%d',
+                            $resumen['limite'],
+                            $resumen['usados']
+                        ));
+                    }
+                }
+
+                $yaExiste = Canal::where('grabador_id', $grabador->id)
+                    ->where('slot_nombre', $slotNombre)
+                    ->lockForUpdate()
+                    ->exists();
+
+                if ($yaExiste) {
+                    throw new \RuntimeException('slot_duplicado');
+                }
+
+                $rutaBase = $resumen['ruta_base'] ?? null;
+                if ($rutaBase === null && !$user->isAdmin()) {
+                    $rutaBase = DB::table('grabador_usuario')
+                        ->where('grabador_id', $grabador->id)
+                        ->where('user_id', $user->id)
+                        ->value('ruta_base');
+                }
+
+                return Canal::create([
+                    'grabador_id' => $grabador->id,
+                    'usuario_id' => $user->id,
+                    'slot_nombre' => $slotNombre,
+                    'ruta_destino' => $rutaBase ? rtrim($rutaBase, '/') . '/' . $slotNombre : null,
+                    'activo' => true,
+                ]);
+            });
+        } catch (\RuntimeException $e) {
+            $motivo = $e->getMessage();
+
+            if ($motivo === 'sin_asignacion') {
+                return back()->with('error', 'No tienes acceso a este grabador')->withInput();
+            }
+
+            if ($motivo === 'slot_duplicado') {
+                return back()->with('error', 'Ya existe un canal con ese nombre en este grabador')->withInput();
+            }
+
+            if (str_starts_with($motivo, 'cupo_alcanzado:')) {
+                [, $limite, $usados] = explode(':', $motivo);
+
+                return back()->with(
+                    'error',
+                    "Has alcanzado tu límite de {$limite} canales ({$usados} en uso)"
+                )->withInput();
+            }
+
+            throw $e;
         }
-
-        $rutaBase = \DB::table('grabador_usuario')
-            ->where('grabador_id', $grabador->id)
-            ->where('user_id', $user->id)
-            ->value('ruta_base');
-
-        $canal = Canal::create([
-            'grabador_id' => $grabador->id,
-            'usuario_id' => $user->id,
-            'slot_nombre' => $request->slot_nombre,
-            'ruta_destino' => $rutaBase ? rtrim($rutaBase, '/') . '/' . $request->slot_nombre : null,
-            'activo' => true,
-        ]);
 
         $resultado = $this->apiService->crearCanal($grabador, $canal);
 
         if (!$resultado['success'] && $this->esErrorCodigoDuplicado($resultado['error'] ?? '')) {
-            $codigo = $this->generarCodigoLocal($request->slot_nombre);
+            $codigo = $this->generarCodigoLocal($slotNombre);
             $remoto = $this->apiService->buscarPorCodigo($grabador, $codigo);
             if ($remoto && !empty($remoto['id'])) {
                 $canal->update([
@@ -222,7 +280,7 @@ class CanalController extends Controller
         $canal->update($campos);
 
         if (empty($canal->ruta_destino) && $canal->usuario_id && $canal->grabador_id) {
-            $rutaBase = \DB::table('grabador_usuario')
+            $rutaBase = DB::table('grabador_usuario')
                 ->where('grabador_id', $canal->grabador_id)
                 ->where('user_id', $canal->usuario_id)
                 ->value('ruta_base');
@@ -405,44 +463,28 @@ class CanalController extends Controller
         }
 
         $grabadores = Grabador::where('activo', true)->get();
+
         $actualizados = 0;
+        $yaOk = 0;
         $sinMatch = 0;
+        $detectados = [];
+        $fueraDeAlcance = 0;
+        $totalRemotos = 0;
 
         foreach ($grabadores as $grabador) {
-            $remotos = $this->apiService->getCanalesRemotos($grabador);
+            $resultado = $this->adopcion->detectar($grabador);
 
-            if (empty($remotos)) {
-                continue;
-            }
+            $actualizados += $resultado['vinculados'];
+            $yaOk += $resultado['ya_ok'];
+            $sinMatch += $resultado['sin_match'];
+            $fueraDeAlcance += $resultado['fuera_de_alcance'];
+            $totalRemotos += $resultado['total_remotos'];
 
-            // Índice por codigo y por nombre para match rápido
-            $porCodigo = [];
-            $porNombre = [];
-            foreach ($remotos as $remoto) {
-                if (!empty($remoto['codigo'])) {
-                    $porCodigo[$remoto['codigo']] = $remoto['id'];
-                }
-                if (!empty($remoto['nombre'])) {
-                    $porNombre[strtolower($remoto['nombre'])] = $remoto['id'];
-                }
-            }
-
-            $canalesLocales = Canal::where('grabador_id', $grabador->id)->get();
-
-            foreach ($canalesLocales as $canal) {
-                $codigoLocal = strtolower(str_replace([' ', '_'], '_', $canal->slot_nombre));
-                $nombreLocal = strtolower($canal->slot_nombre);
-
-                $apiId = $porCodigo[$codigoLocal] ?? $porNombre[$nombreLocal] ?? null;
-
-                if ($apiId !== null) {
-                    if ((int) $canal->api_canal_id !== (int) $apiId) {
-                        $canal->update(['api_canal_id' => $apiId]);
-                        $actualizados++;
-                    }
-                } else {
-                    $sinMatch++;
-                }
+            foreach ($resultado['remotos_detectados'] as $detectado) {
+                $detectado['grabador_id'] = $grabador->id;
+                $detectado['grabador_nombre'] = $grabador->nombre;
+                $detectado['tipo'] = $grabador->tipo;
+                $detectados[] = $detectado;
             }
         }
 
@@ -450,12 +492,125 @@ class CanalController extends Controller
         if ($sinMatch > 0) {
             $msg .= ", {$sinMatch} sin coincidencia en la API";
         }
+        if (count($detectados) > 0) {
+            $msg .= ', ' . count($detectados) . ' canal(es) del grabador sin registrar en la plataforma';
+        }
 
         return response()->json([
             'success' => true,
             'actualizados' => $actualizados,
+            'ya_ok' => $yaOk,
             'sin_match' => $sinMatch,
+            'total_remotos' => $totalRemotos,
+            'fuera_de_alcance' => $fueraDeAlcance,
+            'remotos_detectados' => $detectados,
+            'adoptables' => array_values(array_filter(
+                $detectados,
+                fn($d) => $d['confianza'] === 'adoptable'
+            )),
+            'sugeridos' => array_values(array_filter(
+                $detectados,
+                fn($d) => $d['confianza'] === 'sugerido'
+            )),
             'message' => $msg,
+        ]);
+    }
+
+    /**
+     * Detección pura (sin mutar nada) para el panel de cupos del módulo
+     * Grabadores. Devuelve los canales remotos sin fila local.
+     */
+    public function detectar(Request $request, Grabador $grabador): \Illuminate\Http\JsonResponse
+    {
+        $user = $this->getUser();
+        if (!$user || !$user->isAdmin()) {
+            return response()->json(['error' => 'No autorizado'], 403);
+        }
+
+        $resultado = $this->adopcion->detectar($grabador);
+
+        $porUsuario = [];
+        foreach ($resultado['remotos_detectados'] as $detectado) {
+            $porUsuario[$detectado['user_id']][] = $detectado;
+        }
+
+        return response()->json([
+            'success' => true,
+            'grabador_id' => $grabador->id,
+            'total_remotos' => $resultado['total_remotos'],
+            'vinculados' => $resultado['vinculados'],
+            'ya_ok' => $resultado['ya_ok'],
+            'sin_match' => $resultado['sin_match'],
+            'fuera_de_alcance' => $resultado['fuera_de_alcance'],
+            'remotos_detectados' => $resultado['remotos_detectados'],
+            'por_usuario' => $porUsuario,
+        ]);
+    }
+
+    /**
+     * Adopta canales remotos detectados: INSERT local espejo, sin tocar el
+     * grabador. Nunca se rechaza por cupo (el canal ya graba); si el par queda
+     * excedido, la respuesta lo reporta para que el admin ajuste el límite.
+     */
+    public function adoptar(Request $request): \Illuminate\Http\JsonResponse
+    {
+        $user = $this->getUser();
+        if (!$user || !$user->isAdmin()) {
+            return response()->json(['error' => 'No autorizado'], 403);
+        }
+
+        $validated = $request->validate([
+            'grabador_id' => 'required|exists:grabadores,id',
+            'user_id' => 'required|exists:users,id',
+            'api_canal_ids' => 'required|array|min:1',
+            'api_canal_ids.*' => 'integer',
+        ]);
+
+        $grabador = Grabador::find($validated['grabador_id']);
+        $userId = (int) $validated['user_id'];
+
+        $adoptados = [];
+        $yaOk = [];
+        $omitidos = [];
+
+        foreach ($validated['api_canal_ids'] as $apiCanalId) {
+            $resultado = $this->adopcion->adoptar($grabador, $userId, (int) $apiCanalId);
+
+            if (!$resultado['ok']) {
+                $omitidos[] = $resultado;
+            } elseif ($resultado['accion'] === 'adoptado') {
+                $adoptados[] = $resultado;
+            } else {
+                $yaOk[] = $resultado;
+            }
+        }
+
+        $estado = $this->cupo->resumen($grabador->id, $userId);
+
+        $partes = [];
+        if (count($adoptados) > 0) {
+            $partes[] = count($adoptados) . ' integrado(s)';
+        }
+        if (count($yaOk) > 0) {
+            $partes[] = count($yaOk) . ' ya estaba(n) registrado(s)';
+        }
+        if (count($omitidos) > 0) {
+            $partes[] = count($omitidos) . ' omitido(s)';
+        }
+
+        return response()->json([
+            'success' => true,
+            'adoptados' => $adoptados,
+            'ya_ok' => $yaOk,
+            'omitidos' => $omitidos,
+            'par' => [
+                'grabador_id' => $grabador->id,
+                'user_id' => $userId,
+                'usados' => $estado['usados'] ?? 0,
+                'limite' => $estado['limite'] ?? 0,
+                'excedido' => $estado !== null && $estado['usados'] > $estado['limite'],
+            ],
+            'message' => $partes ? implode(', ', $partes) : 'Nada que integrar',
         ]);
     }
 

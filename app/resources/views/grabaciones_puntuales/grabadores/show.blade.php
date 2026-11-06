@@ -4,6 +4,8 @@
 
 @section('content')
 <div class="p-3 sm:p-6 pb-24 sm:pb-8">
+    @include('partials.flash-toast')
+
     <!-- Page Header -->
     <div class="flex items-center justify-between mb-4 sm:mb-6 gap-3">
         <div class="flex items-center gap-3 min-w-0">
@@ -107,7 +109,11 @@
                 </thead>
                 <tbody class="divide-y divide-slate-100">
                     @forelse($grabador->usuarios as $usuario)
-                    <?php $usados = $grabador->canales()->where('usuario_id', $usuario->id)->count(); ?>
+                    <?php
+                        $usados = $grabador->canales()->where('usuario_id', $usuario->id)->count();
+                        $limiteActual = (int) $usuario->pivot->limite_canales;
+                        $excedido = $limiteActual > 0 && $usados > $limiteActual;
+                    ?>
                     <tr class="hover:bg-slate-50 transition-colors">
                         <td class="px-6 py-4">
                             <div class="flex items-center gap-3">
@@ -135,7 +141,10 @@
                             </form>
                         </td>
                         <td class="px-6 py-4 text-center">
-                            <span class="text-sm font-medium text-slate-700">{{ $usados }}</span>
+                            <span class="text-sm font-medium {{ $excedido ? 'text-rose-600' : 'text-slate-700' }}">{{ $usados }}</span>
+                            @if($excedido)
+                                <p class="text-xs text-rose-500 mt-0.5">{{ $usados - $limiteActual }} por encima</p>
+                            @endif
                         </td>
                         <td class="px-6 py-4 text-right">
                             <form action="{{ route('grabadores.remover-usuario', [$grabador, $usuario->id]) }}"

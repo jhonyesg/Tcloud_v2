@@ -144,6 +144,7 @@ class GrabadorController extends Controller
             'user_id' => 'required|exists:users,id',
             'nombre_base' => 'required|string|max:47|regex:/^[a-zA-Z0-9_]+$/',
             'ruta_base' => 'required|string|max:449',
+            'limite_canales' => 'nullable|integer|min:1|max:100',
         ]);
 
         $user = User::find($request->user_id);
@@ -163,9 +164,13 @@ class GrabadorController extends Controller
 
         $nombreBase = $request->nombre_base;
         $rutaBase = rtrim($request->ruta_base, '/');
+        // El límite pedido por el admin es la fuente de verdad y determina
+        // cuántos slots se provisionan. Antes se hardcodeaba 10 y el formulario
+        // de la vista show ignoraba lo escrito.
+        $limite = $request->filled('limite_canales') ? (int) $request->limite_canales : 10;
 
         $canalesNombres = [];
-        for ($i = 1; $i <= 10; $i++) {
+        for ($i = 1; $i <= $limite; $i++) {
             $canalesNombres[] = $nombreBase . '_' . str_pad($i, 2, '0', STR_PAD_LEFT);
         }
 
@@ -181,11 +186,11 @@ class GrabadorController extends Controller
         }
 
         try {
-            DB::transaction(function () use ($grabador, $request, $nombreBase, $rutaBase) {
+            DB::transaction(function () use ($grabador, $request, $nombreBase, $rutaBase, $limite) {
                 DB::table('grabador_usuario')->insert([
                     'grabador_id' => $grabador->id,
                     'user_id' => $request->user_id,
-                    'limite_canales' => 10,
+                    'limite_canales' => $limite,
                     'ruta_base' => $rutaBase,
                     'created_at' => now(),
                     'updated_at' => now(),
@@ -193,7 +198,7 @@ class GrabadorController extends Controller
 
                 $esRadio = $grabador->tipo === 'radio';
 
-                for ($i = 1; $i <= 10; $i++) {
+                for ($i = 1; $i <= $limite; $i++) {
                     $slotNombre = $nombreBase . '_' . str_pad($i, 2, '0', STR_PAD_LEFT);
                     Canal::create([
                         'grabador_id' => $grabador->id,
@@ -218,6 +223,11 @@ class GrabadorController extends Controller
         }
 
         $grabador->load('usuarios');
+
+        if (!($request->ajax() || $request->wantsJson())) {
+            return back()->with('success', "Usuario asignado con {$limite} canales");
+        }
+
         return response()->json($grabador->usuarios);
     }
 
@@ -228,26 +238,33 @@ class GrabadorController extends Controller
         $request->validate([
             'limite_canales' => 'nullable|integer|min:1|max:100',
             'ruta_base'      => 'nullable|string|max:449',
+            'prune'          => 'nullable|boolean',
         ]);
+
+        $pivotExiste = DB::table('grabador_usuario')
+            ->where('grabador_id', $grabador->id)
+            ->where('user_id', $userId)
+            ->exists();
+
+        if (!$pivotExiste) {
+            if (!($request->ajax() || $request->wantsJson())) {
+                return back()->with('error', 'El usuario no tiene asignación en este grabador');
+            }
+
+            return response()->json(['error' => 'El usuario no tiene asignación en este grabador'], 404);
+        }
+
+        $nuevoLimite = $request->filled('limite_canales') ? (int) $request->limite_canales : null;
+        $podar = $request->boolean('prune');
 
         $canalesDelUsuario = Canal::where('grabador_id', $grabador->id)
             ->where('usuario_id', $userId)
             ->orderBy('id')
             ->get();
 
-        $nuevoLimite = $request->filled('limite_canales') ? (int) $request->limite_canales : null;
-
-        // Eliminar canales sobrantes si el nuevo límite es menor al actual
-        if ($nuevoLimite !== null && $nuevoLimite < $canalesDelUsuario->count()) {
-            $canalesAEliminar = $canalesDelUsuario->slice($nuevoLimite);
-            foreach ($canalesAEliminar as $canal) {
-                if ($canal->api_canal_id) {
-                    $this->apiService->eliminarCanal($grabador, $canal->api_canal_id);
-                }
-                $canal->delete();
-            }
-            $canalesDelUsuario = $canalesDelUsuario->take($nuevoLimite);
-        }
+        $excedentes = $nuevoLimite !== null && $canalesDelUsuario->count() > $nuevoLimite
+            ? $canalesDelUsuario->slice($nuevoLimite)->values()
+            : collect();
 
         $pivotUpdate = ['updated_at' => now()];
         if ($nuevoLimite !== null) {
@@ -255,6 +272,43 @@ class GrabadorController extends Controller
         }
         if ($request->filled('ruta_base')) {
             $pivotUpdate['ruta_base'] = rtrim($request->ruta_base, '/');
+        }
+
+        // La poda es destructiva y por eso SOLO ocurre con prune=true explícito.
+        // Sin la bandera, bajar el límite deja los canales intactos y bloquea
+        // creación futura: nunca se pierde un canal por cambiar un número.
+        if ($podar && $excedentes->isNotEmpty()) {
+            try {
+                DB::transaction(function () use ($grabador, $excedentes) {
+                    foreach ($excedentes as $canal) {
+                        if ($canal->api_canal_id) {
+                            $resultado = $this->apiService->eliminarCanal($grabador, (int) $canal->api_canal_id);
+
+                            if (empty($resultado['success'])) {
+                                throw new \RuntimeException(
+                                    "No se pudo eliminar el canal '{$canal->slot_nombre}' en el grabador: "
+                                    . ($resultado['error'] ?? 'error desconocido')
+                                );
+                            }
+                        }
+
+                        $canal->delete();
+                    }
+                });
+            } catch (\Throwable $e) {
+                // Aborta la poda completa: ninguna fila local se borra si el
+                // remoto falló, para no dejar drift silencioso.
+                if (!($request->ajax() || $request->wantsJson())) {
+                    return back()->with('error', $e->getMessage());
+                }
+
+                return response()->json([
+                    'error' => $e->getMessage(),
+                    'podado' => false,
+                ], 422);
+            }
+
+            $canalesDelUsuario = $canalesDelUsuario->take($nuevoLimite);
         }
 
         DB::table('grabador_usuario')
@@ -268,7 +322,46 @@ class GrabadorController extends Controller
         }
 
         $grabador->load('usuarios');
-        return response()->json($grabador->usuarios);
+
+        $usadosFinal = Canal::where('grabador_id', $grabador->id)
+            ->where('usuario_id', $userId)
+            ->count();
+        $limiteFinal = $nuevoLimite ?? (int) DB::table('grabador_usuario')
+            ->where('grabador_id', $grabador->id)
+            ->where('user_id', $userId)
+            ->value('limite_canales');
+
+        $excedentesRestantes = Canal::where('grabador_id', $grabador->id)
+            ->where('usuario_id', $userId)
+            ->orderBy('id')
+            ->when($limiteFinal > 0, fn($q) => $q->skip($limiteFinal))
+            ->pluck('slot_nombre')
+            ->values();
+
+        $respuesta = [
+            'usuarios' => $grabador->usuarios,
+            'usados' => $usadosFinal,
+            'limite' => $limiteFinal,
+            'excedido' => $limiteFinal > 0 && $usadosFinal > $limiteFinal,
+            'excedentes' => $excedentesRestantes,
+        ];
+
+        if ($excedentesRestantes->isNotEmpty()) {
+            $respuesta['warning'] = sprintf(
+                'Límite %d con %d canales en uso. Se conservan todos; elimina los excedentes de forma explícita.',
+                $limiteFinal,
+                $usadosFinal
+            );
+        }
+
+        if (!($request->ajax() || $request->wantsJson())) {
+            return back()->with(
+                $excedentesRestantes->isNotEmpty() ? 'warning' : 'success',
+                $respuesta['warning'] ?? 'Asignación actualizada'
+            );
+        }
+
+        return response()->json($respuesta);
     }
 
     public function removerUsuario(Grabador $grabador, int $userId)

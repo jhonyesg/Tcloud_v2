@@ -4,6 +4,8 @@
 
 @section('content')
 <div class="p-3 sm:p-6 pb-24 sm:pb-8">
+    @include('partials.flash-toast')
+
     <!-- Page Header -->
     <div class="flex items-center gap-3 mb-4 sm:mb-6">
         <a href="{{ route('canales.index') }}" class="w-9 h-9 sm:w-10 sm:h-10 bg-slate-100 rounded-xl flex items-center justify-center hover:bg-slate-200 transition-colors flex-shrink-0">
@@ -33,7 +35,10 @@
                             data-tipo="">
                         <option value="" data-tipo="">Seleccionar grabador...</option>
                         @foreach($grabadores as $grabador)
-                            <option value="{{ $grabador->id }}" data-tipo="{{ $grabador->tipo }}">{{ ($grabador->tipo === 'tv' ? '📺' : '📻') }} {{ $grabador->nombre }} ({{ $grabador->ip }})</option>
+                            <option value="{{ $grabador->id }}" data-tipo="{{ $grabador->tipo }}"
+                                {{ (string) old('grabador_id') === (string) $grabador->id ? 'selected' : '' }}>
+                                {{ ($grabador->tipo === 'tv' ? '📺' : '📻') }} {{ $grabador->nombre }} ({{ $grabador->ip }})
+                            </option>
                         @endforeach
                     </select>
                     <p id="grabadorTipoAviso" class="mt-2 text-xs hidden"></p>
@@ -41,7 +46,7 @@
 
                 <div>
                     <label class="block text-sm font-medium text-slate-700 mb-1.5">Nombre del Slot</label>
-                    <input type="text" name="slot_nombre" required
+                    <input type="text" name="slot_nombre" required value="{{ old('slot_nombre') }}"
                            class="w-full border border-slate-300 rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-sky-400 focus:border-sky-400 outline-none transition-all"
                            placeholder="Ej: Radio_Siglo_01">
                     <div class="mt-2 flex items-center gap-2 text-sm">
@@ -70,34 +75,45 @@
 <script>
 const asignaciones = @json($asignaciones);
 
-document.getElementById('grabadorSelect').addEventListener('change', function() {
-    const grabadorId = this.value;
-    const info = asignaciones[grabadorId];
+function actualizarEspacios(select) {
+    const grabadorId = select.value;
+    const info = grabadorId ? asignaciones[grabadorId] : null;
     const el = document.getElementById('espaciosDisponibles');
+
     if (info) {
-        el.textContent = info.disponibles + ' de ' + info.limite;
-        el.className = 'font-medium ' + (info.disponibles > 0 ? 'text-emerald-600' : 'text-red-600');
+        const disponibles = Math.max(0, Number(info.disponibles ?? 0));
+        el.textContent = disponibles + ' de ' + info.limite;
+        el.className = 'font-medium ' + (disponibles > 0 ? 'text-emerald-600' : 'text-red-600');
     } else {
         el.textContent = '—';
         el.className = 'font-medium text-slate-700';
     }
 
     // Señal de tipo del grabador elegido (TV=púrpura, Radio=esmeralda)
-    const tipo = this.value ? this.selectedOptions[0].dataset.tipo : '';
+    const tipo = grabadorId && select.selectedOptions[0] ? select.selectedOptions[0].dataset.tipo : '';
     const aviso = document.getElementById('grabadorTipoAviso');
     if (tipo === 'tv' || tipo === 'radio') {
         const esTv = tipo === 'tv';
-        this.classList.remove('border-purple-400', 'ring-purple-300', 'border-emerald-400', 'ring-emerald-300', 'border-slate-300');
-        this.classList.add(esTv ? 'border-purple-400' : 'border-emerald-400');
+        select.classList.remove('border-purple-400', 'ring-purple-300', 'border-emerald-400', 'ring-emerald-300', 'border-slate-300');
+        select.classList.add(esTv ? 'border-purple-400' : 'border-emerald-400');
         aviso.classList.remove('hidden', 'text-purple-600', 'text-emerald-600');
         aviso.classList.add(esTv ? 'text-purple-600' : 'text-emerald-600');
         aviso.textContent = esTv ? '📺 Este grabador es de TV: el canal grabará un canal de televisión.' : '📻 Este grabador es de Radio: el canal grabará una emisora de radio.';
     } else {
-        this.classList.remove('border-purple-400', 'border-emerald-400');
-        this.classList.add('border-slate-300');
+        select.classList.remove('border-purple-400', 'border-emerald-400');
+        select.classList.add('border-slate-300');
         aviso.classList.add('hidden');
     }
-});
+}
+
+const grabadorSelect = document.getElementById('grabadorSelect');
+grabadorSelect.addEventListener('change', function () { actualizarEspacios(this); });
+
+// Si el POST fue rechazado y old('grabador_id') repobló el select, reflejar
+// el cupo sin obligar al usuario a re-elegir el grabador.
+if (grabadorSelect.value) {
+    actualizarEspacios(grabadorSelect);
+}
 </script>
 @endpush
 @endsection

@@ -3,6 +3,8 @@
 @section('title', 'Grabadores - Tcloud')
 
 @section('content')
+@include('partials.flash-toast')
+
 <div class="p-3 sm:p-6 pb-24 sm:pb-8" x-data="{
     grabadores: [],
     allUsers: [],
@@ -24,6 +26,7 @@
     userSearchSelected: null,
     nombreBase: '',
     rutaBase: '',
+    nuevoLimite: 10,
 
     detailGrabador: null,
     deletingGrabador: null,
@@ -33,6 +36,10 @@
     editingUserId: null,
     editUserLimit: null,
     editUserRuta: '',
+
+    detectando: false,
+    detectadosPorUsuario: {},
+    ultimaDeteccion: null,
 
     toast: { show: false, message: '', success: true },
 
@@ -107,6 +114,9 @@
         this.userSearchQuery = '';
         this.nombreBase = '';
         this.rutaBase = '';
+        this.nuevoLimite = 10;
+        this.detectadosPorUsuario = {};
+        this.ultimaDeteccion = null;
         this.showUsersModal = true;
     },
 
@@ -132,7 +142,8 @@
             body: JSON.stringify({
                 user_id: this.userSearchSelected.id,
                 nombre_base: this.nombreBase,
-                ruta_base: this.rutaBase
+                ruta_base: this.rutaBase,
+                limite_canales: this.nuevoLimite
             })
         });
         if (res.ok) {
@@ -147,7 +158,9 @@
             this.userSearchQuery = '';
             this.nombreBase = '';
             this.rutaBase = '';
+            this.nuevoLimite = 10;
             await this.loadGrabadores();
+            this.syncUsersModal();
         } else {
             const err = await res.json();
             this.showToast(err.error || 'Error al asignar usuario', false);
@@ -156,7 +169,8 @@
 
     get channelPreview() {
         if (!this.nombreBase) return [];
-        return Array.from({ length: 10 }, (_, i) => {
+        const limite = Number(this.nuevoLimite) || 10;
+        return Array.from({ length: Math.min(limite, 20) }, (_, i) => {
             const num = String(i + 1).padStart(2, '0');
             return { nombre: this.nombreBase + '_' + num, ruta: this.rutaBase + '/' + this.nombreBase + '_' + num };
         });
@@ -173,10 +187,22 @@
             },
             body: JSON.stringify({ limite_canales: newLimit })
         });
+
+        const data = await res.json().catch(() => ({}));
+
         if (res.ok) {
-            this.usersModalList = await res.json();
+            this.usersModalList = data.usuarios || this.usersModalList;
             await this.loadGrabadores();
-            this.showToast('Límite actualizado');
+            this.syncUsersModal();
+
+            const excedidos = (data.excedentes || []).length;
+            if (excedidos > 0) {
+                this.showToast(data.warning || ('Límite actualizado. ' + excedidos + ' canal(es) por encima del límite.'), false);
+            } else {
+                this.showToast('Límite actualizado');
+            }
+        } else {
+            this.showToast(data.error || 'Error al actualizar el límite', false);
         }
     },
 
@@ -234,21 +260,97 @@
         }
     },
 
-    getRutaBase(userId) {
-        const canal = (this.usersModalGrabador?.canales || []).find(c => c.usuario_id === userId && c.ruta_destino);
-        if (!canal) return '';
-        const parts = canal.ruta_destino.split('/');
-        parts.pop();
-        return parts.join('/');
+    // Detección de canales del grabador que no están registrados localmente.
+    // Solo informa: la adopción se hace desde Medios Puntuales (o con el
+    // comando CLI) para no duplicar el flujo de escritura.
+    async detectarRemotos() {
+        if (!this.usersModalGrabador) return;
+
+        this.detectando = true;
+        try {
+            const res = await apiFetch('/grabaciones-puntuales/canales/detectar/' + this.usersModalGrabador.id, {
+                credentials: 'include',
+                headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+            });
+
+            if (!res.ok) {
+                this.showToast('No se pudo consultar el grabador', false);
+                return;
+            }
+
+            const data = await res.json();
+            this.detectadosPorUsuario = data.por_usuario || {};
+            this.ultimaDeteccion = data;
+
+            const total = (data.remotos_detectados || []).length;
+            const adoptables = (data.remotos_detectados || []).filter(d => d.confianza === 'adoptable').length;
+
+            if (total === 0) {
+                this.showToast('Todos los canales del grabador están registrados');
+            } else {
+                this.showToast(
+                    total + ' canal(es) del grabador sin registrar (' + adoptables + ' listos para integrar)',
+                    adoptables > 0
+                );
+            }
+        } catch (e) {
+            this.showToast('Error al detectar canales remotos', false);
+        } finally {
+            this.detectando = false;
+        }
+    },
+
+    detectadosDeUsuario(userId) {
+        return (this.detectadosPorUsuario[userId] || []).length;
+    },
+
+    // La ruta base vive en el pivote grabador_usuario. Antes se derivaba del
+    // primer canal del usuario, así que un usuario sin canales mostraba vacío
+    // y guardar borraba la ruta real.
+    getRutaBase(u) {
+        return u?.pivot?.ruta_base
+            || (this.usersModalGrabador?.canales || []).find(c => c.usuario_id === u?.id && c.ruta_destino)?.ruta_destino.replace(/\/[^/]+$/, '')
+            || '';
+    },
+
+    canalesDelUsuarioEnModal(userId) {
+        return (this.usersModalGrabador?.canales || []).filter(c => c.usuario_id === userId);
+    },
+
+    excedentesDeUsuario(u) {
+        const limite = Number(u?.pivot?.limite_canales ?? 0);
+        if (!limite) return [];
+        const canales = this.canalesDelUsuarioEnModal(u.id);
+        return canales.slice(limite);
     },
 
     openEditUser(u) {
         this.editingUserId = u.id;
         this.editUserLimit = u.pivot?.limite_canales ?? 10;
-        this.editUserRuta = this.getRutaBase(u.id);
+        this.editUserRuta = this.getRutaBase(u);
     },
 
-    async updateUserAssignment() {
+    // Refresca la copia del grabador que alimenta el modal (canales + pivotes)
+    // después de cualquier mutación, sin cerrar el modal.
+    syncUsersModal() {
+        if (!this.usersModalGrabador) return;
+        const fresco = this.grabadores.find(g => g.id === this.usersModalGrabador.id);
+        if (fresco) {
+            this.usersModalGrabador = fresco;
+            this.usersModalList = fresco.usuarios || this.usersModalList;
+        }
+    },
+
+    async updateUserAssignment(prune = false) {
+        if (prune) {
+            const user = this.usersModalList.find(u => u.id === this.editingUserId);
+            const excedentes = this.excedentesDeUsuario(user);
+            const nombres = excedentes.map(c => c.slot_nombre).join(', ');
+            if (!confirm('Se eliminarán ' + excedentes.length + ' canal(es) del grabador y de la plataforma:\n\n' + nombres + '\n\n¿Continuar?')) {
+                return;
+            }
+        }
+
         const res = await apiFetch('/grabaciones-puntuales/grabadores/' + this.usersModalGrabador.id + '/actualizar-asignacion/' + this.editingUserId, {
             method: 'POST',
             credentials: 'include',
@@ -257,16 +359,25 @@
                 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
                 'Accept': 'application/json',
             },
-            body: JSON.stringify({ limite_canales: this.editUserLimit, ruta_base: this.editUserRuta }),
+            body: JSON.stringify({
+                limite_canales: this.editUserLimit,
+                ruta_base: this.editUserRuta,
+                prune: prune,
+            }),
         });
-        if (res.ok) {
-            this.usersModalList = await res.json();
-            this.editingUserId = null;
-            await this.loadGrabadores();
-            this.showToast('Asignación actualizada');
-        } else {
-            this.showToast('Error al actualizar asignación', false);
+
+        const data = await res.json().catch(() => ({}));
+
+        if (!res.ok) {
+            this.showToast(data.error || 'Error al actualizar asignación', false);
+            return;
         }
+
+        this.usersModalList = data.usuarios || this.usersModalList;
+        this.editingUserId = null;
+        await this.loadGrabadores();
+        this.syncUsersModal();
+        this.showToast(data.warning || (prune ? 'Asignación actualizada y excedentes eliminados' : 'Asignación actualizada'), !data.warning);
     },
 
     async deleteGrabador() {
@@ -670,14 +781,34 @@
     <div x-cloak x-show="showUsersModal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
          x-transition:enter="transition ease-out duration-200" x-transition:leave="transition ease-in duration-150">
         <div class="bg-white rounded-2xl p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto shadow-xl" @click.away="showUsersModal = false">
-            <div class="flex items-center justify-between mb-5">
-                <h2 class="text-xl font-bold text-slate-800">
+            <div class="flex items-center justify-between mb-5 gap-3">
+                <h2 class="text-xl font-bold text-slate-800 min-w-0 truncate">
                     Usuarios: <span class="text-emerald-600" x-text="usersModalGrabador?.nombre"></span>
                 </h2>
-                <button @click="showUsersModal = false" class="text-slate-400 hover:text-slate-600">
-                    <i class="fas fa-times text-lg"></i>
-                </button>
+                <div class="flex items-center gap-2 shrink-0">
+                    <button @click="detectarRemotos()" :disabled="detectando"
+                            class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-teal-50 text-teal-700 hover:bg-teal-100 disabled:opacity-60 text-xs font-medium transition-colors"
+                            title="Consultar el grabador sin modificar nada">
+                        <i class="fas fa-search text-xs" :class="detectando ? 'fa-spinner fa-spin' : ''"></i>
+                        <span x-text="detectando ? 'Consultando...' : 'Detectar canales'"></span>
+                    </button>
+                    <button @click="showUsersModal = false" class="text-slate-400 hover:text-slate-600">
+                        <i class="fas fa-times text-lg"></i>
+                    </button>
+                </div>
             </div>
+
+            <template x-if="ultimaDeteccion && (ultimaDeteccion.remotos_detectados || []).length > 0">
+                <div class="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+                    <p class="text-xs text-amber-900">
+                        <strong x-text="(ultimaDeteccion.remotos_detectados || []).length"></strong>
+                        canal(es) del grabador no están registrados en la plataforma.
+                        Integrarlos no modifica el grabador: se hace desde
+                        <a href="{{ route('canales.index') }}" class="underline font-medium">Medios Puntuales → Sincronizar</a>
+                        o con <code class="font-mono">php artisan canales:detectar-remotos --adoptar</code>.
+                    </p>
+                </div>
+            </template>
 
             <!-- Assigned Users -->
             <div class="mb-5">
@@ -695,7 +826,15 @@
                                          x-text="(u.username || u.email).charAt(0).toUpperCase()"></div>
                                     <div>
                                         <p class="text-sm font-medium text-slate-800" x-text="u.username || u.email"></p>
-                                        <p class="text-xs text-slate-400" x-text="'Límite: ' + (u.pivot?.limite_canales || '?') + ' canales'"></p>
+                                        <p class="text-xs"
+                                           :class="canalesDelUsuarioEnModal(u.id).length > (u.pivot?.limite_canales || 0) ? 'text-rose-600 font-medium' : 'text-slate-400'"
+                                           x-text="canalesDelUsuarioEnModal(u.id).length + ' / ' + (u.pivot?.limite_canales || '?') + ' canales'"></p>
+                                        <template x-if="detectadosDeUsuario(u.id) > 0">
+                                            <p class="text-xs text-amber-600 font-medium">
+                                                <i class="fas fa-exclamation-triangle text-[10px] mr-1"></i>
+                                                <span x-text="detectadosDeUsuario(u.id) + ' en el grabador sin registrar'"></span>
+                                            </p>
+                                        </template>
                                     </div>
                                 </div>
                                 <div class="flex items-center gap-1">
@@ -726,10 +865,31 @@
                                         <p class="text-xs text-slate-400 mt-0.5">Se actualiza la ruta de todos los canales del usuario</p>
                                     </div>
                                 </div>
-                                <button @click="updateUserAssignment()"
-                                        class="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-medium transition-colors">
-                                    <i class="fas fa-check text-xs"></i> Guardar cambios
-                                </button>
+                                <template x-if="excedentesDeUsuario(u).length > 0 && Number(editUserLimit) < canalesDelUsuarioEnModal(u.id).length">
+                                    <div class="mb-3 px-3 py-2 rounded-lg bg-amber-100 border border-amber-300">
+                                        <p class="text-xs font-medium text-amber-900">
+                                            <span x-text="canalesDelUsuarioEnModal(u.id).length"></span> canales en uso,
+                                            límite <span x-text="editUserLimit"></span>.
+                                            <span x-text="excedentesDeUsuario(u).length"></span> quedarían por encima del límite.
+                                        </p>
+                                        <p class="text-xs text-amber-800 mt-1">
+                                            Guardar conserva todos. Usa "Eliminar excedentes" solo si quieres borrarlos del grabador.
+                                        </p>
+                                    </div>
+                                </template>
+                                <div class="flex flex-wrap items-center gap-2">
+                                    <button @click="updateUserAssignment(false)"
+                                            class="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-medium transition-colors">
+                                        <i class="fas fa-check text-xs"></i> Guardar cambios
+                                    </button>
+                                    <template x-if="excedentesDeUsuario(u).length > 0 && Number(editUserLimit) < canalesDelUsuarioEnModal(u.id).length">
+                                        <button @click="updateUserAssignment(true)"
+                                                class="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-medium transition-colors">
+                                            <i class="fas fa-trash text-xs"></i>
+                                            Eliminar <span x-text="excedentesDeUsuario(u).length"></span> excedente(s)
+                                        </button>
+                                    </template>
+                                </div>
                             </div>
                         </div>
                     </template>
@@ -778,12 +938,17 @@
             <!-- Nombre base y Ruta base -->
             <div class="border border-slate-200 rounded-xl p-4 mt-3 bg-emerald-50">
                 <h3 class="text-sm font-bold text-slate-700 mb-3">Configuración de canales</h3>
-                <div class="grid grid-cols-2 gap-4 mb-3">
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-3">
                     <div>
                         <label class="block text-xs font-medium text-slate-600 mb-1">Nombre base</label>
                         <input type="text" x-model="nombreBase" placeholder="Ej: Siglo"
                                class="w-full border border-slate-300 rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-400 focus:border-emerald-400 outline-none"
                                pattern="[a-zA-Z0-9_]+" maxlength="47">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-slate-600 mb-1">Límite de canales</label>
+                        <input type="number" x-model="nuevoLimite" min="1" max="100"
+                               class="w-full border border-slate-300 rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-400 focus:border-emerald-400 outline-none">
                     </div>
                     <div>
                         <label class="block text-xs font-medium text-slate-600 mb-1">Ruta base</label>
@@ -794,7 +959,9 @@
 
                 <!-- Preview de canales a crear -->
                 <div x-show="nombreBase && rutaBase" class="bg-white rounded-xl border border-slate-200 p-3">
-                    <p class="text-xs font-medium text-slate-500 mb-2">Se crearán 10 canales:</p>
+                    <p class="text-xs font-medium text-slate-500 mb-2">
+                        Se crearán <span class="font-bold text-emerald-700" x-text="nuevoLimite"></span> canales:
+                    </p>
                     <div class="grid grid-cols-2 gap-1 text-xs font-mono">
                         <template x-for="ch in channelPreview" :key="ch.nombre">
                             <div class="flex justify-between px-2 py-1 bg-slate-50 rounded">
@@ -809,7 +976,7 @@
                         :disabled="!userSearchSelected || !nombreBase || !rutaBase"
                         :class="(userSearchSelected && nombreBase && rutaBase) ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-slate-300 cursor-not-allowed'"
                         class="mt-3 w-full text-white px-4 py-2.5 rounded-xl text-sm font-medium transition-colors">
-                    Asignar y crear 10 canales
+                    <span x-text="'Asignar y crear ' + (nuevoLimite || 10) + ' canales'"></span>
                 </button>
             </div>
         </div>
