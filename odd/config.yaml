@@ -1,0 +1,19 @@
+schema: odd
+language: es
+context: Restricciones que un agente no puede inferir leyendo el código. Mantenlo corto.
+rules:
+  delivery:
+    - Mantén el presupuesto de entrega en unos 400 líneas modificadas por unidad de trabajo.
+    - Cada línea de tarea lleva un ID estable y una declaración de riesgo.
+  tasks:
+    - Cita el pedido del usuario textual en la sección Specs; nunca lo reescribas.
+tdd:
+  mode: off
+  source: config
+  runner: ""
+delivery:
+  strategy: ask-on-risk
+  chain_strategy: ""
+mirror:
+  backend: auto
+  project: ""
