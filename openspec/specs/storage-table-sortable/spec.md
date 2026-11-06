@@ -5,7 +5,8 @@ Capability `storage-table-sortable`: consolida los requisitos y comportamientos 
 ## Requirements
 
 ### Requirement: Encabezados de columna con ordenamiento clicable
-Los encabezados de las columnas ID, Nombre, Tipo, Archivos y Estado de la tabla de storages SHALL ser clicables para ordenar los registros de forma ascendente o descendente.
+
+Los encabezados de las columnas ID, Nombre, Tipo y Estado de la tabla de storages SHALL ser clicables para ordenar los registros de forma ascendente o descendente. La columna "Archivos" NO forma parte del conjunto ordenable porque deja de renderizarse en la tabla.
 
 #### Scenario: Primer clic en un encabezado ordena ascendentemente
 - **WHEN** el usuario hace clic en el encabezado de una columna que no está actualmente activa como criterio de ordenamiento
@@ -23,6 +24,11 @@ Los encabezados de las columnas ID, Nombre, Tipo, Archivos y Estado de la tabla 
 #### Scenario: Ordenamiento por defecto al cargar
 - **WHEN** la página de storages carga por primera vez
 - **THEN** la tabla se muestra ordenada por ID en orden ascendente
+
+#### Scenario: La columna Archivos no existe como encabezado ordenable
+- **WHEN** el usuario ve la tabla de storages
+- **THEN** no existe un encabezado "Archivos" ni un indicador de orden para `files_count`
+- **AND** ningún clic en la tabla dispara un `toggleSort('files_count')`
 
 ### Requirement: Ordenamiento estable con filtros activos
 El ordenamiento SHALL respetar el subconjunto filtrado de registros y no el array completo.

@@ -15,10 +15,15 @@ class StorageProviderController extends Controller
     public function index(Request $request)
     {
         if ($request->ajax()) {
-            // Cache 60s (change 2026-09-13-perf-audit-and-improve).
-            // `withCount('files')` ejecuta un subquery por storage sobre 190
-            // filas, lo que pesa ~1.2s cold segun Playwright. Con cache, los
-            // requests siguientes son <100ms.
+            // Change `admin-storages-list-drop-files-count` (2026-10-05): el
+            // listado YA NO computa `files_count`. El atributo derivado exigia
+            // un subquery `count(*)` por storage contra `files` (1.36M filas /
+            // 2.5 GB), llevando el cold de ~44 ms a 625 ms-1.8 s. El conteo se
+            // resuelve bajo demanda en `show()` (un storage por vez).
+            //
+            // La cache 60s (change 2026-09-13-perf-audit-and-improve) se
+            // conserva por inercia, pero ya NO es un requisito de rendimiento:
+            // el listado es rapido sin ella. Retirarla es follow-up.
             $ttl = self::resolveAdminStoragesCacheTtl();
             if ($ttl === 0) {
                 return response()->json(self::computeAdminStorages());
@@ -32,7 +37,8 @@ class StorageProviderController extends Controller
 
     private static function computeAdminStorages(): array
     {
-        return StorageProvider::withCount('files')->get()->toArray();
+        // Sin `withCount('files')`: el listado solo lee `storage_providers`.
+        return StorageProvider::get()->toArray();
     }
 
     private static function resolveAdminStoragesCacheTtl(): int
@@ -83,6 +89,7 @@ class StorageProviderController extends Controller
         $storage = StorageProvider::create([
             'name' => $request->input('name'),
             'type' => $kind,
+            'kind' => $kind,
             'config' => $request->input('config', []),
             'base_path' => $basePath,
             'enabled' => $request->boolean('enabled', true),
@@ -101,6 +108,10 @@ class StorageProviderController extends Controller
 
     public function show(int $id)
     {
+        // Conserva `withCount('files')` A PROPOSITO: es el unico punto que
+        // expone el conteo exacto de archivos, a pedido de UN storage (ej. modal
+        // de borrado). NO usar en bucles ni en el listado: contar 196 storages
+        // contra `files` (1.36M filas) cuesta 625 ms-1.8 s.
         $storage = StorageProvider::withCount('files')->findOrFail($id);
         return response()->json($storage);
     }

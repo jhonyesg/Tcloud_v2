@@ -5,6 +5,8 @@
 @section('content')
 <div class="p-3 sm:p-6 pb-24 sm:pb-8" x-data="{
     storages: [],
+    loadingStorages: true,
+    storagesLoadError: false,
     showCreateModal: false,
     showEditModal: false,
     showDeleteModal: false,
@@ -12,6 +14,7 @@
     newStorageType: 'local',
     deletingStorage: null,
     deletingStorageId: null,
+    deletingStorageCount: null,
     testingStorage: null,
     showUsersModal: false,
     usersModalStorage: null,
@@ -79,17 +82,30 @@
     },
     
     async loadStorages() {
-        const res = await apiFetch('/admin/storages', {
-            credentials: 'include',
-            headers: {
-                'Accept': 'application/json',
-                'X-Requested-With': 'XMLHttpRequest'
+        this.loadingStorages = true;
+        this.storagesLoadError = false;
+        try {
+            const res = await apiFetch('/admin/storages', {
+                credentials: 'include',
+                headers: {
+                    'Accept': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest'
+                }
+            });
+            if (res.ok) {
+                this.storages = await res.json();
+            } else {
+                const err = await res.json().catch(() => ({}));
+                this.storagesLoadError = true;
+                this.toast = { show: true, message: err.error || err.message || ('HTTP ' + res.status), success: false };
+                this.showToast();
             }
-        });
-        if (res.ok) {
-            this.storages = await res.json();
-        } else {
-            console.error('Error loading storages');
+        } catch (e) {
+            this.storagesLoadError = true;
+            this.toast = { show: true, message: 'Error de red al cargar los storages', success: false };
+            this.showToast();
+        } finally {
+            this.loadingStorages = false;
         }
     },
     
@@ -191,6 +207,34 @@
         }
     },
     
+    async openDeleteModal(storage) {
+        // El listado ya NO trae `files_count` (change
+        // admin-storages-list-drop-files-count). El conteo exacto se pide bajo
+        // demanda para UN storage via `show()`, que si lo incluye.
+        this.deletingStorage = storage;
+        this.deletingStorageCount = null;
+        this.showDeleteModal = true;
+        try {
+            const res = await apiFetch('/admin/storages/' + storage.id, {
+                credentials: 'include',
+                headers: {
+                    'Accept': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest'
+                }
+            });
+            if (res.ok) {
+                const payload = await res.json().catch(() => ({}));
+                this.deletingStorageCount = (payload && typeof payload.files_count === 'number')
+                    ? payload.files_count
+                    : 0;
+            } else {
+                this.deletingStorageCount = -1;
+            }
+        } catch (e) {
+            this.deletingStorageCount = -1;
+        }
+    },
+
     async deleteStorage(id) {
         this.deletingStorageId = id;
         try {
@@ -205,6 +249,7 @@
             if (res.ok) {
                 this.showDeleteModal = false;
                 this.deletingStorage = null;
+                this.deletingStorageCount = null;
                 await this.loadStorages();
                 this.toast = { show: true, message: 'Storage eliminado correctamente', success: true };
             } else {
@@ -499,7 +544,7 @@
                 <div class="flex items-center justify-between gap-3 mb-2">
                     <div class="min-w-0">
                         <p class="font-semibold text-slate-800 text-sm truncate" x-text="storage.name"></p>
-                        <p class="text-xs text-slate-400" x-text="'ID: ' + storage.id + ' · ' + storage.files_count + ' archivos'"></p>
+                        <p class="text-xs text-slate-400" x-text="'ID: ' + storage.id"></p>
                     </div>
                     <div class="flex items-center gap-1.5 flex-shrink-0">
                         <span class="px-2 py-0.5 text-xs font-semibold rounded-full"
@@ -526,7 +571,7 @@
                             class="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-indigo-50 text-indigo-700 active:bg-indigo-100 text-xs font-medium border border-indigo-100">
                         <i class="fas fa-edit text-xs"></i> Editar
                     </button>
-                    <button @click="deletingStorage = storage; showDeleteModal = true"
+                    <button @click="openDeleteModal(storage)"
                             class="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-red-50 text-red-700 active:bg-red-100 text-xs font-medium border border-red-100">
                         <i class="fas fa-trash text-xs"></i> Eliminar
                     </button>
@@ -537,7 +582,13 @@
              class="bg-white rounded-xl border border-slate-200 text-center py-8 text-gray-500 text-sm">
             Sin resultados. <button @click="resetFilters()" class="ml-1 text-indigo-600">Limpiar filtros</button>
         </div>
-        <div x-show="storages.length === 0" class="bg-white rounded-xl border border-slate-200 text-center py-8 text-gray-500 text-sm">
+        <div x-show="loadingStorages" class="bg-white rounded-xl border border-slate-200 text-center py-8 text-gray-500 text-sm">
+            Cargando storages…
+        </div>
+        <div x-show="!loadingStorages && storagesLoadError" class="bg-white rounded-xl border border-red-200 text-center py-8 text-red-600 text-sm">
+            No se pudo cargar el listado. <button @click="loadStorages()" class="ml-1 font-medium underline">Reintentar</button>
+        </div>
+        <div x-show="!loadingStorages && !storagesLoadError && storages.length === 0" class="bg-white rounded-xl border border-slate-200 text-center py-8 text-gray-500 text-sm">
             No hay storages configurados.
         </div>
     </div>
@@ -566,12 +617,6 @@
                             <span class="text-gray-400" x-text="sortBy.column === 'type' ? (sortBy.direction === 'asc' ? '↑' : '↓') : '↕'"></span>
                         </div>
                     </th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer select-none hover:bg-gray-100 transition-colors" @click="toggleSort('files_count')">
-                        <div class="flex items-center gap-1">
-                            Archivos
-                            <span class="text-gray-400" x-text="sortBy.column === 'files_count' ? (sortBy.direction === 'asc' ? '↑' : '↓') : '↕'"></span>
-                        </div>
-                    </th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer select-none hover:bg-gray-100 transition-colors" @click="toggleSort('enabled')">
                         <div class="flex items-center gap-1">
                             Estado
@@ -596,7 +641,6 @@
                                   :class="(storage.kind || 'local') === 'external' ? 'bg-amber-100 text-amber-800' : 'bg-slate-100 text-slate-700'"
                                   x-text="(storage.kind || 'local') === 'external' ? 'Red' : 'Disco'"></span>
                         </td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500" x-text="storage.files_count"></td>
                         <td class="px-6 py-4 whitespace-nowrap">
                             <span class="px-2 py-1 text-xs font-semibold rounded-full"
                                   :class="storage.enabled ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'"
@@ -621,7 +665,7 @@
                                         class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-indigo-100 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 transition-colors">
                                     <i class="fas fa-edit"></i> Editar
                                 </button>
-                                <button @click="deletingStorage = storage; showDeleteModal = true"
+                                <button @click="openDeleteModal(storage)"
                                         class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-red-100 bg-red-50 text-red-700 hover:bg-red-100 transition-colors">
                                     <i class="fas fa-trash"></i> Eliminar
                                 </button>
@@ -636,8 +680,16 @@
             No se encontraron storages con los filtros aplicados.
             <button @click="resetFilters()" class="ml-2 text-indigo-600 hover:underline text-sm">Limpiar filtros</button>
         </div>
+        <!-- Cargando storages -->
+        <div x-show="loadingStorages" class="text-center py-8 text-gray-500">
+            Cargando storages…
+        </div>
+        <!-- Error al cargar -->
+        <div x-show="!loadingStorages && storagesLoadError" class="text-center py-8 text-red-600">
+            No se pudo cargar el listado. <button @click="loadStorages()" class="ml-1 font-medium underline">Reintentar</button>
+        </div>
         <!-- Sin storages registrados -->
-        <div x-show="storages.length === 0" class="text-center py-8 text-gray-500">
+        <div x-show="!loadingStorages && !storagesLoadError && storages.length === 0" class="text-center py-8 text-gray-500">
             No hay storages configurados.
         </div>
 
@@ -777,7 +829,9 @@
                         <p class="mb-4 text-sm text-slate-600">¿Estás seguro de eliminar el storage <strong class="text-slate-800" x-text="deletingStorage.name"></strong>?</p>
                         <p class="text-red-600 text-sm font-medium mb-1">Esta acción es irreversible. Se eliminarán permanentemente:</p>
                         <ul class="text-red-600 text-sm mb-5 list-disc list-inside">
-                            <li x-text="(deletingStorage.files_count || 0) + ' archivo(s) asociado(s)'"></li>
+                            <li x-show="deletingStorageCount === null">Calculando archivos asociados…</li>
+                            <li x-show="deletingStorageCount === -1">los archivos asociados a este storage</li>
+                            <li x-show="deletingStorageCount !== null && deletingStorageCount >= 0" x-text="deletingStorageCount + ' archivo(s) asociado(s)'"></li>
                             <li>Todas las asignaciones de usuarios de este storage</li>
                         </ul>
                         <div class="flex gap-3">
@@ -793,7 +847,7 @@
                                     Eliminando...
                                 </span>
                             </button>
-                            <button @click="showDeleteModal = false; deletingStorage = null" class="px-5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-sm font-medium transition-colors">Cancelar</button>
+                            <button @click="showDeleteModal = false; deletingStorage = null; deletingStorageCount = null" class="px-5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-sm font-medium transition-colors">Cancelar</button>
                         </div>
                     </div>
                 </template>
