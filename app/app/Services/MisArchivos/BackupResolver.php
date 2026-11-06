@@ -113,6 +113,11 @@ class BackupResolver
     /**
      * Resuelve la carpeta-día del backup para un storage de origen.
      *
+     * @param  bool  $materialize  Si la fila del día falta en el catálogo,
+     *                             ¿se materializa con el sync del módulo?
+     *                             `false` para las consultas de solo lectura
+     *                             (un GET no debe escribir en el catálogo).
+     *
      * @return array{
      *   available: bool,
      *   reason: ?string,
@@ -124,7 +129,7 @@ class BackupResolver
      *   file_id: ?int
      * }
      */
-    public function resolveDayFolder(StorageProvider $source, string $dayName): array
+    public function resolveDayFolder(StorageProvider $source, string $dayName, bool $materialize = true): array
     {
         $result = [
             'available' => false,
@@ -205,8 +210,17 @@ class BackupResolver
 
         $file = $this->registry->find($backup->id, $relative);
 
-        if ($file === null) {
+        if ($file === null && $materialize) {
             $file = $this->materializeDayFolder($backup, $folder, $dayName);
+        }
+
+        if ($file === null && ! $materialize) {
+            // La consulta de solo lectura no materializa: el material está en
+            // disco (ya se verificó) pero el catálogo todavía no lo tiene.
+            // No es motivo para negar el backup: lo materializa el POST.
+            $result['available'] = true;
+            $result['reason'] = null;
+            return $result;
         }
 
         if ($file === null) {

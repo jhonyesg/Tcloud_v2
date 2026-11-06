@@ -80,7 +80,7 @@ class BackupRequestController extends Controller
 
         $validated = $request->validate([
             'file_id' => 'required|integer|exists:files,id',
-            'motivo' => 'required|string',
+            'motivo' => 'required|string|max:2000',
         ]);
 
         $folder = File::find($validated['file_id']);

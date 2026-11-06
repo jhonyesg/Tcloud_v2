@@ -72,6 +72,28 @@ El enlace generado SHALL tener permiso de solo lectura y SHALL expirar en la vig
 - **THEN** el sistema SHALL ignorar cualquier bandera de expiración permanente o de expiración personalizada en la entrada
 - **AND** SHALL aplicar siempre la vigencia configurada
 
+### Requirement: El enlace de backup lo administra Mis Archivos, no el módulo de compartidos
+
+La vigencia y el alcance de un enlace de backup son parte del contrato de la solicitud, no una opción de quien lo posee. El módulo de compartidos SHALL NOT editar ni eliminar un enlace que pertenezca a una solicitud de backup, y la depuración masiva SHALL excluirlo y reportarlo aparte. La única vía para desactivarlo SHALL ser revocar la solicitud.
+
+#### Scenario: El propietario intenta hacer permanente el enlace
+
+- **WHEN** el solicitante de un enlace de backup intenta cambiar su fecha de vencimiento para que no expire
+- **THEN** el módulo de compartidos SHALL rechazarlo con un error de autorización
+- **AND** la fecha de vencimiento del enlace SHALL permanecer sin cambios
+
+#### Scenario: El propietario intenta borrar el enlace
+
+- **WHEN** el solicitante de un enlace de backup intenta eliminarlo desde el módulo de compartidos
+- **THEN** el módulo de compartidos SHALL rechazarlo con un error de autorización
+- **AND** el enlace SHALL seguir existiendo
+
+#### Scenario: La purga masiva alcanza un enlace de backup
+
+- **WHEN** una depuración masiva incluye un enlace que pertenece a una solicitud de backup
+- **THEN** el enlace SHALL NOT ser eliminado
+- **AND** la respuesta SHALL reportar el enlace como excluido
+
 ### Requirement: Solo quien puede leer el origen puede solicitar
 
 El sistema SHALL autorizar la creación de una solicitud a los usuarios que tengan permiso de lectura sobre el storage de origen de la carpeta-día. La creación del enlace SHALL ser en nombre del solicitante, de modo que la solicitud y el enlace queden asociados a su usuario. El sistema SHALL NOT usar el enlace para conceder al cliente acceso de lectura al árbol de backup dentro de Mis Archivos.
@@ -93,6 +115,22 @@ El sistema SHALL autorizar la creación de una solicitud a los usuarios que teng
 - **WHEN** un cliente tiene una solicitud de backup atendida
 - **THEN** el sistema SHALL NOT agregarle permisos sobre el storage de backup
 - **AND** el árbol de backup SHALL NOT aparecer en su listado de storages de Mis Archivos
+
+#### Scenario: El storage de origen es el propio árbol de backup
+
+- **WHEN** el storage de origen de la carpeta declara como destino de backup a sí mismo
+- **THEN** el sistema SHALL rechazar la solicitud
+- **AND** SHALL NOT crear ningún enlace
+
+### Requirement: Un único enlace vivo por usuario, canal y día
+
+El sistema SHALL mantener como máximo una solicitud viva —con enlace activo— por usuario, storage de origen y día. Dos solicitudes simultáneas del mismo día SHALL NOT producir dos enlaces.
+
+#### Scenario: Dos envíos simultáneos del mismo día
+
+- **WHEN** dos solicitudes del mismo día para el mismo usuario y canal se procesan a la vez
+- **THEN** solo una SHALL quedar con enlace
+- **AND** la otra SHALL devolver la solicitud que quedó viva
 
 ### Requirement: El historial de solicitudes es del solicitante
 

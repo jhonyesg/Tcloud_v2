@@ -56,7 +56,7 @@ class BackupRequestService
             throw new BackupRequestException('storage_missing', 'La carpeta no pertenece a ningún almacenamiento.', 404);
         }
 
-        $resolved = $this->resolver->resolveDayFolder($storage, $sourceFolder->name);
+        $resolved = $this->resolver->resolveDayFolder($storage, $sourceFolder->name, materialize: false);
 
         return [
             'day' => $resolved['day'],
@@ -112,8 +112,7 @@ class BackupRequestService
 
         $resolved = $this->resolver->resolveDayFolder($storage, $sourceFolder->name);
 
-        if (!$resolved['available']) {
-            // La solicitud se REGISTRA igual: el cliente pidió, y la respuesta
+        if (!$resolved['available']) {            // La solicitud se REGISTRA igual: el cliente pidió, y la respuesta
             // honesta es "ese día no tiene backup todavía / ya no está". Queda
             // en el historial con su motivo, sin enlace.
             $request = BackupRequest::create([
@@ -149,30 +148,47 @@ class BackupRequestService
 
         $expiresAt = $this->validityUntil();
 
-        $request = DB::transaction(function () use ($user, $sourceFolder, $storage, $motivo, $resolved, $expiresAt) {
-            $share = Share::create([
-                'file_id' => $resolved['file_id'],
-                'path_snapshot' => $resolved['relative_path'],
-                'token' => Str::random(32),
-                'password_hash' => null,
-                'expires_at' => $expiresAt,
-                'permissions' => 'read',
-                'created_by' => $user->id,
-            ]);
+        try {
+            $request = DB::transaction(function () use ($user, $sourceFolder, $storage, $motivo, $resolved, $expiresAt) {
+                $share = Share::create([
+                    'file_id' => $resolved['file_id'],
+                    'path_snapshot' => $resolved['relative_path'],
+                    'token' => Str::random(32),
+                    'password_hash' => null,
+                    'expires_at' => $expiresAt,
+                    'permissions' => 'read',
+                    'created_by' => $user->id,
+                ]);
 
-            return BackupRequest::create([
-                'user_id' => $user->id,
-                'source_storage_id' => $storage->id,
-                'source_folder_id' => $sourceFolder->id,
-                'backup_storage_id' => $resolved['backup_storage_id'],
-                'share_id' => $share->id,
-                'day' => $resolved['day'],
-                'motivo' => $motivo,
-                'status' => BackupRequest::STATUS_READY,
-                'backup_path' => $resolved['backup_path'],
-                'link_expires_at' => $expiresAt,
-            ]);
-        });
+                return BackupRequest::create([
+                    'user_id' => $user->id,
+                    'source_storage_id' => $storage->id,
+                    'source_folder_id' => $sourceFolder->id,
+                    'backup_storage_id' => $resolved['backup_storage_id'],
+                    'share_id' => $share->id,
+                    'day' => $resolved['day'],
+                    'motivo' => $motivo,
+                    'status' => BackupRequest::STATUS_READY,
+                    'backup_path' => $resolved['backup_path'],
+                    'link_expires_at' => $expiresAt,
+                ]);
+            });
+        } catch (QueryException $e) {
+            // Índice único parcial `(user_id, source_storage_id, day) WHERE
+            // status='ready'`: dos POST simultáneos para el mismo día no
+            // pueden mintear dos enlaces públicos. El que pierde la carrera
+            // devuelve la solicitud que ganó.
+            if (! $this->isUniqueViolation($e)) {
+                throw $e;
+            }
+
+            $existing = $this->findLive($user, $storage, $resolved['day']);
+            if ($existing !== null) {
+                return $existing;
+            }
+
+            throw $e;
+        }
 
         Log::info('backup_request.created', [
             'request_id' => $request->id,
@@ -298,6 +314,13 @@ class BackupRequestService
             return BackupRequest::STATUS_UNAVAILABLE;
         }
 
+        // El share_id apunta a una fila que ya no existe (borrada en cascada
+        // o desde el módulo de compartidos): el enlace no sirve.
+        $share = $request->relationLoaded('share') ? $request->share : $request->share()->first();
+        if ($share === null) {
+            return BackupRequest::STATUS_UNAVAILABLE;
+        }
+
         return BackupRequest::STATUS_READY;
     }
 
@@ -330,9 +353,21 @@ class BackupRequestService
      *
      * La autorización es la del storage de ORIGEN. El admin tiene bypass,
      * igual que en el módulo de compartidos.
+     *
+     * Guarda latente: el storage de origen NO puede ser el propio storage
+     * de backup. Hoy es inocuo (ningún cliente tiene permiso sobre el
+     * storage 34), pero sin este guard bastaría UNA fila en
+     * `user_storages` para que un cliente pidiera el master de un día YA
+     * DENTRO del árbol de producción, y el enlace apuntaría al árbol
+     * entero en vez de a un canal.
      */
     private function canRequest(User $user, StorageProvider $storage): bool
     {
+        $mapping = $storage->backupMapping();
+        if ($mapping !== null && (int) $mapping['storage']->id === (int) $storage->id) {
+            return false;
+        }
+
         if ($user->isAdmin()) {
             return true;
         }
@@ -342,6 +377,10 @@ class BackupRequestService
 
     /**
      * Solicitud viva del mismo usuario para el mismo storage y día.
+     *
+     * "Viva" = estado `ready` Y vigencia no vencida. Sin el filtro de
+     * vigencia, re-solicitar un día ya expirado devolvía la solicitud
+     * muerta (sin enlace) en vez de crear una nueva.
      */
     private function findLive(User $user, StorageProvider $storage, string $day): ?BackupRequest
     {
@@ -350,8 +389,20 @@ class BackupRequestService
             ->where('source_storage_id', $storage->id)
             ->where('day', $day)
             ->where('status', BackupRequest::STATUS_READY)
+            ->where(function ($q) {
+                $q->whereNull('link_expires_at')
+                    ->orWhere('link_expires_at', '>', Carbon::now());
+            })
             ->orderByDesc('id')
             ->first();
+    }
+
+    /**
+     * ¿La excepción es una violación de índice único?
+     */
+    private function isUniqueViolation(QueryException $e): bool
+    {
+        return ($e->errorInfo[0] ?? null) === '23505';
     }
 
     /**

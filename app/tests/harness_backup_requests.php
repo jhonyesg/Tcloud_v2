@@ -301,6 +301,97 @@ try {
         );
 
         // ------------------------------------------------------------------
+        h_section('el módulo de compartidos no puede editar ni borrar el enlace');
+        // Regresión de la revisión independiente: el share del backup se crea
+        // con created_by = solicitante, así que el cliente lo "poseía" en el
+        // módulo de compartidos y podía hacer PUT {"expires_at": null} para
+        // convertir el enlace de 2 días en un enlace PERMANENTE al master.
+        $shareCtrl = app(App\Http\Controllers\ShareController::class);
+        $expiresAntes = $share->expires_at?->toIso8601String();
+
+        // El controller resuelve el usuario por `session('user_id')`.
+        Illuminate\Support\Facades\Session::put('user_id', $usuario->id);
+
+        $resUpdate = $shareCtrl->update(new Illuminate\Http\Request(), $solicitud->share_id);
+        $statusUpdate = method_exists($resUpdate, 'getStatusCode') ? $resUpdate->getStatusCode() : 500;
+        h_check($statusUpdate === 403, 'editar el enlace de backup por /shares responde 403', "respondió {$statusUpdate}");
+
+        $share->refresh();
+        h_check(
+            $share->expires_at?->toIso8601String() === $expiresAntes,
+            'la vigencia del enlace no cambió (sigue siendo de 2 días)',
+            'la vigencia del enlace cambió'
+        );
+
+        $resDestroy = $shareCtrl->destroy($solicitud->share_id);
+        $statusDestroy = method_exists($resDestroy, 'getStatusCode') ? $resDestroy->getStatusCode() : 500;
+        h_check($statusDestroy === 403, 'borrar el enlace de backup por /shares responde 403', "respondió {$statusDestroy}");
+        h_check(Share::find($solicitud->share_id) !== null, 'el enlace de backup sigue existiendo', 'el enlace de backup se borró');
+        Illuminate\Support\Facades\Session::forget('user_id');
+
+        // La purga masiva tampoco puede llevárselo.
+        Illuminate\Support\Facades\Session::put('user_id', $usuario->id);
+        $resBulk = $shareCtrl->bulkDelete(new Illuminate\Http\Request([
+            'ids' => [$solicitud->share_id],
+            'confirm_count' => 1,
+        ]));
+        $bulk = json_decode($resBulk->getContent(), true);
+        h_check(
+            ($bulk['deleted_count'] ?? 0) === 0 && ($bulk['protected_count'] ?? 0) === 1,
+            'la purga masiva excluye el enlace de backup y lo reporta',
+            json_encode(['deleted' => $bulk['deleted_count'] ?? null, 'protected' => $bulk['protected_count'] ?? null])
+        );
+        h_check(Share::find($solicitud->share_id) !== null, 'el enlace de backup sobrevivió a la purga masiva', 'el enlace de backup se borró en la purga');
+        Illuminate\Support\Facades\Session::forget('user_id');
+
+        // ------------------------------------------------------------------
+        h_section('idempotencia con carrera: el índice único parcial existe');
+        $idx = DB::selectOne("SELECT indexname FROM pg_indexes WHERE tablename = 'backup_requests' AND indexname = 'idx_backup_requests_unique_live'");
+        h_check($idx !== null, 'existe el índice único parcial de solicitudes vivas', 'no existe el índice único parcial');
+
+        $violacion = null;
+        try {
+            DB::table('backup_requests')->insert([
+                'user_id' => $usuario->id,
+                'source_storage_id' => $SOURCE_ID,
+                'day' => $diaDisponible,
+                'motivo' => 'duplicado deliberado',
+                'status' => 'ready',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        } catch (Throwable $e) {
+            $violacion = $e;
+        }
+        h_check(
+            $violacion !== null && ($violacion->errorInfo[0] ?? null) === '23505',
+            'una segunda solicitud viva del mismo día viola el índice (23505)',
+            'la segunda solicitud viva NO violó el índice'
+        );
+
+        // ------------------------------------------------------------------
+        h_section('la consulta de elegibilidad NO escribe en el catálogo');
+        $antes = DB::table('files')->where('storage_provider_id', $BACKUP_ID)->count();
+        $service->eligibility($usuario, $carpeta);
+        $despues = DB::table('files')->where('storage_provider_id', $BACKUP_ID)->count();
+        h_check($antes === $despues, 'el GET de elegibilidad no crea filas de files', "antes {$antes}, después {$despues}");
+
+        // ------------------------------------------------------------------
+        h_section('guarda latente: el origen no puede ser el propio backup');
+        // Caso latente: el storage de ORIGEN es el propio árbol de backup.
+        $conMismo = clone $backup;
+        $conMismo->forceFill([
+            'backup_storage_id' => $BACKUP_ID,
+            'backup_folder_name' => '05_Redmas',
+        ]);
+        $guardia = (new ReflectionClass(App\Services\MisArchivos\BackupRequestService::class));
+        $metodo = $guardia->getMethod('canRequest');
+        $metodo->setAccessible(true);
+        $instancia = $service;
+        $puede = $metodo->invoke($instancia, $usuario, $conMismo);
+        h_check($puede === false, 'un storage que ES el árbol de backup no puede pedir backup', 'la guarda no bloqueó el caso latente');
+
+        // ------------------------------------------------------------------
         h_section('el material puede desaparecer sin romper el historial');
         // Se borra el share como lo haría el ON DELETE CASCADE de `files`.
         Share::where('id', $solicitud->share_id)->delete();

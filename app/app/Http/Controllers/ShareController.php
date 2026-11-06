@@ -529,6 +529,18 @@ class ShareController extends Controller
             return response()->json(['error' => 'Forbidden'], 403);
         }
 
+        // Los enlaces de backup los administra el submódulo de Mis Archivos:
+        // su vigencia (2 días) y su alcance (solo lectura) son parte del
+        // contrato de la solicitud, no una opción del propietario. Sin este
+        // guard, `PUT {"expires_at": null}` convertiría el enlace temporal al
+        // master de producción en un enlace PERMANENTE.
+        if ($this->isBackupManaged($share)) {
+            return response()->json([
+                'error' => 'Este enlace pertenece a una solicitud de backup. Revoca la solicitud en Mis Archivos para desactivarlo.',
+                'code' => 'backup_managed_share',
+            ], 403);
+        }
+
         $data = $request->validate([
             'permissions' => 'nullable|in:read,write,upload,full',
             'password' => 'nullable|string|min:4',
@@ -586,10 +598,56 @@ class ShareController extends Controller
             return response()->json(['error' => 'Forbidden'], 403);
         }
 
+        // Ver `update()`: un enlace de backup se revoca desde Mis Archivos,
+        // no desde el módulo de compartidos. Borrarlo aquí dejaría la
+        // solicitud apuntando a un enlace muerto.
+        if ($this->isBackupManaged($share)) {
+            return response()->json([
+                'error' => 'Este enlace pertenece a una solicitud de backup. Revoca la solicitud en Mis Archivos para desactivarlo.',
+                'code' => 'backup_managed_share',
+            ], 403);
+        }
+
         Cache::forget("share:meta:{$share->token}");
         $share->delete();
 
         return response()->json(['message' => 'Share deleted']);
+    }
+
+    /**
+     * ¿Este enlace lo administra el submódulo de solicitudes de backup?
+     *
+     * Los enlaces de backup se crean a nombre del solicitante (para que
+     * aparezcan en su historial), pero su vigencia y su alcance son parte del
+     * contrato de la solicitud. Editarlos o borrarlos desde el módulo de
+     * compartidos se lo saltaría.
+     */
+    private function isBackupManaged(Share $share): bool
+    {
+        return $share->relationLoaded('backupRequest')
+            ? $share->backupRequest !== null
+            : $share->backupRequest()->exists();
+    }
+
+    /**
+     * Ids de los enlaces de backup dentro de un conjunto (una sola query).
+     *
+     * @param  array<int,mixed>  $shareIds
+     * @return list<int>
+     */
+    private function backupManagedIds(array $shareIds): array
+    {
+        $ids = array_values(array_unique(array_map('intval', $shareIds)));
+        if ($ids === []) {
+            return [];
+        }
+
+        return Share::whereIn('id', $ids)
+            ->whereHas('backupRequest')
+            ->pluck('id')
+            ->map(fn ($id) => (int) $id)
+            ->values()
+            ->all();
     }
 
     /**
@@ -685,6 +743,15 @@ class ShareController extends Controller
 
         $shares = $query->get(['shares.id', 'shares.permissions', 'shares.expires_at', 'shares.file_id']);
 
+        // Los enlaces de backup los administra Mis Archivos: no entran en la
+        // depuración masiva. Se excluyen del conteo para que la
+        // previsualización y la depuración coincidan.
+        $protectedIds = $this->backupManagedIds($shares->pluck('id')->all());
+        if ($protectedIds !== []) {
+            $shares = $shares->reject(fn (Share $share) => in_array((int) $share->id, $protectedIds, true))->values();
+            $total = $shares->count();
+        }
+
         $missing = $shares->filter(fn (Share $share) => $share->file?->availability_state === 'missing')->count();
         $unknown = $shares->filter(fn (Share $share) => ($share->file?->availability_state ?? 'unknown') === 'unknown')->count();
 
@@ -697,6 +764,7 @@ class ShareController extends Controller
                 'unknown' => $unknown,
                 'permissions' => $shares->groupBy('permissions')->map->count(),
             ],
+            'protected_count' => count($protectedIds),
         ]);
     }
 
@@ -743,6 +811,14 @@ class ShareController extends Controller
         $authorizedIds = $shares->pluck('id')->map(fn ($id) => (int) $id)->values();
         $omittedIds = $allMatching ? collect() : $requestedIds->diff($authorizedIds)->values();
 
+        // Los enlaces de backup no se borran en la purga masiva: los
+        // administra el submódulo de Mis Archivos (ver `isBackupManaged()`).
+        // Se reportan aparte para que la UI explique por qué no se tocaron.
+        $protectedIds = $this->backupManagedIds($authorizedIds->all());
+        if ($protectedIds !== []) {
+            $authorizedIds = $authorizedIds->diff($protectedIds)->values();
+        }
+
         try {
             DB::transaction(function () use ($authorizedIds) {
                 foreach ($authorizedIds->chunk(100) as $chunk) {
@@ -776,6 +852,8 @@ class ShareController extends Controller
             'omitted_count' => $omittedIds->count(),
             'failed_count' => 0,
             'omitted_ids' => $omittedIds,
+            'protected_count' => count($protectedIds),
+            'protected_ids' => $protectedIds,
         ]);
     }
 

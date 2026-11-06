@@ -65,5 +65,6 @@
 ## 8. Cierre
 
 - [x] 8.1 Documentar en `AGENTS.md` el contrato: dónde vive el mapeo, cómo se resuelve la carpeta-día, por qué el share se crea por servicio interno y no por `ShareController::store()`, y por qué el cliente no recibe permisos sobre el storage de backup
-- [ ] 8.2 Revisar de forma independiente el flujo de escalada de privilegio (ítems de alto riesgo 2 y 3 del protocolo ODD): alcance del enlace, expiración, idempotencia, revocación y auditoría
+- [x] 8.2 Revisar de forma independiente el flujo de escalada de privilegio (ítems de alto riesgo 2 y 3 del protocolo ODD): alcance del enlace, expiración, idempotencia, revocación y auditoría
+  - Informe: 1 high (el cliente podía volver permanente el enlace vía `PUT /shares/{id}`), 2 medium (carrera de idempotencia sin índice único; `can_create_shares` ignorado) y 5 low. Los del change están corregidos y verificados (harness: 48 aserciones). El medium preexistente de `can_create_shares` queda como decisión de producto: los 6 clientes objetivo lo tienen en `false`, así que aplicarlo dejaría el módulo sin clientes. El medium preexistente del storage 5 exponiendo el árbol de producción queda documentado en AGENTS.md como decisión operativa.
 - [x] 8.3 Documentar el rollback: `git revert` + `migrate:rollback --step=2`, y el comportamiento de las solicitudes ya creadas si se borra la tabla

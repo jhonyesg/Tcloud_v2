@@ -2276,8 +2276,52 @@ El cliente **no** recibe filas en `user_storages` para el storage de backup:
 el árbol de producción no aparece en su listado de storages y el acceso es
 solo el enlace temporal.
 
-### `backup_requests` es la fuente de verdad, no el share
+### El enlace de backup lo administra Mis Archivos, no el módulo de compartidos
 
+El share se crea con `created_by = solicitante`, así que el cliente lo
+"poseía" en `/shares`. Eso abría una escalada: `PUT /shares/{id}` con
+`{"expires_at": null}` convertía el enlace de 2 días al master de producción
+en un enlace **permanente** (`ShareController::update()` solo autoriza por
+`created_by`, y `resolveUpdateExpiry()` acepta `null`).
+
+Por eso `ShareController` rechaza editar o borrar un enlace que tenga una
+solicitud de backup (`Share::backupRequest()`), y la purga masiva los excluye
+y los reporta en `protected_count` / `protected_ids`. La única vía para
+desactivarlo es **revocar la solicitud** en Mis Archivos.
+
+Si se agrega otra clase de enlace "gestionado por otro módulo", el patrón es
+el mismo: una relación desde `shares` hacia su dueño y un guard en el
+controller.
+
+### Idempotencia con carrera
+
+El invariante "un enlace vivo por (usuario, canal, día)" está respaldado por
+un índice único **parcial**:
+
+```sql
+CREATE UNIQUE INDEX idx_backup_requests_unique_live
+ON backup_requests (user_id, source_storage_id, day) WHERE status = 'ready';
+```
+
+Dos POST simultáneos para el mismo día no pueden mintear dos enlaces públicos:
+el que pierde la carrera captura el `23505` y devuelve la solicitud que ganó.
+
+### Caveat: el árbol de producción ya era alcanzable por el storage 5
+
+El razonamiento de seguridad de este módulo ("el master solo se alcanza por el
+enlace temporal") **no es el estado real del sistema**. El storage 5
+(`00 Discos`, `base_path = Tcloud`) indexa el árbol completo, así que bajo
+`Disco_D/backup%` tiene 3.150 filas, de ellas **842 carpetas-día** con
+**2.278 archivos de medios reales**. El usuario `santiago` tiene `read` sobre
+el storage 5.
+
+Es exposures **preexistente** (no lo introduce este change), pero invalida la
+premisa: el master de producción se puede listar y descargar hoy sin pasar
+por una solicitud de backup. Decisión del operador: des-indexar
+`Disco_D/backup*` del storage 5, o quitarle `read` a `santiago`, o aceptarlo
+explícitamente.
+
+### `backup_requests` es la fuente de verdad, no el share
 `shares.file_id` es FK `ON DELETE CASCADE` y el árbol rota (~13 carpetas-día
 rodantes): cuando la carpeta-día sale del disco, el prune borra su fila de
 `files` y el share **muere solo**, dejando un 404 mudo. `backup_requests`

@@ -74,7 +74,7 @@
 - [x] **T10 — Harness `tests/harness_backup_requests.php`** (S2,S4,S5,S6,S8,S9) — inline — done — commit: 69eefd3 — evidence: `harness_backup_requests.php` → 38 aserciones OK, 0 residuos en BD — risk: none
 - [x] **T11 — Verificación: harnesses existentes + `openspec validate`** (S1,S2,S3,S4,S5,S6,S7,S8,S9) — inline — done — commit: 82fc227 — evidence: 4 harnesses OK; `openspec validate --strict` válido; suite Unit sin regresiones — risk: none
 - [x] **T12 — Documentar el contrato en `AGENTS.md`** (S1,S2,S3,S4,S5,S6,S7,S8,S9) — inline — done — commit: 82fc227 — evidence: sección "Solicitud de backup de producción" en AGENTS.md — risk: none
-- [ ] **T13 — Verificador independiente del flujo de escalada** (S4,S5,S9) — delegated — in_progress — commit: - — evidence: subagente `ses_e50d9f1e4ffeKKygBvkza2HHJP` relanzado tras un error de API — risk: item 2 (revisión de seguridad obligatoria)
+- [x] **T13 — Verificador independiente del flujo de escalada** (S4,S5,S9) — delegated — done — commit: pendiente (este commit) — evidence: informe del subagente `ses_e50d9f1e4ffeKKygBvkza2HHJP`: 1 hallazgo high, 2 medium, 5 low; los high y medium del change están corregidos y verificados — risk: item 2 (revisión de seguridad obligatoria)
 - [x] **T14 — Mapeo real de los storages de origen** (S3,S7) — inline — done — commit: 69eefd3 — evidence: 21 filas con `backup_storage_id=34` verificadas en `storage_providers` — risk: item 1 (UPDATE sobre `storage_providers`)
 
 ## Acceptance Criteria
@@ -107,7 +107,8 @@ Checks observados (se completan a medida que avanza la implementación):
 | `php artisan view:cache` | OK — Blade compila |
 | Playwright `tests/playwright_backup_request.py` | OK — 28 aserciones, 0 errores de JavaScript (incluye el día sin backup, el enlace público 200 y la revocación) |
 | Suite `phpunit --testsuite Unit` | 407 tests: 10 errores + 10 fallos **idénticos** al commit 69eefd3 con el mismo `.env` y `bootstrap/cache/config.php` → 0 regresiones del change |
-| Verificador independiente (T13) | EN CURSO — subagente `ses_e50d9f1e4ffeKKygBvkza2HHJP` |
+| Verificador independiente (T13) | OK — informe recibido; 1 high + 2 medium + 5 low; los del change corregidos y verificados |
+| `php tests/harness_backup_requests.php` (tras las correcciones) | OK — 48 aserciones |
 
 ## Progress
 
@@ -167,3 +168,19 @@ T13: cerrar el informe del verificador independiente y aplicar los hallazgos que
 - **L9** — 2026-11-06 — **Hallazgo colateral: la cache de configuración de producción está vieja.** `app/bootstrap/cache/config.php` tiene fecha 27 de octubre. Eso hace que 3 tests de `TranscriptorSettingsTest` fallen (`target_pg_queue` 800 en vez de 140, freno 200 en vez de 0) — expectativas viejas contra la configuración vigente — y que `resume_remote_queue` no exista en `config/transcriptor.php`. NO es una regresión de este change: se comprobó levantando el commit 69eefd3 en un worktree con el mismo `.env` y el mismo `bootstrap/cache/config.php`, y el conjunto de fallos resultó idéntico. Lo que cambia es que **cualquier cambio de `.env` posterior al 27 de octubre no está vivo** hasta que se corra `php artisan config:cache`. No se ejecutó: es una acción de despliegue y la decisión es del operador.
 
 - **L10** — 2026-11-06 — **Estrategia de entrega**: la feature ya iba en 1.298 líneas (1.274 de código) cuando cruzó el presupuesto de 400 del protocolo ODD. Se preguntó la estrategia de encadenamiento al usuario y la pregunta fue descartada sin respuesta; se continúa con `ask-on-risk` en su forma por defecto (preguntar cuando el acumulado cruce el presupuesto). No se hace push, ni PR, ni merge en ningún caso.
+
+- **L11** — 2026-11-06 — **Revisión independiente de seguridad (T13)**: el subagente `ses_e50d9f1e4ffeKKygBvkza2HHJP` devolvió 1 hallazgo **high**, 2 **medium** y 5 **low**. Verifiqué los materiales y corregí los que son del change:
+
+  - **HIGH — el cliente podía convertir el enlace temporal en permanente.** El share se creaba con `created_by = solicitante`, así que el cliente lo "poseía" en `/shares`, y `ShareController::update()` solo autoriza por `created_by`: `PUT /shares/{id}` con `{"expires_at": null}` lo volvía un enlace PERMANENTE al master de producción. **Corregido**: `Share::backupRequest()` + guard en `update()`/`destroy()` (403) y exclusión en la purga masiva (`protected_count`/`protected_ids`). Mi docblock del servicio afirmaba lo contrario de lo que el código hacía.
+  - **MEDIUM — carrera de idempotencia.** `findLive()` era una consulta previa sin respaldo de base de datos: dos POST simultáneos mintaban dos enlaces. **Corregido** con índice único parcial `(user_id, source_storage_id, day) WHERE status='ready'` y captura del `23505`.
+  - **MEDIUM — `can_create_shares` ignorado.** Verificado: **los 6 clientes objetivo lo tienen en `false`** sobre el storage 6. Aplicarlo dejaría el módulo sin clientes. **Decisión: no se aplica**; se reporta al operador como decisión de producto (y queda de paso el hallazgo de que ese flag no se aplica en NINGÚN sitio del sistema, ni siquiera en `ShareController::store()`).
+  - **LOW — `findLive()` no miraba la vigencia**: re-solicitar un día expirado devolvía la solicitud muerta sin enlace. Corregido.
+  - **LOW — `eligibility()` escribía en el catálogo** (un GET que inserta filas). Corregido: `resolveDayFolder(..., materialize: false)`.
+  - **LOW — `MapBackupStorages --apply` no revalidaba** que la carpeta existiera. Corregido.
+  - **LOW — `motivo` sin tope de longitud** (DoS de almacenamiento). Corregido (`max:2000`).
+  - **LOW — guarda latente**: un storage que es su propio destino de backup. Corregido.
+  - **LOW — `status='expired'` nunca se persistía** (se calcula en lectura). No se cambia: el comportamiento observable es correcto.
+
+  El informe verificó como **correctos**, entre otros: la autorización por storage de ORIGEN, la contención de la ruta (CHECK en BD + comparación por cadena), el `permissions='read'` con el public controller bloqueando toda escritura, la revocación (olvida la cache `share:meta:{token}` y el controller revalida en cada request), el scoping estricto del historial, el auth por `session('user_id')`, el CSRF y el orden de las rutas.
+
+  **MEDIUM preexistente que NO se corrige aquí**: el árbol de producción es alcanzable por el storage 5 (`00 Discos`), que tiene `read` para `santiago` y 3.150 filas bajo `Disco_D/backup%` (842 carpetas-día, 2.278 medios reales). La premisa de seguridad del módulo ("el master solo se alcanza por el enlace temporal") es falsa en el sistema real. Es exposures preexistente y su corrección es una decisión operativa (des-indexar `Disco_D/backup*` del storage 5, o quitarle `read` a `santiago`). Queda documentado en AGENTS.md.

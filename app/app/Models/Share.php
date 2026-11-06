@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class Share extends Model
 {
@@ -32,6 +33,20 @@ class Share extends Model
     public function accessLogs(): HasMany
     {
         return $this->hasMany(ShareAccessLog::class);
+    }
+
+    /**
+     * Solicitud de backup que originó este enlace, si la hay.
+     *
+     * Los enlaces de backup los administra el submódulo de Mis Archivos: su
+     * vigencia (2 días) y su alcance (solo lectura) son parte del contrato de
+     * la solicitud, no una opción del propietario del enlace. Por eso el
+     * módulo de compartidos se niega a editarlos o borrarlos: la vía es
+     * revocar la solicitud.
+     */
+    public function backupRequest(): HasOne
+    {
+        return $this->hasOne(BackupRequest::class, 'share_id');
     }
 
     public function isExpired(): bool

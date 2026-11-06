@@ -169,9 +169,14 @@ class MapBackupStorages extends Command
         }
 
         $written = 0;
-        DB::transaction(function () use ($assignment, $explicit, $rootId, &$written) {
+        $skipped = 0;
+        DB::transaction(function () use ($assignment, $explicit, $rootId, $basePath, &$written, &$skipped) {
             foreach ($assignment as $storageId => $folder) {
                 if (isset($explicit[$storageId])) {
+                    continue;
+                }
+                if (! $this->isWritableFolder($basePath, $folder)) {
+                    $skipped++;
                     continue;
                 }
                 StorageProvider::where('id', $storageId)->update([
@@ -182,6 +187,13 @@ class MapBackupStorages extends Command
             }
 
             foreach ($explicit as $storageId => $folder) {
+                // El mapeo explícito NO se escribe a ciegas: la carpeta tiene
+                // que existir bajo el root y ser un único segmento de nombre.
+                if (! $this->isWritableFolder($basePath, $folder)) {
+                    $this->warn("Ignorado --map={$storageId}:{$folder}: no existe bajo {$basePath} o no es un nombre simple.");
+                    $skipped++;
+                    continue;
+                }
                 StorageProvider::where('id', $storageId)->update([
                     'backup_storage_id' => $rootId,
                     'backup_folder_name' => $folder,
@@ -191,8 +203,31 @@ class MapBackupStorages extends Command
         });
 
         $this->info("Mapeos escritos: {$written}");
+        if ($skipped > 0) {
+            $this->warn("Mapeos omitidos: {$skipped}");
+        }
 
         return Command::SUCCESS;
+    }
+
+    /**
+     * ¿La carpeta es escribible como destino de un mapeo?
+     *
+     * Tiene que existir bajo el root del árbol de backup y ser un único
+     * segmento de nombre (sin `/`, sin `..`, sin `%`). El CHECK de la base
+     * también lo prohíbe, pero un mapeo que apunta a algo inexistente deja
+     * el storage con un vínculo que nunca resolverá.
+     */
+    private function isWritableFolder(string $basePath, string $folder): bool
+    {
+        if ($folder === '' || str_contains($folder, '/') || str_contains($folder, '\\')) {
+            return false;
+        }
+        if (str_contains($folder, '..') || str_contains($folder, '%')) {
+            return false;
+        }
+
+        return is_dir($basePath . '/' . $folder);
     }
 
     /**
