@@ -11,6 +11,7 @@ use App\Services\StorageSyncService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Session;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
@@ -266,7 +267,12 @@ class FileController extends Controller
             }
 
             if (!$user->hasStoragePermission($request->storage_id, 'write') && !$user->isAdmin()) {
-                return response()->json(['error' => 'Write permission required'], 403);
+                Log::info('folder.create_rejected_403', [
+                    'user_id' => $user->id,
+                    'storage_id' => $request->storage_id,
+                    'reason' => 'permission',
+                ]);
+                return response()->json(['error' => 'No tienes permiso para crear carpetas en este almacenamiento'], 403);
             }
 
             $parentId = $request->parent_id;
@@ -300,8 +306,25 @@ class FileController extends Controller
                 return response()->json(['error' => 'Invalid path'], 400);
             }
             if (!is_dir($physicalPath)) {
-                if (!mkdir($physicalPath, 0755, true)) {
-                    return response()->json(['error' => 'No se pudo crear el directorio'], 500);
+                if (!is_writable(dirname($physicalPath))) {
+                    Log::error('folder.create_failed', [
+                        'storage_id' => $storageId,
+                        'physicalPath' => $physicalPath,
+                        'reason' => 'parent_not_writable',
+                        'uid' => posix_geteuid(),
+                    ]);
+                    return response()->json(['error' => 'El directorio no es escribible por el usuario del servidor'], 500);
+                }
+                try {
+                    mkdir($physicalPath, 0755, true);
+                } catch (\Throwable $e) {
+                    Log::error('folder.create_failed', [
+                        'storage_id' => $storageId,
+                        'physicalPath' => $physicalPath,
+                        'reason' => 'mkdir_exception',
+                        'message' => $e->getMessage(),
+                    ]);
+                    return response()->json(['error' => 'No se pudo crear el directorio en el almacenamiento: ' . $e->getMessage()], 500);
                 }
             }
         }
@@ -345,12 +368,19 @@ class FileController extends Controller
         }
 
         $request->validate([
-            'name' => 'sometimes|string|max:255',
+            'name' => 'sometimes|string|max:255|regex:/^[^\/\\\\\.](?:[^\/\\\\]{0,253}[^\/\\\\\.])?$/',
+        ], [
+            'name.regex' => 'El nombre no puede estar vacío, empezar/terminar con punto, ni contener / ni \\',
         ]);
 
         if ($request->has('name')) {
+            $newName = trim($request->name);
+            if ($newName === $file->name) {
+                return response()->json($file);
+            }
+
             $existing = File::where('parent_id', $file->parent_id)
-                ->where('name', $request->name)
+                ->where('name', $newName)
                 ->where('id', '!=', $id)
                 ->first();
 
@@ -358,7 +388,59 @@ class FileController extends Controller
                 return response()->json(['error' => 'A file with this name already exists'], 409);
             }
 
-            $file->update(['name' => $request->name]);
+            $storage = $file->storageProvider;
+            if (!$storage || $storage->type !== 'local') {
+                return response()->json(['error' => 'Only supported for local storage'], 400);
+            }
+
+            $realBase = realpath($storage->base_path);
+            if (!$realBase) {
+                return response()->json(['error' => 'Storage path not found'], 404);
+            }
+
+            $srcPhysical = $realBase . '/' . $file->path;
+            $srcReal = realpath($srcPhysical);
+            if (!$srcReal || !str_starts_with($srcReal, $realBase)) {
+                return response()->json(['error' => 'Source path not found on disk'], 404);
+            }
+
+            $parentDir = dirname($srcReal);
+            $dstPhysical = $parentDir . '/' . $newName;
+            $newRelativePath = dirname($file->path) === '.' ? $newName : dirname($file->path) . '/' . $newName;
+
+            try {
+                if (!@rename($srcReal, $dstPhysical)) {
+                    $err = error_get_last();
+                    \Illuminate\Support\Facades\Log::error("update: rename failed for [{$srcReal}] -> [{$dstPhysical}]: " . ($err['message'] ?? 'unknown'));
+                    return response()->json([
+                        'error' => 'No se pudo renombrar el archivo en disco (permisos del servidor o el destino no es escribible). El registro de BD no fue modificado.',
+                        'permission_denied' => true,
+                    ], 500);
+                }
+            } catch (\ErrorException $e) {
+                \Illuminate\Support\Facades\Log::error("update: rename exception for [{$srcReal}] -> [{$dstPhysical}]: " . $e->getMessage());
+                return response()->json([
+                    'error' => 'No se pudo renombrar el archivo en disco: ' . $e->getMessage(),
+                    'permission_denied' => str_contains($e->getMessage(), 'Permission denied'),
+                ], 500);
+            }
+
+            if ($file->is_folder) {
+                $oldPrefix = $file->path . '/';
+                $newPrefix = $newRelativePath . '/';
+                $offset = (int) (strlen($oldPrefix) + 1);
+                \Illuminate\Support\Facades\DB::statement(
+                    "UPDATE files SET path = ? || SUBSTRING(path FROM ?::int) WHERE storage_provider_id = ? AND path LIKE ?",
+                    [$newPrefix, $offset, $storage->id, $oldPrefix . '%']
+                );
+            }
+
+            $file->update([
+                'name' => $newName,
+                'path' => $newRelativePath,
+            ]);
+
+            return response()->json($file->fresh());
         }
 
         return response()->json($file);
@@ -377,9 +459,34 @@ class FileController extends Controller
         }
 
         if ($file->is_folder) {
-            $this->deleteRecursive($file);
+            // El borrado es DISCO-PRIMERO: se purga el arbol fisico completo
+            // (incluye contenido NO rastreado en BD, p. ej. creado por crons que
+            // corren como root) y solo si eso tiene exito se toca la BD. Si el
+            // disco falla, se conservan las filas y se responde error, para no
+            // dejar un falso "Deleted" que reaparece en el siguiente listado.
+            $failure = $this->deleteRecursive($file);
+            if ($failure !== null) {
+                Log::warning('folder.delete_failed', [
+                    'file_id' => $file->id,
+                    'path' => $file->path,
+                    'failed_path' => $failure,
+                    'parent_writable' => is_writable(dirname($failure)),
+                    'uid' => function_exists('posix_geteuid') ? posix_geteuid() : null,
+                ]);
+
+                return response()->json([
+                    'error' => 'No se pudo eliminar la carpeta: un elemento no es escribible por el usuario del servidor (' . basename($failure) . '). Pide al administrador normalizar los permisos (chown -R www:storage-admins).',
+                    'permission_denied' => true,
+                ], 500);
+            }
         } else {
-            $this->deleteFile($file);
+            $diskOk = $this->deleteFile($file);
+            if (!$diskOk) {
+                return response()->json([
+                    'error' => 'No se pudo eliminar el archivo en disco (permisos del servidor). El registro de BD fue removido. Aplica chown -R www:www sobre la raíz del storage.',
+                    'permission_denied' => true,
+                ], 500);
+            }
         }
 
         return response()->json(['message' => 'Deleted']);
@@ -439,7 +546,7 @@ class FileController extends Controller
         $file->move($destDir, $filename);
 
         $physicalPath = $destDir . '/' . $filename;
-        $modifiedAt = file_exists($physicalPath) ? \Carbon\Carbon::createFromTimestamp(filemtime($physicalPath)) : null;
+        $modifiedAt = \App\Support\FilesystemTime::fromPath($physicalPath);
 
         $storedFile = File::create([
             'name' => $filename,
@@ -957,29 +1064,191 @@ class FileController extends Controller
         return $name;
     }
 
-    private function deleteRecursive(File $folder): void
+    /**
+     * Purga el subarbol fisico de un directorio de disco (recursivo, sin
+     * depender de las filas de `files`). Incluye contenido NO rastreado en BD
+     * (p. ej. `pdf_paginas_ocr/*.pdf` creados por un cron).
+     *
+     * Recorre con `RecursiveDirectoryIterator` en modo CHILD_FIRST para poder
+     * rmdir los directorios vacios al final. Devuelve la ruta del PRIMER
+     * elemento que no pudo eliminarse, o `null` si todo se borro.
+     *
+     * No lanza excepciones: los `unlink`/`rmdir` fallidos se capturan y se
+     * reportan via el string de retorno para que el caller arme el 500.
+     */
+    private function purgeDirectoryTree(string $dirAbsolute): ?string
     {
-        $children = File::where('parent_id', $folder->id)->with('storageProvider')->get();
-        foreach ($children as $child) {
-            if ($child->is_folder) {
-                $this->deleteRecursive($child);
-            } else {
-                $this->deleteFile($child);
-            }
+        if (!is_dir($dirAbsolute)) {
+            return null;
         }
 
-        $storage = $folder->storageProvider;
-        if ($storage && $storage->type === 'local' && $folder->path) {
-            $dirPath = rtrim($storage->base_path, '/') . '/' . $folder->path;
-            if (is_dir($dirPath)) {
-                @rmdir($dirPath);
+        // Nunca atravesar limites de filesystem: si un subdirectorio es un
+        // mountpoint anidado (otro device), borrarlo recursivamente seria
+        // destructivo. El filtro impide que el iterador DESCENDA en el.
+        $rootDev = @stat($dirAbsolute)['dev'] ?? null;
+        $nestedMount = null;
+
+        $directory = new \RecursiveDirectoryIterator($dirAbsolute, \FilesystemIterator::SKIP_DOTS);
+        $filter = new \RecursiveCallbackFilterIterator(
+            $directory,
+            function (\SplFileInfo $current) use ($rootDev, &$nestedMount) {
+                $itemDev = @stat($current->getPathname())['dev'] ?? null;
+                if ($rootDev !== null && $itemDev !== null && $itemDev !== $rootDev) {
+                    $nestedMount = $current->getPathname();
+                    \Illuminate\Support\Facades\Log::warning('purgeDirectoryTree: mountpoint anidado, se omite', [
+                        'path' => $current->getPathname(),
+                    ]);
+                    return false;
+                }
+                return true;
             }
+        );
+
+        $failure = null;
+        try {
+            $iterator = new \RecursiveIteratorIterator($filter, \RecursiveIteratorIterator::CHILD_FIRST);
+            foreach ($iterator as $item) {
+                $path = $item->getPathname();
+                if ($failure !== null) {
+                    continue;
+                }
+                try {
+                    if ($item->isDir() && !$item->isLink()) {
+                        if (!@rmdir($path)) {
+                            $failure = $path;
+                        }
+                    } else {
+                        if (!@unlink($path)) {
+                            $failure = $path;
+                        }
+                    }
+                } catch (\ErrorException $e) {
+                    $failure = $path;
+                }
+            }
+
+            // Si se omitio un mountpoint anidado, no intentamos borrar el dir
+            // raiz como si estuviera vacio: reportamos ese path como fallo.
+            if ($failure === null && $nestedMount !== null) {
+                $failure = $nestedMount;
+            }
+
+            if ($failure === null) {
+                try {
+                    if (!@rmdir($dirAbsolute)) {
+                        $failure = $dirAbsolute;
+                    }
+                } catch (\ErrorException $e) {
+                    $failure = $dirAbsolute;
+                }
+            }
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('purgeDirectoryTree: excepcion', [
+                'dir' => $dirAbsolute,
+                'message' => $e->getMessage(),
+            ]);
+            return $failure ?? $dirAbsolute;
         }
 
-        $folder->delete();
+        return $failure;
     }
 
-    private function deleteFile(File $file): void
+    /**
+     * Elimina recursivamente una carpeta: purga el ARBOL FISICO completo
+     * (incluye contenido no rastreado en BD) y, solo si el disco quedo limpio,
+     * borra las filas de `files` del subarbol.
+     *
+     * Devuelve `null` si todo tuvo exito, o la ruta del primer elemento que no
+     * pudo eliminarse. Si hubo fallo fisico, NO se borra ninguna fila, para que
+     * el listado siga siendo coherente con el disco y el operador vea el error.
+     */
+    private function deleteRecursive(File $folder): ?string
+    {
+        $storage = $folder->storageProvider;
+
+        // 0) Guard de seguridad: el path fisico no puede contener la raiz de
+        //    OTRO StorageProvider (los storages pueden estar anidados, ej.
+        //    storage 5 `00 Discos` contiene los base_path de canal). Purga
+        //    fisica ciega sobre ese path destruiria datos de otro storage.
+        if ($storage && $storage->type === 'local' && $folder->path) {
+            $dirAbsolute = rtrim($storage->base_path, '/') . '/' . $folder->path;
+            $nestedStorage = StorageProvider::query()
+                ->where('id', '!=', $storage->id)
+                ->whereNotNull('base_path')
+                ->where(function ($q) use ($dirAbsolute) {
+                    $q->where('base_path', $dirAbsolute)
+                        ->orWhere('base_path', 'LIKE', rtrim($dirAbsolute, '/') . '/%');
+                })
+                ->first(['id', 'name', 'base_path']);
+
+            if ($nestedStorage) {
+                \Illuminate\Support\Facades\Log::warning('deleteRecursive: path contiene otro storage, se rechaza', [
+                    'storage_id' => $storage->id,
+                    'path' => $folder->path,
+                    'nested_storage_id' => $nestedStorage->id,
+                    'nested_base_path' => $nestedStorage->base_path,
+                ]);
+
+                return $dirAbsolute;
+            }
+        }
+
+        // 1) Purga fisica autoritativa (no depende de `files`).
+        if ($storage && $storage->type === 'local' && $folder->path) {
+            $dirAbsolute = rtrim($storage->base_path, '/') . '/' . $folder->path;
+            $failure = $this->purgeDirectoryTree($dirAbsolute);
+            if ($failure !== null) {
+                \Illuminate\Support\Facades\Log::warning("deleteRecursive: no se pudo purgar [{$failure}] (permission denied o no vacio)");
+                return $failure;
+            }
+        }
+
+        // 2) Disco limpio: borrar filas del subarbol (la FK ON DELETE CASCADE
+        //    limpia los descendientes por `parent_id`) y los thumbs de clips
+        //    de cada descendiente.
+        $descendantIds = $this->descendantFileIds($folder->id);
+        foreach ($descendantIds as $id) {
+            $this->deleteClipThumbs($id);
+        }
+        $this->deleteClipThumbs($folder->id);
+        $folder->delete();
+
+        return null;
+    }
+
+    /**
+     * IDs de todos los descendientes de una carpeta (sin incluirla), via CTE
+     * recursivo. Usado para limpiar recursos derivados (clip-thumbs) antes de
+     * que el CASCADE borre las filas.
+     *
+     * @return list<int>
+     */
+    private function descendantFileIds(int $folderId): array
+    {
+        $rows = DB::select("
+            WITH RECURSIVE tree AS (
+                SELECT id FROM files WHERE parent_id = ?
+                UNION ALL
+                SELECT f.id FROM files f INNER JOIN tree t ON f.parent_id = t.id
+            )
+            SELECT id FROM tree
+        ", [$folderId]);
+
+        return array_map(fn($r) => (int) $r->id, $rows);
+    }
+
+    /**
+     * Elimina un archivo de disco (si aplica) y de BD.
+     *
+     * Retorna `true` si el borrado en disco fue exitoso (o no aplicaba),
+     * `false` si falló por permisos u otro error de filesystem. En ese caso
+     * la fila de BD IGUAL se elimina para no dejar huérfanos, pero se loguea
+     * el path problemático para que el operador pueda aplicar chown.
+     *
+     * La conversión de warning -> exception de PHP 8.4 se captura aquí para
+     * que el endpoint devuelva un mensaje útil en lugar de un 500 opaco.
+     */
+    private function deleteFile(File $file): bool
     {
         $storage = $file->storageProvider;
 
@@ -990,21 +1259,29 @@ class FileController extends Controller
             }
         }
 
+        $diskOk = true;
         if ($storage && $storage->type === 'local' && $file->path) {
             $fullPath = rtrim($storage->base_path, '/') . '/' . $file->path;
             if (is_file($fullPath)) {
-                if (!unlink($fullPath)) {
-                    \Illuminate\Support\Facades\Log::error("FileController: unlink failed for [{$fullPath}]");
+                try {
+                    if (!@unlink($fullPath)) {
+                        \Illuminate\Support\Facades\Log::error("deleteFile: unlink returned false for [{$fullPath}]");
+                        $diskOk = false;
+                    }
+                } catch (\ErrorException $e) {
+                    \Illuminate\Support\Facades\Log::error("deleteFile: unlink exception for [{$fullPath}]: " . $e->getMessage());
+                    $diskOk = false;
                 }
             } else {
-                \Illuminate\Support\Facades\Log::warning("FileController: file not found on disk [{$fullPath}]");
+                \Illuminate\Support\Facades\Log::warning("deleteFile: file not found on disk [{$fullPath}]");
             }
         } elseif (!$storage) {
-            \Illuminate\Support\Facades\Log::warning("FileController: no storage provider for file [{$file->id}] [{$file->path}]");
+            \Illuminate\Support\Facades\Log::warning("deleteFile: no storage provider for file [{$file->id}] [{$file->path}]");
         }
 
         $this->deleteClipThumbs($file->id);
         $file->delete();
+        return $diskOk;
     }
 
     private function deleteClipThumbs(int $fileId): void
@@ -1073,7 +1350,7 @@ class FileController extends Controller
             return response()->json(['error' => 'Error al copiar el archivo en disco'], 500);
         }
 
-        $modifiedAt = file_exists($dstPhysical) ? \Carbon\Carbon::createFromTimestamp(filemtime($dstPhysical)) : null;
+        $modifiedAt = \App\Support\FilesystemTime::fromPath($dstPhysical);
 
         $newFile = File::create([
             'name' => $file->name,
@@ -1208,9 +1485,7 @@ class FileController extends Controller
                     copy($srcPhysical, $dstChildPhysical);
                 }
 
-                $modifiedAt = file_exists($dstChildPhysical)
-                    ? \Carbon\Carbon::createFromTimestamp(filemtime($dstChildPhysical))
-                    : null;
+                $modifiedAt = \App\Support\FilesystemTime::fromPath($dstChildPhysical);
 
                 File::create([
                     'name' => $child->name,

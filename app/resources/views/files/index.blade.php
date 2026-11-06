@@ -2,6 +2,8 @@
 
 @section('title', 'Archivos - Tcloud')
 
+@php($defaultExpiryDays = (int) config('shares.default_expiry_days', 30))
+
 @section('content')
 <style>
 .txt-editor-nowrap { white-space: pre; overflow-x: auto; }
@@ -43,7 +45,8 @@ document.addEventListener('alpine:init', () => {
     shareForm: {
         permissions: 'read',
         password: '',
-        expires_at: ''
+        expires_at: '',
+        never_expires: false
     },
     shareFeedback: { type: '', message: '' },
     viewerOpen: false,
@@ -530,6 +533,7 @@ deleteConfirmFile: null,
             scan_untrusted: 'el disco no respondio de forma fiable',
             sync_disabled: 'la sincronizacion esta desactivada',
             path_missing: 'la ruta ya no existe en disco',
+            path_unreadable: 'el directorio no es legible por el usuario del servidor',
             path_outside_base: 'la ruta queda fuera del storage',
             unknown_folder: 'la carpeta ya no existe en la base de datos',
         }[stats.status];
@@ -855,7 +859,7 @@ deleteConfirmFile: null,
                 this.currentViewerFile = { ...this.currentViewerFile, _v: Date.now() };
             } else {
                 const data = await res.json();
-                alert('Error al guardar: ' + (data.error || res.status));
+                this.showToast('Error al guardar: ' + (data.error || data.message || ('HTTP ' + res.status)), 'error', 5000);
             }
         } finally {
             this.imgSaving = false;
@@ -902,10 +906,11 @@ deleteConfirmFile: null,
         if (res.ok) {
             this.showNewFolderModal = false;
             if (this.$refs.folderName) this.$refs.folderName.value = '';
+            this.showToast('Carpeta creada correctamente', 'success', 3000);
             this.loadFiles();
         } else {
             const data = await res.json().catch(() => ({}));
-            alert('Error al crear carpeta: ' + (data.error || res.status));
+            this.showToast('Error al crear carpeta: ' + (data.error || data.message || ('HTTP ' + res.status)), 'error', 5000);
         }
     },
 
@@ -917,7 +922,12 @@ deleteConfirmFile: null,
         this.selectedShareIds = [];
         this.bulkDeleteLoading = false;
         this.editingShareId = null;
-        this.shareForm = { permissions: 'read', password: '', expires_at: '' };
+        // `never_expires` DEBE existir siempre: el input usa
+        // :disabled="shareForm.never_expires" y Alpine deja el atributo
+        // `disabled` aplicado cuando la clave esta ausente, lo que hacia que
+        // el campo de fecha naciera bloqueado ("no se deja asignar hasta que
+        // agrego uno"). Ver change fix-fechas-mis-archivos-shares.
+        this.shareForm = { permissions: 'read', password: '', expires_at: '', never_expires: false };
         this.shareFeedback = { type: '', message: '' };
         await this.loadFileShares(file.id);
     },
@@ -1062,9 +1072,13 @@ deleteConfirmFile: null,
             body: JSON.stringify({ name: newName })
         });
         if (res.ok) {
-            const updated = await res.json();
-            const idx = this.files.findIndex(f => f.id === file.id);
-            if (idx !== -1) this.files[idx] = { ...this.files[idx], name: updated.name };
+            this.showToast('Renombrado correctamente', 'success', 3000);
+            await this.loadFiles();
+        } else {
+            let data = {};
+            try { data = await res.json(); } catch (e) {}
+            const errMsg = data.error || ('HTTP ' + res.status);
+            this.showToast('Error al renombrar: ' + errMsg, 'error', 5000);
         }
     },
 
@@ -1136,13 +1150,13 @@ deleteConfirmFile: null,
     async openCopyMoveModal(file, action) {
         this.copyMoveSourceFile = file;
         this.copyMoveAction = action;
-        this.copyMoveDestFolderId = null;
-        this.copyMoveDestLabel = 'Raíz';
+        this.copyMoveDestFolderId = this.currentFolder;
+        this.copyMoveDestLabel = this.currentFolderName || 'Raíz';
         this.copyMoveBreadcrumb = [];
         this.copyMoveError = null;
         this.copyMoveFolders = [];
         this.showCopyMoveModal = true;
-        await this.loadCopyMoveFolders(null);
+        await this.loadCopyMoveFolders(this.currentFolder);
     },
 
     async loadCopyMoveFolders(parentId) {
@@ -1152,7 +1166,8 @@ deleteConfirmFile: null,
         if (parentId !== null) url += '&parent_id=' + parentId;
         const res = await apiFetch(url, { credentials: 'include', headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' } });
         const data = await res.json().catch(() => []);
-        this.copyMoveFolders = (Array.isArray(data) ? data : []).filter(f => f.is_folder);
+        const list = Array.isArray(data) ? data : (data?.files ?? []);
+        this.copyMoveFolders = list.filter(f => f.is_folder);
         this.copyMoveLoading = false;
     },
 
@@ -1161,6 +1176,27 @@ deleteConfirmFile: null,
         this.copyMoveDestLabel = folder.name;
         this.copyMoveBreadcrumb.push({ id: folder.id, name: folder.name });
         await this.loadCopyMoveFolders(folder.id);
+    },
+
+    async navigateCopyMoveUp() {
+        if (this.copyMoveDestFolderId === null) return;
+        try {
+            const res = await apiFetch('/files/' + this.copyMoveDestFolderId, {
+                credentials: 'include',
+                headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            });
+            if (!res.ok) return;
+            const data = await res.json();
+            const parentId = data?.parent_id ?? null;
+            this.copyMoveDestFolderId = parentId;
+            this.copyMoveDestLabel = 'Raíz';
+            if (this.copyMoveBreadcrumb.length > 0) {
+                this.copyMoveBreadcrumb.pop();
+            }
+            await this.loadCopyMoveFolders(parentId);
+        } catch (e) {
+            console.error('navigateCopyMoveUp failed', e);
+        }
     },
 
     async navigateCopyMoveBreadcrumb(index) {
@@ -1218,7 +1254,11 @@ deleteConfirmFile: null,
         });
         if (res.ok) {
             this.files = this.files.filter(f => f.id !== file.id);
+            this.showToast('Eliminado correctamente', 'success', 3000);
+            return;
         }
+        const data = await res.json().catch(() => ({}));
+        this.showToast(data.error || ('No se pudo eliminar (HTTP ' + res.status + ').'), 'error', 6000);
     },
 
     async executeDeleteSelected() {
@@ -1227,6 +1267,7 @@ deleteConfirmFile: null,
         this.selectedFiles = [];
         const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
         let errors = 0;
+        let firstError = null;
         for (const file of toDelete) {
             const res = await apiFetch('/files/' + file.id, {
                 method: 'DELETE',
@@ -1241,10 +1282,16 @@ deleteConfirmFile: null,
                 this.files = this.files.filter(f => f.id !== file.id);
             } else {
                 errors++;
+                if (!firstError) {
+                    const data = await res.json().catch(() => ({}));
+                    firstError = data.error || ('HTTP ' + res.status);
+                }
             }
         }
         if (errors > 0) {
-            this.showToast(errors + ' elemento(s) no se pudieron eliminar.');
+            this.showToast(errors + ' elemento(s) no se pudieron eliminar. ' + (firstError || ''), 'error', 7000);
+        } else if (toDelete.length > 0) {
+            this.showToast(toDelete.length + ' elemento(s) eliminado(s).', 'success', 3000);
         }
     },
 
@@ -1269,8 +1316,11 @@ deleteConfirmFile: null,
             }
         });
         if (res.ok) {
-            const data = await res.json();
-            this.fileShares = Array.isArray(data) ? data : (data.shares || []);
+            const payload = await res.json();
+            // El endpoint publica la forma `{ data, meta, counters }`. Leer
+            // `payload.shares` devolvia `undefined` y la pestana SIEMPRE
+            // mostraba "No hay enlaces compartidos para este archivo".
+            this.fileShares = Array.isArray(payload) ? payload : (payload.data || []);
         }
     },
 
@@ -1289,20 +1339,33 @@ deleteConfirmFile: null,
                 file_id: this.selectedFile.id,
                 permissions: this.shareForm.permissions,
                 password: this.shareForm.password || null,
-                expires_at: this.shareForm.expires_at || null
+                expires_at: this.shareForm.never_expires ? null : (this.shareForm.expires_at || null),
+                never_expires: this.shareForm.never_expires
             })
         });
 
         if (res.ok) {
-            const newShare = await res.json();
-            this.fileShares.push(newShare);
-            this.shareForm = { permissions: 'read', password: '', expires_at: '' };
+            // No se inserta la respuesta cruda en la lista: se vuelve a pedir
+            // el listado del recurso para que la vista quede consistente con
+            // el servidor y no dependa de la forma de la respuesta.
+            await this.loadFileShares(this.selectedFile.id);
+            this.shareForm = { permissions: 'read', password: '', expires_at: '', never_expires: false };
             this.shareFeedback = { type: 'success', message: 'Enlace generado correctamente' };
             setTimeout(() => this.shareFeedback = { type: '', message: '' }, 3000);
         } else {
             const error = await res.json();
-            this.shareFeedback = { type: 'error', message: error.error || 'Error al generar enlace' };
+            this.shareFeedback = { type: 'error', message: this.shareApiError(error, res) };
         }
+    },
+
+    shareApiError(payload, res) {
+        if (payload && payload.errors) {
+            const first = Object.values(payload.errors)[0];
+            const message = Array.isArray(first) ? first[0] : first;
+            if (message) return String(message);
+        }
+        if (payload && payload.message) return String(payload.message);
+        return (payload && payload.error) ? String(payload.error) : 'Error ' + res.status;
     },
 
     copyShareLink(token) {
@@ -1348,26 +1411,51 @@ deleteConfirmFile: null,
         return visible.some(s => this.selectedShareIds.includes(s.id)) && !this.allFilteredSharesSelected();
     },
 
+    /**
+     * Borrado masivo de los enlaces seleccionados de la pestana.
+     *
+     * Una sola operacion bulk server-side, NO un DELETE por enlace: el
+     * servidor revalida propiedad/autorizacion, revalida el alcance y
+     * devuelve eliminados/omitidos/fallidos. El contrato `shares-tabs-bulk-delete`
+     * prohibe depender de envios individuales.
+     */
     async bulkDeleteShares() {
         if (!this.selectedShareIds.length) return;
         this.bulkDeleteLoading = true;
         const ids = [...this.selectedShareIds];
-        const results = await Promise.all(ids.map(id =>
-            apiFetch('/shares/' + id, {
-                method: 'DELETE',
+        try {
+            const res = await apiFetch('/shares/bulk-delete', {
+                method: 'POST',
                 credentials: 'include',
-                headers: { 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content, 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
-            }).then(r => ({ id, ok: r.ok }))
-        ));
-        const succeeded = results.filter(r => r.ok).map(r => r.id);
-        const failed = results.filter(r => !r.ok).length;
-        this.fileShares = this.fileShares.filter(s => !succeeded.includes(s.id));
-        this.selectedShareIds = this.selectedShareIds.filter(id => !succeeded.includes(id));
-        this.bulkDeleteLoading = false;
-        if (failed > 0) {
-            this.showToast(succeeded.length + ' eliminados, ' + failed + ' fallaron', 'error');
-        } else {
-            this.showToast(succeeded.length + ' enlace(s) eliminado(s)', 'success');
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
+                    'Accept': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest'
+                },
+                body: JSON.stringify({ ids, confirm_count: ids.length })
+            });
+            const payload = await res.json();
+            if (!res.ok) throw new Error(this.shareApiError(payload, res));
+
+            const deleted = payload.deleted_count || 0;
+            const omitted = payload.omitted_count || 0;
+            const failed = payload.failed_count || 0;
+
+            // Solo se retiran de la vista los enlaces que el servidor
+            // confirmo como eliminados.
+            await this.loadFileShares(this.selectedFile.id);
+            this.selectedShareIds = this.selectedShareIds.filter(id => !ids.includes(id));
+
+            if (failed > 0 || omitted > 0) {
+                this.showToast(`${deleted} eliminados, ${omitted} omitidos, ${failed} fallidos`, 'error');
+            } else {
+                this.showToast(`${deleted} enlace(s) eliminado(s)`, 'success');
+            }
+        } catch (e) {
+            this.showToast(e.message, 'error');
+        } finally {
+            this.bulkDeleteLoading = false;
         }
     },
 
@@ -3116,8 +3204,15 @@ deleteConfirmFile: null,
                                     <option value="upload">Subida</option>
                                     <option value="full">Completo</option>
                                 </select>
-                                <input type="datetime-local" x-model="shareForm.expires_at" class="w-full border border-purple-200 px-3 py-1.5 rounded-lg text-sm focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none" placeholder="Expira (opcional)">
+                                <input type="datetime-local" x-model="shareForm.expires_at" :disabled="shareForm.never_expires" class="w-full border border-purple-200 px-3 py-1.5 rounded-lg text-sm focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none disabled:opacity-50" placeholder="Expira (opcional)">
                             </div>
+                            <label class="flex items-center gap-2 text-xs text-purple-800 mb-2 cursor-pointer">
+                                <input type="checkbox" x-model="shareForm.never_expires" class="rounded border-purple-300 text-purple-600 focus:ring-purple-500">
+                                Sin vencimiento
+                            </label>
+                            <p class="text-[11px] text-purple-700 mb-2" x-show="!shareForm.never_expires && !shareForm.expires_at">
+                                Si no indicas fecha, el enlace vence en {{ $defaultExpiryDays }} días.
+                            </p>
                             <input type="password" x-model="shareForm.password" autocomplete="new-password" class="w-full border border-purple-200 px-3 py-1.5 rounded-lg text-sm mb-2 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none" placeholder="Contraseña (opcional)">
                             <button @click="generateShareLink()" class="w-full bg-purple-600 hover:bg-purple-700 text-white px-3 py-1.5 rounded-lg text-sm transition-colors flex items-center justify-center gap-2">
                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -3545,6 +3640,12 @@ deleteConfirmFile: null,
 
             {{-- Lista de carpetas --}}
             <div class="overflow-y-auto flex-1 px-3 py-2">
+                <button @click="navigateCopyMoveUp()"
+                        :disabled="copyMoveDestFolderId === null"
+                        class="w-full flex items-center gap-2 px-3 py-2 mb-1 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7"/></svg>
+                    <span>Subir</span>
+                </button>
                 <div x-show="copyMoveLoading && copyMoveFolders.length === 0" class="text-center py-6 text-slate-400 text-sm">Cargando...</div>
                 <div x-show="!copyMoveLoading && copyMoveFolders.length === 0" class="text-center py-6 text-slate-400 text-sm">No hay subcarpetas aquí</div>
                 <template x-for="folder in copyMoveFolders" :key="folder.id">

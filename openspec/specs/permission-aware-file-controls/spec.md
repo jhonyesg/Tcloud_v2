@@ -5,7 +5,7 @@ Capability `permission-aware-file-controls`: consolida los requisitos y comporta
 ## Requirements
 
 ### Requirement: Ocultar controles de escritura en storages de solo lectura
-El sistema SHALL ocultar los botones "Subir Archivo" y "Nueva Carpeta" en el módulo "Mis Archivos" cuando el usuario tiene permisos de solo lectura (`read`) en el storage activo.
+El sistema SHALL ocultar los botones "Subir Archivo" y "Nueva Carpeta" en el módulo "Mis Archivos" cuando el usuario tiene permisos de solo lectura (`read`) en el storage activo. Adicionalmente, SHALL rechazar en el backend cualquier intento de crear carpeta o subir archivo en un storage donde el usuario no tiene permiso de escritura, devolviendo HTTP 403 con `{"error":"No tienes permiso para crear carpetas en este almacenamiento"}`.
 
 #### Scenario: Usuario con permiso read entra a un storage
 - **WHEN** un usuario con permiso `read` en un storage navega a ese storage
@@ -22,6 +22,11 @@ El sistema SHALL ocultar los botones "Subir Archivo" y "Nueva Carpeta" en el mó
 #### Scenario: Usuario con permiso upload entra a un storage
 - **WHEN** un usuario con permiso `upload` en un storage navega a ese storage
 - **THEN** el botón "Subir Archivo" es visible y el botón "Nueva Carpeta" NO es visible
+
+#### Scenario: Usuario con permiso read intenta crear carpeta por bypass de UI
+- **WHEN** un usuario con permiso `read` envía POST a `/files` con `is_folder=true` (bypass de la UI que oculta el botón)
+- **THEN** el endpoint responde HTTP 403 con `{"error":"No tienes permiso para crear carpetas en este almacenamiento"}`
+- **AND** no se ejecuta `mkdir()` ni se crea fila en `files`
 
 ### Requirement: Ocultar zona de drag-and-drop en storages de solo lectura
 El sistema SHALL NO mostrar el overlay de "Suelta para subir" ni procesar el evento de drop cuando el usuario tiene permisos de solo lectura en el storage activo.
