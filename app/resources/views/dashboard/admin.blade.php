@@ -252,6 +252,7 @@
                 @include('dashboard.partials._mis-avisos', ['context' => 'admin', 'data' => $dashboardData['mis_avisos']])
                 @include('dashboard.partials._bg-jobs-active', ['context' => 'admin', 'data' => $dashboardData['bg_jobs']])
                 @include('dashboard.partials._active-sessions', ['context' => 'admin', 'data' => $dashboardData['active_sessions']])
+                @include('dashboard.partials._storage_health', ['context' => 'admin', 'data' => $dashboardData['storage_health']])
             </div>
         </div>
     </div>

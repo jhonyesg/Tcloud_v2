@@ -28,6 +28,19 @@ Schedule::command('mis-archivos:match-fs-db --mode=hot_warm')->everyFiveMinutes(
 // Full sweep diario a las 03:00 Bogota para purgar pending_deletion_at vencidos.
 Schedule::command('mis-archivos:match-fs-db --mode=hot_warm_cold')->dailyAt('03:00')->withoutOverlapping(120);
 
+// Auditoría horaria de ownership/permisos del filesystem. Detecta archivos
+// con owner != www (PHP-FPM) en las raíces de StorageProvider, más hijos
+// directos del base_path que son inaccesibles al usuario PHP-FPM (modo 700
+// ajeno al grupo). Sin --apply, solo loguea y emite el summary por mail al
+// admin (configurable vía --send-mail). Para activar auto-reparación, descomentar
+// --apply (recomendado solo en servidores de un solo tenant donde se sabe que el
+// "owner correcto" es www). withoutOverlapping(150) = 2.5h de margen para
+// find sobre árboles multi-TB.
+Schedule::command('storage:audit-ownership')
+    ->hourly()
+    ->withoutOverlapping(60)
+    ->onOneServer();
+
 // Limpieza de sesiones huérfanas y expiradas. La frecuencia (default 30 min)
 // es la del scheduler; el setting `sessions_cleanup_interval_minutes` se
 // consulta DENTRO del closure solo para emitir un warning si es demasiado

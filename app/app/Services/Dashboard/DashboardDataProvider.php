@@ -3,6 +3,7 @@
 namespace App\Services\Dashboard;
 
 use App\Models\MediaEditJob;
+use App\Models\SystemSetting;
 use App\Models\User;
 use App\Models\UserSession;
 use App\Services\BgJobRegistry;
@@ -49,6 +50,7 @@ class DashboardDataProvider
             ),
             'bg_jobs' => $this->hot($this->buildAdminBgJobsData()),
             'active_sessions' => $this->hot($this->buildAdminActiveSessionsData()),
+            'storage_health' => $this->hot($this->buildAdminStorageHealthData()),
         ];
     }
 
@@ -199,7 +201,7 @@ class DashboardDataProvider
         }
     }
 
-    private function buildAdminActiveSessionsData(): array
+private function buildAdminActiveSessionsData(): array
     {
         $activeFilter = function ($q) {
             $q->whereNull('expires_at')->orWhere('expires_at', '>', now());
@@ -230,6 +232,61 @@ class DashboardDataProvider
         })->all();
 
         return ['total' => $total, 'top_users' => $topUsers];
+    }
+
+    /**
+     * Bloque storage_health: lee métricas persistidas por `storage:audit-ownership`.
+     * Solo expone storages con hallazgos (untraversable_count > 0 o owner_mismatch > 0).
+     * El partial decide si mostrar la tarjeta final según su gating.
+     */
+    private function buildAdminStorageHealthData(): array
+    {
+        $enabled = (bool) SystemSetting::get('storage_health_enabled');
+        $auditFinishedAt = SystemSetting::get('storage_health:audit_finished_at');
+
+        $rows = DB::table('system_settings')
+            ->where('key', 'like', 'storage_health:%:untraversable_count')
+            ->get(['key', 'value']);
+
+        if ($rows->isEmpty()) {
+            return [
+                'enabled' => $enabled,
+                'audit_finished_at' => $auditFinishedAt,
+                'items' => [],
+            ];
+        }
+
+        $storageIds = $rows->map(fn ($r) => (int) substr($r->key, strlen('storage_health:'), -strlen(':untraversable_count')));
+        $storageMap = DB::table('storage_providers')
+            ->whereIn('id', $storageIds)
+            ->get(['id', 'name', 'base_path'])
+            ->keyBy('id');
+
+        $items = [];
+        foreach ($rows as $r) {
+            $storageId = (int) substr($r->key, strlen('storage_health:'), -strlen(':untraversable_count'));
+            $untravsersable = (int) $r->value;
+            $ownerMismatch = (int) SystemSetting::get("storage_health:{$storageId}:owner_mismatch_count", '0');
+
+            if ($untravsersable === 0 && $ownerMismatch === 0) {
+                continue;
+            }
+
+            $s = $storageMap->get($storageId);
+            $items[] = [
+                'storage_id' => $storageId,
+                'name' => $s?->name ?? "Storage #{$storageId}",
+                'base_path' => $s?->base_path,
+                'untraversable_count' => $untravsersable,
+                'owner_mismatch_count' => $ownerMismatch,
+            ];
+        }
+
+        return [
+            'enabled' => $enabled,
+            'audit_finished_at' => $auditFinishedAt,
+            'items' => $items,
+        ];
     }
 
     private function buildClientMediaEditorData(User $user): array

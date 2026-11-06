@@ -72,7 +72,8 @@
         @endif
 
         @if($canalesCount > 0)
-        <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
+        <a href="{{ route('canales.index') }}"
+           class="bg-white rounded-xl shadow-sm border border-slate-200 p-5 hover:shadow-md hover:border-orange-300 transition-all">
             <div class="flex items-center gap-4">
                 <div class="w-12 h-12 bg-orange-100 rounded-xl flex items-center justify-center">
                     <i class="fas fa-satellite-dish text-orange-600 text-xl"></i>
@@ -82,21 +83,7 @@
                     <p class="text-xs text-slate-500">{{ $canalesCount }} canal{{ $canalesCount !== 1 ? 'es' : '' }} asignado{{ $canalesCount !== 1 ? 's' : '' }}</p>
                 </div>
             </div>
-        </div>
-        @endif
-
-        @if($canalesCount > 0)
-        <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
-            <div class="flex items-center gap-4">
-                <div class="w-12 h-12 bg-orange-100 rounded-xl flex items-center justify-center">
-                    <i class="fas fa-satellite-dish text-orange-600 text-xl"></i>
-                </div>
-                <div>
-                    <h3 class="font-semibold text-slate-800">Medios Puntuales</h3>
-                    <p class="text-xs text-slate-500">{{ $canalesCount }} canal{{ $canalesCount !== 1 ? 'es' : '' }} asignado{{ $canalesCount !== 1 ? 's' : '' }}</p>
-                </div>
-            </div>
-        </div>
+        </a>
         @endif
 
         @include('dashboard.partials._media-editor', ['context' => 'client', 'user' => $user])
