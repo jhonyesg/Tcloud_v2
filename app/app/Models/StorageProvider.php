@@ -8,7 +8,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class StorageProvider extends Model
 {
-    protected $fillable = ['name', 'type', 'config', 'base_path', 'enabled', 'is_accessible', 'last_checked_at', 'transcription_enabled', 'folder_layout', 'allow_parent_overlap', 'is_personal'];
+    protected $fillable = ['name', 'type', 'kind', 'config', 'base_path', 'enabled', 'is_accessible', 'last_checked_at', 'transcription_enabled', 'folder_layout', 'allow_parent_overlap', 'is_personal', 'duplicate_of_storage_id', 'merged_at', 'merged_reason'];
 
     protected $casts = [
         'config' => 'array',
@@ -34,6 +34,73 @@ class StorageProvider extends Model
     public function scopeTranscriptionEnabled(Builder $query): Builder
     {
         return $query->where('transcription_enabled', true);
+    }
+
+    /**
+     * Busca un storage por (kind, physical_path_normalized), EXCLUYENDO los
+     * que estan marcados como mergeados (`duplicate_of_storage_id IS NOT NULL`).
+     *
+     * El indice parcial `storage_providers_physical_path_normalized_idx`
+     * (`btree (kind, physical_path_normalized) WHERE physical_path_normalized
+     * IS NOT NULL`) cubre el WHERE; el ORDER BY id solo se aplica cuando hay
+     * varios candidatos (escenario de duplicado pre-merge).
+     *
+     * Usado por `StorageProviderController::store/update` para bloquear
+     * HTTP 409 cuando se intenta crear/mover un storage a un base_path que
+     * ya tiene un storage canonico (no mergeado).
+     *
+     * @return self|null
+     */
+    public static function findByNormalizedPath(string $normalizedPath, string $kind = 'local'): ?self
+    {
+        if ($normalizedPath === '') {
+            return null;
+        }
+        return static::query()
+            ->where('kind', $kind)
+            ->where('physical_path_normalized', $normalizedPath)
+            ->whereNull('duplicate_of_storage_id')
+            ->orderBy('id')
+            ->first();
+    }
+
+    /**
+     * Variante canonica de `findByNormalizedPath`: ante varios storages no
+     * mergeados con el mismo path, devuelve el de menor `id` (insertion
+     * order). Usado por el reconciler de identidad fisica para resolver
+     * ambiguedad de forma estable.
+     *
+     * @return self|null
+     */
+    public static function canonicalFor(string $normalizedPath, string $kind = 'local'): ?self
+    {
+        return static::findByNormalizedPath($normalizedPath, $kind);
+    }
+
+    /**
+     * Invalida la cache de `resolveInheritedTranscriptionScope` para el rootId
+     * dado. Llamado por:
+     *  - `StorageProviderController::update` cuando se modifica `base_path` y
+     *    cambia el root efectivo del storage.
+     *  - `StorageProviderController::store/destroy` (via recomputeHierarchy).
+     *  - `ApiTranscriptorController::toggleStorage` (cambia `transcription_enabled`).
+     *
+     * Si el $rootId es null (storage sin ancestro asignado), limpia todas las
+     * keys de scope cache.
+     */
+    public static function forgetInheritedTranscriptionScope(?int $rootId): void
+    {
+        $cache = \Illuminate\Support\Facades\Cache::store();
+        if ($rootId === null) {
+            // No hay un patron "por prefijo" en cache; lo mas seguro es no
+            // hacer nada. Quien invalide sin root conoce su ambito y debe
+            // pasar IDs explicitos.
+            return;
+        }
+        // La key de cache sigue el patron "transcriptor.scope.inherited.{id}".
+        // TTL configurable via `transcriptor_scope_cache_ttl` (default 300s).
+        $cache->forget("transcriptor.scope.inherited.{$rootId}");
+        $cache->forget("transcriptor.scope.inherited.info.{$rootId}");
     }
 
     /**

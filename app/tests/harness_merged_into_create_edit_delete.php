@@ -1,37 +1,33 @@
 <?php
 /**
- * Harness E2E de regresión para el change `schema-clarity-rename-merged-into`.
+ * Harness de regresión para el change `schema-clarity-rename-merged-into`.
  *
- * Verifica que los flujos create/edit/delete de los módulos que tocan
- * `files.canonical_folder_id` y `storage_providers.duplicate_of_storage_id`
- * funcionan correctamente con los nombres nuevos. Cubre:
+ * CONTEXTO HISTÓRICO
+ * ------------------
+ * Este harness verificaba el flujo create/edit/delete completo del modelo
+ * mirror→canónico: `files:repair-folder-mirrors`, `FilePhysicalIdentity::
+ * link()/unlink()`, `storages:merge-duplicates --apply` y
+ * `shares:repair-mirror-targets --apply`.
  *
- *   STORAGE (storage_providers.duplicate_of_storage_id):
- *   - Store: crear storage OK
- *   - Merge: storages:merge-duplicates --apply (dos storages con mismo base_path)
- *   - Un-merge: update() con base_path nuevo limpia duplicate_of_storage_id
+ * El 2026-09-21 la migration `2026_09_20_120000_drop_mirror_columns_and_
+ * restore_baseline` desmontó esa familia de forma deliberada. TODOS los
+ * comandos y helpers que este harness ejercitaban dejaron de existir, y el
+ * harness CRASHEABA (excepción de SQL) en vez de reportar FAIL.
  *
- *   FOLDER (files.canonical_folder_id):
- *   - Repair: files:repair-folder-mirrors --apply setea canonical_folder_id
- *   - Repair: re-run idempotente (no re-muta, no audit rows nuevas)
- *   - Unlink: FilePhysicalIdentity::unlink() pone canonical_folder_id = null
- *   - Re-link: vuelve a enlazar para los siguientes tests
+ * Qué verifica AHORA, contra el esquema vigente:
+ *   1. Lo que SOBREVIVE del modelo de storages: creación, jerarquía via
+ *      `parent_storage_id`, detección de duplicados por ruta normalizada
+ *      (`findByNormalizedPath` / `canonicalFor`) y la semántica de
+ *      `duplicate_of_storage_id` (merge / un-merge).
+ *   2. Que la familia mirror NO pueda reaparecer por descuido en el código de
+ *      aplicación.
+ *   3. Que el alta de un share siga funcionando con el contrato actual.
  *
- *   SHARE (sobre folder mirror):
- *   - Store: crea share sobre folder mirror → canónica al canonicalFolder
- *   - Store: crea share sobre folder canonical → pasa directo
- *   - Repoint: shares:repair-mirror-targets --apply repunta al canonical
- *
- *   STORAGE QUERY (validación final de queries con el nombre nuevo):
- *   - whereNull(duplicate_of_storage_id) funciona
- *   - whereNotNull(duplicate_of_storage_id) funciona
- *   - resolveInheritedTranscriptionScope() no rompe
- *
- * Tag prefijo: `hmcr_<8-hex>` (merged-into create/edit/delete regression).
+ * Tag prefijo: `hmcr_<8-hex>` (merged-into create/edit/delete).
  *
  * Uso:
  *   cd app && php tests/harness_merged_into_create_edit_delete.php
- *   exit 0 = OK, 1 = alguna aserción falló
+ *   exit 0 = OK, 1 = alguna asercion fallo
  */
 
 require __DIR__ . '/../vendor/autoload.php';
@@ -41,11 +37,8 @@ $kernel = $app->make(Illuminate\Contracts\Console\Kernel::class);
 $kernel->bootstrap();
 
 use App\Models\File;
-use App\Models\Share;
 use App\Models\StorageProvider;
 use App\Models\User;
-use App\Services\FilePhysicalIdentity;
-use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 
@@ -57,7 +50,15 @@ function h_fail(string $msg): void { echo "  ✗ $msg\n"; $GLOBALS['failures']++
 function h_section(string $msg): void { echo "\n=== $msg ===\n"; }
 function h_check(bool $cond, string $ok, string $fail): void
 {
-    if ($cond) h_ok($ok); else h_fail($fail);
+    if ($cond) { h_ok($ok); } else { h_fail($fail); }
+}
+
+function h_column_exists(string $table, string $column): bool
+{
+    return DB::selectOne(
+        "SELECT column_name FROM information_schema.columns WHERE table_name = ? AND column_name = ?",
+        [$table, $column]
+    ) !== null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -82,19 +83,22 @@ if ($staleUsers->isNotEmpty()) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SETUP — 2 storages padre+sub para folder mirrors; 2 storages mismo path para merge
+// SETUP — storages padre/sub (jerarquia) + un par con la misma ruta (duplicado)
 // ─────────────────────────────────────────────────────────────────────────────
 h_section("SETUP [tag=$tag]");
 
-// Storages para FOLDER MIRRORS (jerarquía padre→sub)
 $tmpParent = sys_get_temp_dir() . "/{$tag}_p";
-$tmpSub = sys_get_temp_dir() . "/{$tag}_p/sub";
+$tmpSub = $tmpParent . '/sub';
 foreach ([$tmpParent, $tmpSub] as $d) {
-    if (!is_dir($d)) mkdir($d, 0755, true);
+    if (! is_dir($d)) {
+        mkdir($d, 0755, true);
+    }
 }
 
-// Storages para STORAGE MERGE (mismo path)
-$tmpMerge = sys_get_temp_dir() . "/{$tag}_m";
+$tmpDup = sys_get_temp_dir() . "/{$tag}_dup";
+if (! is_dir($tmpDup)) {
+    mkdir($tmpDup, 0755, true);
+}
 
 $user = User::create([
     'email' => "{$tag}@harness.local",
@@ -107,10 +111,10 @@ $user = User::create([
 ]);
 h_ok("admin user creado (id={$user->id})");
 
-// Storages padre y sub para folder mirrors
 $parentStorage = StorageProvider::create([
     'name' => "{$tag} parent",
     'type' => 'local',
+    'kind' => 'local',
     'config' => [],
     'base_path' => $tmpParent,
     'enabled' => true,
@@ -119,12 +123,12 @@ $parentStorage = StorageProvider::create([
     'transcription_enabled' => false,
     'folder_layout' => 'flat',
     'is_personal' => false,
-    'kind' => 'local',
 ])->refresh();
 
 $subStorage = StorageProvider::create([
     'name' => "{$tag} sub",
     'type' => 'local',
+    'kind' => 'local',
     'config' => [],
     'base_path' => $tmpSub,
     'enabled' => true,
@@ -133,387 +137,247 @@ $subStorage = StorageProvider::create([
     'transcription_enabled' => false,
     'folder_layout' => 'flat',
     'is_personal' => false,
-    'kind' => 'local',
     'parent_storage_id' => $parentStorage->id,
 ])->refresh();
 
 h_ok("parent storage (id={$parentStorage->id}), sub storage (id={$subStorage->id})");
 
-// Folders mirror pair: canonical en sub, mirror en parent
-$canonicalFolder = File::create([
-    'name' => 'channel_a',
-    'path' => 'channel_a',
-    'storage_provider_id' => $subStorage->id,
-    'parent_id' => null,
-    'is_folder' => true,
-    'owner_id' => $user->id,
-    'mime_type' => 'folder',
-    'size' => 0,
-])->refresh();
-
-$mirrorFolder = File::create([
-    'name' => 'channel_a',
-    'path' => 'sub/channel_a',
-    'storage_provider_id' => $parentStorage->id,
-    'parent_id' => null,
-    'is_folder' => true,
-    'owner_id' => $user->id,
-    'mime_type' => 'folder',
-    'size' => 0,
-])->refresh();
-
-h_ok("canonical folder (id={$canonicalFolder->id}), mirror folder (id={$mirrorFolder->id})");
-
 // ─────────────────────────────────────────────────────────────────────────────
-// (F1) FOLDER: repair-folder-mirrors --apply setea canonical_folder_id
-// ─────────────────────────────────────────────────────────────────────────────
-h_section('(F1) files:repair-folder-mirrors --apply');
-
-$auditBefore = (int) DB::table('file_mirror_audit_log')->where('action', 'link_mirror')->count();
-
-Artisan::call('files:repair-folder-mirrors', ['--apply' => true, '--storage' => [$parentStorage->id, $subStorage->id]]);
-
-$auditAfter = (int) DB::table('file_mirror_audit_log')->where('action', 'link_mirror')->count();
-
-h_check(
-    $auditAfter >= $auditBefore + 1,
-    "audit_rows nuevas >= 1 (pre=$auditBefore, post=$auditAfter)",
-    "audit no creció: pre=$auditBefore, post=$auditAfter"
-);
-
-$mirrorFolder->refresh();
-
-h_check(
-    $mirrorFolder->canonical_folder_id === $canonicalFolder->id,
-    "mirror.canonical_folder_id = canonical.id ({$canonicalFolder->id})",
-    "mirror.canonical_folder_id = " . var_export($mirrorFolder->canonical_folder_id, true) . " (esperado {$canonicalFolder->id})"
-);
-
-h_check(
-    $mirrorFolder->isFolderMirror() === true,
-    "mirror.isFolderMirror() === true tras repair",
-    "mirror.isFolderMirror() !== true tras repair"
-);
-
-h_check(
-    $canonicalFolder->isFolderMirror() === false,
-    "canonical.isFolderMirror() === false",
-    "canonical.isFolderMirror() !== false"
-);
-
-// ─────────────────────────────────────────────────────────────────────────────
-// (F2) FOLDER: idempotencia (re-run no emite audit rows)
-// ─────────────────────────────────────────────────────────────────────────────
-h_section('(F2) files:repair-folder-mirrors idempotencia');
-
-$auditBefore2 = (int) DB::table('file_mirror_audit_log')->where('action', 'link_mirror')->count();
-Artisan::call('files:repair-folder-mirrors', ['--apply' => true, '--storage' => [$parentStorage->id, $subStorage->id]]);
-$auditAfter2 = (int) DB::table('file_mirror_audit_log')->where('action', 'link_mirror')->count();
-
-h_check(
-    $auditAfter2 === $auditBefore2,
-    "re-run no emite audit rows nuevas (idempotente)",
-    "re-run emitió " . ($auditAfter2 - $auditBefore2) . " audit rows nuevas"
-);
-
-// ─────────────────────────────────────────────────────────────────────────────
-// (F3) FOLDER: FilePhysicalIdentity::link() (re-link) y unlink()
-// ─────────────────────────────────────────────────────────────────────────────
-h_section('(F3) FilePhysicalIdentity::link() / unlink()');
-
-$resolver = app(FilePhysicalIdentity::class);
-
-// Unlink
-$mirrorFolder->refresh();
-$unlinkResult = $resolver->unlink($mirrorFolder);
-
-h_check(
-    $unlinkResult === true,
-    "unlink() retorna true (precond: mirror está enlazado)",
-    "unlink() retorno " . var_export($unlinkResult, true)
-);
-
-$mirrorFolder->refresh();
-
-h_check(
-    $mirrorFolder->canonical_folder_id === null,
-    "mirror.canonical_folder_id = null tras unlink()",
-    "mirror.canonical_folder_id = " . var_export($mirrorFolder->canonical_folder_id, true)
-);
-
-h_check(
-    $mirrorFolder->isFolderMirror() === false,
-    "mirror.isFolderMirror() === false tras unlink",
-    "mirror.isFolderMirror() !== false tras unlink"
-);
-
-// Re-link para tests siguientes
-$relinkResult = $resolver->link($mirrorFolder, $canonicalFolder, 'harness_e2e_relink', $user->id);
-
-h_check(
-    $relinkResult === true,
-    "re-link() retorna true",
-    "re-link() retorno " . var_export($relinkResult, true)
-);
-
-$mirrorFolder->refresh();
-h_check(
-    $mirrorFolder->canonical_folder_id === $canonicalFolder->id,
-    "mirror.canonical_folder_id = canonical.id tras re-link",
-    "mirror.canonical_folder_id = " . var_export($mirrorFolder->canonical_folder_id, true)
-);
-
-// ─────────────────────────────────────────────────────────────────────────────
-// (S1) STORAGE: create OK
+// (S1) Creación basica
 // ─────────────────────────────────────────────────────────────────────────────
 h_section('(S1) StorageProvider::create — creación básica');
 
-$storageC = StorageProvider::create([
-    'name' => "{$tag} C create_ok",
+h_check($parentStorage->id > 0, 'storage creado', 'storage NO creado');
+h_check(
+    $parentStorage->kind === 'local',
+    'el campo canonico `kind` se guardó',
+    'el campo canonico `kind` NO se guardó'
+);
+h_check(
+    $parentStorage->type === 'local',
+    'el campo legacy `type` sigue poblándose',
+    'el campo legacy `type` quedo vacio'
+);
+h_check(
+    $parentStorage->physical_path_normalized !== null,
+    'la ruta normalizada se calcula al crear',
+    'la ruta normalizada NO se calculo'
+);
+h_check(
+    $parentStorage->physical_path_normalized === strtolower(rtrim($tmpParent, '/')),
+    'la ruta normalizada es la base_path en minusculas sin barra final',
+    'la ruta normalizada no coincide: ' . var_export($parentStorage->physical_path_normalized, true)
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// (S2) Jerarquia vigente: parent_storage_id es DERIVADA, no asignable
+// ─────────────────────────────────────────────────────────────────────────────
+h_section('(S2) Jerarquia de storages via parent_storage_id');
+
+// `parent_storage_id` NO es mass-assignable a proposito: la jerarquia se
+// DERIVA del base_path, no la elige el operador.
+h_check(
+    ! in_array('parent_storage_id', (new StorageProvider())->getFillable(), true),
+    'parent_storage_id NO es mass-assignable (la jerarquia se deriva)',
+    'parent_storage_id se puede asignar por mass-assignment — la jerarquia dejaria de ser derivada'
+);
+
+$subStorage->forceFill(['parent_storage_id' => null])->saveQuietly();
+
+$hierarchy = app(\App\Services\Ia\StorageHierarchyService::class);
+$computedParent = $hierarchy->recomputeParent($subStorage->refresh());
+h_check(
+    $computedParent === $parentStorage->id,
+    'recomputeParent deriva el padre por prefijo de base_path',
+    'recomputeParent devolvio ' . var_export($computedParent, true) . " (esperado {$parentStorage->id})"
+);
+h_check(
+    $subStorage->refresh()->parent_storage_id === $parentStorage->id,
+    'el padre queda persistido',
+    'el padre NO quedo persistido'
+);
+
+$hierarchy->recomputeParent($parentStorage->refresh());
+h_check(
+    $parentStorage->refresh()->parent_storage_id === null,
+    'el padre no tiene padre',
+    'el padre tiene padre'
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// (S3) Deteccion de duplicados por ruta normalizada
+// ─────────────────────────────────────────────────────────────────────────────
+h_section('(S3) Deteccion de duplicados por ruta normalizada');
+
+$normalizedDup = strtolower(rtrim($tmpDup, '/'));
+
+$dupStorage = StorageProvider::create([
+    'name' => "{$tag} duplicate",
     'type' => 'local',
+    'kind' => 'local',
     'config' => [],
-    'base_path' => sys_get_temp_dir() . "/{$tag}_c",
+    'base_path' => $tmpDup,
     'enabled' => true,
     'is_accessible' => true,
     'last_checked_at' => now(),
     'transcription_enabled' => false,
     'folder_layout' => 'flat',
     'is_personal' => false,
-    'kind' => 'local',
-]);
-
-h_check($storageC->exists && $storageC->id > 0, "StorageProvider::create OK (id={$storageC->id})", "StorageProvider::create falló");
-h_check($storageC->duplicate_of_storage_id === null, "duplicate_of_storage_id NULL por default", "duplicate_of_storage_id != NULL por default");
-h_check($storageC->isDuplicate() === false, "isDuplicate() === false en storage nuevo", "isDuplicate() !== false en storage nuevo");
-
-// ─────────────────────────────────────────────────────────────────────────────
-// (S2) STORAGE: findByNormalizedPath detecta duplicados pre-merge
-// ─────────────────────────────────────────────────────────────────────────────
-h_section('(S2) findByNormalizedPath detecta duplicados pre-merge');
-
-// Crear storageA' con el MISMO base_path que parentStorage para simular duplicado de storage
-$storageAprime = StorageProvider::create([
-    'name' => "{$tag} A' duplicate_of_parent",
-    'type' => 'local',
-    'config' => [],
-    'base_path' => $tmpParent,  // MISMO path que parentStorage
-    'enabled' => true,
-    'is_accessible' => true,
-    'last_checked_at' => now(),
-    'transcription_enabled' => false,
-    'folder_layout' => 'flat',
-    'is_personal' => false,
-    'kind' => 'local',
 ])->refresh();
 
-$normalizedParent = strtolower(rtrim($tmpParent, '/'));
-$foundDup = StorageProvider::findByNormalizedPath($normalizedParent, 'local');
-
+$found = StorageProvider::findByNormalizedPath($normalizedDup, 'local');
 h_check(
-    $foundDup !== null && ($foundDup->id === $parentStorage->id || $foundDup->id === $storageAprime->id),
-    "findByNormalizedPath retorna UNO de los duplicados (id={$foundDup->id})",
-    "findByNormalizedPath falló: " . var_export($foundDup?->id, true)
+    $found !== null && $found->id === $dupStorage->id,
+    'findByNormalizedPath encuentra el storage por su ruta normalizada',
+    'findByNormalizedPath no encontró el storage'
+);
+
+$canonical = StorageProvider::canonicalFor($normalizedDup, 'local');
+h_check(
+    $canonical !== null && $canonical->id === $dupStorage->id,
+    'canonicalFor devuelve el storage canonico (no mergeado)',
+    'canonicalFor no devolvio el canonico'
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
-// (S3) STORAGE: storages:merge-duplicates --apply (con mismo path)
+// (S4) Merge y un-merge de storages por `duplicate_of_storage_id`
 // ─────────────────────────────────────────────────────────────────────────────
-h_section('(S3) storages:merge-duplicates --apply (mismo base_path)');
+h_section('(S4) Merge / un-merge de storages');
 
-try {
-    Artisan::call('storages:merge-duplicates', [
-        '--canonical' => (string) $parentStorage->id,
-        '--duplicate' => (string) $storageAprime->id,
-        '--apply' => true,
-        '--yes' => true,
-    ]);
-    $artisanOutput = Artisan::output();
-} catch (\Throwable $e) {
-    $artisanOutput = 'ERROR: ' . $e->getMessage();
-}
-
-$storageAprime->refresh();
+DB::table('storage_providers')->where('id', $dupStorage->id)->update([
+    'duplicate_of_storage_id' => $parentStorage->id,
+    'merged_at' => now(),
+    'merged_reason' => 'harness_test',
+]);
+$dupStorage->refresh();
 
 h_check(
-    str_contains($artisanOutput, 'Merge completado'),
-    "merge --apply imprime 'Merge completado'",
-    "merge --apply no mostró éxito (output: " . substr($artisanOutput, 0, 300) . ")"
+    $dupStorage->duplicate_of_storage_id === $parentStorage->id,
+    'el duplicado apunta al canonico',
+    'el duplicado NO apunta al canonico'
 );
 
+$canonicalAfterMerge = StorageProvider::canonicalFor($normalizedDup, 'local');
 h_check(
-    $storageAprime->duplicate_of_storage_id === $parentStorage->id,
-    "storageA'.duplicate_of_storage_id = parentStorage.id ({$parentStorage->id})",
-    "storageA'.duplicate_of_storage_id = " . var_export($storageAprime->duplicate_of_storage_id, true) . " (esperado {$parentStorage->id})"
+    $canonicalAfterMerge === null,
+    'tras el merge, la ruta ya NO resuelve a un storage canonico (el mergeado queda excluido)',
+    'tras el merge la ruta seguia resolviendo a un storage canonico'
 );
-
 h_check(
-    $storageAprime->isDuplicate() === true,
-    "storageA'.isDuplicate() === true tras merge",
-    "storageA'.isDuplicate() !== true tras merge"
+    StorageProvider::whereNull('duplicate_of_storage_id')->where('physical_path_normalized', $normalizedDup)->count() === 0,
+    'no queda ningun storage canonico (no mergeado) con esa ruta',
+    'queda un storage canonico con esa ruta'
 );
 
+$excluded = StorageProvider::whereNull('duplicate_of_storage_id')->where('id', $dupStorage->id)->exists();
 h_check(
-    $storageAprime->enabled === false,
-    "storageA'.enabled === false tras merge",
-    "storageA'.enabled sigue true tras merge"
+    $excluded === false,
+    'whereNull(duplicate_of_storage_id) excluye al duplicado',
+    'whereNull(duplicate_of_storage_id) NO excluyo al duplicado'
 );
 
+$stillCanonical = StorageProvider::whereNull('duplicate_of_storage_id')->where('id', $parentStorage->id)->exists();
 h_check(
-    $storageAprime->base_path === null,
-    "storageA'.base_path === null tras merge",
-    "storageA'.base_path = " . var_export($storageAprime->base_path, true) . " tras merge"
+    $stillCanonical === true,
+    'el canonico sigue siendo elegible',
+    'el canonico fue excluido'
 );
 
-// ─────────────────────────────────────────────────────────────────────────────
-// (S4) STORAGE: un-merge via direct DB update (simula PUT /admin/storages/{id})
-// ─────────────────────────────────────────────────────────────────────────────
-h_section('(S4) un-merge (limpieza de duplicate_of_storage_id)');
-
-$newBasePath = sys_get_temp_dir() . "/{$tag}_aprime_recovered";
-if (!is_dir($newBasePath)) mkdir($newBasePath, 0755, true);
-
-DB::table('storage_providers')->where('id', $storageAprime->id)->update([
+// Un-merge
+DB::table('storage_providers')->where('id', $dupStorage->id)->update([
     'duplicate_of_storage_id' => null,
     'merged_at' => null,
     'merged_reason' => null,
-    'enabled' => true,
-    'base_path' => $newBasePath,
 ]);
-$storageAprime->refresh();
-
+$dupStorage->refresh();
 h_check(
-    $storageAprime->duplicate_of_storage_id === null,
-    "storageA'.duplicate_of_storage_id NULL tras un-merge",
-    "storageA'.duplicate_of_storage_id = " . var_export($storageAprime->duplicate_of_storage_id, true)
+    $dupStorage->duplicate_of_storage_id === null,
+    'el un-merge limpia el puntero',
+    'el un-merge NO limpio el puntero'
 );
-
 h_check(
-    $storageAprime->isDuplicate() === false,
-    "storageA'.isDuplicate() === false tras un-merge",
-    "storageA'.isDuplicate() !== false tras un-merge"
+    StorageProvider::whereNull('duplicate_of_storage_id')->where('id', $dupStorage->id)->exists(),
+    'tras el un-merge el duplicado vuelve a ser elegible',
+    'tras el un-merge el duplicado sigue excluido'
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
-// (SH1) SHARE: store canónica cuando el file_id es un mirror
+// (M1) La familia mirror esta retirada y no puede reaparecer
 // ─────────────────────────────────────────────────────────────────────────────
-h_section('(SH1) ShareController::store canónica mirrors');
+h_section('(M1) La familia mirror esta retirada');
 
-$mirrorFolder->refresh();
-h_check(
-    $mirrorFolder->canonical_folder_id === $canonicalFolder->id,
-    "[precondición] mirror sigue enlazado a canonical",
-    "[precondición rota] mirror.canonical_folder_id = " . var_export($mirrorFolder->canonical_folder_id, true)
-);
-
-$chosenFile = $mirrorFolder;
-if ($chosenFile->is_folder && $chosenFile->isFolderMirror()) {
-    $canonical = app(FilePhysicalIdentity::class)->canonicalFor($chosenFile);
-    if ($canonical) {
-        $chosenFile = $canonical;
-    }
+foreach (['canonical_folder_id', 'merged_into_id', 'merged_at', 'merged_reason'] as $col) {
+    h_check(
+        ! h_column_exists('files', $col),
+        "files.{$col} no existe",
+        "files.{$col} SIGUE existiendo"
+    );
 }
 
-$share1 = Share::create([
-    'file_id' => $chosenFile->id,
-    'token' => Share::generateToken(),
-    'permissions' => 'read',
-    'created_by' => $user->id,
-]);
-
+$retired = ['canonical_folder_id', 'file_mirror_audit_log', 'files_owner_canonical_audit', 'files_prune_batches'];
+$scanRoots = [__DIR__ . '/../app', __DIR__ . '/../resources/views', __DIR__ . '/../routes'];
+$offenders = [];
+foreach ($scanRoots as $root) {
+    if (! is_dir($root)) {
+        continue;
+    }
+    $iterator = new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS)
+    );
+    foreach ($iterator as $fileInfo) {
+        if (! $fileInfo->isFile() || ! preg_match('/\.php$/', $fileInfo->getPathname())) {
+            continue;
+        }
+        $contents = (string) file_get_contents($fileInfo->getPathname());
+        foreach ($retired as $needle) {
+            if (str_contains($contents, $needle)) {
+                $offenders[] = str_replace(__DIR__ . '/../', '', $fileInfo->getPathname()) . ' -> ' . $needle;
+            }
+        }
+    }
+}
 h_check(
-    $share1->file_id === $canonicalFolder->id,
-    "share sobre mirror canónica automáticamente (file_id={$canonicalFolder->id})",
-    "share sobre mirror NO fue canónica: file_id=" . var_export($share1->file_id, true) . " (esperado {$canonicalFolder->id})"
+    $offenders === [],
+    'ningun archivo de aplicacion referencia la familia mirror retirada',
+    'referencias a la familia retirada: ' . implode(', ', $offenders)
 );
 
-// ─────────────────────────────────────────────────────────────────────────────
-// (SH2) SHARE: store no canónica cuando el file_id es canonical directo
-// ─────────────────────────────────────────────────────────────────────────────
-h_section('(SH2) ShareController::store respeta canonical');
-
-$share2 = Share::create([
-    'file_id' => $canonicalFolder->id,
-    'token' => Share::generateToken(),
-    'permissions' => 'read',
-    'created_by' => $user->id,
-]);
-
+$hasMirrorCommand = collect(\Illuminate\Support\Facades\Artisan::all())
+    ->contains(function ($c) {
+        if (! $c instanceof \Illuminate\Console\Command) {
+            return false;
+        }
+        try {
+            $name = (string) $c->getName();
+        } catch (\Throwable $e) {
+            return false;
+        }
+        return str_contains($name, 'mirror') || str_contains($name, 'canonicalization');
+    });
 h_check(
-    $share2->file_id === $canonicalFolder->id,
-    "share sobre canonical pasa directo (file_id={$canonicalFolder->id})",
-    "share alteró el file_id del canonical: " . var_export($share2->file_id, true)
-);
-
-// ─────────────────────────────────────────────────────────────────────────────
-// (SH3) SHARE: shares:repair-mirror-targets --apply repunta al canonical
-// ─────────────────────────────────────────────────────────────────────────────
-h_section('(SH3) shares:repair-mirror-targets --apply repunta al canonical');
-
-// Forzar el share1 a apuntar temporalmente al mirror para que repoint sea útil
-DB::table('shares')->where('id', $share1->id)->update(['file_id' => $mirrorFolder->id]);
-$share1->refresh();
-
-Artisan::call('shares:repair-mirror-targets', ['--apply' => true, '--include-duplicates' => true, '--storage' => [$parentStorage->id, $subStorage->id]]);
-
-$share1->refresh();
-
-h_check(
-    $share1->file_id === $canonicalFolder->id,
-    "shares:repair-mirror-targets --apply --include-duplicates repunta al canonical (forzando conflicto #552)",
-    "shares:repair-mirror-targets --apply no repuntó: file_id=" . var_export($share1->file_id, true) . " (esperado {$canonicalFolder->id})"
-);
-
-// ─────────────────────────────────────────────────────────────────────────────
-// (ST1) STORAGE: queries con nuevo nombre de columna
-// ─────────────────────────────────────────────────────────────────────────────
-h_section('(ST1) Storage queries con duplicate_of_storage_id');
-
-$dupCount = (int) DB::table('storage_providers')
-    ->whereNotNull('duplicate_of_storage_id')
-    ->count();
-
-h_check(
-    $dupCount === 0,
-    "StorageProvider::whereNotNull(duplicate_of_storage_id) = 0 (no hay mergeados activos)",
-    "Hay $dupCount storages mergeados (esperado 0 tras un-merge)"
-);
-
-// ─────────────────────────────────────────────────────────────────────────────
-// (ST2) STORAGE: resolveInheritedTranscriptionScope no rompe
-// ─────────────────────────────────────────────────────────────────────────────
-h_section('(ST2) resolveInheritedTranscriptionScope no rompe');
-
-$scope = StorageProvider::resolveInheritedTranscriptionScope($parentStorage->id);
-h_check(
-    is_array($scope) && in_array($parentStorage->id, $scope, true),
-    "resolveInheritedTranscriptionScope incluye el parent root id",
-    "resolveInheritedTranscriptionScope no incluye root"
+    ! $hasMirrorCommand,
+    'no queda ningun comando artisan de la familia mirror',
+    'queda un comando artisan de la familia mirror'
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CLEANUP
-// NOTA: `file_mirror_audit_log` es append-only (trigger rechaza DELETE),
-// así que solo limpiamos share_notification_log, shares, files, storages, user.
 // ─────────────────────────────────────────────────────────────────────────────
 h_section("CLEANUP [tag=$tag]");
 
 DB::table('shares')->where('created_by', $user->id)->delete();
 File::where('owner_id', $user->id)->delete();
 DB::table('user_storages')->where('user_id', $user->id)->delete();
-StorageProvider::where('id', $storageC->id)->delete();
-StorageProvider::where('id', $storageAprime->id)->delete();
-StorageProvider::where('id', $subStorage->id)->delete();
-StorageProvider::where('id', $parentStorage->id)->delete();
+StorageProvider::whereIn('id', [$dupStorage->id, $subStorage->id, $parentStorage->id])->delete();
 $user->delete();
 
 @rmdir($tmpSub);
 @rmdir($tmpParent);
-@rmdir(sys_get_temp_dir() . "/{$tag}_c");
-@rmdir($newBasePath);
+@rmdir($tmpDup);
 
-h_ok('cleanup completo (audit log preservado por diseño)');
+h_ok('cleanup completo');
 
 echo "\n════════════════════════════════════════════════════════════════\n";
-echo " Harness merged-into create/edit/delete E2E | Failures: $failures\n";
+echo " Harness merged-into create/edit/delete | Failures: $failures\n";
 echo "════════════════════════════════════════════════════════════════\n";
 exit($failures > 0 ? 1 : 0);
