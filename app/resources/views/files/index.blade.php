@@ -33,6 +33,16 @@ document.addEventListener('alpine:init', () => {
     showUploadModal: false,
     showDetailModal: false,
     showNewFolderModal: false,
+    // Solicitud de backup (change `solicitud-backup-mis-archivos`).
+    showBackupRequestModal: false,
+    backupRequestFolder: null,
+    backupMotivo: '',
+    backupEligibility: null,
+    backupSubmitting: false,
+    backupLoadingEligibility: false,
+    backupError: '',
+    backupRequests: [],
+    backupRequestsLoading: false,
     selectedFile: null,
     breadcrumbs: [],
     dataMode: 'bd',
@@ -210,6 +220,172 @@ deleteConfirmFile: null,
 
     canCopyMove() {
         return this.currentStoragePermission === 'full';
+    },
+
+    // ------------------------------------------------------------------
+    // Solicitud de backup (change `solicitud-backup-mis-archivos`)
+    // ------------------------------------------------------------------
+
+    /**
+     * ¿La carpeta es una carpeta-día (`DDMMYYYY`)? Es la forma del árbol de
+     * producción: `05112026` es el 5 de noviembre de 2026.
+     */
+    isDayFolder(file) {
+        return !!(file && file.is_folder && /^\d{8}$/.test(file.name || ''));
+    },
+
+    /**
+     * ¿El storage actual declara una carpeta de backup? La bandera la
+     * resuelve el servidor (`/user/storages`); la vista solo la refleja.
+     */
+    currentStorageHasBackup() {
+        if (!this.currentStorage) return false;
+        const storage = this.availableStorages.find(s => s.id === this.currentStorage);
+        return !!(storage && storage.has_backup);
+    },
+
+    canRequestBackup(file) {
+        return this.isDayFolder(file) && this.currentStorageHasBackup();
+    },
+
+    async openBackupRequest(file) {
+        this.backupRequestFolder = file;
+        this.backupMotivo = '';
+        this.backupError = '';
+        this.backupEligibility = null;
+        this.showBackupRequestModal = true;
+        this.backupLoadingEligibility = true;
+
+        try {
+            const res = await apiFetch('/files/backup-requests/eligibility?file_id=' + file.id, {
+                credentials: 'include',
+                headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                this.backupError = data.error || ('No se pudo verificar el backup (HTTP ' + res.status + ').');
+                return;
+            }
+            this.backupEligibility = data;
+        } catch (e) {
+            this.backupError = 'Error de red al verificar el backup.';
+        } finally {
+            this.backupLoadingEligibility = false;
+        }
+    },
+
+    backupMotivoLength() {
+        return (this.backupMotivo || '').trim().length;
+    },
+
+    backupMinMotivoLength() {
+        return 10;
+    },
+
+    canSubmitBackupRequest() {
+        return !!(this.backupEligibility && this.backupEligibility.can_request)
+            && this.backupMotivoLength() >= this.backupMinMotivoLength()
+            && !this.backupSubmitting;
+    },
+
+    async submitBackupRequest() {
+        if (!this.backupRequestFolder || this.backupSubmitting) return;
+
+        if (this.backupMotivoLength() < this.backupMinMotivoLength()) {
+            this.backupError = 'Escribe un motivo de al menos ' + this.backupMinMotivoLength() + ' caracteres.';
+            return;
+        }
+
+        this.backupSubmitting = true;
+        this.backupError = '';
+
+        try {
+            const res = await apiFetch('/files/backup-requests', {
+                method: 'POST',
+                credentials: 'include',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
+                    'Accept': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest'
+                },
+                body: JSON.stringify({
+                    file_id: this.backupRequestFolder.id,
+                    motivo: this.backupMotivo.trim()
+                })
+            });
+
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                this.backupError = data.error || ('No se pudo crear la solicitud (HTTP ' + res.status + ').');
+                return;
+            }
+
+            this.showBackupRequestModal = false;
+            const req = data.request || {};
+            if (req.status === 'ready' && req.link && req.link.public_url) {
+                this.showToast('Solicitud atendida. El enlace vence el ' + (req.link.expires_at || '').slice(0, 10) + '.', 'success', 6000);
+            } else {
+                this.showToast(req.status_message || 'El backup de ese día no está disponible.', 'warning', 6000);
+            }
+            await this.loadBackupRequests();
+        } catch (e) {
+            this.backupError = 'Error de red al crear la solicitud.';
+        } finally {
+            this.backupSubmitting = false;
+        }
+    },
+
+    async loadBackupRequests() {
+        this.backupRequestsLoading = true;
+        try {
+            const res = await apiFetch('/files/backup-requests', {
+                credentials: 'include',
+                headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+            });
+            const data = await res.json().catch(() => ({}));
+            this.backupRequests = Array.isArray(data.data) ? data.data : [];
+        } catch (e) {
+            this.backupRequests = [];
+        } finally {
+            this.backupRequestsLoading = false;
+        }
+    },
+
+    showBackupRequests() {
+        this.viewMode = 'backups';
+        this.loadBackupRequests();
+    },
+
+    async revokeBackupRequest(request) {
+        if (!confirm('¿Revocar esta solicitud? El enlace dejará de funcionar.')) return;
+
+        try {
+            const res = await apiFetch('/files/backup-requests/' + request.id, {
+                method: 'DELETE',
+                credentials: 'include',
+                headers: {
+                    'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
+                    'Accept': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest'
+                }
+            });
+            if (!res.ok) {
+                const data = await res.json().catch(() => ({}));
+                this.showToast(data.error || 'No se pudo revocar la solicitud.', 'error', 5000);
+                return;
+            }
+            this.showToast('Solicitud revocada. El enlace ya no sirve.', 'success', 4000);
+            await this.loadBackupRequests();
+        } catch (e) {
+            this.showToast('Error de red al revocar la solicitud.', 'error', 5000);
+        }
+    },
+
+    backupRequestDate(day) {
+        if (!day || !/^\d{8}$/.test(day)) return day || '';
+        const d = day.slice(0, 2), m = day.slice(2, 4), y = day.slice(4, 8);
+        return d + '/' + m + '/' + y;
     },
 
     isSelected(file) {
@@ -2355,7 +2531,7 @@ deleteConfirmFile: null,
                             </span>
                         </template>
                     </h1>
-                    <p class="text-xs text-slate-500 truncate" x-text="viewMode === 'storages' ? 'Selecciona un storage' : currentStorageName"></p>
+                    <p class="text-xs text-slate-500 truncate" x-text="viewMode === 'storages' ? 'Selecciona un storage' : (viewMode === 'backups' ? 'Material de producción' : currentStorageName)"></p>
                 </div>
             </div>
             <div class="flex items-center gap-3">
@@ -2395,6 +2571,18 @@ deleteConfirmFile: null,
                         </button>
                     </div>
                 </template>
+                <button @click="showBackupRequests()" x-show="viewMode !== 'backups'" class="flex items-center gap-1 sm:gap-2 bg-teal-600 hover:bg-teal-700 active:bg-teal-800 text-white px-2 sm:px-4 py-2 rounded-lg font-medium shadow-sm transition-colors" title="Mis solicitudes de backup">
+                    <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h6"/>
+                    </svg>
+                    <span class="hidden sm:inline">Backups</span>
+                </button>
+                <button @click="navigateToRoot()" x-show="viewMode === 'backups'" class="flex items-center gap-1 sm:gap-2 bg-slate-100 hover:bg-slate-200 text-slate-700 px-2 sm:px-4 py-2 rounded-lg transition-colors" title="Volver a Storages">
+                    <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 17l-5-5m0 0l5-5m-5 5h12"/>
+                    </svg>
+                    <span class="hidden sm:inline">Volver a Storages</span>
+                </button>
                 <button @click="refreshFiles()" x-show="viewMode === 'files'" class="flex items-center gap-1 sm:gap-2 bg-green-600 hover:bg-green-700 active:bg-green-800 text-white px-2 sm:px-4 py-2 rounded-lg font-medium shadow-sm transition-colors" title="Actualizar">
                     <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
@@ -2761,6 +2949,11 @@ deleteConfirmFile: null,
                                 <p class="text-xs text-slate-400 mt-1" x-text="file.is_folder ? 'Carpeta' : formatSize(file.size)"></p>
                             </div>
                             <div class="flex items-center justify-center mt-2 sm:mt-3 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity gap-0.5 sm:gap-1">
+                                <button x-show="canRequestBackup(file)" @click.stop="openBackupRequest(file)" class="p-1.5 sm:p-2 bg-white hover:bg-teal-100 rounded-lg shadow-sm transition-colors" title="Solicitar backup">
+                                    <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4 text-teal-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h6"/>
+                                    </svg>
+                                </button>
                                 <button x-show="currentStorageCanShare" @click.stop="openDetailModal(file)" class="p-1.5 sm:p-2 bg-white hover:bg-indigo-100 rounded-lg shadow-sm transition-colors" title="Compartir">
                                     <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z"/>
@@ -2925,6 +3118,11 @@ deleteConfirmFile: null,
                                     <td class="px-2 sm:px-4 py-2 sm:py-3 text-slate-700 text-sm hidden lg:table-cell" x-text="file.file_modified_at ? formatDate(file.file_modified_at) : '—'"></td>
                                     <td class="px-2 sm:px-4 py-2 sm:py-3 text-right">
                                         <div class="flex items-center justify-end gap-0.5 sm:gap-1">
+                                            <button x-show="canRequestBackup(file)" @click.stop="openBackupRequest(file)" class="p-1.5 sm:p-2 bg-teal-100 hover:bg-teal-200 text-teal-600 rounded-lg transition-colors" title="Solicitar backup">
+                                                <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h6"/>
+                                                </svg>
+                                            </button>
                                             <button x-show="currentStorageCanShare" @click.stop="openDetailModal(file)" class="p-1.5 sm:p-2 hover:bg-slate-200 rounded-lg transition-colors" title="Compartir">
                                                 <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z"/>
@@ -2987,6 +3185,73 @@ deleteConfirmFile: null,
                     </div>
                     <h3 class="text-lg font-medium text-slate-700 mb-2">No tienes storages asignados</h3>
                     <p class="text-slate-500">Contacta al administrador para que te asigne storages.</p>
+                </div>
+
+                {{-- Historial de solicitudes de backup (change `solicitud-backup-mis-archivos`).
+                     Solo las solicitudes del propio usuario. El enlace abre en una
+                     pestaña nueva; una solicitud sin material se explica, no se
+                     muestra como enlace roto. --}}
+                <div x-show="viewMode === 'backups'" class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                    <div class="px-4 py-3 border-b border-slate-200 flex items-center justify-between gap-3">
+                        <h3 class="text-sm font-semibold text-slate-700">Mis solicitudes de backup</h3>
+                        <button @click="loadBackupRequests()" class="text-xs text-slate-500 hover:text-slate-700 flex items-center gap-1">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                            </svg>
+                            Actualizar
+                        </button>
+                    </div>
+
+                    <div x-show="backupRequestsLoading" class="p-6 text-center text-sm text-slate-500">Cargando solicitudes...</div>
+
+                    <div x-show="!backupRequestsLoading && backupRequests.length === 0" class="p-10 text-center">
+                        <div class="w-16 h-16 bg-slate-100 rounded-full flex items-center justify-center mx-auto mb-3">
+                            <svg class="w-8 h-8 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h6"/>
+                            </svg>
+                        </div>
+                        <p class="text-slate-500 text-sm">
+                            Todavía no has solicitado ningún backup.<br>
+                            Abre una carpeta con nombre de fecha (por ejemplo <span class="font-mono">05112026</span>) en un canal con backup configurado y pulsa <span class="font-medium">Solicitar backup</span>.
+                        </p>
+                    </div>
+
+                    <div x-show="!backupRequestsLoading && backupRequests.length > 0" class="divide-y divide-slate-100">
+                        <template x-for="req in backupRequests" :key="req.id">
+                            <div class="px-4 py-3 flex flex-col sm:flex-row sm:items-center gap-3">
+                                <div class="flex-1 min-w-0">
+                                    <div class="flex items-center gap-2 flex-wrap">
+                                        <span class="font-medium text-slate-800 text-sm" x-text="req.source_storage ? req.source_storage.name : '—'"></span>
+                                        <span class="font-mono text-xs text-slate-500" x-text="backupRequestDate(req.day)"></span>
+                                        <span class="text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full border"
+                                              :class="{
+                                                  'bg-green-50 text-green-700 border-green-200': req.status === 'ready',
+                                                  'bg-amber-50 text-amber-700 border-amber-200': req.status === 'unavailable',
+                                                  'bg-slate-100 text-slate-600 border-slate-200': req.status === 'expired',
+                                                  'bg-red-50 text-red-700 border-red-200': req.status === 'revoked'
+                                              }"
+                                              x-text="req.status"></span>
+                                    </div>
+                                    <p class="text-xs text-slate-500 mt-1" x-text="req.motivo"></p>
+                                    <p class="text-xs text-slate-400 mt-0.5" x-text="req.status_message"></p>
+                                </div>
+                                <div class="flex items-center gap-2 flex-shrink-0">
+                                    <a x-show="req.link" :href="req.link?.public_url || '#'" target="_blank" rel="noopener noreferrer"
+                                       class="flex items-center gap-1 bg-teal-600 hover:bg-teal-700 text-white px-3 py-1.5 rounded-lg text-xs font-medium transition-colors">
+                                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6v6m-11 5l10-10"/>
+                                        </svg>
+                                        Abrir
+                                    </a>
+                                    <button x-show="req.status === 'ready'" @click="revokeBackupRequest(req)"
+                                            class="flex items-center gap-1 bg-slate-100 hover:bg-red-100 text-slate-600 hover:text-red-700 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
+                                            title="Revocar la solicitud">
+                                        Revocar
+                                    </button>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
                 </div>
 
                 <!-- Skeleton de carga — mientras llega la respuesta del servidor -->
@@ -3124,6 +3389,89 @@ deleteConfirmFile: null,
                     Cancelar
                 </button>
             </div>
+        </div>
+    </div>
+
+    {{-- Solicitar backup (change `solicitud-backup-mis-archivos`).
+         El modal explica qué se va a pedir y por qué antes de enviar nada.
+         El enlace que se genera NO promete mejor calidad: el árbol de
+         producción tiene otra segmentación y el bitrate va por canal. --}}
+    <div x-cloak x-show="showBackupRequestModal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" x-transition>
+        <div class="bg-white rounded-xl p-6 w-full max-w-lg shadow-xl max-h-[90vh] overflow-y-auto" @click.away="showBackupRequestModal = false">
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-xl font-bold text-slate-800 flex items-center gap-2">
+                    <svg class="w-6 h-6 text-teal-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h6"/>
+                    </svg>
+                    Solicitar backup
+                </h2>
+                <button @click="showBackupRequestModal = false" class="text-slate-400 hover:text-slate-600">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                </button>
+            </div>
+
+            <div x-show="backupLoadingEligibility" class="text-sm text-slate-500 py-4 text-center">
+                Verificando el backup de ese día...
+            </div>
+
+            <div x-show="!backupLoadingEligibility && backupEligibility" class="space-y-4">
+                <div class="bg-slate-50 border border-slate-200 rounded-lg p-4 text-sm space-y-1">
+                    <div class="flex justify-between gap-4">
+                        <span class="text-slate-500">Canal</span>
+                        <span class="font-medium text-slate-800 text-right" x-text="backupEligibility?.source_storage ? backupEligibility.source_storage.name : '—'"></span>
+                    </div>
+                    <div class="flex justify-between gap-4">
+                        <span class="text-slate-500">Día</span>
+                        <span class="font-medium text-slate-800" x-text="backupRequestDate(backupEligibility?.day || '')"></span>
+                    </div>
+                    <div class="flex justify-between gap-4">
+                        <span class="text-slate-500">Ruta del backup</span>
+                        <span class="font-mono text-xs text-slate-700 text-right break-all" x-text="backupEligibility?.backup_path || '—'"></span>
+                    </div>
+                    <div class="flex justify-between gap-4">
+                        <span class="text-slate-500">Vigencia del enlace</span>
+                        <span class="font-medium text-slate-800" x-text="backupEligibility?.expires_at ? backupEligibility.expires_at.slice(0, 10) : '—'"></span>
+                    </div>
+                </div>
+
+                <div x-show="backupEligibility && !backupEligibility.available" class="bg-amber-50 border border-amber-200 text-amber-800 rounded-lg p-3 text-sm">
+                    <span x-text="backupEligibility?.reason_message || 'El backup de ese día no está disponible.'"></span>
+                </div>
+
+                <div>
+                    <label class="block text-sm font-medium text-slate-700 mb-1">
+                        Motivo de la solicitud
+                        <span class="text-red-500">*</span>
+                    </label>
+                    <textarea x-model="backupMotivo" rows="3"
+                              :disabled="!(backupEligibility && backupEligibility.available)"
+                              placeholder="¿Para qué necesitas el material de ese día?"
+                              class="w-full border border-slate-300 px-3 py-2 rounded-lg text-sm focus:ring-2 focus:ring-teal-500 focus:border-teal-500 outline-none disabled:bg-slate-100 disabled:text-slate-400"></textarea>
+                    <p class="text-xs text-slate-500 mt-1">
+                        Mínimo <span x-text="backupMinMotivoLength()"></span> caracteres.
+                        <span x-show="backupMotivoLength() > 0 && backupMotivoLength() < backupMinMotivoLength()" class="text-red-500" x-text="'(faltan ' + (backupMinMotivoLength() - backupMotivoLength()) + ')'"></span>
+                    </p>
+                </div>
+
+                <div x-show="backupError" class="bg-red-50 border border-red-200 text-red-700 rounded-lg p-3 text-sm" x-text="backupError"></div>
+
+                <div class="flex gap-3">
+                    <button @click="submitBackupRequest()"
+                            :disabled="!canSubmitBackupRequest()"
+                            :class="canSubmitBackupRequest() ? 'bg-teal-600 hover:bg-teal-700 text-white cursor-pointer' : 'bg-slate-200 text-slate-400 cursor-not-allowed'"
+                            class="flex-1 px-4 py-2 rounded-lg transition-colors text-sm font-medium">
+                        <span x-show="!backupSubmitting">Solicitar</span>
+                        <span x-show="backupSubmitting">Enviando...</span>
+                    </button>
+                    <button @click="showBackupRequestModal = false" class="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 px-4 py-2 rounded-lg transition-colors text-sm font-medium">
+                        Cancelar
+                    </button>
+                </div>
+            </div>
+
+            <div x-show="!backupLoadingEligibility && !backupEligibility && backupError" class="bg-red-50 border border-red-200 text-red-700 rounded-lg p-3 text-sm" x-text="backupError"></div>
         </div>
     </div>
 

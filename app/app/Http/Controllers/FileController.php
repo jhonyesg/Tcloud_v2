@@ -1039,15 +1039,23 @@ class FileController extends Controller
                 return true;
             })
             ->map(function ($us) {
+                $sp = $us->storageProvider;
+
                 return [
-                    'id' => $us->storageProvider->id,
-                    'name' => $us->storageProvider->name,
-                    'type' => $us->storageProvider->type,
+                    'id' => $sp->id,
+                    'name' => $sp->name,
+                    'type' => $sp->type,
                     'permissions' => $us->permissions,
                     'can_create_shares' => (bool) $us->can_create_shares,
-                    'accessible' => $us->storageProvider->is_accessible,
-                    'last_checked' => $us->storageProvider->last_checked_at?->format('d M, H:i'),
-                    'is_personal' => str_starts_with($us->storageProvider->base_path ?? '', '/home/www/Usuarios_tcloud/'),
+                    'accessible' => $sp->is_accessible,
+                    'last_checked' => $sp->last_checked_at?->format('d M, H:i'),
+                    'is_personal' => str_starts_with($sp->base_path ?? '', '/home/www/Usuarios_tcloud/'),
+                    // ¿Este canal declara una carpeta de backup ("Producción")?
+                    // La UI usa la bandera para habilitar la acción "Solicitar
+                    // backup" solo en las carpetas-día de los canales que la
+                    // tienen. El criterio vive en el servidor: la vista solo
+                    // lo refleja.
+                    'has_backup' => $sp->hasBackupMapping(),
                 ];
             })
             ->values();
