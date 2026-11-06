@@ -119,7 +119,12 @@ $storage = StorageProvider::create([
     'last_checked_at' => now(),
     'transcription_enabled' => false,
     'folder_layout' => 'flat',
-    'allow_parent_overlap' => false,
+    // `allow_parent_overlap` NO se incluye: la columna no existe en el
+    // esquema actual (la retiro el restore de agosto 2026) y meterla en el
+    // INSERT hace fallar la creation. La columna sigue viva en las specs
+    // `transcription-virtual-scope` / `transcriptor-storage-funnel` /
+    // `transcription-disk-scanner`: esa deriva de esquema es un pendiente
+    // aparte, no de este harness.
     'is_personal' => false,
     'kind' => 'local',
 ]);

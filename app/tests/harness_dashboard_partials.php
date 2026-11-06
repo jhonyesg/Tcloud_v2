@@ -224,6 +224,58 @@ try {
     h_check(trim($htmlClientCtxAsAdmin) === '', 'bg-jobs NO renderiza en contexto cliente',
         'bg-jobs renderizó fuera de admin');
 
+    // ─── 9. _storage_health (storage-readability-audit-and-repair) ────────
+    h_section('9. _storage_health admin/client gating');
+
+    // Admin + enabled=true + items con hallazgos → debe renderizar.
+    $itemsWithFindings = [
+        ['storage_id' => 99, 'name' => 'Storage de prueba', 'base_path' => '/x/y', 'untraversable_count' => 7, 'owner_mismatch_count' => 51],
+    ];
+    $shHtmlAdmin = render('dashboard.partials._storage_health', ['context' => 'admin', 'data' => ['enabled' => true, 'audit_finished_at' => '2026-10-05T00:00:00Z', 'items' => $itemsWithFindings]]);
+    h_check(str_contains($shHtmlAdmin, 'data-dashboard-partial="storage-health"'),
+        'admin+enabled+items: selector de tour estable',
+        'admin+enabled+items: falta data-dashboard-partial="storage-health"');
+    h_check(str_contains($shHtmlAdmin, '7 untraversable'),
+        'admin: muestra conteo untraversable',
+        'admin: falta conteo untraversable');
+    h_check(str_contains($shHtmlAdmin, '51 owner-mismatch'),
+        'admin: muestra conteo owner-mismatch',
+        'admin: falta conteo owner-mismatch');
+    h_check(str_contains($shHtmlAdmin, 'sudo php artisan storage:repair-ownership --storage=99'),
+        'admin: muestra comando repair textual',
+        'admin: falta comando repair');
+
+    // Cliente: SIEMPRE vacío.
+    $shHtmlClient = render('dashboard.partials._storage_health', ['context' => 'client', 'data' => ['enabled' => true, 'audit_finished_at' => 'now', 'items' => $itemsWithFindings]]);
+    h_check(trim($shHtmlClient) === '',
+        'cliente: NO renderiza (privacidad)',
+        'cliente: renderizó contenido (leak)');
+
+    // Admin + enabled=false: vacío.
+    $shHtmlDisabled = render('dashboard.partials._storage_health', ['context' => 'admin', 'data' => ['enabled' => false, 'audit_finished_at' => null, 'items' => $itemsWithFindings]]);
+    h_check(trim($shHtmlDisabled) === '',
+        'admin+enabled=false: NO renderiza',
+        'admin+enabled=false: renderizó contenido');
+
+    // Admin + items vacío: vacío (cero hallazgos).
+    $shHtmlEmpty = render('dashboard.partials._storage_health', ['context' => 'admin', 'data' => ['enabled' => true, 'audit_finished_at' => null, 'items' => []]]);
+    h_check(trim($shHtmlEmpty) === '',
+        'admin+items vacío: NO renderiza (cero ruido)',
+        'admin+items vacío: renderizó contenido');
+
+    // Admin + storage con solo owner_mismatch (no untraversable): debe mostrar
+    // el comando de inspección pero NO el comando de repair.
+    $itemsOnlyOwner = [
+        ['storage_id' => 100, 'name' => 'Solo owner', 'base_path' => '/x', 'untraversable_count' => 0, 'owner_mismatch_count' => 25],
+    ];
+    $shOnlyOwner = render('dashboard.partials._storage_health', ['context' => 'admin', 'data' => ['enabled' => true, 'audit_finished_at' => null, 'items' => $itemsOnlyOwner]]);
+    h_check(str_contains($shOnlyOwner, '25 owner-mismatch'),
+        'admin: muestra owner-mismatch aunque untraversable=0',
+        'admin: no muestra owner-mismatch');
+    h_check(!str_contains($shOnlyOwner, 'repair-ownership'),
+        'admin: NO muestra repair-amount cuando no hay untraversable',
+        'admin: muestra repair incorrectamente');
+
 } finally {
     // ─── Cleanup por tag ──────────────────────────────────────────────────
     DB::table('user_alerts_inteligentes')->whereIn('user_id',
