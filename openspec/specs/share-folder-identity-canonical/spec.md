@@ -4,38 +4,24 @@ Garantiza que un share creado sobre un folder apunte siempre al canónico y que 
 
 ## Requirements
 
-### Requirement: Share creation canonicalizes folder file_id
-
-When a user creates a share via `POST /shares` with a `file_id` pointing to a folder that is a mirror (i.e., has `canonical_folder_id IS NOT NULL`), the system MUST canonicalize the `file_id` to the corresponding canonical folder before persisting the share.
-
-#### Scenario: Mirror folder is auto-redirected to canonical
-- **WHEN** a `POST /shares` request includes `file_id = 7244491` (a mirror) whose canonical is `7244379`
-- **THEN** the persisted share MUST have `file_id = 7244379`
-- **AND** the response MUST include the canonical file_id, not the mirror
-
-#### Scenario: Canonical folder passes through unchanged
-- **WHEN** a `POST /shares` request includes `file_id` pointing to a folder with `canonical_folder_id IS NULL`
-- **THEN** the share MUST persist with that exact file_id
-
-#### Scenario: File (non-folder) shares are not canonicalized
-- **WHEN** a `POST /shares` request includes `file_id` pointing to a file (not folder)
-- **THEN** the share MUST persist with the original file_id regardless of any canonical_folder_id on the row
-
 ### Requirement: Public share page lists children across storages
 
 When a public visitor opens `GET /s/{token}` and the share's file is a folder, the rendered listing MUST include files whose `parent_id` is registered in any storage whose `base_path` is a prefix of the folder's physical path, deduplicated by `(file_id, name)`.
 
 #### Scenario: Folder with cross-storage children shows all
-- **WHEN** a share points to canonical folder `7244379` (storage 7, base `/Tcloud/.../Canal_Rcn`) that has zero children in storage 7 but 35 files exist in storage 5 (parent storage) under the same physical path
-- **THEN** the rendered HTML MUST list all 35 files
+
+- **WHEN** a share points to a folder in a storage whose `base_path` is a prefix of the physical path where the files live, and the files are cataloged in a sub-storage
+- **THEN** the rendered HTML MUST list those files
 - **AND** the response MUST NOT 500
 
 #### Scenario: Folder with same-storage children shows only its own
+
 - **WHEN** a share points to a folder with children in the same storage
-- **THEN** the listing MUST NOT include duplicates from other storages
+- **THEN** the rendered listing MUST NOT include duplicates from other storages
 - **AND** the count MUST match the canonical storage's children count
 
 #### Scenario: Empty folder shows empty page gracefully
+
 - **WHEN** a share points to a folder with zero children in any storage
 - **THEN** the listing MUST render with an empty state
 - **AND** the response MUST be HTTP 200 (not 404 or 500)
@@ -45,158 +31,93 @@ When a public visitor opens `GET /s/{token}` and the share's file is a folder, t
 When a public visitor navigates `GET /s/{token}/folder/{folderId}` (subfolder within a share), the subfolder listing MUST use the same cross-storage logic as the root listing.
 
 #### Scenario: Subfolder under share resolves across storages
-- **WHEN** a visitor navigates from a share into a subfolder that is itself a mirror
-- **THEN** the subfolder MUST be canonicalized via `FilePhysicalIdentity::canonicalFor()` before listing its contents
+
+- **WHEN** a visitor navigates from a share into a subfolder that is cataloged in a different storage
+- **THEN** the subfolder MUST be resolved against the same hierarchy used by the root listing
 - **AND** the listing MUST show cross-storage children
-
-### Requirement: Folder delete via share respects mirror vs canonical
-
-When a share owner deletes the shared folder via `DELETE /s/{token}` or `POST /s/{token}/destroy`, the system MUST distinguish three cases based on whether the target is a mirror or canonical, and the share's permissions.
-
-#### Scenario: Mirror folder delete is metadata-only
-- **WHEN** the share's file_id points to a folder with `canonical_folder_id IS NOT NULL` and the operator triggers delete
-- **THEN** the system MUST delete only the mirror row in `files` and the share row
-- **AND** the canonical folder and its children MUST remain untouched
-- **AND** no files MUST be removed from disk
-
-#### Scenario: Canonical folder with read permission is metadata-only
-- **WHEN** the share's file_id points to a folder with `canonical_folder_id IS NULL` and `share.permissions = 'read'` and the operator triggers delete
-- **THEN** the system MUST delete the canonical row and cascade-delete its `files` children rows
-- **AND** no files MUST be removed from disk
-- **AND** the share row MUST be deleted
-
-#### Scenario: Canonical folder with write or full permission is destructive
-- **WHEN** the share's file_id points to a folder with `canonical_folder_id IS NULL` and `share.permissions IN ('write','full')` and the operator triggers delete
-- **THEN** the system MUST `deleteRecursive()` the physical folder on disk
-- **AND** cascade-delete all `files` rows under it
-- **AND** delete the share row
-- **AND** the operation MUST be logged in the audit trail
 
 ### Requirement: Folder listing returns exactly one level of children, no grandchildren
 
-When a public visitor opens a folder share and the system computes the visible children of that folder, the listing MUST include only rows whose `parent_id` matches the canonical folder id or the id of any mirror of that folder. The listing MUST NOT include rows whose `parent_id` is a child of the canonical or a child of a mirror (i.e., MUST NOT include grandchildren).
+When a public visitor opens a folder share and the system computes the visible children of that folder, the listing MUST include only rows whose `parent_id` matches the share's folder id or the id of an equivalent folder row resolved from the hierarchy. The listing MUST NOT include rows whose `parent_id` is a child of those rows (i.e., MUST NOT include grandchildren).
 
 #### Scenario: Canonical folder with sub-folder children returns sub-folders only
-- **WHEN** a share points to a canonical folder whose direct children are 121 sub-folders and those sub-folders collectively contain thousands of files
-- **THEN** the rendered listing MUST contain exactly 121 items
-- **AND** the listing MUST NOT contain any file whose `parent_id` is one of those 121 sub-folders
+
+- **WHEN** a share points to a folder whose direct children are sub-folders and those sub-folders collectively contain thousands of files
+- **THEN** the rendered listing MUST contain exactly those direct children
+- **AND** the listing MUST NOT contain any file whose `parent_id` is one of those sub-folders
 
 #### Scenario: Canonical folder with file children is unchanged by the fix
-- **WHEN** a share points to a canonical folder whose direct children are 34 files (no sub-folders)
-- **THEN** the rendered listing MUST contain exactly 34 items
-- **AND** the listing MUST NOT include rows from unrelated parents whose `id` collides with any of the 34 file ids (the previous bug accidentally produced false positives only when child rows were folders)
 
-#### Scenario: Mirror with file children returns only those files
-- **WHEN** a share points to a mirror folder that has 97 file children directly under it and the canonical has 0 children
-- **THEN** the rendered listing MUST contain exactly 97 items (the mirror's direct children)
-- **AND** MUST NOT include rows whose `parent_id` resolves to children of the mirror (none exist in this case)
-
-#### Scenario: Canonical with mirror that has its own file children returns union
-- **WHEN** a share points to a canonical folder with 0 direct children and a mirror that has 59 file children of its own
-- **THEN** the rendered listing MUST contain exactly 59 items (the mirror's children)
-- **AND** the count MUST equal the union of `parent_id = canonical_id` and `parent_id = mirror_id`, nothing more
+- **WHEN** a share points to a folder whose direct children are files and no sub-folders
+- **THEN** the rendered listing MUST contain exactly those direct children
+- **AND** the listing MUST NOT contain rows from unrelated parents whose `id` collides with any of the file ids
 
 #### Scenario: Folder with no children anywhere shows empty gracefully
-- **WHEN** a share points to a folder that has zero direct children and zero mirrors and zero grandchildren
+
+- **WHEN** a share points to a folder that has zero direct children and zero equivalent rows
 - **THEN** the response MUST be HTTP 200 with an empty listing
 - **AND** the page MUST render the "no hay elementos" empty state
-- **AND** the bug fix MUST NOT regress this behavior (the canonical implementation already handled this; the fix preserves it)
+
+#### Scenario: Mirror with file children returns only those files
+
+- **WHEN** a share points to an equivalent folder row that has file children directly under it and the folder of the share itself has zero children
+- **THEN** the rendered listing MUST contain exactly those file children
+- **AND** MUST NOT include rows whose `parent_id` resolves to children of that equivalent row (none exist in this case)
+
+#### Scenario: Canonical with mirror that has its own file children returns union
+
+- **WHEN** a share points to a folder with 0 direct children and an equivalent row that has file children of its own
+- **THEN** the rendered listing MUST contain exactly those file children
+- **AND** the count MUST equal the union of `parent_id = folder_id` and `parent_id = equivalent_id`, nothing more
 
 #### Scenario: Listing count equals direct children plus mirror children exactly
-- **WHEN** a share's folder has N direct children of the canonical and M direct children of each mirror (sum across all mirrors)
+
+- **WHEN** a share's folder has N direct children and M direct children of each equivalent row (sum across equivalent rows)
 - **THEN** after deduplication by name, the listing count MUST equal the size of the deduplicated set
 - **AND** the listing MUST NOT exceed N + M (no grandchildren)
 - **AND** the listing MUST NOT be less than min(N, M) when names overlap (dedup can reduce but must not zero out)
 
-### Requirement: Folder listing finds equivalent folders by physical path
-
-When a public visitor opens a folder share and the canonical/mirror identity does not cover all folder rows that represent the same physical directory on disk (e.g., a sub-storage folder at the same absolute path that was never linked via `canonical_folder_id`), the listing MUST discover those equivalent folder rows via `physical_path_normalized` (= `LOWER(RTRIM(base_path_snapshot || '/' || path))`) and include their children.
-
-#### Scenario: Share points to empty parent folder, files live in sub-storage folder at same path
-- **WHEN** a share points to folder `7631760` in storage 5 (path `Disco_D/backup/02_Canal_Rcn_bk/18092026`, `canonical_folder_id IS NULL`, 0 children) and folder `7631759` in storage 34 (path `02_Canal_Rcn_bk/18092026`, `canonical_folder_id IS NULL`, 35 children) shares the same `physical_path_normalized`
-- **THEN** the rendered listing MUST contain exactly 35 items (the 35 files under folder 7631759)
-- **AND** the listing MUST NOT be empty (the share MUST show the files even though the share's file_id points to the empty folder)
-
-#### Scenario: Two folders with same physical path but different content merge via dedup
-- **WHEN** two folders in different storages share the same `physical_path_normalized` and both contain files with the same name (e.g., one row in storage 5 with one name, one row in storage 34 with the same name)
-- **THEN** the listing MUST deduplicate by name and prefer the row from the storage with the longer `base_path` (deeper sub-storage wins)
-- **AND** the dedup MUST be deterministic across requests
-
-#### Scenario: Physical-path equivalence does not match folders with different paths
-- **WHEN** two folders exist in different storages but have different `physical_path_normalized` values
-- **THEN** the listing for either folder MUST NOT include rows from the other folder's children
-- **AND** `physical_path_normalized` comparison MUST be case-insensitive (LOWER on both sides) and trim trailing slashes
-
-#### Scenario: Physical-path equivalence falls back gracefully when base_path_snapshot is missing
-- **WHEN** a folder has `base_path_snapshot IS NULL` (the snapshot was never populated, e.g., rows created before the FileObserver was deployed)
-- **THEN** the system MUST still return the canonical + mirror children correctly
-- **AND** MUST NOT crash or 500
-- **AND** MUST log a warning so the operator can backfill `base_path_snapshot` via `files:resync-base-path-snapshots`
-
-### Requirement: Columna renamed para identidad de folder
-
-The system SHALL rename `files.merged_into_id` to `files.canonical_folder_id` so that the column name unambiguously expresses its domain (a folder row that is a mirror pointing to a canonical row in the same table).
-
-#### Scenario: Columna renommée en BD
-- **WHEN** se ejecuta la migration de rename
-- **THEN** la columna SHALL llamarse `canonical_folder_id`
-- **AND** SHALL conservar el FK constraint `files_merged_into_id_fkey` (renombrado a `files_canonical_folder_id_fkey`)
-- **AND** SHALL conservar el partial index `files_merged_into_id_idx` (renombrado a `files_canonical_folder_id_idx`)
-- **AND** SHALL conservar `ON DELETE SET NULL` semantics
-
-#### Scenario: Helpers renombrados en modelo
-- **WHEN** el código consulta la identidad de un folder row
-- **THEN** SHALL usar `File::canonicalFolderId()` y `File::isFolderMirror()` en lugar de los getters viejos
-- **AND** SHALL NO existir el método `File::isMirror()` (eliminado; reemplazado por `isFolderMirror()`)
-- **AND** SHALL NO existir `File::canonical()` (renombrado a `File::canonicalFolder()` para desambiguar de otros usos de "canonical")
-
-#### Scenario: Audit log action enum sin cambios
-- **WHEN** el trigger `file_mirror_audit_log_append_only_trigger` rechaza UPDATE/DELETE
-- **THEN** SHALL seguir rechazando filas del log
-- **AND** SHALL NO requerir migración del audit log (los `action` values `link_mirror`, `unlink_mirror`, etc. describen conceptualmente la operación y no cambian)
-
-#### Scenario: Queries SQL actualizadas
-- **WHEN** cualquier consulta referencia `merged_into_id` en `files`
-- **THEN** SHALL usar `canonical_folder_id`
-- **AND** SHALL NO quedar referencias viejas (verificado por `rg "files.*merged_into_id" app/` retornando 0 matches)
-
 ### Requirement: Cross-storage actions within a share succeed
 
-When a public visitor of a folder share performs any individual action on a file that was rendered in the listing via physical-path equivalence (i.e., the file row lives in a different storage from the share's `file_id` row but represents the same physical location on disk), the action MUST succeed and return the file's content. The system MUST NOT reject the action with 403 `File not in shared folder`.
+When a public visitor of a folder share performs any individual action on a file that was rendered in the listing via cross-storage resolution (i.e., the file row lives in a different storage from the share's folder row but represents the same physical location on disk), the action MUST succeed and return the file's content. The system MUST NOT reject the action with 403 `File not in shared folder`.
 
-This invariant applies to: `GET /s/{token}/media/{file_id}/preview`, `GET /s/{token}/preview/{file_id}`, `GET /s/{token}/download/{file_id}`, plus the 5 other methods in `PublicShareController` that internally call `isDescendantOf()`.
+This invariant applies to: `GET /s/{token}/media/{file_id}/preview`, `GET /s/{token}/preview/{file_id}`, `GET /s/{token}/download/{file_id}`, plus the other methods in `PublicShareController` that internally call `isDescendantOf()`.
 
 #### Scenario: Media preview on cross-storage file succeeds
-- **WHEN** a share's `file_id` points to a folder in storage A, and the rendered listing includes a file in storage B whose `physical_path_normalized` falls under the folder's `physical_path_normalized`, and the visitor requests `GET /s/{token}/media/{file_id}/preview`
-- **THEN** the response MUST be HTTP 200 with `Content-Type: video/mp4` (or the file's mime type)
+
+- **WHEN** a share's folder row lives in a storage whose `base_path` is a prefix of the physical path of a file row cataloged in a sub-storage, and the visitor requests `GET /s/{token}/media/{file_id}/preview`
+- **THEN** the response MUST be HTTP 200 with the file's mime type
 - **AND** the body MUST be the file bytes streamed from disk
 - **AND** the response MUST NOT be HTTP 403 or HTTP 404
 
 #### Scenario: Download on cross-storage file returns the bytes
+
 - **WHEN** the same setup as above, and the visitor clicks the download icon triggering `GET /s/{token}/download/{file_id}`
 - **THEN** the response MUST be HTTP 200
 - **AND** the `Content-Disposition` header MUST include `attachment; filename="..."` with the file's name
 - **AND** the body MUST match `filesize()` of the physical file
-- **AND** the response MUST NOT be HTTP 403 with a JSON body saved by the browser as `<id>.json`
 
 #### Scenario: Preview on cross-storage file renders HTML
+
 - **WHEN** the same setup as above, and the visitor requests `GET /s/{token}/preview/{file_id}`
 - **THEN** the response MUST be HTTP 200 with `Content-Type: text/html`
 - **AND** the response MUST NOT be HTTP 403 JSON
 
 #### Scenario: isDescendantOf recognizes physical-path equivalence
-- **WHEN** a folder row F (storage A, `base_path_snapshot` = `/data/root`, `path` = `sub/file.mp4`-parent) and a file row X (storage B, `base_path_snapshot` = `/data/root/sub`, `path` = `file.mp4`) are evaluated, and X's `physical_path_normalized` starts with F's `physical_path_normalized + '/'`
-- **THEN** `PublicShareController::isDescendantOf(X, F)` MUST return `true`
-- **AND** it MUST also return `true` when F's `parent_id` chain does NOT contain X (the walk-only path is insufficient; physical-path fallback is required)
-- **AND** the helper MUST keep returning `false` for unrelated files (different physical prefix)
+
+- **WHEN** a folder row F lives in a storage whose `base_path` is a prefix of the physical path of a file row X cataloged in another storage, and the `parent_id` chain of F does not contain X
+- **THEN** the descendant check MUST return `true`
+- **AND** the check MUST keep returning `false` for files in an unrelated physical location
 
 #### Scenario: File in totally different physical location still gets 403
-- **WHEN** a file row X lives in a completely unrelated physical path (does not start with the share's folder's `physical_path_normalized`)
-- **THEN** `PublicShareController::isDescendantOf(X, folder)` MUST return `false`
+
+- **WHEN** a file row X lives in a completely unrelated physical path (does not start with the share's folder's physical path)
+- **THEN** the descendant check MUST return `false`
 - **AND** `mediaPreview`/`preview`/`download` MUST return HTTP 403
-- **AND** the false positive is impossible because `physical_path_normalized` includes `base_path_snapshot`, which is unique per storage
 
 #### Scenario: Defense-in-depth canonicalizes $file before reading disk
-- **WHEN** a visitor requests `mediaPreview`/`preview`/`download` and the file row passed by the client is a mirror (`canonical_folder_id IS NOT NULL`)
-- **THEN** the controller MUST canonicalize via `FilePhysicalIdentity::canonicalFor()` before computing `$storage` and `$fullPath`
-- **AND** if the canonical FK is dangling, the controller MUST log a warning and continue with the original file row (no crash)
+
+- **WHEN** a visitor requests `mediaPreview`/`preview`/`download` and the file row passed by the client is not the one cataloged in the share's own storage
+- **THEN** the controller MUST resolve the effective storage and physical path from the hierarchy before computing the absolute path
+- **AND** it MUST NOT crash when the hierarchy cannot be resolved
+- **AND** it MUST continue with the original file row when the resolution cannot be completed

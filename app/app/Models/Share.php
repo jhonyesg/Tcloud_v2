@@ -8,7 +8,14 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Share extends Model
 {
-    protected $fillable = ['file_id', 'token', 'password_hash', 'expires_at', 'permissions', 'created_by'];
+    protected $fillable = ['file_id', 'path_snapshot', 'token', 'password_hash', 'expires_at', 'permissions', 'created_by'];
+
+    /**
+     * El hash de la contraseña nunca se serializa. Es la segunda barrera:
+     * el serializador `ShareController::sharePayload()` ya lo excluye, pero
+     * cualquier respuesta que devuelva el modelo crudo queda protegida aqui.
+     */
+    protected $hidden = ['password_hash'];
 
     protected $casts = ['expires_at' => 'datetime'];
 

@@ -5,32 +5,51 @@ namespace App\Http\Controllers;
 use App\Models\Share;
 use App\Models\ShareAccessLog;
 use App\Models\File;
+use App\Models\StorageProvider;
 use App\Services\StorageSyncService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
 class PublicShareController extends Controller
 {
+    /**
+     * Vista publica de un enlace.
+     *
+     * La cache `share:meta:{token}` guarda SOLO escalares del enlace
+     * (identificador, recurso, vencimiento, permiso y hash). La fila del
+     * recurso y su relacion se resuelven en CADA respuesta a partir de la fila
+     * vigente: cachear el modelo con relaciones congelaba el nombre y los
+     * metadatos del archivo, y un archivo renombrado se mostraba con el nombre
+     * viejo hasta una hora despues.
+     */
     public function show(Request $request, string $token)
     {
         $cacheKey = "share:meta:{$token}";
 
-        $share = Cache::remember($cacheKey, 3600, function () use ($token) {
-            return Share::where('token', $token)->with(['file', 'creator'])->first();
-        });
+        $meta = Cache::remember($cacheKey, 3600, fn () => $this->shareMeta($token));
 
-        if ($share && !Share::where('id', $share->id)->exists()) {
+        // La cache puede contener una entrada del formato anterior (el modelo
+        // completo) si el TTL de una hora no ha expirado tras el despliegue.
+        // Se descarta y se recalcula: un share existente jamas debe dar 404.
+        if (! is_array($meta)) {
             Cache::forget($cacheKey);
-            $share = Share::where('token', $token)->with(['file', 'creator'])->first();
-            if ($share) {
-                Cache::put($cacheKey, $share, 3600);
-            }
+            $meta = Cache::remember($cacheKey, 3600, fn () => $this->shareMeta($token));
         }
 
-        if (!$share) {
+        // Revalidacion: un enlace revocado no puede resolver por efecto de la
+        // cache. Se relee la fila vigente con sus relaciones.
+        $share = $meta
+            ? Share::with(['file.storageProvider', 'creator'])->find($meta['id'])
+            : null;
+
+        if (! $share) {
+            Cache::forget($cacheKey);
+
             if ($request->ajax() || $request->wantsJson()) {
                 return response()->json(['error' => 'Share not found'], 404);
             }
@@ -45,7 +64,7 @@ class PublicShareController extends Controller
         }
 
         if ($share->password_hash) {
-            if (!$request->hasHeader('X-Share-Password') && !$request->session()->has("share_auth_{$token}")) {
+            if (! $request->hasHeader('X-Share-Password') && ! $request->session()->has("share_auth_{$token}")) {
                 if ($request->ajax() || $request->wantsJson()) {
                     return response()->json(['error' => 'Password required', 'requires_password' => true], 401);
                 }
@@ -54,7 +73,7 @@ class PublicShareController extends Controller
 
             if ($request->hasHeader('X-Share-Password')) {
                 $password = $request->header('X-Share-Password');
-                if (!Hash::check($password, $share->password_hash)) {
+                if (! Hash::check($password, $share->password_hash)) {
                     if ($request->ajax() || $request->wantsJson()) {
                         return response()->json(['error' => 'Invalid password'], 401);
                     }
@@ -68,9 +87,16 @@ class PublicShareController extends Controller
 
         $file = $share->file;
 
+        if (! $file) {
+            if ($request->ajax() || $request->wantsJson()) {
+                return response()->json(['error' => 'File not found'], 404);
+            }
+            return view('shares.public-not-found');
+        }
+
         if ($file->is_folder) {
             $this->autoSyncFolder($file, $request->boolean('refresh'));
-            $folderContents = $file->children()->orderBy('is_folder', 'desc')->orderBy('name')->get();
+            $listing = $this->folderContents($file);
             $mimeType = 'folder';
             $isPreviewable = false;
             $fileUrl = null;
@@ -82,7 +108,9 @@ class PublicShareController extends Controller
                 'mimeType' => $mimeType,
                 'isPreviewable' => $isPreviewable,
                 'fileUrl' => $fileUrl,
-                'folderContents' => $folderContents,
+                'folderContents' => $listing['items'],
+                'folderListingTotal' => $listing['total'],
+                'folderListingTruncated' => $listing['truncated'],
                 'breadcrumbs' => $breadcrumbs,
             ]);
         }
@@ -109,6 +137,88 @@ class PublicShareController extends Controller
             'fileUrl' => $fileUrl,
             'folderContents' => collect(),
         ]);
+    }
+
+    /**
+     * Metadatos escalares del enlace para la cache publica.
+     *
+     * Deliberadamente NO se cachea el modelo con sus relaciones: la fila del
+     * recurso debe resolverse en cada respuesta para que un renombrado o un
+     * cambio de disponibilidad se vea de inmediato (contrato
+     * `share-security`, "Metadatos publics frescos").
+     *
+     * @return array{id:int, file_id:int, expires_at:?string, permissions:string, password_hash:?string}|null
+     */
+    private function shareMeta(string $token): ?array
+    {
+        $share = Share::where('token', $token)->first();
+
+        if (! $share) {
+            return null;
+        }
+
+        return [
+            'id' => (int) $share->id,
+            'file_id' => (int) $share->file_id,
+            'expires_at' => $share->expires_at?->format('Y-m-d H:i:s'),
+            'permissions' => $share->permissions,
+            'password_hash' => $share->password_hash,
+        ];
+    }
+
+    /**
+     * Autenticacion HTML por contrasena de share.
+     *
+     * El formulario `shares.public-password` postea aqui. Sin este endpoint,
+     * TODO enlace protegido por contrasena era insusable: el visitante
+     * escribia la contrasena, enviaba el formulario y recibia un HTTP 500.
+     *
+     * Contrato (`share-security`):
+     *  - contrasena correcta -> se crea `share_auth_{token}` y se redirige al
+     *    GET publico.
+     *  - contrasena incorrecta -> `401` para clientes JSON o el formulario con
+     *    error, y NO se crea la sesion.
+     *  - share expirado -> `410` o la vista de expirado, sin evaluar la
+     *    contrasena.
+     */
+    public function authenticate(Request $request, string $token)
+    {
+        $share = Share::where('token', $token)->first();
+
+        if (! $share) {
+            if ($request->ajax() || $request->wantsJson()) {
+                return response()->json(['error' => 'Share not found'], 404);
+            }
+            return view('shares.public-not-found');
+        }
+
+        if ($share->expires_at && $share->expires_at->isPast()) {
+            if ($request->ajax() || $request->wantsJson()) {
+                return response()->json(['error' => 'Share has expired'], 410);
+            }
+            return view('shares.public-expired');
+        }
+
+        if (! $share->password_hash) {
+            return redirect('/s/' . $token);
+        }
+
+        $request->validate(['password' => 'required|string']);
+
+        if (! Hash::check($request->input('password'), $share->password_hash)) {
+            if ($request->ajax() || $request->wantsJson()) {
+                return response()->json(['error' => 'Invalid password'], 401);
+            }
+
+            return response()->view('shares.public-password', [
+                'token' => $token,
+                'error' => 'Contrasena incorrecta',
+            ], 401);
+        }
+
+        $request->session()->put("share_auth_{$token}", true);
+
+        return redirect('/s/' . $token);
     }
 
     public function folder(Request $request, string $token, int $folder_id)
@@ -142,15 +252,9 @@ class PublicShareController extends Controller
         }
 
         $this->autoSyncFolder($currentFolder, $request->boolean('refresh'));
-        $folderContents = $currentFolder->children()->orderBy('is_folder', 'desc')->orderBy('name')->get();
+        $listing = $this->folderContents($currentFolder);
 
-        $breadcrumbs = [];
-        $crumb = $currentFolder;
-        while ($crumb && $crumb->id !== $rootFolder->id) {
-            array_unshift($breadcrumbs, $crumb);
-            $crumb = $crumb->parent;
-        }
-        array_unshift($breadcrumbs, $rootFolder);
+        $breadcrumbs = $this->buildBreadcrumbs($currentFolder, $rootFolder);
 
         return view('shares.public', [
             'share' => $share,
@@ -158,7 +262,9 @@ class PublicShareController extends Controller
             'mimeType' => 'folder',
             'isPreviewable' => false,
             'fileUrl' => null,
-            'folderContents' => $folderContents,
+            'folderContents' => $listing['items'],
+            'folderListingTotal' => $listing['total'],
+            'folderListingTruncated' => $listing['truncated'],
             'breadcrumbs' => $breadcrumbs,
         ]);
     }
@@ -528,7 +634,28 @@ class PublicShareController extends Controller
             return response()->json(['error' => 'Invalid path'], 400);
         }
 
-        mkdir($fullPath, 0755, true);
+        if (!is_dir($fullPath)) {
+            if (!is_writable(dirname($fullPath))) {
+                Log::warning('share.folder_create_failed', [
+                    'share_token' => $token,
+                    'fullPath' => $fullPath,
+                    'reason' => 'parent_not_writable',
+                    'uid' => posix_geteuid(),
+                ]);
+                return response()->json(['error' => 'El directorio no es escribible por el usuario del servidor'], 500);
+            }
+            try {
+                mkdir($fullPath, 0755, true);
+            } catch (\Throwable $e) {
+                Log::warning('share.folder_create_failed', [
+                    'share_token' => $token,
+                    'fullPath' => $fullPath,
+                    'reason' => 'mkdir_exception',
+                    'message' => $e->getMessage(),
+                ]);
+                return response()->json(['error' => 'No se pudo crear el directorio en el almacenamiento: ' . $e->getMessage()], 500);
+            }
+        }
 
         $newFolder = File::create([
             'name' => $request->name,
@@ -662,8 +789,174 @@ class PublicShareController extends Controller
         return response()->json(['message' => 'Deleted successfully']);
     }
 
+    /**
+     * Contenido visible de una carpeta en un enlace publico.
+     *
+     * Reune dos fuentes:
+     *  1. Los hijos DIRECTOS de la fila de la carpeta (`parent_id = folder.id`).
+     *  2. Las filas raiz (`parent_id IS NULL`) de los storages cuyo
+     *     `base_path` cae DENTRO de la ruta fisica de la carpeta. Esos
+     *     storages tienen su propia raiz fisica dentro de la carpeta
+     *     compartida, asi que sus contenidos no aparecen como hijos de la
+     *     fila de la carpeta: viven en otro storage del arbol.
+     *
+     * El storage propio de la carpeta queda excluido salvo que su
+     * `base_path` sea EXACTAMENTE la ruta fisica de la carpeta: en ese caso
+     * la carpeta ES la raiz de ese storage y sus raices son sus hijos.
+     *
+     * Deduplica por nombre. Ante el mismo nombre en dos storages gana la fila
+     * del storage mas especifico (`base_path` mas largo), que es la que
+     * describe la ruta mas cercana a la operacion real.
+     *
+     * El resultado se limita a `shares.folder_listing_max_items`: una carpeta
+     * que sea la raiz fisica de un sub-storage puede tener decenas de miles de
+     * entradas y la vista las serializa todas en el DOM. Cuando se alcanza el
+     * tope, el listado se marca como truncado para que la vista lo diga en
+     * vez de mostrar un recorte silencioso.
+     *
+     * @return array{items: Collection<int,File>, total: int, truncated: bool}
+     */
+    private function folderContents(File $folder): array
+    {
+        $rows = $folder->children()->get()
+            ->map(fn (File $child) => ['file' => $child, 'depth' => $this->storageDepth($child)]);
+
+        $folderPhysical = $folder->physicalPath();
+
+        if ($folderPhysical !== null) {
+            $storageIds = $this->storageIdsUnder($folderPhysical);
+
+            if ($storageIds !== []) {
+                $roots = File::whereIn('storage_provider_id', $storageIds)
+                    ->whereNull('parent_id')
+                    ->get()
+                    ->map(fn (File $root) => ['file' => $root, 'depth' => $this->storageDepth($root)]);
+
+                $rows = $rows->concat($roots);
+            }
+        }
+
+        $deduped = $rows
+            ->sortByDesc(fn (array $row) => $row['depth'])
+            ->groupBy(fn (array $row) => (string) $row['file']->name)
+            ->map(fn (Collection $group) => $group->first()['file'])
+            ->values();
+
+        $total = $deduped->count();
+        $limit = max(1, (int) config('shares.folder_listing_max_items', 2000));
+
+        return [
+            'items' => $deduped->take($limit)->values(),
+            'total' => $total,
+            'truncated' => $total > $limit,
+        ];
+    }
+
+    /**
+     * Storages cuya raiz fisica cae dentro de la ruta fisica indicada.
+     *
+     * Incluye el storage cuyo `base_path` es EXACTAMENTE la ruta (su raiz es
+     * esa carpeta) y todos los mas especificos. Excluye los storages
+     * ANTERIORES en el arbol: su contenido esta por encima, no dentro.
+     *
+     * @return array<int,int>
+     */
+    private function storageIdsUnder(string $physicalPath): array
+    {
+        $physicalPath = rtrim($physicalPath, '/');
+
+        return StorageProvider::query()
+            ->whereNotNull('base_path')
+            ->whereRaw("rtrim(base_path, '/') <> ''")
+            ->whereRaw("(rtrim(base_path, '/') = ? OR rtrim(base_path, '/') LIKE ?)", [
+                $physicalPath,
+                $physicalPath . '/%',
+            ])
+            ->pluck('id')
+            ->map(fn ($id) => (int) $id)
+            ->all();
+    }
+
+    /**
+     * Profundidad de especificidad del storage de un recurso: la longitud de
+     * su `base_path`. Sirve para desempatar por nombre entre storages.
+     */
+    private function storageDepth(File $file): int
+    {
+        $storage = $file->relationLoaded('storageProvider')
+            ? $file->storageProvider
+            : $file->storageProvider()->first();
+
+        return $storage === null ? 0 : strlen((string) $storage->base_path);
+    }
+
+    /**
+     * Migas de pan de la carpeta actual hasta la carpeta raiz del enlace.
+     *
+     * Caso normal: la cadena `parent_id` llega a la raiz.
+     *
+     * Caso cross-storage: la carpeta actual vive en un sub-storage y su
+     * `parent_id` es NULL, asi que la cadena no llega a la raiz. En ese caso
+     * las midas se derivan de la RUTA FISICA: cada segmento intermedio se
+     * busca como fila de `files` en el storage de la carpeta actual; si no
+     * existe fila para ese segmento, se usa una mida sin enlace (la vista no
+     * genera un link a un id inexistente).
+     */
+    private function buildBreadcrumbs(File $currentFolder, File $rootFolder): array
+    {
+        $chain = [];
+        $crumb = $currentFolder;
+
+        while ($crumb && $crumb->id !== $rootFolder->id) {
+            array_unshift($chain, $crumb);
+            $crumb = $crumb->parent;
+        }
+
+        if ($crumb !== null) {
+            array_unshift($chain, $rootFolder);
+
+            return $chain;
+        }
+
+        // Cross-storage: derivar de la ruta fisica.
+        $rootPhysical = $rootFolder->physicalPath();
+        $currentPhysical = $currentFolder->physicalPath();
+
+        if ($rootPhysical === null || $currentPhysical === null) {
+            return [$rootFolder];
+        }
+
+        $rootPhysical = rtrim($rootPhysical, '/');
+        $currentPhysical = rtrim($currentPhysical, '/');
+
+        if (! str_starts_with($currentPhysical . '/', $rootPhysical . '/')) {
+            return [$rootFolder];
+        }
+
+        $relative = trim(substr($currentPhysical, strlen($rootPhysical)), '/');
+        $segments = $relative === '' ? [] : explode('/', $relative);
+
+        $crumbs = [$rootFolder];
+        $storageId = $currentFolder->storage_provider_id;
+        $accumulated = '';
+
+        foreach ($segments as $segment) {
+            $accumulated = $accumulated === '' ? $segment : $accumulated . '/' . $segment;
+
+            $row = File::where('storage_provider_id', $storageId)
+                ->where('path', $accumulated)
+                ->where('is_folder', true)
+                ->first();
+
+            $crumbs[] = $row ?? (object) ['id' => null, 'name' => $segment];
+        }
+
+        return $crumbs;
+    }
+
     private function isDescendantOf(File $file, File $ancestor): bool
     {
+        // 1) Arbol de catalogacion: cadena `parent_id` dentro del storage.
         $current = $file;
         while ($current) {
             if ($current->id === $ancestor->id) {
@@ -671,7 +964,22 @@ class PublicShareController extends Controller
             }
             $current = $current->parent;
         }
-        return false;
+
+        // 2) Equivalencia fisica: el recurso vive en un storage cuyo
+        //    `base_path` cae dentro de la ruta fisica del ancestro. Sin esta
+        //    comprobacion, las acciones sobre archivos de un sub-storage
+        //    respondian 403 aunque estuvieran dentro de la carpeta compartida.
+        $filePhysical = $file->physicalPath();
+        $ancestorPhysical = $ancestor->physicalPath();
+
+        if ($filePhysical === null || $ancestorPhysical === null) {
+            return false;
+        }
+
+        return str_starts_with(
+            rtrim($filePhysical, '/') . '/',
+            rtrim($ancestorPhysical, '/') . '/'
+        );
     }
 
     private function isPathWithinStorage(string $path, string $basePath): bool

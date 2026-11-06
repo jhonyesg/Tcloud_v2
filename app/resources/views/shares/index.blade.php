@@ -299,12 +299,25 @@ function sharesApp() {
             return params;
         },
 
+        apiError(payload, res) {
+            // Un 422 de validacion trae `errors` (bolsa de mensajes), no
+            // `error` (cadena). Sin esto el operador ve "Error 422" y no
+            // sabe que filtro corregir.
+            if (payload && payload.errors) {
+                const first = Object.values(payload.errors)[0];
+                const message = Array.isArray(first) ? first[0] : first;
+                if (message) return String(message);
+            }
+            if (payload && payload.message) return String(payload.message);
+            return (payload && payload.error) ? String(payload.error) : 'Error ' + res.status;
+        },
+
         async loadShares() {
             this.loading = true; this.errorMessage = '';
             try {
                 const res = await apiFetch('/shares?' + this.queryParams().toString(), { credentials: 'include', headers: { 'Accept': 'application/json' } });
                 const payload = await res.json();
-                if (!res.ok) throw new Error(payload.error || 'Error ' + res.status);
+                if (!res.ok) throw new Error(this.apiError(payload, res));
                 this.shares = payload.data || []; this.meta = payload.meta || this.meta; this.counters = payload.counters || this.counters;
             } catch (e) { this.errorMessage = 'No se pudieron cargar los compartidos: ' + e.message; }
             finally { this.loading = false; }
@@ -338,7 +351,7 @@ function sharesApp() {
             this.bulkLoading = true;
             try {
                 const res = await apiFetch('/shares/bulk-preview', { method: 'POST', credentials: 'include', headers: { 'Accept': 'application/json', 'Content-Type': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content }, body: JSON.stringify(this.selectionBody()) });
-                const payload = await res.json(); if (!res.ok) throw new Error(payload.error || 'Error ' + res.status);
+                const payload = await res.json(); if (!res.ok) throw new Error(this.apiError(payload, res));
                 this.bulkModal = { show: true, loading: false, count: payload.count || 0, summary: payload.summary || {}, kind: 'selection', confirmText: '' };
             } catch (e) { this.showToast(false, e.message); } finally { this.bulkLoading = false; }
         },
@@ -364,7 +377,7 @@ function sharesApp() {
                     ? { ...Object.fromEntries(this.queryParams(false).entries()), [kind === 'cleanup-missing' ? 'availability' : 'status']: kind === 'cleanup-missing' ? 'missing' : 'expired', all_matching: true, confirm_count: this.bulkModal.count }
                     : { ...this.selectionBody(), confirm_count: this.bulkModal.count };
                 const res = await apiFetch('/shares/bulk-delete', { method: 'POST', credentials: 'include', headers: { 'Accept': 'application/json', 'Content-Type': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content }, body: JSON.stringify(body) });
-                const payload = await res.json(); if (!res.ok) throw new Error(payload.error || 'Error ' + res.status);
+                const payload = await res.json(); if (!res.ok) throw new Error(this.apiError(payload, res));
                 this.bulkModal = { show: false, loading: false, count: 0, summary: {}, kind: 'selection', confirmText: '' };
                 this.clearSelection();
                 this.showToast(true, `${payload.deleted_count || 0} enlace(s) depurado(s) · ${payload.omitted_count || 0} omitidos`); await this.loadShares();
@@ -372,39 +385,44 @@ function sharesApp() {
         },
         async verifySelected() {
             if (!this.selectedCount()) return;
-            this.bulkLoading = true;
-            try {
-                const res = await apiFetch('/shares/availability/verify', { method: 'POST', credentials: 'include', headers: { 'Accept': 'application/json', 'Content-Type': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content }, body: JSON.stringify(this.selectionBody()) });
-                const payload = await res.json(); if (!res.ok) throw new Error(payload.error || 'Error ' + res.status);
-                this.clearSelection(); this.showToast(true, `${payload.available || 0} disponibles, ${payload.missing || 0} ausentes, ${payload.unknown || 0} no verificados`); await this.loadShares();
-            } catch (e) { this.showToast(false, e.message); } finally { this.bulkLoading = false; }
+            await this.runVerification(this.selectionBody(), `Verificando ${this.selectedCount()} enlace(s) seleccionados…`);
         },
         async verifyAllFiltered() {
             if (!this.meta.total) return;
-            const total = this.meta.total;
+            const body = Object.fromEntries(this.queryParams(false).entries());
+            body.all_matching = true;
+            await this.runVerification(body, `Verificando ${this.meta.total} enlace(s) filtrados…`);
+        },
+        /**
+         * Recorre la verificacion por lotes usando el cursor opaco que devuelve
+         * el servidor. El cursor se pasa tal cual: el servidor lo necesita
+         * completo (clave de ordenamiento + id + instante congelado) para no
+         * repetir ni saltarse enlaces.
+         */
+        async runVerification(baseBody, startMessage) {
             const batchSize = 50;
             this.bulkLoading = true;
-            this.showToast(true, `Iniciando verificación en lotes de ${batchSize} (${total} enlace(s))…`);
+            this.showToast(true, startMessage);
             let processed = 0, available = 0, missing = 0, unknown = 0;
             let cursor = null;
             try {
                 do {
-                    const body = Object.fromEntries(this.queryParams(false).entries());
-                    body.all_matching = true;
+                    const body = { ...baseBody };
                     body.limit = batchSize;
-                    if (cursor !== null) body.after_id = cursor;
+                    if (cursor !== null) body.cursor = cursor;
                     const res = await apiFetch('/shares/availability/verify', { method: 'POST', credentials: 'include', headers: { 'Accept': 'application/json', 'Content-Type': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content }, body: JSON.stringify(body) });
                     const payload = await res.json();
-                    if (!res.ok) throw new Error(payload.error || 'Error ' + res.status);
+                    if (!res.ok) throw new Error(this.apiError(payload, res));
                     processed += payload.checked || 0;
                     available += payload.available || 0;
                     missing += payload.missing || 0;
                     unknown += payload.unknown || 0;
-                    this.showToast(true, `Verificados ${processed}/${total}: ${available} disponibles, ${missing} ausentes, ${unknown} no verificados`);
+                    this.showToast(true, `Verificados ${processed}: ${available} disponibles, ${missing} ausentes, ${unknown} no verificados`);
                     cursor = payload.has_more ? payload.next_cursor : null;
                 } while (cursor !== null);
+                this.clearSelection();
                 await this.loadShares();
-                this.showToast(true, `Listo: ${available} disponibles, ${missing} ausentes, ${unknown} no verificados`);
+                this.showToast(true, `Listo: ${processed} verificados · ${available} disponibles, ${missing} ausentes, ${unknown} no verificados`);
             } catch (e) { this.showToast(false, e.message); } finally { this.bulkLoading = false; }
         },
         async quickCleanupMissing() {
@@ -420,7 +438,7 @@ function sharesApp() {
             this.bulkLoading = true;
             try {
                 const previewRes = await apiFetch('/shares/bulk-preview', { method: 'POST', credentials: 'include', headers: { 'Accept': 'application/json', 'Content-Type': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content }, body: JSON.stringify({ ...body, all_matching: true }) });
-                const preview = await previewRes.json(); if (!previewRes.ok) throw new Error(preview.error || 'No se pudo previsualizar');
+                const preview = await previewRes.json(); if (!previewRes.ok) throw new Error(this.apiError(preview, previewRes));
                 if (!preview.count) { this.bulkLoading = false; this.showToast(true, 'No hay enlaces no disponibles para depurar'); return; }
                 this.bulkModal = { show: true, loading: false, count: preview.count, summary: preview.summary || {}, kind: 'cleanup-missing', confirmText: '' };
             } catch (e) { this.showToast(false, e.message); } finally { this.bulkLoading = false; }
@@ -438,7 +456,7 @@ function sharesApp() {
             this.bulkLoading = true;
             try {
                 const previewRes = await apiFetch('/shares/bulk-preview', { method: 'POST', credentials: 'include', headers: { 'Accept': 'application/json', 'Content-Type': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content }, body: JSON.stringify({ ...body, all_matching: true }) });
-                const preview = await previewRes.json(); if (!previewRes.ok) throw new Error(preview.error || 'No se pudo previsualizar');
+                const preview = await previewRes.json(); if (!previewRes.ok) throw new Error(this.apiError(preview, previewRes));
                 if (!preview.count) { this.bulkLoading = false; this.showToast(true, 'No hay enlaces expirados para depurar'); return; }
                 this.bulkModal = { show: true, loading: false, count: preview.count, summary: preview.summary || {}, kind: 'cleanup-expired', confirmText: '' };
             } catch (e) { this.showToast(false, e.message); } finally { this.bulkLoading = false; }

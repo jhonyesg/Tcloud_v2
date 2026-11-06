@@ -57,7 +57,14 @@ $filesJsonRaw = json_encode($previewableFiles->values());
 
 <script type="application/json" id="files-data">{!! $filesJsonRaw !!}</script>
 @if($file->is_folder && isset($folderContents))
-<script type="application/json" id="folder-items-data">{!! json_encode($folderContents->values()) !!}</script>
+<script type="application/json" id="folder-items-data">{!! json_encode($folderContents->map(fn ($item) => [
+    'id' => $item->id,
+    'name' => $item->name,
+    'is_folder' => (bool) $item->is_folder,
+    'size' => (int) $item->size,
+    'mime_type' => $item->mime_type,
+    'file_modified_at' => $item->file_modified_at?->toIso8601String(),
+])->values()) !!}</script>
 @endif
 
 <div id="share-app"
@@ -656,12 +663,15 @@ function refreshFolder() {
                         <nav class="flex items-center gap-2 text-sm mb-4 pb-3 border-b border-slate-200">
                             @foreach($breadcrumbs as $index => $crumb)
                                 @if($index > 0)
-                                    <svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <svg class="w-4 h-4 text-slate-400" fill="none" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
                                     </svg>
                                 @endif
                                 @if($crumb->id === $file->id)
                                     <span class="text-slate-800 font-medium">{{ $crumb->name }}</span>
+                                @elseif($crumb->id === null)
+                                    {{-- Miga derivada de la ruta fisica sin fila propia: se muestra, no se enlaza. --}}
+                                    <span class="text-slate-500">{{ $crumb->name }}</span>
                                 @else
                                     <a href="{{ route('share.folder', ['token' => $share->token, 'folder_id' => $crumb->id]) }}" class="text-blue-600 hover:text-blue-700">
                                         {{ $crumb->name }}
@@ -674,6 +684,11 @@ function refreshFolder() {
                         <div class="mb-4 flex items-center justify-between">
                             <h2 class="text-lg font-semibold text-slate-800">Contenido</h2>
                             <div class="flex items-center gap-2">
+                                @if(!empty($folderListingTruncated))
+                                    <span class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5">
+                                        Se muestran {{ count($folderContents) }} de {{ $folderListingTotal }} elementos. Usa un enlace a una subcarpeta para ver el resto.
+                                    </span>
+                                @endif
                                 <button id="refresh-btn" onclick="refreshFolder()" title="Actualizar contenido" class="flex items-center gap-1.5 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg text-sm transition-colors">
                                     <svg id="refresh-icon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
                                     <span id="refresh-label">Actualizar</span>

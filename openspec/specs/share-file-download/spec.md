@@ -1,7 +1,8 @@
 # share-file-download Specification
 
 ## Purpose
-TBD - created by archiving change fix-share-download-behavior. Update Purpose after archive.
+Garantizar que la descarga de un recurso compartido descargue el archivo al dispositivo sin sacar al visitante de la página del enlace, con el mismo comportamiento en lectura y en escritura. La descarga es una acción de solo lectura sobre el recurso: no depende del permiso de escritura ni de la capacidad de modificar el enlace.
+
 ## Requirements
 ### Requirement: Descarga sin navegación en shares públicos
 El sistema SHALL descargar el archivo al pulsar el botón de descarga en cualquier share público sin navegar fuera de la página actual, independientemente del tipo de archivo o nivel de permisos.
