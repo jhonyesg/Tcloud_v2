@@ -4,11 +4,12 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class StorageProvider extends Model
 {
-    protected $fillable = ['name', 'type', 'kind', 'config', 'base_path', 'enabled', 'is_accessible', 'last_checked_at', 'transcription_enabled', 'folder_layout', 'allow_parent_overlap', 'is_personal', 'duplicate_of_storage_id', 'merged_at', 'merged_reason'];
+    protected $fillable = ['name', 'type', 'kind', 'config', 'base_path', 'enabled', 'is_accessible', 'last_checked_at', 'transcription_enabled', 'folder_layout', 'allow_parent_overlap', 'is_personal', 'duplicate_of_storage_id', 'merged_at', 'merged_reason', 'backup_storage_id', 'backup_folder_name'];
 
     protected $casts = [
         'config' => 'array',
@@ -29,6 +30,19 @@ class StorageProvider extends Model
     public function files(): HasMany
     {
         return $this->hasMany(File::class);
+    }
+
+    /**
+     * Storage que contiene la carpeta de backup declarada para este storage.
+     *
+     * Es el árbol de "Producción": el export NFS de difusor02 montado en
+     * `Tcloud/Disco_D/backup`. La relación se declara en el storage de ORIGEN
+     * porque los nombres de los dos lados no se corresponden y el vínculo no
+     * se puede deducir.
+     */
+    public function backupStorage(): BelongsTo
+    {
+        return $this->belongsTo(StorageProvider::class, 'backup_storage_id');
     }
 
     public function scopeTranscriptionEnabled(Builder $query): Builder
@@ -240,5 +254,57 @@ class StorageProvider extends Model
     {
         // No-op: la cache fue retirada. Ver UserStorageObserver.php docblock.
         unset($storageId);
+    }
+
+    /**
+     * Vínculo declarado con la carpeta de backup de este storage, o `null` si
+     * no aplica.
+     *
+     * Devuelve `null` —es decir, "este storage no tiene backup"— cuando:
+     *  - no se declaró `backup_storage_id` o `backup_folder_name`;
+     *  - el storage de backup declarado ya no existe (fue borrado);
+     *  - el storage de backup declarado no es local: leer un backend remoto
+     *    por este camino no está soportado y no debe intentarse.
+     *
+     * @return array{storage: StorageProvider, folder: string}|null
+     */
+    public function backupMapping(): ?array
+    {
+        if ($this->backup_storage_id === null) {
+            return null;
+        }
+
+        $folder = trim((string) $this->backup_folder_name, '/');
+        if ($folder === '') {
+            return null;
+        }
+
+        $backup = $this->relationLoaded('backupStorage')
+            ? $this->backupStorage
+            : $this->backupStorage()->first();
+
+        if ($backup === null) {
+            return null;
+        }
+
+        // `kind` es la columna canónica (el `type` es legacy). Un storage que
+        // no sea local no se puede leer por ruta.
+        if ($backup->kind !== 'local') {
+            return null;
+        }
+
+        if (trim((string) $backup->base_path, '/') === '') {
+            return null;
+        }
+
+        return ['storage' => $backup, 'folder' => $folder];
+    }
+
+    /**
+     * ¿Este storage declara un vínculo utilizable con su carpeta de backup?
+     */
+    public function hasBackupMapping(): bool
+    {
+        return $this->backupMapping() !== null;
     }
 }

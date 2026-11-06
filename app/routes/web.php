@@ -113,6 +113,19 @@ Route::middleware('auth')->group(function () {
 
     Route::post('/files/upload', [App\Http\Controllers\FileController::class, 'upload']);
     Route::post('/files/download-multi', [App\Http\Controllers\FileController::class, 'downloadMulti']);
+
+    // Solicitud de backup (change `solicitud-backup-mis-archivos`).
+    //
+    // Se registran ANTES de `Route::resource('files')` a propósito: el resource
+    // declara `GET /files/{file}` (show) y ese comodín se tragaría
+    // `GET /files/backup-requests`. Laravel resuelve por orden de registro,
+    // así que el literal tiene que declararse primero. NO reordenar estas
+    // líneas por debajo del resource.
+    Route::get('/files/backup-requests/eligibility', [App\Http\Controllers\MisArchivos\BackupRequestController::class, 'eligibility']);
+    Route::get('/files/backup-requests', [App\Http\Controllers\MisArchivos\BackupRequestController::class, 'index']);
+    Route::post('/files/backup-requests', [App\Http\Controllers\MisArchivos\BackupRequestController::class, 'store']);
+    Route::delete('/files/backup-requests/{id}', [App\Http\Controllers\MisArchivos\BackupRequestController::class, 'destroy']);
+
     Route::resource('files', App\Http\Controllers\FileController::class)->only(['index', 'store', 'show', 'update', 'destroy']);
 
     // Papelera removida en change restore-mis-archivos-august
