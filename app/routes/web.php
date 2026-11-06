@@ -154,6 +154,8 @@ Route::middleware('auth')->group(function () {
         Route::resource('grabadores', App\Http\Controllers\GrabacionesPuntuales\GrabadorController::class);
 
         Route::post('/canales/sincronizar', [App\Http\Controllers\GrabacionesPuntuales\CanalController::class, 'sincronizar'])->name('canales.sincronizar');
+        Route::post('/canales/adoptar', [App\Http\Controllers\GrabacionesPuntuales\CanalController::class, 'adoptar'])->name('canales.adoptar');
+        Route::get('/canales/detectar/{grabador}', [App\Http\Controllers\GrabacionesPuntuales\CanalController::class, 'detectar'])->name('canales.detectar');
         Route::resource('canales', App\Http\Controllers\GrabacionesPuntuales\CanalController::class)->parameters([
             'canales' => 'canal',
         ]);
@@ -165,7 +167,7 @@ Route::middleware('auth')->group(function () {
 
 Route::middleware('auth')->get('/sites/{externalSite}', [App\Http\Controllers\ExternalSiteViewController::class, 'show']);
 
-Route::get('/s/{token}', [App\Http\Controllers\PublicShareController::class, 'show']);
+Route::get('/s/{token}', [App\Http\Controllers\PublicShareController::class, 'show'])->name('share.show');
 Route::post('/s/{token}/authenticate', [App\Http\Controllers\PublicShareController::class, 'authenticate'])->name('share.authenticate');
 Route::get('/s/{token}/folder/{folder_id}', [App\Http\Controllers\PublicShareController::class, 'folder'])->name('share.folder');
 Route::get('/s/{token}/download', [App\Http\Controllers\PublicShareController::class, 'download'])->name('share.download');
