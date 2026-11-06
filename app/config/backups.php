@@ -18,4 +18,16 @@ return [
      * sin un mínimo, "x" o "a" no sirve ni para auditar ni para priorizar.
      */
     'min_motivo_length' => (int) env('BACKUP_MIN_MOTIVO_LENGTH', 10),
+
+    /**
+     * Storage que contiene el árbol de backup ("Producción"). Es el storage
+     * raíz del que cuelgan las carpetas de canal (`01_Caracol_BK`, …), y el
+     * destino de `storage_providers.backup_storage_id`.
+     *
+     * Null = todavía no declarado: el comando `backups:map-storages` pide
+     * `--root=` en ese caso.
+     */
+    'root_storage_id' => env('BACKUP_ROOT_STORAGE_ID') !== null
+        ? (int) env('BACKUP_ROOT_STORAGE_ID')
+        : null,
 ];

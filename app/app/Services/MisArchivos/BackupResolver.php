@@ -31,9 +31,15 @@ use Illuminate\Support\Facades\Log;
  *     NFS son `hard` y un `realpath()` sobre un mount caído bloquea
  *     PHP-FPM indefinidamente.
  *
- *  4. Toda lectura del filesystem pasa antes por `MountGuard`.
+ *  4. Toda lectura del filesystem pasa antes por `MountGuard`, con el punto de
+ *     montaje MÁS ESPECÍFICO que contiene el path: `isNetworkMount()` solo
+ *     reconoce el punto exacto y devolvería false para un path profundo.
  *
- *  5. El catálogo no se escribe con SQL: si la fila del día falta, se
+ *  5. La disponibilidad se verifica EN DISCO, nunca leyendo el catálogo:
+ *     el catálogo del árbol de backup está obsoleto (536 carpetas-día
+ *     catalogadas frente a 368 en disco).
+ *
+ *  6. El catálogo no se escribe con SQL: si la fila del día falta, se
  *     materializa por la vía canónica del módulo (`StorageSyncService`).
  */
 class BackupResolver
@@ -55,6 +61,9 @@ class BackupResolver
 
     /** El día ya salió de la ventana de retención del árbol de backup. */
     public const REASON_EXPIRED_WINDOW = 'backup_expired_window';
+
+    /** Existe en disco pero no se pudo catalogar en `files`. */
+    public const REASON_NOT_INDEXED = 'backup_not_indexed';
 
     public function __construct(
         private readonly MountGuard $mountGuard,
@@ -164,16 +173,33 @@ class BackupResolver
         $result['backup_path'] = $absolute;
         $result['relative_path'] = $relative;
 
-        // MountGuard ANTES de tocar el filesystem: los exports NFS son
-        // `hard` y un stat() colgado deja PHP-FPM en uninterruptible sleep.
-        if (($detached = $this->mountGuard->detachedAncestor($absolute)) !== null) {
+        // Guardia de montaje ANTES de tocar el filesystem: los exports NFS
+        // son `hard` y un stat() colgado deja PHP-FPM en espera indefinida.
+        //
+        // `isNetworkMountDown()` resuelve el punto de montaje MÁS ESPECÍFICO
+        // que contiene el path (`Tcloud/Disco_D`), no el path literal:
+        // `MountGuard::isNetworkMount()` solo reconoce el punto exacto y
+        // habría devuelto false para un path profundo.
+        if ($this->mountGuard->isNetworkMountDown($absolute)) {
             Log::warning('backup_request.mount_detached', [
                 'storage_id' => $source->id,
                 'backup_storage_id' => $backup->id,
                 'absolute' => $absolute,
-                'mount_point' => $detached,
+                'mount_point' => $this->mountGuard->enclosingNetworkMount($absolute),
             ]);
             $result['reason'] = self::REASON_MOUNT_DETACHED;
+            return $result;
+        }
+
+        // LA DISPONIBILIDAD SE VERIFICA EN DISCO, NUNCA EN EL CATÁLOGO.
+        //
+        // El catálogo del árbol de backup está obsoleto: 536 carpetas-día
+        // catalogadas frente a 368 que existen en disco (168 fantasma, 31 %).
+        // Resolver desde `files` entregaría enlaces a carpetas que ya no
+        // están, cuyo listado público mostraría archivos que al descargar
+        // darían 404.
+        if (!@is_dir($absolute)) {
+            $result['reason'] = $this->classifyMissingDay($date);
             return $result;
         }
 
@@ -184,7 +210,9 @@ class BackupResolver
         }
 
         if ($file === null) {
-            $result['reason'] = $this->classifyMissingDay($date);
+            // Existe en disco pero no se pudo catalogar (por ejemplo, la
+            // carpeta padre del canal tampoco está en `files`).
+            $result['reason'] = self::REASON_NOT_INDEXED;
             return $result;
         }
 

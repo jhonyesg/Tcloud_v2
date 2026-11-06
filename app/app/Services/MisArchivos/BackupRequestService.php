@@ -320,6 +320,7 @@ class BackupRequestService
             BackupResolver::REASON_MOUNT_DETACHED => 'El disco de backup no está disponible en este momento. Intenta más tarde.',
             BackupResolver::REASON_NOT_READY => 'El backup de este día todavía no está disponible: la producción va con retraso.',
             BackupResolver::REASON_EXPIRED_WINDOW => 'Este día ya salió de la ventana de retención del backup.',
+            BackupResolver::REASON_NOT_INDEXED => 'El backup de este día está en disco pero todavía no se pudo indexar. Vuelve a intentar en un momento.',
             default => 'El backup de ese día no está disponible.',
         };
     }

@@ -82,6 +82,30 @@ Dado un storage de origen con backup mapeado y un nombre de carpeta-día, el sis
 - **THEN** la ruta absoluta resultante SHALL estar contenida dentro del directorio base del storage de backup
 - **AND** si la contención no se cumple, el sistema SHALL reportar el backup como no disponible
 
+### Requirement: La disponibilidad se verifica en disco, no en el catálogo
+
+El sistema SHALL determinar que un día tiene backup comprobando que la carpeta-día EXISTE en el sistema de archivos del árbol de backup. La presencia de una fila en el catálogo de archivos SHALL NOT establecer por sí sola la disponibilidad de un día: el catálogo del árbol de backup queda obsoleto conforme el árbol rota, y resolver desde él entregaría enlaces a carpetas que ya no existen.
+
+#### Scenario: La fila del catálogo existe pero la carpeta ya no está en disco
+
+- **WHEN** existe una fila de catálogo para la carpeta-día
+- **AND** la carpeta-día ya no existe en el árbol de backup
+- **THEN** el sistema SHALL reportar el backup de ese día como no disponible
+- **AND** SHALL NOT crear ningún enlace
+
+#### Scenario: La carpeta existe en disco y se materializa en el catálogo
+
+- **WHEN** la carpeta-día existe en el árbol de backup
+- **AND** el catálogo todavía no la tiene
+- **THEN** el sistema SHALL materializarla por la vía de sincronización del módulo
+- **AND** SHALL reportar el backup de ese día como disponible
+
+#### Scenario: El montaje de red está caído
+
+- **WHEN** el árbol de backup vive en un montaje de red que no está montado
+- **THEN** el sistema SHALL reportar el backup como no disponible
+- **AND** SHALL NOT tocar el sistema de archivos del montaje
+
 ### Requirement: La acción de solicitar backup solo se habilita con mapeo y carpeta-día
 
 La interfaz de Mis Archivos SHALL habilitar la acción de solicitar backup únicamente sobre carpetas-día cuyo storage de origen tenga un backup mapeado. La interfaz SHALL NOT habilitar la acción sobre carpetas-día sin mapeo, sobre carpetas que no sean carpeta-día, ni sobre archivos.

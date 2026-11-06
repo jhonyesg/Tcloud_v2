@@ -76,6 +76,67 @@ class MountGuard
     }
 
     /**
+     * Mount de red EFECTIVO que contiene al path dado, o null si el
+     * filesystem que lo contiene es local.
+     *
+     * El kernel resuelve el filesystem de un path por el punto de montaje MÁS
+     * ESPECÍFICO (prefijo más largo), no por "el primer NFS que aparezca".
+     * Si un ext4 está montado DENTRO de un NFS, el path es local y no hay
+     * riesgo de bloqueo. Por eso se elige el match más largo y recién después
+     * se pregunta si es de red.
+     *
+     * Hace falta el prefijo y no la coincidencia exacta porque
+     * `isNetworkMount()` solo reconoce el punto de montaje literal: para
+     * `Tcloud/Disco_D/backup/01_Caracol_BK/05112026` el punto de montaje es
+     * `Tcloud/Disco_D`, y el path profundo no coincide con ninguna clave de
+     * `/proc/self/mounts`.
+     */
+    public function enclosingNetworkMount(string $path): ?string
+    {
+        $best = null;
+        $bestLen = -1;
+
+        foreach (array_keys($this->mounts()) as $point) {
+            $point = rtrim((string) $point, '/') ?: '/';
+            if ($path !== $point && !str_starts_with($path . '/', $point . '/')) {
+                continue;
+            }
+            if (strlen($point) > $bestLen) {
+                $best = $point;
+                $bestLen = strlen($point);
+            }
+        }
+
+        if ($best === null) {
+            return null;
+        }
+
+        return $this->isNetworkMount($best) ? $best : null;
+    }
+
+    /**
+     * ¿El path cae bajo un montaje de red que NO está montado?
+     *
+     * Es el guardia que hay que poner ANTES de un `stat()` sobre un export
+     * NFS: con política `hard` una llamada al servidor que no responde deja
+     * el proceso en espera indefinida. Cuando el montaje se cae, el punto de
+     * montaje sigue existiendo como directorio local vacío, así que sin este
+     * guardia el `stat()` "tiene éxito" y devuelve "vacío".
+     *
+     * `isMounted()` consulta primero `/proc/self/mounts` (lectura local, nunca
+     * bloquea); el `stat()` de respaldo compara dispositivos.
+     */
+    public function isNetworkMountDown(string $path): bool
+    {
+        $mount = $this->enclosingNetworkMount($path);
+        if ($mount === null) {
+            return false;
+        }
+
+        return !$this->isMounted($mount);
+    }
+
+    /**
      * ¿Es un punto de montaje activo? Compara el dispositivo con el del padre.
      */
     public function isMounted(string $path): bool

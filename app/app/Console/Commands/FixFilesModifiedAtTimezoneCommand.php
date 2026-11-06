@@ -420,33 +420,14 @@ class FixFilesModifiedAtTimezoneCommand extends Command
      * Mount de red EFECTIVO para el path dado, o null si el filesystem que lo
      * contiene es local.
      *
-     * Kernel resuelve el filesystem de un path por el mount point mas
-     * especifico (prefijo mas largo), no por "el primer NFS que aparezca".
-     * Si un ext4 esta montado DENTRO de un NFS, el path es local y no hay
-     * riesgo de bloqueo. Por eso se elige el match mas largo y recien despues
-     * se pregunta si es de red.
+     * La lógica vive ahora en `MountGuard::enclosingNetworkMount()`: es la
+     * misma regla (el kernel resuelve por el punto de montaje más específico)
+     * y la comparten el comando de zona horaria y el resolver de backups.
+     * No volver a duplicarla aquí.
      */
     private function enclosingNetworkMount(string $path, MountGuard $mountGuard): ?string
     {
-        $best = null;
-        $bestLen = -1;
-
-        foreach (array_keys($mountGuard->mounts()) as $point) {
-            $point = rtrim((string) $point, '/') ?: '/';
-            if ($path !== $point && !str_starts_with($path . '/', $point . '/')) {
-                continue;
-            }
-            if (strlen($point) > $bestLen) {
-                $best = $point;
-                $bestLen = strlen($point);
-            }
-        }
-
-        if ($best === null) {
-            return null;
-        }
-
-        return $mountGuard->isNetworkMount($best) ? $best : null;
+        return $mountGuard->enclosingNetworkMount($path);
     }
 
     /**
