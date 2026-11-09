@@ -127,6 +127,21 @@ solicitar → enlace) y declaración de los 7 vínculos pendientes con el operad
   Corrección: `@endsection` antes de `@push('scripts')`, más dos aserciones que comparan
   POSICIONES (`<main` < contenido < `</body>`, y panel lateral antes del contenido). El test
   negativo confirma que sin `@endsection` fallan las dos.
+- **L11** — 2026-11-09 — Cierre de las 7 carpetas huérfanas del árbol. Se buscaron las
+  contrapartes por CONTENIDO (prefijo de archivo + días solapados), no por parecido de nombre:
+  `01_Caracol_internacional` ↔ 32 Caracol Internacional (3/3 días), `02_Canal_Rcn_bk` ↔ 02 RCN Tv
+  (14/14), `04_Canal_UNO_BK` ↔ 04 Canal Uno (14/14), `14_Cosmovicion_bk` ↔ 20 cosmovision
+  (16/16), `19_Capital_BK` ↔ 06 Capital (13/13), `30_Calitv` ↔ 29 Cali Tv (8/8),
+  `51_Blu_BK` ↔ 25 Blu Tv Digital (13/13). Cobertura final: **28/28 carpetas mapeadas, 0 huérfanas,
+  0 vínculos rotos**, y los 28 resuelven el día de hoy como disponible.
+  El caso especial fue **29 Cali Tv** (storage 33): su `base_path` apuntaba a
+  `Disco_A/television/30_Calitv`, una ruta que YA NO EXISTE (el material está en
+  `Disco_I/television/30_Calitv`). Con la ruta muerta, el cliente no veía ninguna carpeta-día y
+  la acción de backup no tenía dónde aparecer. Se repuntó el storage (snapshot
+  `storage_providers_remap_pre_20261109_160714`) y se sincronizó su catálogo (53 → 63 carpetas),
+  junto con el de 32 Caracol Internacional (52 → 54).
+  De ahí salió la mejora: el módulo de administración ahora marca los storages cuya **ruta base
+  no existe** (`BackupMappingService::pathState()`), que antes eran invisibles para el operador.
 - **L10** — 2026-11-09 — El operador preguntó por qué no veía la acción "Solicitar backup" en un
   storage al que tenía acceso de lectura. Causa: **la visibilidad la decide el vínculo declarado,
   no el permiso**. "02 RCN Tv" (storage 7) no tenía vínculo, así que `has_backup` venía false y

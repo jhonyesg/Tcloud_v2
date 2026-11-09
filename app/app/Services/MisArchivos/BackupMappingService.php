@@ -376,6 +376,34 @@ class BackupMappingService
     }
 
     /**
+     * ¿La ruta base del storage existe en disco?
+     *
+     * Un storage cuya ruta base ya no existe (el disco cambió o la carpeta se
+     * movió) es invisible para el cliente: no lista carpetas-día, así que la
+     * acción "Solicitar backup" nunca aparece aunque el vínculo esté
+     * declarado. Es el caso de "29 Cali Tv", que apuntaba a
+     * `Disco_A/television/30_Calitv` cuando el material ya estaba en
+     * `Disco_I/television/30_Calitv`.
+     *
+     * @return 'ok'|'missing'|'mount_down'
+     */
+    public function pathState(StorageProvider $storage): string
+    {
+        $base = rtrim((string) $storage->base_path, '/');
+        if ($base === '') {
+            return 'missing';
+        }
+
+        // Guarda de montaje ANTES de tocar el filesystem: los exports NFS
+        // son `hard` y un stat() colgado deja PHP-FPM esperando.
+        if ($this->mountGuard->isNetworkMountDown($base)) {
+            return 'mount_down';
+        }
+
+        return is_dir($base) ? 'ok' : 'missing';
+    }
+
+    /**
      * Candidatos a storage de ORIGEN: locales, con ruta base y fuera del árbol de backup.
      *
      * @return Collection<int,StorageProvider>

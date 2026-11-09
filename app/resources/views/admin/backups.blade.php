@@ -140,6 +140,12 @@
                             <td class="px-4 py-3">
                                 <p class="text-sm font-medium text-slate-800" x-text="row.name"></p>
                                 <p class="text-xs text-slate-400 truncate max-w-sm" x-text="row.base_path"></p>
+                                <p x-show="row.path_state === 'missing'" class="mt-0.5 text-[11px] text-red-600">
+                                    <i class="fas fa-triangle-exclamation mr-0.5"></i>La ruta base no existe en disco
+                                </p>
+                                <p x-show="row.path_state === 'mount_down'" class="mt-0.5 text-[11px] text-amber-600">
+                                    <i class="fas fa-plug-circle-xmark mr-0.5"></i>Montaje de red caído
+                                </p>
                             </td>
                             <td class="px-4 py-3">
                                 <template x-if="row.folder">

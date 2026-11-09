@@ -238,9 +238,24 @@ try {
     );
 
     // ------------------------------------------------------------------
+    h_section('estado de la ruta base del storage');
+    h_check($service->pathState(StorageProvider::find($sourceId)) === 'ok', 'una ruta base existente reporta ok');
+    h_check($service->pathState(StorageProvider::find($backupId)) === 'ok', 'el árbol de backup reporta ok');
+
+    $dead = StorageProvider::create([
+        'name' => $tag . ' ruta muerta',
+        'type' => 'local',
+        'kind' => 'local',
+        'base_path' => $tmpRoot . '/no-existe',
+        'enabled' => true,
+        'is_accessible' => true,
+    ]);
+    $deadId = (int) $dead->id;
+    h_check($service->pathState(StorageProvider::find($deadId)) === 'missing', 'una ruta base inexistente reporta missing');
+
+    // ------------------------------------------------------------------
     h_section('cobertura');
-    $coverage = $service->coverage($backupId);
-    h_check($coverage['folders_total'] === 1, 'la cobertura cuenta la carpeta del árbol fixture');
+    $coverage = $service->coverage($backupId);    h_check($coverage['folders_total'] === 1, 'la cobertura cuenta la carpeta del árbol fixture');
     h_check($coverage['folders_mapped'] === 0, 'la carpeta sin mapear cuenta como huérfana');
     h_check(in_array($folder, $coverage['folders_orphan'], true), 'la carpeta huérfana aparece en la lista');
     h_check($coverage['sources_mapped'] === 0, 'no hay orígenes mapeados a ESTE árbol tras la prueba');
@@ -420,7 +435,7 @@ try {
             // la sesión de prueba puede no haberse creado
         }
     }
-    DB::table('storage_providers')->whereIn('id', array_filter([$sourceId, $backupId, $otherSourceId, $nonLocalId]))->delete();
+    DB::table('storage_providers')->whereIn('id', array_filter([$sourceId, $backupId, $otherSourceId, $nonLocalId, $deadId ?? null]))->delete();
     DB::table('storage_providers')->where('name', 'like', $tag . '%')->delete();
     @exec('rm -rf ' . escapeshellarg($tmpRoot));
     h_ok('fixtures eliminados');

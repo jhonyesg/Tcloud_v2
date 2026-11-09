@@ -82,6 +82,7 @@ class BackupMappingController extends Controller
                 'destination' => $destinationName,
                 'suggestion' => $suggestions[(int) $source->id] ?? null,
                 'reason' => $broken[(int) $source->id] ?? null,
+                'path_state' => $this->mappings->pathState($source),
             ];
         }
 
