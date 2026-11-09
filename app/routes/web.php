@@ -37,6 +37,13 @@ Route::middleware(['auth', 'admin'])->prefix('admin')->group(function () {
     Route::delete('/storages/{storage}/users/all/remove', [App\Http\Controllers\StorageProviderController::class, 'removeAll']);
     Route::get('/storages/{storage}/test', [App\Http\Controllers\StorageProviderController::class, 'test']);
     Route::post('/storages/{storage}/reconcile', [App\Http\Controllers\StorageProviderController::class, 'reconcile']);
+
+    // Mapeo de storages al arbol de backup ("Produccion").
+    // Configuracion de ADMINISTRACION: el cliente nunca ve estas rutas.
+    Route::get('/backups', [App\Http\Controllers\Admin\BackupMappingController::class, 'index'])->name('admin.backups.index');
+    Route::get('/backups/folders', [App\Http\Controllers\Admin\BackupMappingController::class, 'folders'])->name('admin.backups.folders');
+    Route::post('/backups', [App\Http\Controllers\Admin\BackupMappingController::class, 'store'])->name('admin.backups.store');
+    Route::delete('/backups/{storage}', [App\Http\Controllers\Admin\BackupMappingController::class, 'destroy'])->whereNumber('storage')->name('admin.backups.destroy');
     Route::post('/users/{user}/toggle-media-editor', [App\Http\Controllers\UserController::class, 'toggleMediaEditor']);
     Route::get('/media-editor', [App\Http\Controllers\MediaEditorAdminController::class, 'index']);
     Route::get('/media-editor/users', [App\Http\Controllers\MediaEditorAdminController::class, 'users']);
@@ -80,8 +87,7 @@ Route::middleware(['auth', 'admin'])->prefix('admin')->group(function () {
     Route::post('/redis/clean-orphans', [App\Http\Controllers\RedisMonitorController::class, 'cleanOrphans']);
 
     // Sites Externos
-    Route::get('/external-sites', [App\Http\Controllers\ExternalSiteController::class, 'index']);
-    Route::post('/external-sites', [App\Http\Controllers\ExternalSiteController::class, 'store']);
+    Route::get('/external-sites', [App\Http\Controllers\ExternalSiteController::class, 'index']);    Route::post('/external-sites', [App\Http\Controllers\ExternalSiteController::class, 'store']);
     Route::put('/external-sites/{externalSite}', [App\Http\Controllers\ExternalSiteController::class, 'update']);
     Route::delete('/external-sites/{externalSite}', [App\Http\Controllers\ExternalSiteController::class, 'destroy']);
     Route::get('/external-sites/{externalSite}/users', [App\Http\Controllers\ExternalSiteController::class, 'users']);
