@@ -127,6 +127,22 @@ solicitar → enlace) y declaración de los 7 vínculos pendientes con el operad
   Corrección: `@endsection` antes de `@push('scripts')`, más dos aserciones que comparan
   POSICIONES (`<main` < contenido < `</body>`, y panel lateral antes del contenido). El test
   negativo confirma que sin `@endsection` fallan las dos.
+- **L10** — 2026-11-09 — El operador preguntó por qué no veía la acción "Solicitar backup" en un
+  storage al que tenía acceso de lectura. Causa: **la visibilidad la decide el vínculo declarado,
+  no el permiso**. "02 RCN Tv" (storage 7) no tenía vínculo, así que `has_backup` venía false y
+  la acción se ocultaba en silencio; el permiso `read` del usuario era correcto e irrelevante.
+  Además, el árbol sí tiene `02_Canal_Rcn_bk`: era una de las 7 carpetas huérfanas.
+  Corregido en dos partes:
+  1. **Datos**: se declaró el vínculo `02 RCN Tv` → storage 34 + `02_Canal_Rcn_bk`, verificado
+     por contenido (mismo prefijo de archivos `rcn_`, mismos nombres de carpeta-día
+     `DDMMYYYY`, solapamiento de 26 días) y no por parecido de nombre. Verificado en vivo: el
+     día `09112026` resuelve a
+     `/www/wwwroot/data.mediaserver.com.co/Tcloud/Disco_D/backup/02_Canal_Rcn_bk/09112026` y
+     el usuario `Multiarchivo` (read) obtiene `can_request=true`.
+  2. **UX**: cuando la carpeta es un día pero el canal NO tiene backup declarado, la acción
+     aparece **apagada** con el motivo en el tooltip ("Este canal no tiene backup
+     configurado"; para admin, "Decláralo en Administración → Backup"). Antes la ausencia era
+     silenciosa y se leía como un módulo roto.
 - **L9** — 2026-11-09 — Ajuste pedido por el operador: el listado se ordena **primero lo que ya
   está declarado** (para revisarlo) y abajo lo que falta por asignar. Antes el orden era el
   inverso (sin mapear primero). Orden final: `mapped` → `broken` → `unmapped`; el toolbar
