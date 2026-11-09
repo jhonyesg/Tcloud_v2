@@ -248,6 +248,8 @@
 
 </div>
 
+@endsection
+
 @push('scripts')
 <script>
 function backupAdmin() {

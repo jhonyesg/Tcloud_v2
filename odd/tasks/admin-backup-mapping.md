@@ -118,6 +118,15 @@ solicitar → enlace) y declaración de los 7 vínculos pendientes con el operad
   ("Array to string conversion") y el paso de la cookie de sesión por el header en vez de por
   el parámetro `cookies` de `Request::create()` (Symfony no parsea ese header cuando el array
   de cookies ya viene vacío), que hacía que el harness viera un 302 en vez de la página.
+- **L8** — 2026-11-09 — Defecto encontrado por el operador en la primera carga real: la página
+  llegaba **sin header, sin panel lateral y sin footer**. Causa: a la vista le faltaba
+  `@endsection`. Con la sección abierta, Blade imprimía el contenido ANTES del layout y
+  concatenaba el HTML del layout después: la respuesta traía las dos cosas, pero en el orden
+  equivocado (el contenido arriba, el chrome abajo del todo). El harness NO lo detectaba porque
+  solo buscaba cadenas: el HTML contenía el panel lateral, más abajo.
+  Corrección: `@endsection` antes de `@push('scripts')`, más dos aserciones que comparan
+  POSICIONES (`<main` < contenido < `</body>`, y panel lateral antes del contenido). El test
+  negativo confirma que sin `@endsection` fallan las dos.
 - **L7** — 2026-11-09 — Riesgo: **item 2 (seguridad)**. El módulo escribe el vínculo que decide
   qué material de producción puede pedir un cliente. La autorización (solo admin) está
   verificada por el harness, pero la superficie concede acceso al master de producción: lo

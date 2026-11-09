@@ -314,6 +314,28 @@ try {
     }
     h_check(str_contains($html, '01_Caracol_BK'), 'la página lista las carpetas reales del árbol de producción');
 
+    // El chrome del layout (header, sidebar, footer) tiene que ENVOLVER al
+    // contenido. Sin `@endsection`, la sección queda abierta: el contenido se
+    // imprime ANTES del layout y la página llega sin sidebar ni footer.
+    h_check(str_contains($html, 'data-nav-path="/files"'), 'la página conserva el panel lateral del layout');
+    h_check((bool) preg_match('/<title>Backup de produccion/s', $html), 'la página conserva el título del layout');
+
+    $mainPos = strpos($html, '<main');
+    $contentPos = strpos($html, 'x-data="backupAdmin()"');
+    $bodyEnd = strrpos($html, '</body>');
+    $sidebarPos = strpos($html, 'data-nav-path="/files"');
+    h_check(
+        $mainPos !== false && $contentPos !== false && $bodyEnd !== false
+            && $mainPos < $contentPos && $contentPos < $bodyEnd,
+        'el contenido va DENTRO del layout (main → contenido → body)',
+        'el contenido quedó fuera del layout (main=' . var_export($mainPos, true) . ', contenido=' . var_export($contentPos, true) . ')'
+    );
+    h_check(
+        $sidebarPos !== false && $contentPos !== false && $sidebarPos < $contentPos,
+        'el panel lateral se imprime ANTES del contenido (el layout lo envuelve)',
+        'el panel lateral quedó después del contenido (sidebar=' . var_export($sidebarPos, true) . ', contenido=' . var_export($contentPos, true) . ')'
+    );
+
     $response = $dispatch('GET', '/admin/backups/folders?root=34');
     $payload = json_decode($response->getContent(), true);
     h_check($response->getStatusCode() === 200 && ($payload['ok'] ?? false) === true, 'GET /admin/backups/folders responde 200 con las carpetas del árbol');
