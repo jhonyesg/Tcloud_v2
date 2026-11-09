@@ -85,8 +85,11 @@ class BackupMappingController extends Controller
             ];
         }
 
+        // Orden de revisión: primero lo que YA está declarado (para revisarlo),
+        // después los vínculos inválidos (que también tienen carpeta asignada y
+        // hay que corregir), y al final lo que falta por asignar.
         usort($rows, function (array $a, array $b) {
-            $order = ['broken' => 0, 'unmapped' => 1, 'mapped' => 2];
+            $order = ['mapped' => 0, 'broken' => 1, 'unmapped' => 2];
 
             return [$order[$a['state']], $a['name']] <=> [$order[$b['state']], $b['name']];
         });

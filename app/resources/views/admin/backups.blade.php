@@ -112,6 +112,14 @@
                 <input type="checkbox" x-model="onlyUnmapped" class="rounded border-slate-300">
                 Solo sin mapear
             </label>
+            <div class="flex items-center gap-2 text-xs">
+                <span class="px-2 py-1 rounded-lg bg-emerald-50 text-emerald-700 font-medium"
+                      x-text="mappedCount + ' mapeados'"></span>
+                <span x-show="brokenCount > 0" class="px-2 py-1 rounded-lg bg-red-50 text-red-700 font-medium"
+                      x-text="brokenCount + ' inválidos'"></span>
+                <span class="px-2 py-1 rounded-lg bg-slate-100 text-slate-500 font-medium"
+                      x-text="unmappedCount + ' sin mapear'"></span>
+            </div>
             <span class="text-xs text-slate-400" x-text="filtered().length + ' de ' + rows.length"></span>
         </div>
 
@@ -289,6 +297,18 @@ function backupAdmin() {
         },
 
         get unmappedSources() {
+            return this.rows.filter(r => r.state === 'unmapped').length;
+        },
+
+        get mappedCount() {
+            return this.rows.filter(r => r.state === 'mapped').length;
+        },
+
+        get brokenCount() {
+            return this.rows.filter(r => r.state === 'broken').length;
+        },
+
+        get unmappedCount() {
             return this.rows.filter(r => r.state === 'unmapped').length;
         },
 

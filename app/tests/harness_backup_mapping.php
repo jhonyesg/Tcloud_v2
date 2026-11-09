@@ -342,6 +342,32 @@ try {
     h_check(count($payload['folders'] ?? []) > 0, 'la API devuelve al menos una carpeta del árbol real');
     h_check(($payload['root']['name'] ?? '') !== '', 'la API devuelve el árbol raíz');
 
+    // Orden de revisión: primero lo que ya está declarado, al final lo que falta.
+    $rows = json_decode($html, true);
+    $states = [];
+    if (preg_match('/rows: (\[.*?\]),\s*\n/s', $html, $m)) {
+        $decoded = json_decode($m[1], true);
+        $states = is_array($decoded) ? array_column($decoded, 'state') : [];
+    }
+    h_check($states !== [], 'la página entrega el listado de storages');
+    if ($states !== []) {
+        $lastMapped = -1;
+        $firstUnmapped = PHP_INT_MAX;
+        foreach ($states as $i => $state) {
+            if ($state === 'mapped') {
+                $lastMapped = $i;
+            }
+            if ($state === 'unmapped' && $firstUnmapped === PHP_INT_MAX) {
+                $firstUnmapped = $i;
+            }
+        }
+        h_check(
+            $lastMapped < $firstUnmapped,
+            'los storages ya mapeados aparecen ANTES que los que falta asignar',
+            'orden inválido: el último mapeado está en ' . $lastMapped . ' y el primero sin mapear en ' . $firstUnmapped
+        );
+    }
+
     // Cliente: el módulo es de administración.
     $store->put('user_role', 'cliente');
     $store->save();

@@ -127,6 +127,11 @@ solicitar → enlace) y declaración de los 7 vínculos pendientes con el operad
   Corrección: `@endsection` antes de `@push('scripts')`, más dos aserciones que comparan
   POSICIONES (`<main` < contenido < `</body>`, y panel lateral antes del contenido). El test
   negativo confirma que sin `@endsection` fallan las dos.
+- **L9** — 2026-11-09 — Ajuste pedido por el operador: el listado se ordena **primero lo que ya
+  está declarado** (para revisarlo) y abajo lo que falta por asignar. Antes el orden era el
+  inverso (sin mapear primero). Orden final: `mapped` → `broken` → `unmapped`; el toolbar
+  muestra el conteo por estado. El harness compara el índice del último mapeado con el del
+  primero sin mapear, así que un cambio de orden rompe la aserción.
 - **L7** — 2026-11-09 — Riesgo: **item 2 (seguridad)**. El módulo escribe el vínculo que decide
   qué material de producción puede pedir un cliente. La autorización (solo admin) está
   verificada por el harness, pero la superficie concede acceso al master de producción: lo
