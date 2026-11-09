@@ -2368,6 +2368,90 @@ Las dos columnas y la tabla son aditivas. Si se borra `backup_requests`, los
 shares ya creados siguen sirviendo hasta vencer su vigencia (son filas de
 `shares`, tabla aparte).
 
+## Administración del vínculo de backup (change `admin-backup-mapping`, 2026-11-09)
+
+**Pantalla**: `/admin/backups`, entrada "Backup" en el sidebar (grupo
+Administración). Es la superficie de ADMINISTRACIÓN para declarar qué carpeta
+del árbol de producción corresponde a cada storage de origen. El cliente no la
+ve: su punto de entrada sigue siendo el botón "Solicitar backup".
+
+### Dónde vive el vínculo
+
+`storage_providers.backup_storage_id` (FK al storage del árbol) +
+`storage_providers.backup_folder_name` (un solo segmento). **NUNCA** se
+deduce del nombre: los dos lados no se corresponden (`09 Redmas` ↔
+`05_Redmas`, `05 Institucional` ↔ `22_Institucional_BK`, `13_Telecafe_BK` y
+`13_Telepacifico_Bk` comparten prefijo).
+
+### Fuente única de las reglas
+
+`App\Services\MisArchivos\BackupMappingService` es el dueño del vínculo. La
+UI (`Admin\BackupMappingController`) y el comando `backups:map-storages`
+comparten las validaciones, para que no exista una puerta trasera por consola
+con reglas más débiles.
+
+| Método | Rol |
+|---|---|
+| `tree(?int $rootId, bool $fresh)` | storage raíz + carpetas de canal leídas DEL DISCO |
+| `validate(int $sourceId, int $backupStorageId, string $folder)` | reglas sin escribir |
+| `assign(...)` / `unassign(int $sourceId)` | escriben el par (asignar valida primero) |
+| `coverage(?int $rootId)` | carpetas del árbol, mapeadas, huérfanas, vínculos inválidos |
+| `candidateSources(?int $rootId)` | storages locales fuera del árbol, candidatos a origen |
+| `suggestions(?int $rootId)` | ayuda visual por token compartido; NUNCA escribe |
+
+### Reglas que la validación aplica
+
+| Error | Regla |
+|---|---|
+| `invalid_folder_name` | un solo segmento: sin `/`, sin `\`, sin `..`, sin `%`, sin caracteres de control, ≤ 120 |
+| `folder_not_found` | la carpeta tiene que existir **en disco** bajo el árbol |
+| `folder_already_mapped` | una carpeta no puede estar asignada a dos orígenes |
+| `same_storage` | el origen y el árbol no pueden ser el mismo storage |
+| `source_inside_backup_tree` | un storage que ya vive dentro del árbol no se mapea |
+| `backup_inside_source` | el árbol no puede estar dentro del storage de origen |
+| `backup_not_local` | el árbol debe ser `kind='local'` con `base_path` |
+| `mount_down` | el montaje de red está caído: no se toca el disco |
+
+### Guarda de NFS
+
+El árbol de producción es un export NFS en modo **hard**. Antes de cualquier
+`is_dir()` se consulta `MountGuard::isNetworkMountDown()`, que resuelve el
+punto de montaje MÁS ESPECÍFICO que contiene el path (`Tcloud/Disco_D`).
+`MountGuard::isNetworkMount()` NO sirve aquí: solo reconoce el punto exacto y
+devolvería `false` para un path profundo. La contención se verifica por
+cadena, **sin `realpath()`**.
+
+### Rutas
+
+| Ruta | Método | Notas |
+|---|---|---|
+| `GET /admin/backups` | `index` | pantalla; acepta `?root=<id>` para ver otro árbol |
+| `GET /admin/backups/folders` | `folders` | JSON con las carpetas del árbol; `?fresh=1` relee el disco |
+| `POST /admin/backups` | `store` | declara el vínculo; `422` con el mensaje del error |
+| `DELETE /admin/backups/{storage}` | `destroy` | quita el vínculo; idempotente |
+
+Todas bajo `['auth','admin']`. El listado de carpetas se cachea 60 s en Redis
+(`backup.mapping.folders.<rootId>`) porque es una lectura de NFS; `assign()` y
+`unassign()` invalidan la key.
+
+### Verificación
+
+```bash
+cd app
+php tests/harness_backup_mapping.php   # contrato del módulo (servicio + HTTP real)
+php tests/harness_route_contract.php   # ninguna ruta huérfana
+php tests/harness_backup_requests.php  # el módulo cliente sigue funcionando
+```
+
+El harness de mapeo crea una sesión de admin real (fila en `user_sessions` +
+payload en la sesión de Redis) para despachar peticiones HTTP de verdad, y
+borra ambas al terminar.
+
+### Rollback
+
+`git revert` del commit. Sin migración: el módulo no cambia el esquema, solo
+escribe las dos columnas que ya existían.
+
 <!-- ODD:BEGIN -->
 ## Organic Driven Development (ODD)
 
