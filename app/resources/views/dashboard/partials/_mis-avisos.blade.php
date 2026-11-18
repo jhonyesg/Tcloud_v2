@@ -65,12 +65,18 @@
 @elseif($context === 'client' && $user)
     @if($user->alertsInteligente?->enabled && ((int) ($user->alertsInteligente?->keywords_quota ?? 0)) > 0)
         @php
+            // El provider ya resolvió todo el estado en buildClientMisAvisosData():
+            // userKeywords()->count() era una query extra por carga. El
+            // fallback mantiene el partial renderizable de forma aislada.
+            $data = $data ?? [];
             $config       = $user->alertsInteligente;
-            $keywordsUsed = $user->userKeywords()->count();
-            $keywordsQta  = (int) $config->keywords_quota;
-            $emails       = $config->emailsList();
-            $emailsQta    = (int) ($config->emails_quota ?? 0);
-            $cadence      = (int) ($config->alert_frequency_minutes ?? 30);
+            $keywordsUsed = array_key_exists('keywords_used', $data)
+                ? (int) $data['keywords_used']
+                : $user->userKeywords()->count();
+            $keywordsQta  = (int) ($data['keywords_quota'] ?? $config->keywords_quota);
+            $emails       = array_key_exists('emails', $data) ? (array) $data['emails'] : $config->emailsList();
+            $emailsQta    = (int) ($data['emails_quota'] ?? $config->emails_quota ?? 0);
+            $cadence      = (int) ($data['cadence_minutes'] ?? $config->alert_frequency_minutes ?? 30);
         @endphp
         <a href="/ia/mis-avisos"
            data-dashboard-partial="mis-avisos"

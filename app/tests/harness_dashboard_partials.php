@@ -276,6 +276,35 @@ try {
         'admin: NO muestra repair-amount cuando no hay untraversable',
         'admin: muestra repair incorrectamente');
 
+    // ─── 10. La Guía del dashboard cubre los partials ─────────────────────
+    h_section('10. Tour del dashboard admin: cobertura de los partials');
+
+    $adminView = (string) file_get_contents(resource_path('views/dashboard/admin.blade.php'));
+    foreach (['media-editor', 'mis-avisos', 'bg-jobs-active', 'active-sessions', 'storage-health'] as $partialId) {
+        h_check(
+            str_contains($adminView, "conditionalStep('" . $partialId . "'"),
+            "el tour cubre el partial '{$partialId}'",
+            "el tour NO cubre el partial '{$partialId}' (el usuario no descubre el módulo)"
+        );
+    }
+    h_check(
+        str_contains($adminView, '].filter(Boolean)'),
+        'los pasos condicionales se filtran (un módulo apagado no deja un paso muerto)',
+        'faltó el filtro de pasos condicionales'
+    );
+    h_check(
+        ! str_contains($adminView, ":has-text("),
+        'ningún paso usa el pseudo-selector inexistente :has-text()',
+        'quedó un selector :has-text() que revienta el tour con SyntaxError'
+    );
+
+    $tourEngine = (string) file_get_contents(public_path('js/interactive-tour.js'));
+    h_check(
+        str_contains($tourEngine, '_resolveTarget'),
+        'el motor de tours atrapa selectores inválidos en vez de morir',
+        'el motor sigue llamando querySelector sin protección'
+    );
+
 } finally {
     // ─── Cleanup por tag ──────────────────────────────────────────────────
     DB::table('user_alerts_inteligentes')->whereIn('user_id',

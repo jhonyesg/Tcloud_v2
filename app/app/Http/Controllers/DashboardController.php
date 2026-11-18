@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Session;
 use App\Models\User;
 use App\Services\Dashboard\DashboardDataProvider;
@@ -12,14 +13,24 @@ class DashboardController extends Controller
     {
     }
 
+    /**
+     * Id del storage personal del usuario, o `null` si no tiene.
+     *
+     * Query directa: materializar la colección completa de `user_storages` con
+     * eager load solo para elegir uno costaba 61-106 ms con usuarios de 27-122
+     * storages (medido 2026-11-18). El `orderBy('us.id')` conserva exactamente
+     * la elección previa (`->get()->first()`), que es por insertion order.
+     */
     private function personalStorageId(User $user): ?int
     {
-        $us = $user->userStorages()
-            ->with('storageProvider')
-            ->get()
-            ->first(fn($us) => (bool) $us->storageProvider->is_personal);
+        $id = DB::table('user_storages as us')
+            ->join('storage_providers as sp', 'sp.id', '=', 'us.storage_provider_id')
+            ->where('us.user_id', $user->id)
+            ->where('sp.is_personal', true)
+            ->orderBy('us.id')
+            ->value('sp.id');
 
-        return $us?->storageProvider->id;
+        return $id === null ? null : (int) $id;
     }
 
     private function scanInstructivos(): array

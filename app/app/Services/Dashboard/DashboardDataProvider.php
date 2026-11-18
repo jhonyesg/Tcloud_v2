@@ -3,7 +3,6 @@
 namespace App\Services\Dashboard;
 
 use App\Models\MediaEditJob;
-use App\Models\SystemSetting;
 use App\Models\User;
 use App\Models\UserSession;
 use App\Services\BgJobRegistry;
@@ -32,6 +31,10 @@ use Illuminate\Support\Carbon;
 class DashboardDataProvider
 {
     private const CACHE_KEY_CREATED_PREFIX = 'illuminate:cache:flexible:created:';
+
+    public function __construct(private readonly DashboardStatsCache $statsCache)
+    {
+    }
 
     public function buildAdmin(User $user): array
     {
@@ -83,21 +86,22 @@ class DashboardDataProvider
 
     private function buildAdminStatsData(): array
     {
-        $agg = DB::table('files')
-            ->selectRaw('COUNT(*) AS c, COALESCE(SUM(size), 0) AS s')
-            ->first();
+        // El agregado de `files` es un seq scan de 237-737 ms (1,2 M filas /
+        // 2,5 GB, medido 2026-11-18). Se calcula en background con
+        // `dashboard:refresh-stats` y acá solo se lee.
+        $agg = $this->statsCache->get();
 
         return [
             'total_users' => (int) User::count(),
             'total_storages' => (int) DB::table('storage_providers')->count(),
-            'total_files' => (int) ($agg->c ?? 0),
+            'total_files' => (int) $agg['total_files'],
             'total_shares' => (int) DB::table('shares')->count(),
             'active_shares' => (int) DB::table('shares')
                 ->where(function ($q) {
                     $q->whereNull('expires_at')->orWhere('expires_at', '>=', now());
                 })
                 ->count(),
-            'storage_used' => (int) ($agg->s ?? 0),
+            'storage_used' => (int) $agg['storage_used'],
         ];
     }
 
@@ -238,47 +242,77 @@ private function buildAdminActiveSessionsData(): array
      * Bloque storage_health: lee métricas persistidas por `storage:audit-ownership`.
      * Solo expone storages con hallazgos (untraversable_count > 0 o owner_mismatch > 0).
      * El partial decide si mostrar la tarjeta final según su gating.
+     *
+     * Coste: UNA query a `system_settings`. La versión anterior leía el flag,
+     * el timestamp y luego un `SystemSetting::get()` por storage dentro del
+     * `foreach` (7 queries por request medidos el 2026-11-18), y seguía
+     * pagando todo el recorrido cuando el flag estaba apagado.
      */
     private function buildAdminStorageHealthData(): array
     {
-        $enabled = (bool) SystemSetting::get('storage_health_enabled');
-        $auditFinishedAt = SystemSetting::get('storage_health:audit_finished_at');
+        $settings = DB::table('system_settings')
+            ->where(function ($q) {
+                $q->whereIn('key', ['storage_health_enabled', 'storage_health:audit_finished_at'])
+                    ->orWhere('key', 'like', 'storage_health:%:untraversable_count')
+                    ->orWhere('key', 'like', 'storage_health:%:owner_mismatch_count');
+            })
+            ->pluck('value', 'key');
 
-        $rows = DB::table('system_settings')
-            ->where('key', 'like', 'storage_health:%:untraversable_count')
-            ->get(['key', 'value']);
+        $enabled = (bool) $settings->get('storage_health_enabled');
+        $auditFinishedAt = $settings->get('storage_health:audit_finished_at');
 
-        if ($rows->isEmpty()) {
-            return [
-                'enabled' => $enabled,
-                'audit_finished_at' => $auditFinishedAt,
-                'items' => [],
-            ];
+        $empty = [
+            'enabled' => $enabled,
+            'audit_finished_at' => $auditFinishedAt,
+            'items' => [],
+        ];
+
+        // Gate temprano: con el flag apagado el partial nunca renderiza, así
+        // que no hay razón para cruzar storages ni armar items.
+        if (! $enabled) {
+            return $empty;
         }
 
-        $storageIds = $rows->map(fn ($r) => (int) substr($r->key, strlen('storage_health:'), -strlen(':untraversable_count')));
+        $prefix = 'storage_health:';
+        $unSuffix = ':untraversable_count';
+        $omSuffix = ':owner_mismatch_count';
+
+        $counts = [];
+        foreach ($settings as $key => $value) {
+            $key = (string) $key;
+            if (! str_starts_with($key, $prefix)) {
+                continue;
+            }
+            if (str_ends_with($key, $unSuffix)) {
+                $counts[(int) substr($key, strlen($prefix), -strlen($unSuffix))]['untraversable'] = (int) $value;
+            } elseif (str_ends_with($key, $omSuffix)) {
+                $counts[(int) substr($key, strlen($prefix), -strlen($omSuffix))]['owner_mismatch'] = (int) $value;
+            }
+        }
+
+        $counts = array_filter(
+            $counts,
+            fn (array $c) => ($c['untraversable'] ?? 0) > 0 || ($c['owner_mismatch'] ?? 0) > 0
+        );
+
+        if ($counts === []) {
+            return $empty;
+        }
+
         $storageMap = DB::table('storage_providers')
-            ->whereIn('id', $storageIds)
+            ->whereIn('id', array_keys($counts))
             ->get(['id', 'name', 'base_path'])
             ->keyBy('id');
 
         $items = [];
-        foreach ($rows as $r) {
-            $storageId = (int) substr($r->key, strlen('storage_health:'), -strlen(':untraversable_count'));
-            $untravsersable = (int) $r->value;
-            $ownerMismatch = (int) SystemSetting::get("storage_health:{$storageId}:owner_mismatch_count", '0');
-
-            if ($untravsersable === 0 && $ownerMismatch === 0) {
-                continue;
-            }
-
+        foreach ($counts as $storageId => $c) {
             $s = $storageMap->get($storageId);
             $items[] = [
-                'storage_id' => $storageId,
+                'storage_id' => (int) $storageId,
                 'name' => $s?->name ?? "Storage #{$storageId}",
                 'base_path' => $s?->base_path,
-                'untraversable_count' => $untravsersable,
-                'owner_mismatch_count' => $ownerMismatch,
+                'untraversable_count' => (int) ($c['untraversable'] ?? 0),
+                'owner_mismatch_count' => (int) ($c['owner_mismatch'] ?? 0),
             ];
         }
 
@@ -355,9 +389,15 @@ private function buildAdminActiveSessionsData(): array
         $created = Cache::get(self::CACHE_KEY_CREATED_PREFIX . $key);
         $createdTs = is_numeric($created) ? (int) $created : time();
 
+        // Zona explícita: en Carbon 3 `createFromTimestamp()` sin segundo
+        // argumento devuelve UTC, y la vista re-parsea el ISO en la zona de la
+        // app, dejando el "Datos actualizados hace…" 5 h adelantado en los
+        // bloques cacheados (medido 2026-11-18: 16:41+00 vs 11:41-05).
+        $generatedAt = Carbon::createFromTimestamp($createdTs, config('app.timezone'));
+
         return [
             'data' => $data,
-            'generated_at' => Carbon::createFromTimestamp($createdTs)->toIso8601String(),
+            'generated_at' => $generatedAt->toIso8601String(),
             'stale' => ($createdTs + $freshSeconds) <= time(),
         ];
     }

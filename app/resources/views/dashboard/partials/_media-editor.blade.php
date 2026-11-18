@@ -66,8 +66,17 @@
 @elseif($context === 'client' && $user)
     @if($user->canUseMediaEditor())
         @php
-            $clipsUsed = (int) $user->mediaEditorClipsThisMonth();
-            $limit = (int) $user->media_editor_clip_limit;
+            // El provider ya calculó `clips_used` en buildClientMediaEditorData().
+            // Volver a llamar a mediaEditorClipsThisMonth() era un COUNT extra
+            // sobre media_edit_jobs por cada carga del dashboard (medido
+            // 2026-11-18). El fallback mantiene el partial renderizable de
+            // forma aislada (harness_dashboard_partials lo hace sin $data).
+            $clipsUsed = array_key_exists('clips_used', $data ?? [])
+                ? (int) $data['clips_used']
+                : (int) $user->mediaEditorClipsThisMonth();
+            $limit = array_key_exists('limit', $data ?? [])
+                ? (int) $data['limit']
+                : (int) $user->media_editor_clip_limit;
             $limitEnabled = $limit > 0;
             $pct = $limitEnabled ? min(100, round(($clipsUsed / $limit) * 100, 1)) : 0;
         @endphp

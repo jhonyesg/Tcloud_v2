@@ -2515,6 +2515,132 @@ ignora los discos con el montaje caído.
 **Nota**: `filesystems.cloud_root` se lee de la config CACHEADA. Después de
 cambiar `config/filesystems.php` hay que correr `php artisan config:cache`.
 
+
+## Rendimiento del dashboard y CSS compilado (change `dashboard-perf-backup-guide`, 2026-11-18)
+
+**Veredicto de memoria: no hay fuga por request.** 6 renders consecutivos de
+`dashboard.admin` dan `usage=7.36 MB / peak=13.95 MB` idénticos y
+`grep -c "Allowed memory size" laravel.log` → `0`. Lo que sí había era
+**acumulación por worker sin reciclado** (35 workers de 62-69 MB con 2 d 23 h
+de uptime). Se corrigió con `pm.max_requests = 500`.
+
+### Causa dominante de la lentitud (y qué la resolvió)
+
+| Factor | Antes | Ahora |
+|---|---|---|
+| `COUNT(*)+SUM(size)` sobre `files` (1,2 M filas / 2,5 GB, seq scan) **dentro del request** | 237-737 ms | 0 (se calcula en background) |
+| Xdebug en `mode=develop` en PHP-FPM | `toArray()` de 196 storages: 612 ms | 69 ms |
+| Tailwind Play CDN (407 KB de JIT en runtime) | FCP 424 ms · DCL 502 ms | FCP 212 ms · DCL 162 ms |
+| `personalStorageId()` materializando la colección | 106 ms (122 storages) | 8 ms |
+| Build warm del dashboard | 359-2607 ms | **8 ms** · 5 queries |
+
+Medición HTTP real (`/dashboard`, sesión de `jsuarez`): **0,97 s → 0,20 s** en frío.
+
+### Agregado de `files` en background (T5)
+
+`App\Services\Dashboard\DashboardStatsCache` es el dueño del número:
+
+```php
+DashboardStatsCache::get(): array       // {total_files, storage_used, captured_at}
+DashboardStatsCache::refresh(): array   // recalcula y publica
+DashboardStatsCache::forget(): void
+```
+
+- Key: `dashboard:stats:aggregate` (TTL 7 días de respaldo).
+- **Nunca** volver a meter `COUNT(*)+SUM(size)` de `files` dentro de un request:
+  es el seq scan que hacía lento el dashboard. Si aparece un consumidor nuevo,
+  que lea del `DashboardStatsCache`.
+- Refresco: `dashboard:refresh-stats` programado cada 10 min
+  (`routes/console.php`). Manual: `php artisan dashboard:refresh-stats
+  [--dry-run]`.
+- Si la key no existe (primer deploy, cache limpio) se calcula en línea **una
+  vez**: el dashboard nunca muestra un cero inventado por falta de cache.
+- Invalidación: `php artisan dashboard:clear-cache` también borra esta key.
+
+### Xdebug retirado de PHP-FPM (T2)
+
+`/www/server/php/84/etc/php.ini:1867` apunta el `zend_extension` a
+`xdebug.so.disabled`. **CLI conserva la extensión** (`php-cli.ini`), así que
+para depurar alcanza con `php -d xdebug.mode=debug ...`.
+
+Backup de la configuración original: `/root/php84-backup-20261118/`.
+
+Para revertir: renombrar `xdebug.so.disabled` → `xdebug.so` en la línea 1867 y
+`systemctl reload php-fpm-84`.
+
+### CSS compilado (T3) — **no volver al Play CDN**
+
+`public/js/tailwind.js` (Play CDN) fue retirado. El CSS vive en
+`public/css/app.css`, generado desde `resources/css/app.css` con
+`tailwind.config.js`.
+
+```bash
+cd app
+npm install          # solo la primera vez (tailwindcss 3.4.17)
+npm run build        # compila public/css/app.css (minificado, ~108 KB)
+npm run build:watch  # durante desarrollo de UI
+php tests/tailwind_coverage_check.php   # guardarraíl obligatorio
+```
+
+**Reglas:**
+
+1. **Toda clase nueva en Blade/PHP/JS entra sola al build** porque el escáner
+   cubre `resources/views`, `app/`, `routes/` y `public/js`. Después de agregar
+   UI, correr `npm run build` y commitear el `app.css` regenerado.
+2. **Clases armadas por concatenación** (`'bg-' . $color`) NO las ve el
+   escáner. Se declaran literales en el markup o en `safelist`
+   (`tailwind.config.js`).
+3. La paleta `brand` vive SOLO en `tailwind.config.js`. No volver a inyectar
+   `tailwind.config = {...}` en el layout: el CDN ya no existe.
+4. `php tests/tailwind_coverage_check.php` es el guardarraíl: verifica que
+   cada clase estática del markup tenga su selector en el CSS compilado. Si
+   falla, la UI se degrada en silencio (botones sin color, tablas sin bordes) y
+   ningún test funcional lo detecta.
+5. `w-13`/`h-13` **no existen** en la escala de Tailwind (no hay paso 13). Usar
+   `w-[52px]` o `style` inline.
+
+### Harness de rendimiento y memoria
+
+```bash
+cd app && php tests/harness_dashboard_perf_memory.php
+```
+
+Mide build cold/warm, queries por request, deriva de memoria en 6 renders
+consecutivos, pico por request y ausencia de `Allowed memory size` en el log.
+Umbrales actuales (guardarraíles, no objetivos): warm < cold, ≤ 8 queries,
+deriva < 2 MB, pico < 64 MB.
+
+### Guías interactivas — contrato
+
+Tres tours cubren el flujo de backup. Si se agrega un módulo o partial nuevo,
+**hay que extender el tour**: es el mecanismo de descubrimiento del proyecto.
+
+| Tour | Dónde se define | Anclas |
+|---|---|---|
+| Mis Archivos | `startFilesTour()` en `resources/views/files/index.blade.php` | `title="Mis solicitudes de backup"`, `title="Solicitar backup"` |
+| Dashboard admin | `startAdminDashboardTour()` en `resources/views/dashboard/admin.blade.php` | `data-dashboard-partial="<id>"` |
+| Administración de backup | `startBackupTour()` en `resources/views/admin/backups.blade.php` | `data-backup-tour="<name>"` |
+
+**Contrato del motor** (`public/js/interactive-tour.js`):
+
+- `selector` puede ser string CSS o función que devuelve el elemento.
+- Un selector inválido o un target ausente **no rompe el tour**: el paso se
+  muestra centrado (`_resolveTarget()` atrapa la excepción). Nunca usar
+  pseudo-selectores de Playwright (`:has-text`) en un tour: no son CSS.
+- Los pasos condicionales usan `conditionalStep(id, step)` y el array cierra
+  con `.filter(Boolean)`: un partial apagado no deja un paso muerto.
+
+**Regla**: si un partial expone `data-dashboard-partial`, el tour del dashboard
+DEBE mencionarlo. `tests/harness_dashboard_partials.php` lo verifica.
+
+### El vínculo de backup, explicado para la Guía (S4)
+
+Por qué solo algunos canales ofrecen "Solicitar backup": el vínculo
+`storage_providers.backup_storage_id` + `backup_folder_name` **se declara**, no
+se deduce del nombre (los dos lados no coinciden: `09 Redmas` ↔ `05_Redmas`).
+La pantalla de administración es `/admin/backups` y su Guía lo explica paso a
+paso. Hoy: **28 de 205** storages con vínculo declarado.
+
 <!-- ODD:BEGIN -->
 ## Organic Driven Development (ODD)
 

@@ -18,10 +18,16 @@
                 <i class="fas fa-rotate" :class="loading ? 'fa-spin' : ''"></i>
                 <span>Actualizar</span>
             </button>
-            <button @click="openCreate()"
+            <button @click="openCreate()" data-backup-tour="assign"
                     class="flex items-center gap-2 px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-xl text-sm font-medium transition-colors">
                 <i class="fas fa-link"></i>
                 <span>Asignar carpeta</span>
+            </button>
+            <button @click="startBackupTour()"
+                    class="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-sm font-medium transition-colors"
+                    title="Guía interactiva">
+                <i class="fas fa-map-marked-alt"></i>
+                <span class="hidden sm:inline">Guía</span>
             </button>
         </div>
     </div>
@@ -45,25 +51,25 @@
 
     <!-- Cobertura -->
     <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 mb-6">
-        <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
+        <div data-backup-tour="coverage-folders" class="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
             <p class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Carpetas del arbol</p>
             <p class="mt-2 text-3xl font-bold text-slate-800" x-text="folders.length"></p>
             <p class="mt-1 text-xs text-slate-500 truncate" x-text="rootLabel"></p>
         </div>
 
-        <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
+        <div data-backup-tour="coverage-mapped" class="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
             <p class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Con origen declarado</p>
             <p class="mt-2 text-3xl font-bold text-emerald-600" x-text="mappedFolders"></p>
             <p class="mt-1 text-xs text-slate-500" x-text="orphanFolders.length + ' sin origen (huérfanas)'"></p>
         </div>
 
-        <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
+        <div data-backup-tour="coverage-sources" class="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
             <p class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Storages de origen</p>
             <p class="mt-2 text-3xl font-bold text-slate-800" x-text="rows.length"></p>
             <p class="mt-1 text-xs text-slate-500" x-text="unmappedSources + ' sin backup asignado'"></p>
         </div>
 
-        <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
+        <div data-backup-tour="coverage-broken" class="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
             <p class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Vínculos inválidos</p>
             <p class="mt-2 text-3xl font-bold" :class="brokenSources > 0 ? 'text-red-600' : 'text-slate-800'"
                x-text="brokenSources"></p>
@@ -72,7 +78,7 @@
     </div>
 
     <!-- Carpetas huerfanas -->
-    <div x-show="orphanFolders.length > 0" x-cloak class="mb-6 bg-white rounded-xl shadow-sm border border-slate-200">
+    <div data-backup-tour="orphans" x-show="orphanFolders.length > 0" x-cloak class="mb-6 bg-white rounded-xl shadow-sm border border-slate-200">
         <button @click="orphansOpen = !orphansOpen" class="w-full flex items-center justify-between px-5 py-4 text-left">
             <div>
                 <h2 class="text-sm font-semibold text-slate-800">Carpetas del árbol sin storage de origen</h2>
@@ -101,9 +107,9 @@
     </div>
 
     <!-- Listado de storages -->
-    <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+    <div data-backup-tour="listing" class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
         <div class="px-5 py-4 border-b border-slate-100 flex flex-wrap items-center gap-3">
-            <div class="relative flex-1 min-w-[220px]">
+            <div data-backup-tour="search" class="relative flex-1 min-w-[220px]">
                 <input type="text" x-model="search" placeholder="Buscar storage o ruta..."
                        class="w-full border border-slate-300 rounded-lg pl-9 pr-4 py-2 text-sm focus:ring-2 focus:ring-brand-500 outline-none">
                 <i class="fas fa-search absolute left-3 top-2.5 text-slate-400 text-sm"></i>
@@ -355,7 +361,128 @@
 @endsection
 
 @push('scripts')
+<script src="/js/interactive-tour.js?v=20"></script>
 <script>
+/**
+ * Guía interactiva del módulo de Backup.
+ *
+ * Explica la pieza que el operador no puede deducir mirando la pantalla: el
+ * vínculo "storage de origen → carpeta del árbol" se DECLARA y solo entonces
+ * aparece la acción "Solicitar backup" en Mis Archivos. Los pasos apuntan a
+ * anclas `data-backup-tour` para no depender de clases Tailwind.
+ */
+function startBackupTour() {
+    function anchor(name) {
+        return document.querySelector('[data-backup-tour="' + name + '"]');
+    }
+    function scrollTo(el) {
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+        return el;
+    }
+
+    TcloudTour.start({
+        steps: [
+            {
+                title: 'Backup de producción',
+                content: 'Esta pantalla administra el vínculo entre un <strong>storage de origen</strong> (los canales) ' +
+                         'y su <strong>carpeta en el árbol de producción</strong>. No se copia nada: se declara ' +
+                         'qué carpeta corresponde a qué canal, y con eso el cliente puede pedir el material de un día.',
+                icon: 'fa-box-archive',
+                color: '#0f766e',
+                selector: null,
+                position: 'center',
+            },
+            {
+                title: 'El vínculo NO se deduce del nombre',
+                content: 'Los nombres de los dos lados no coinciden: <span class="font-mono">09 Redmas</span> ↔ ' +
+                         '<span class="font-mono">05_Redmas</span>, <span class="font-mono">05 Institucional</span> ↔ ' +
+                         '<span class="font-mono">22_Institucional_BK</span>. Por eso el vínculo se declara a mano y ' +
+                         'es la única fuente de verdad. Una carpeta no puede estar asignada a dos orígenes.',
+                icon: 'fa-circle-info',
+                color: '#0f766e',
+                selector: function () { return anchor('listing'); },
+                position: 'top',
+                onShow: function () { scrollTo(anchor('listing')); },
+            },
+            {
+                title: 'Carpetas del árbol',
+                content: 'Cuántas carpetas de canal se leyeron <strong>del disco</strong> en el árbol de producción. ' +
+                         'Esta lectura es de NFS: si el montaje está caído la pantalla avisa y no intenta leer nada ' +
+                         '(el export es <code>hard</code> y un acceso bloquearía las peticiones).',
+                icon: 'fa-folder-tree',
+                color: '#0891b2',
+                selector: function () { return anchor('coverage-folders'); },
+                position: 'bottom',
+                onShow: function () { scrollTo(anchor('coverage-folders')); },
+            },
+            {
+                title: 'Cobertura del vínculo',
+                content: 'Tres números para saber dónde estás: <strong>con origen declarado</strong> (carpetas ya ' +
+                         'vinculadas), <strong>storages de origen</strong> (canales del sistema y cuántos no tienen ' +
+                         'backup asignado) y <strong>vínculos inválidos</strong> (destino borrado o que dejó de ser local).',
+                icon: 'fa-chart-simple',
+                color: '#0891b2',
+                selector: function () { return anchor('coverage-mapped'); },
+                position: 'bottom',
+                onShow: function () { scrollTo(anchor('coverage-mapped')); },
+            },
+            {
+                title: 'Carpetas sin origen',
+                content: 'Carpetas que existen en el árbol pero ningún canal las reclama. El cliente no puede pedirlas. ' +
+                         'La flecha que aparece al lado es una <strong>sugerencia por nombre compartido</strong>: ' +
+                         'no escribe nada, solo ayuda a decidir. El vínculo se declara a mano.',
+                icon: 'fa-folder-open',
+                color: '#d97706',
+                selector: function () { return anchor('orphans'); },
+                position: 'top',
+                onShow: function () { scrollTo(anchor('orphans')); },
+            },
+            {
+                title: 'Buscar y filtrar',
+                content: 'Busca por nombre de storage o por ruta, y usa <strong>Solo sin mapear</strong> para atacar ' +
+                         'justo los canales que todavía no tienen backup. Los contadores de la derecha se recalculan con el filtro.',
+                icon: 'fa-magnifying-glass',
+                color: '#475569',
+                selector: function () { return anchor('search'); },
+                position: 'bottom',
+                onShow: function () { scrollTo(anchor('search')); },
+            },
+            {
+                title: 'Asignar una carpeta',
+                content: 'Con <strong>Asignar carpeta</strong> eliges el storage de origen, el árbol destino y la carpeta. ' +
+                         'El sistema valida que la carpeta exista <strong>en disco</strong>, que no esté ya asignada a otro ' +
+                         'canal y que el origen no viva dentro del árbol. Un vínculo inválido se rechaza con el motivo.',
+                icon: 'fa-link',
+                color: '#7c3aed',
+                selector: function () { return anchor('assign'); },
+                position: 'bottom',
+                onShow: function () { scrollTo(anchor('assign')); },
+            },
+            {
+                title: 'Qué ve el cliente',
+                content: 'Una vez declarado el vínculo, en <strong>Mis Archivos</strong> la carpeta-día ' +
+                         '(<span class="font-mono">DDMMYYYY</span>) de ese canal muestra la acción ' +
+                         '<strong>Solicitar backup</strong>. La solicitud genera un enlace público de solo lectura con ' +
+                         '2 días de vigencia, y el cliente lo ve en su historial de <em>Backups</em>. ' +
+                         'Revocar la solicitud en Mis Archivos es la única forma de desactivar ese enlace.',
+                icon: 'fa-user',
+                color: '#0f766e',
+                selector: null,
+                position: 'center',
+            },
+            {
+                title: 'Guía Completada',
+                content: 'Ya sabes cómo se conecta un canal con su carpeta de producción y por qué solo algunos canales ' +
+                         'tienen la acción de backup: les falta declarar el vínculo. Repite esta guía con el botón morado.',
+                icon: 'fa-check-circle',
+                color: '#16a34a',
+                selector: null,
+                position: 'center',
+            },
+        ],
+    });
+}
+
 function backupAdmin() {
     return {
         rows: @json($rows),

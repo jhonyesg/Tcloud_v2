@@ -7,29 +7,11 @@
     <title>@yield('title', 'Tcloud')</title>
     @yield('og_meta')
     <link rel="icon" type="image/png" href="/logo.png">
-    <script src="/js/tailwind.js"></script>
-    <script>
-        tailwind.config = {
-            theme: {
-                extend: {
-                    colors: {
-                        brand: {
-                            50: '#e6e9f4',
-                            100: '#c4cbe4',
-                            200: '#9faad1',
-                            300: '#7a89be',
-                            400: '#5b6db3',
-                            500: '#4654a8',
-                            600: '#3d4899',
-                            700: '#343c88',
-                            800: '#2b3077',
-                            900: '#1a1f4d',
-                        }
-                    }
-                }
-            }
-        }
-    </script>
+    {{-- CSS compilado (change dashboard-perf-backup-guide, T3).
+         Antes: `js/tailwind.js` era el Play CDN (407 KB) que generaba el CSS en
+         runtime en cada carga. Ahora el subconjunto usado se compila con
+         `npm run build`. La paleta `brand` vive en `tailwind.config.js`. --}}
+    <link rel="stylesheet" href="/css/app.css?v={{ filemtime(public_path('css/app.css')) }}">
     @if(empty(trim($__env->yieldContent('skip_session_manager'))))
     <script src="/js/session-manager.js?v={{ filemtime(public_path('js/session-manager.js')) }}"></script>
     @endif
@@ -669,7 +651,10 @@
             </div>
         </div>
         <!-- Mobile FAB: abrir menú lateral -->
-        <button class="lg:hidden fixed bottom-16 right-5 z-30 w-13 h-13 flex items-center justify-center rounded-full shadow-2xl transition-all duration-200 active:scale-95"
+        <!-- `w-13`/`h-13` no existen en la escala de Tailwind (no hay paso 13), así
+             que el tamaño lo da el `style` inline. Se retiraron del `class` para
+             que el chequeo de cobertura del CSS compilado no las reporte. -->
+        <button class="lg:hidden fixed bottom-16 right-5 z-30 flex items-center justify-center rounded-full shadow-2xl transition-all duration-200 active:scale-95"
                 style="width:52px; height:52px; background: linear-gradient(135deg, #3d4899, #2b3077); box-shadow: 0 8px 24px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.1);"
                 @click="sidebarOpen = !sidebarOpen">
             <i :class="sidebarOpen ? 'fas fa-times text-base' : 'fas fa-bars text-base'" class="text-white"></i>

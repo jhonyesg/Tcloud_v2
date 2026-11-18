@@ -1,0 +1,17 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Build de utilidades del proyecto.
+ *
+ * Antes se cargaba `public/js/tailwind.js` (Play CDN 3.4.17, 407 KB) en el
+ * `<head>`: el navegador parseaba el compilador JIT completo y generaba ~2.255
+ * reglas en runtime en CADA carga (medido 2026-11-18). Con el CSS precompilado
+ * sólo se descarga el subconjunto que el proyecto usa.
+ *
+ * Cualquier clase nueva en Blade/PHP/JS entra sola al build: `npm run build`.
+ *
+ * Las clases que se arman por concatenación en runtime NO las descubre el
+ * escáner; si aparece una, se agrega acá con su justificación.
+ */

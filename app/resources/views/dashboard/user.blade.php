@@ -86,8 +86,8 @@
         </a>
         @endif
 
-        @include('dashboard.partials._media-editor', ['context' => 'client', 'user' => $user])
-        @include('dashboard.partials._mis-avisos', ['context' => 'client', 'user' => $user])
+        @include('dashboard.partials._media-editor', ['context' => 'client', 'user' => $user, 'data' => $dashboardData['media_editor']])
+        @include('dashboard.partials._mis-avisos', ['context' => 'client', 'user' => $user, 'data' => $dashboardData['mis_avisos']])
     </div>
 
     @if(count($instructivos) > 0)

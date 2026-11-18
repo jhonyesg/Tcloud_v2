@@ -64,10 +64,14 @@ function bgJobIndicator() {
         emptyPolls: 0,
         polling: false,
         pollTimer: null,
+        slowMode: false,
+        lastInteractionPoll: 0,
+        INTERACTION_POLL_MIN_MS: 30000,
         showAll: false,
         POLL_INTERVAL_MS: 5000,
+        IDLE_POLL_INTERVAL_MS: 60000,
         MAX_VISIBLE: 3,
-        EMPTY_THRESHOLD: 2,        // polls vacíos antes de pausar
+        EMPTY_THRESHOLD: 2,        // polls vacíos antes de pasar a la marcha lenta
         DISMISS_TTL_MS: 86_400_000, // 24h: un descarte manual sobrevive al menos este tiempo
         DISMISSED_KEY: 'bg_jobs:dismissed:v2',
         ENDPOINT: '/bg-jobs/active',
@@ -97,16 +101,33 @@ function bgJobIndicator() {
             this.pollTimer = setInterval(() => this.maybePoll(), this.POLL_INTERVAL_MS);
         },
 
+        /**
+         * Polling con dos marchas, para no martillar el endpoint cuando no hay
+         * nada que mostrar.
+         *
+         *   - hay jobs           → cada POLL_INTERVAL_MS (5 s), la UI está viva;
+         *   - sin jobs, primeras  → transición normal hasta EMPTY_THRESHOLD;
+         *   - sin jobs, después  → cada IDLE_POLL_INTERVAL_MS (60 s).
+         *
+         * La versión anterior declaraba EMPTY_THRESHOLD pero nunca lo usaba:
+         * un admin con la pestaña abierta disparaba GET /bg-jobs/active cada
+         * 5 s indefinidamente (medido 2026-11-18). `jobCountRegressed()` leía
+         * `lastUserInteraction`, que jamás se asignaba, así que el "reactivar
+         * tras interacción" tampoco funcionaba.
+         */
         async maybePoll() {
             // Si la pestaña no está visible, no gastar ciclos
             if (document.visibilityState !== 'visible') return;
-            // Si ya tenemos jobs visibles, polleamos; si dos polls vacíos, paramos
+            await this.poll();
             if (this.jobs.length > 0) {
-                await this.poll();
+                // Volvió a haber trabajo: acelerar de nuevo.
+                if (this.slowMode) this.restartFastTimer();
                 return;
             }
-            // Si todavía no hay jobs, polling suave (cada 5s)
-            await this.poll();
+            // Sin jobs: enfriar después de los primeros polls vacíos.
+            if (!this.slowMode && this.emptyPolls >= this.EMPTY_THRESHOLD) {
+                this.enterSlowMode();
+            }
         },
 
         async poll() {
@@ -139,21 +160,49 @@ function bgJobIndicator() {
         attachVisibilityHandlers() {
             document.addEventListener('visibilitychange', () => {
                 if (document.visibilityState === 'visible') {
-                    this.emptyPolls = 0; // reset para reactivar polling
+                    this.emptyPolls = 0; // reset para reactivar el polling rápido
+                    this.restartFastTimer();
                     this.poll();
                 }
             });
-            // Reactivar tras interacción si llevamos mucho sin ver jobs
+            // Reactivar tras interacción SOLO si estamos en la marcha lenta.
+            // Antes, `jobCountRegressed()` comparaba contra `lastUserInteraction`
+            // (nunca asignado), así que devolvía `true` siempre y cada click y
+            // cada tecla disparaban un GET: el widget poléaba más cuanto más se
+            // usaba la app.
             ['click', 'keydown'].forEach(ev =>
                 document.addEventListener(ev, () => {
-                    if (this.jobCountRegressed()) this.poll();
+                    this.lastUserInteraction = Date.now();
+                    if (this.idleMode() && this.canWakeFromInteraction()) {
+                        this.emptyPolls = 0;
+                        this.restartFastTimer();
+                        this.poll();
+                    }
                 }, { passive: true })
             );
         },
 
-        jobCountRegressed() {
-            // Si el usuario regresa de inactividad, fuerce poll si fue hace >30s
-            return Date.now() - (this.lastUserInteraction || 0) > 30000;
+        idleMode() {
+            return this.slowMode;
+        },
+
+        enterSlowMode() {
+            this.slowMode = true;
+            if (this.pollTimer) clearInterval(this.pollTimer);
+            this.pollTimer = setInterval(() => this.maybePoll(), this.IDLE_POLL_INTERVAL_MS);
+        },
+
+        canWakeFromInteraction() {
+            const now = Date.now();
+            if (now - (this.lastInteractionPoll || 0) < this.INTERACTION_POLL_MIN_MS) return false;
+            this.lastInteractionPoll = now;
+            return true;
+        },
+
+        restartFastTimer() {
+            this.slowMode = false;
+            if (this.pollTimer) clearInterval(this.pollTimer);
+            this.pollTimer = setInterval(() => this.maybePoll(), this.POLL_INTERVAL_MS);
         },
 
         dismiss(runId) {

@@ -72,6 +72,13 @@ Schedule::call(function () {
     }
 })->everyThirtyMinutes()->name('sessions:cleanup')->withoutOverlapping();
 
+// Agregado global de `files` para el dashboard admin
+// (dashboard-perf-backup-guide, T5). `COUNT(*)+SUM(size)` sobre 1,2 M filas es
+// un seq scan de 237-737 ms; pagarlo dentro del request que encuentra el cache
+// frío es lo que se percibía como "el dashboard se demora". Cada 10 min deja el
+// número fresco sin que ningún usuario cargue el costo.
+Schedule::command('dashboard:refresh-stats')->everyTenMinutes()->withoutOverlapping(5);
+
 // Limpieza de logs de acceso a shares más antiguos de 90 días (corre 1 vez/semana)
 Schedule::command('shares:cleanup-logs --days=90')->weekly()->sundays()->at('03:00');
 

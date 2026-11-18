@@ -158,8 +158,31 @@
             }
         },
 
+        /**
+         * Resuelve el target de un paso sin romper el tour.
+         *
+         * Un `selector` inválido para `querySelector` lanzaba `SyntaxError`
+         * dentro de `_renderStep()` y el tour quedaba muerto a mitad de camino
+         * (pasó con `h3:has-text("Información del Sistema")` en el tour del
+         * dashboard admin). Un paso que apunta a algo que no existe debe
+         * mostrarse centrado, no reventar la guía.
+         */
+        _resolveTarget: function (step) {
+            if (!step || !step.selector) return null;
+            try {
+                return typeof step.selector === 'function'
+                    ? (step.selector() || null)
+                    : (document.querySelector(step.selector) || null);
+            } catch (e) {
+                if (window.console && console.warn) {
+                    console.warn('TcloudTour: selector inválido en el paso "' + (step.title || '?') + '":', e.message || e);
+                }
+                return null;
+            }
+        },
+
         _renderStep: function (step) {
-            var target = typeof step.selector === 'function' ? step.selector() : document.querySelector(step.selector);
+            var target = this._resolveTarget(step);
 
             // Guard: ensure spotlight exists before using it
             if (!this.spotlight) { this.dismiss(); return; }

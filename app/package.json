@@ -1,0 +1,14 @@
+{
+  "name": "tcloud-assets",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Build de assets de Tcloud. Solo Tailwind: compila public/css/app.css desde las clases usadas en Blade/PHP/JS.",
+  "scripts": {
+    "build": "tailwindcss -i ./resources/css/app.css -o ./public/css/app.css --minify",
+    "build:watch": "tailwindcss -i ./resources/css/app.css -o ./public/css/app.css --watch",
+    "check:coverage": "php tests/tailwind_coverage_check.php"
+  },
+  "devDependencies": {
+    "tailwindcss": "3.4.17"
+  }
+}

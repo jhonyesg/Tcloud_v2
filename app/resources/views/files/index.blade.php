@@ -5450,6 +5450,76 @@ function startFilesTour() {
                 position: 'center',
             },
             {
+                title: 'Backups: mis solicitudes',
+                content: 'El botón <strong style="color:#0d9488">Backups</strong> abre el historial de ' +
+                         '<strong>solicitudes de backup</strong>. Ahí ves cada material de producción que pediste, ' +
+                         'su estado (<span style="color:#16a34a">listo</span>, no disponible, revocado) y el ' +
+                         '<strong>enlace público temporal</strong> para descargarlo. ' +
+                         'El número sobre el botón indica cuántas solicitudes están vivas ahora mismo.',
+                icon: 'fa-box-archive',
+                color: '#0d9488',
+                selector: 'button[title="Mis solicitudes de backup"]',
+                position: 'bottom',
+                onShow: function () {
+                    enterPersonalStorage();
+                },
+            },
+            {
+                title: 'Solicitar backup de un día',
+                content: 'En un canal que tiene backup declarado, abre la carpeta del día (formato ' +
+                         '<span class="font-mono">DDMMYYYY</span>, por ejemplo <span class="font-mono">05112026</span>). ' +
+                         'Sobre esa carpeta aparece la acción <strong style="color:#0d9488">Solicitar backup</strong>. ' +
+                         'Al pedirla escribes un motivo y el sistema te devuelve un <strong>enlace de solo lectura ' +
+                         'con 2 días de vigencia</strong> al material de producción de ese día. ' +
+                         'No se copia nada: el enlace apunta al árbol de producción que ya existe.',
+                icon: 'fa-cloud-arrow-down',
+                color: '#0d9488',
+                selector: function () {
+                    // La acción solo existe sobre una carpeta-día, así que el
+                    // botón puede no estar en el DOM según dónde esté el usuario.
+                    return document.querySelector('button[title="Solicitar backup"]');
+                },
+                position: 'bottom',
+                async: true,
+                onShow: function (done) {
+                    enterPersonalStorage(function () {
+                        var a = getAlpine();
+                        if (a && a.filesViewMode !== 'grid') {
+                            a.setFilesViewMode('grid');
+                        }
+                        forceActionButtonsVisible();
+                        setTimeout(function () {
+                            var btn = document.querySelector('button[title="Solicitar backup"]');
+                            if (btn) {
+                                btn.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+                            }
+                            setTimeout(function () { if (done) done(); }, 400);
+                        }, 600);
+                    });
+                },
+            },
+            {
+                title: 'Canal sin backup declarado',
+                content: 'La acción aparece <strong>apagada</strong> (gris) cuando el canal todavía no tiene una carpeta ' +
+                         'de producción vinculada. No es un error: el vínculo se declara una vez en ' +
+                         '<em>Administración → Backup</em>. Pasa el cursor sobre el botón apagado para ver el motivo ' +
+                         'exacto; si eres administrador, el mensaje te dice dónde declararlo.',
+                icon: 'fa-circle-info',
+                color: '#64748b',
+                selector: function () {
+                    var all = document.querySelectorAll('button[title^="Este canal no tiene backup"]');
+                    return all.length ? all[0] : null;
+                },
+                position: 'bottom',
+                async: true,
+                onShow: function (done) {
+                    enterPersonalStorage(function () {
+                        forceActionButtonsVisible();
+                        setTimeout(function () { if (done) done(); }, 300);
+                    });
+                },
+            },
+            {
                 title: 'Vista Grid / Lista',
                 content: 'Cambia entre vista de cuadrícula (iconos grandes) y vista de lista (tabla con detalles). ' +
                          'Tu preferencia se guarda automáticamente para la próxima visita.',
@@ -5473,7 +5543,7 @@ function startFilesTour() {
             },
             {
                 title: 'Guía Completada',
-                content: 'Ahora conoces lo esencial de Mis Archivos. ' +
+                content: 'Ahora conoces lo esencial de Mis Archivos, incluidas las <strong>solicitudes de backup</strong>. ' +
                          'Recuerda: entra a tu storage personal para subir y organizar archivos. ' +
                          'Las acciones disponibles dependen de tus permisos. ' +
                          'Puedes repetir esta guía cuando quieras con el botón morado.',

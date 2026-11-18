@@ -303,6 +303,32 @@ function startAdminDashboardTour() {
         return null;
     }
 
+    /**
+     * Target de un partial auto-gated del dashboard.
+     *
+     * Los partials modulares se renderizan condicionalmente (flag del modelo,
+     * datos disponibles). Cuando no están en el DOM el paso se muestra
+     * centrado, sin romper el tour.
+     */
+    function partial(id) {
+        return function () { return document.querySelector('[data-dashboard-partial="' + id + '"]'); };
+    }
+
+    function hasPartial(id) {
+        return !!document.querySelector('[data-dashboard-partial="' + id + '"]');
+    }
+
+    /**
+     * Paso condicional: se incluye solo si el partial está en el DOM.
+     *
+     * Los 5 partials de "Módulos Inteligentes" se auto-gatean (flag del modelo,
+     * cuota, hallazgos). Un tour que los enumere a ciegas deja pasos muertos
+     * cuando el módulo está apagado, así que se filtran antes de arrancar.
+     */
+    function conditionalStep(id, step) {
+        return hasPartial(id) ? step : null;
+    }
+
     TcloudTour.start({
         steps: [
             {
@@ -355,14 +381,14 @@ function startAdminDashboardTour() {
                 }
             },
             {
-                title: 'Total Shares',
+                title: 'Total enlaces',
                 content: 'Cantidad de <strong>enlaces públicos</strong> activos generados por los usuarios para compartir archivos.',
                 icon: 'fa-link',
                 color: '#6366f1',
-                selector: function () { return getStatsCard('Total Shares'); },
+                selector: function () { return getStatsCard('Total enlaces'); },
                 position: 'bottom',
                 onShow: function () {
-                    var c = getStatsCard('Total Shares');
+                    var c = getStatsCard('Total enlaces');
                     if (c) scrollTo(c);
                 }
             },
@@ -470,13 +496,121 @@ function startAdminDashboardTour() {
                 }
             },
             {
+                title: 'Módulos Inteligentes',
+                content: 'Esta franja agrupa el estado de los módulos que se activan por usuario o por feature flag. ' +
+                         'Cada tarjeta aparece solo si el módulo está habilitado y tiene datos: ' +
+                         '<strong>Editor de Medios</strong>, <strong>Mis Avisos</strong>, <strong>Jobs en Background</strong>, ' +
+                         '<strong>Sesiones Activas</strong> y <strong>Permisos de almacenamiento</strong>. ' +
+                         'Si una tarjeta no está, el módulo está apagado o sin hallazgos.',
+                icon: 'fa-microchip',
+                color: '#6366f1',
+                selector: function () {
+                    var h3s = document.querySelectorAll('h3.text-lg.font-semibold');
+                    for (var i = 0; i < h3s.length; i++) {
+                        if (h3s[i].textContent.indexOf('Módulos Inteligentes') !== -1) return h3s[i];
+                    }
+                    return null;
+                },
+                position: 'top',
+                onShow: function () {
+                    var h3s = document.querySelectorAll('h3.text-lg.font-semibold');
+                    for (var i = 0; i < h3s.length; i++) {
+                        if (h3s[i].textContent.indexOf('Módulos Inteligentes') !== -1) {
+                            scrollTo(h3s[i]);
+                            return;
+                        }
+                    }
+                }
+            },
+            conditionalStep('media-editor', {
+                title: 'Editor de Medios (módulo)',
+                content: 'Resumen global del editor: <strong>clips cortados este mes</strong>, cuántos usuarios lo tienen ' +
+                         'habilitado y cuántos están <strong>cerca del límite</strong> mensual. Debajo, el top de consumidores. ' +
+                         'El detalle completo vive en <em>Administración → Editor de Medios</em>.',
+                icon: 'fa-film',
+                color: '#7c3aed',
+                selector: partial('media-editor'),
+                position: 'bottom',
+                onShow: function () {
+                    var el = document.querySelector('[data-dashboard-partial="media-editor"]');
+                    if (el) scrollTo(el);
+                }
+            }),
+            conditionalStep('mis-avisos', {
+                title: 'Mis Avisos (cobertura)',
+                content: 'Cobertura del módulo de menciones: <strong>pares keyword × storage</strong> registrados, ' +
+                         'cuántos quedan <strong>pendientes</strong> de escanear, cuántos ya tienen hits y el ' +
+                         '<strong>drift negativo</strong> (pares que deberían existir y faltan). ' +
+                         'Un drift distinto de cero se corrige con <code>avisos:reconcile-watermarks</code>.',
+                icon: 'fa-bell',
+                color: '#4f46e5',
+                selector: partial('mis-avisos'),
+                position: 'bottom',
+                onShow: function () {
+                    var el = document.querySelector('[data-dashboard-partial="mis-avisos"]');
+                    if (el) scrollTo(el);
+                }
+            }),
+            conditionalStep('bg-jobs-active', {
+                title: 'Jobs en Background',
+                content: 'Trabajos largos corriendo ahora mismo en cualquier módulo (hoy: escaneos de <strong>Avisos Inteligentes</strong>). ' +
+                         'Cada fila enlaza con el módulo que lo lanzó. El mismo estado se ve en el widget flotante de la esquina ' +
+                         'inferior derecha, que se actualiza solo.',
+                icon: 'fa-cogs',
+                color: '#475569',
+                selector: partial('bg-jobs-active'),
+                position: 'bottom',
+                onShow: function () {
+                    var el = document.querySelector('[data-dashboard-partial="bg-jobs-active"]');
+                    if (el) scrollTo(el);
+                }
+            }),
+            conditionalStep('active-sessions', {
+                title: 'Sesiones Activas',
+                content: 'Total de sesiones vigentes en el sistema y los usuarios con más sesiones abiertas. ' +
+                         'Útil para detectar cuentas compartidas o sesiones zombis. El detalle y el cierre individual ' +
+                         'están en <em>Administración → Sesiones</em>.',
+                icon: 'fa-shield-alt',
+                color: '#16a34a',
+                selector: partial('active-sessions'),
+                position: 'bottom',
+                onShow: function () {
+                    var el = document.querySelector('[data-dashboard-partial="active-sessions"]');
+                    if (el) scrollTo(el);
+                }
+            }),
+            conditionalStep('storage-health', {
+                title: 'Permisos de almacenamiento',
+                content: 'Solo aparece cuando la auditoría encontró problemas: <strong>directorios no traversables</strong> ' +
+                         '(el proceso de PHP no puede entrar) o <strong>owner-mismatch</strong> (archivos de otro usuario). ' +
+                         'Cada fila trae el comando exacto para diagnosticar y reparar.',
+                icon: 'fa-folder-tree',
+                color: '#d97706',
+                selector: partial('storage-health'),
+                position: 'bottom',
+                onShow: function () {
+                    var el = document.querySelector('[data-dashboard-partial="storage-health"]');
+                    if (el) scrollTo(el);
+                }
+            }),
+            {
                 title: 'Información del Sistema',
                 content: 'Datos técnicos del entorno: <strong>Versión Laravel</strong>, <strong>PHP Version</strong>, ' +
                          '<strong>Base de Datos</strong> (PostgreSQL) y el <strong>Estado</strong> actual del sistema. ' +
                          'El punto verde "Operativo" indica que todos los servicios están funcionando.',
                 icon: 'fa-server',
                 color: '#64748b',
-                selector: 'h3:has-text("Información del Sistema")',
+                selector: function () {
+                    // El pseudo-selector de Playwright para "texto que contiene"
+                    // NO es CSS válido: con la cadena anterior querySelector
+                    // lanzaba SyntaxError dentro de _renderStep() y el tour moría
+                    // justo en este paso.
+                    var h3s = document.querySelectorAll('h3.text-lg.font-semibold');
+                    for (var i = 0; i < h3s.length; i++) {
+                        if (h3s[i].textContent.indexOf('Información del Sistema') !== -1) return h3s[i];
+                    }
+                    return null;
+                },
                 position: 'top',
                 onShow: function () {
                     var h3s = document.querySelectorAll('h3.text-lg.font-semibold');
@@ -498,7 +632,7 @@ function startAdminDashboardTour() {
                 selector: null,
                 position: 'center'
             }
-        ]
+        ].filter(Boolean)
     });
 }
 </script>

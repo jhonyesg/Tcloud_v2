@@ -7,7 +7,7 @@ use Illuminate\Support\Facades\Cache;
 
 /**
  * dashboard-tiered-cache: invalida manualmente el cache por tiers del
- * dashboard (frío + tibio) sin deploy.
+ * dashboard (frío + tibio + agregado de `files`) sin deploy.
  *
  * Uso:
  *   php artisan dashboard:clear-cache
@@ -32,6 +32,11 @@ class ClearDashboardCacheCommand extends Command
         foreach (['dashboard:cold:stats', 'dashboard:cold:media-editor'] as $key) {
             $this->forget($key, $forgot);
         }
+
+        // Agregado de `files` (dashboard-perf-backup-guide, T5). Se borra para
+        // que una mutación masiva se vea en el próximo `dashboard:refresh-stats`
+        // (o en la próxima carga si la key todavía no existe).
+        $this->forget(\App\Services\Dashboard\DashboardStatsCache::KEY, $forgot);
 
         // El tier tibio incluye el epoch en la key; limpiar los últimos epochs
         // razonables cubre corridas recientes sin depender de SCAN.

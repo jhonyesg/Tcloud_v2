@@ -2,7 +2,7 @@
 <html>
 <head>
     <title>Establecer Contraseña - TCloud</title>
-    <script src="/js/tailwind.js"></script>
+    <link rel="stylesheet" href="/css/app.css?v={{ filemtime(public_path('css/app.css')) }}">
 </head>
 <body class="bg-gray-100 flex items-center justify-center min-h-screen">
     <div class="bg-white rounded shadow p-8 w-full max-w-md">
