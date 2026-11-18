@@ -168,9 +168,11 @@ class PuntualReportService
         $lineas[] = 'Filtro:    ' . $this->etiquetaEstado((string) $reporte['estado']);
         $lineas[] = '';
         $lineas[] = sprintf(
-            'TOTALES:   %d solicitudes · %d clientes · %d minutos · %d archivos · %s',
+            'TOTALES:   %d %s · %d %s · %d minutos · %d archivos · %s',
             $reporte['totales']['solicitudes'],
+            $reporte['totales']['solicitudes'] === 1 ? 'solicitud' : 'solicitudes',
             $reporte['totales']['clientes'],
+            $reporte['totales']['clientes'] === 1 ? 'cliente' : 'clientes',
             $reporte['totales']['minutos'],
             $reporte['totales']['archivos'],
             $this->bytes((int) $reporte['totales']['bytes'])
@@ -222,7 +224,7 @@ class PuntualReportService
                 'HORARIO',
                 'MIN',
                 'ARCHIV',
-                'TAMANO',
+                'TAMAÑO',
                 'ESTADO'
             );
             $lineas[] = str_repeat('-', $ancho);
