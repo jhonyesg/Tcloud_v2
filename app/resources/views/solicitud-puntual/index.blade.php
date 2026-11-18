@@ -737,6 +737,10 @@
 @endsection
 
 @push('scripts')
+{{-- Motor de la guia interactiva: se carga SOLO en las pantallas que la
+     usan (Mis Archivos, el dashboard admin y este modulo). Sin esta linea
+     el boton "Guia" quedaba mudo, porque `TcloudTour` no existia. --}}
+<script src="/js/interactive-tour.js?v=20"></script>
 <script>
 function puntualManager() {
     return {
@@ -1288,66 +1292,152 @@ function puntualManager() {
 }
 
 /**
- * Guía interactiva del módulo.
+ * Guía interactiva del módulo: paso a paso completo.
  *
- * Usa el motor compartido (`public/js/interactive-tour.js`): `TcloudTour.start({ steps })`.
- * Los selectores son CSS válidos: un selector inválido no rompe el tour, el
- * paso se muestra centrado.
+ * Usa el motor compartido (`public/js/interactive-tour.js`). Los selectores
+ * son CSS válidos; si un paso apunta a algo que no esta en pantalla (por
+ * ejemplo la recomendacion, que solo aparece cuando la franja supera el
+ * umbral), el motor lo muestra centrado sin romper el tour.
+ *
+ * Los pasos que necesitan la pestana de Medios se aseguran de estar en ella
+ * antes de resaltar: `onBeforeStep` no existe en el motor, asi que el paso 1
+ * arranca desde la pestana correcta y el resto son elementos de la misma.
  */
 function startPuntualTour() {
     if (typeof TcloudTour === 'undefined') {
+        // Sin el motor cargado el boton no debe quedar mudo: se avisa.
+        alert('La guia no esta disponible en este momento. Recarga la pagina e intenta de nuevo.');
         return;
     }
 
     TcloudTour.start({
         steps: [
             {
-                title: 'Solicitud puntual de TV y Radio',
-                content: 'Aquí pides material de un medio que <strong>no</strong> tienes asignado. ' +
-                         'El sistema comprueba que el material cubra el horario exacto que pides y te entrega ' +
-                         'enlaces de solo lectura que vencen a los 3 días.',
+                title: 'Bienvenido a Solicitud Puntual',
+                content: 'Aqui <strong>pides material de TV o Radio que no tienes asignado</strong>. ' +
+                         'En lugar de pedir un dia entero, puedes pedir una <strong>franja horaria exacta</strong> ' +
+                         '(por ejemplo, Caracol del 14 de noviembre de 12:00 a 13:00). ' +
+                         'Al final recibes enlaces publicos de solo lectura que vencen en 3 dias.<br><br>' +
+                         'Te muestro el paso a paso en 10 pasos. Puedes salir cuando quieras con <kbd>Esc</kbd>.',
                 icon: 'fa-satellite-dish',
                 color: '#6366f1',
                 selector: null,
                 position: 'center',
             },
             {
-                title: 'Los medios que puedes pedir',
-                content: 'Esta lista es el <strong>complemento</strong> de lo que tienes asignado: lo que ya tienes ' +
-                         'no aparece, porque para eso está Mis Archivos. Busca por nombre o filtra entre TV y Radio.',
-                icon: 'fa-tv',
+                title: 'Paso 1: elige la pestana Medios',
+                content: 'El modulo tiene tres pestanas. <strong>Medios</strong> es donde pides. ' +
+                         'En <strong>Mis solicitudes</strong> ves lo que ya pediste. ' +
+                         'Si eres administrador, en <strong>Control por cliente</strong> llevas el control contable.',
+                icon: 'fa-table-columns',
+                color: '#6366f1',
+                selector: '[data-puntual-tour="tabs"]',
+                position: 'bottom',
+            },
+            {
+                title: 'Paso 2: solo aparece lo que NO tienes',
+                content: 'Esta lista es el <strong>complemento</strong> de tus storages asignados. ' +
+                         'Si un medio ya lo tienes, no aparece aqui: para ese material entra a <strong>Mis Archivos</strong>. ' +
+                         'Asi no pides dos veces lo mismo.',
+                icon: 'fa-filter',
                 color: '#3b82f6',
                 selector: '[data-puntual-tour="catalogo"]',
                 position: 'bottom',
             },
             {
-                title: 'Elige fecha y horario',
-                content: 'Selecciona el día y el rango exacto. Al consultar la cobertura ves cuántos archivos hay, ' +
-                         'cuánto pesan y si hay huecos: la comprobación se hace contra el material real, no contra un catálogo.',
+                title: 'Paso 3: busca y filtra',
+                content: 'Escribe el nombre del medio (o la region) en el buscador, o filtra por <strong>TV</strong> ' +
+                         'y <strong>Radio</strong>. La busqueda tambien esta <strong>al pie de la tabla</strong>: ' +
+                         'las dos barras hacen lo mismo, usa la que tengas mas a mano.',
+                icon: 'fa-magnifying-glass',
+                color: '#3b82f6',
+                selector: '[data-puntual-tour="catalogo"] input[type="search"]',
+                position: 'bottom',
+            },
+            {
+                title: 'Paso 4: ordena por cualquier columna',
+                content: 'Haz clic en el encabezado de <strong>Medio</strong>, <strong>Region</strong>, ' +
+                         '<strong>Tipo</strong> o <strong>Storage</strong> para ordenar. El primer clic ordena de A a Z ' +
+                         'y el segundo invierte. El triangulo del encabezado te dice en que direccion estas.',
+                icon: 'fa-sort',
+                color: '#3b82f6',
+                selector: '[data-puntual-tour="catalogo"] thead',
+                position: 'bottom',
+            },
+            {
+                title: 'Paso 5: toca Solicitar',
+                content: 'Cada fila tiene su boton <strong>Solicitar</strong>. El <strong>numero de la izquierda</strong> ' +
+                         '(001, 002...) te sirve para referirte a un medio: es continuo entre paginas, ' +
+                         'asi que "el medio 137" siempre es el mismo.',
+                icon: 'fa-hand-pointer',
+                color: '#6366f1',
+                selector: '[data-puntual-tour="catalogo"] tbody',
+                position: 'top',
+            },
+            {
+                title: 'Paso 6: fecha y horario exacto',
+                content: 'Elige el dia y el rango. Fijate en el aviso bajo la fecha: te dice si ese dia tiene ' +
+                         'grabaciones o no, y te ofrece <strong>atajos a los dias mas recientes</strong>. ' +
+                         'Casi ninguna emisora graba el dia de hoy todavia, asi que el sistema abre directo ' +
+                         'en el ultimo dia que si tiene material.',
                 icon: 'fa-clock',
                 color: '#8b5cf6',
                 selector: '[data-puntual-tour="modal"]',
                 position: 'top',
             },
             {
-                title: 'El día completo sale más barato',
-                content: 'Si pides más de dos horas, el sistema te recomienda el día completo: una franja larga genera ' +
-                         'un enlace por cada archivo y cada uno vence por separado, mientras que el día es un solo enlace ' +
-                         'sobre la carpeta del día. La recomendación no te obliga: tú decides.',
+                title: 'Paso 7: consulta la cobertura',
+                content: 'Antes de pedir, el sistema comprueba el material <strong>real</strong> (no el catalogo) ' +
+                         'y te muestra cuantos archivos hay, cuanto pesan y si falta algun tramo. ' +
+                         'Si dice <strong>cobertura completa</strong>, tienes todo el rango. ' +
+                         'Si dice <strong>parcial</strong>, te dice exactamente que hueco hay.',
+                icon: 'fa-chart-simple',
+                color: '#8b5cf6',
+                selector: '[data-puntual-tour="modal"]',
+                position: 'top',
+            },
+            {
+                title: 'Paso 8: el dia completo sale mas barato',
+                content: 'Si pides mas de <strong>2 horas</strong>, cada tramo es un enlace distinto que vence por ' +
+                         'separado. El dia completo es <strong>un solo enlace</strong> sobre la carpeta del dia. ' +
+                         'El sistema te lo recomienda con los numeros reales, pero <strong>tu decides</strong>: ' +
+                         'la recomendacion no te obliga.',
                 icon: 'fa-lightbulb',
                 color: '#f59e0b',
                 selector: '[data-puntual-tour="recomendacion"]',
                 position: 'top',
             },
             {
-                title: 'Tus solicitudes',
-                content: 'Cada solicitud queda registrada con el horario exacto, los archivos entregados y su tamaño: ' +
-                         'es el control de lo que has pedido. Puedes ordenar por cualquier columna, buscar y revocar ' +
-                         'cuando ya no necesites los enlaces.',
+                title: 'Paso 9: el motivo es opcional',
+                content: 'Puedes escribir para que necesitas el material. <strong>No es obligatorio</strong>: ' +
+                         'si lo dejas vacio, la solicitud se registra igual. Lo que si queda registrado siempre ' +
+                         'es el medio, la fecha, el horario, los archivos y su tamano.',
+                icon: 'fa-comment-dots',
+                color: '#10b981',
+                selector: '[data-puntual-tour="modal"] textarea',
+                position: 'top',
+            },
+            {
+                title: 'Paso 10: sigue tu solicitud en Mis solicitudes',
+                content: 'Cada pedido queda con su horario exacto, el detalle de archivos entregados y su tamano. ' +
+                         'Aqui ves los <strong>enlaces</strong> de cada archivo y los abres cuando los necesites. ' +
+                         'Puedes ordenar por cualquier columna y buscar.',
                 icon: 'fa-list-check',
                 color: '#10b981',
                 selector: '[data-puntual-tour="historial"]',
                 position: 'top',
+            },
+            {
+                title: 'Listo: tres cosas que conviene recordar',
+                content: '<ul class="text-left list-disc pl-4 space-y-1">' +
+                         '<li>Los enlaces <strong>vencen a los 3 dias</strong>. Si necesitas el material por mas tiempo, descargalo.</li>' +
+                         '<li>La <strong>revocacion la hace el administrador</strong>, no el cliente: es parte del control contable.</li>' +
+                         '<li>Si un dia aparece <strong>sin material</strong>, revisa el aviso de la fecha: casi siempre es que ese dia no se grabo.</li>' +
+                         '</ul><br>Puedes volver a abrir esta guia cuando quieras con el boton <strong>Guia</b>.',
+                icon: 'fa-circle-check',
+                color: '#10b981',
+                selector: null,
+                position: 'center',
             },
         ],
     });
