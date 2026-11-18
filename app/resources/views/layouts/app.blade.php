@@ -216,6 +216,11 @@
                         <span x-show="sidebarOpen" x-transition class="font-medium text-sm">Compartidos</span>
                     </a>
 
+                    <a href="/solicitud-puntual" data-nav-path="/solicitud-puntual"                       class="nav-link flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg transition-colors text-brand-200 hover:bg-brand-700 hover:text-white">
+                        <i class="nav-icon fas fa-satellite-dish w-5 text-center text-brand-300"></i>
+                        <span x-show="sidebarOpen" x-transition class="font-medium text-sm">Solicitud Puntual</span>
+                    </a>
+
                     @if(session('user_role') === 'admin')
                     <div class="px-3 mt-6 mb-2" x-show="sidebarOpen">
                         <span class="text-xs font-semibold text-brand-400 uppercase tracking-wider">Administración</span>
@@ -235,6 +240,11 @@
                     <a href="/admin/backups" data-nav-path="/admin/backups"                       class="nav-link flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg transition-colors text-brand-200 hover:bg-brand-800 hover:text-white">
                         <i class="nav-icon fas fa-shield-halved w-5 text-center text-brand-300"></i>
                         <span x-show="sidebarOpen" x-transition class="font-medium text-sm">Backup</span>
+                    </a>
+
+                    <a href="/admin/medios" data-nav-path="/admin/medios"                       class="nav-link flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg transition-colors text-brand-200 hover:bg-brand-800 hover:text-white">
+                        <i class="nav-icon fas fa-tower-broadcast w-5 text-center text-brand-300"></i>
+                        <span x-show="sidebarOpen" x-transition class="font-medium text-sm">Medios</span>
                     </a>
 
                     <a href="/admin/media-editor" data-nav-path="/admin/media-editor"                       class="nav-link flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg transition-colors text-brand-200 hover:bg-brand-800 hover:text-white">

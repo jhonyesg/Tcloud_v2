@@ -56,12 +56,12 @@
 
 ## 7. Interfaz del cliente
 
-- [ ] 7.1 Vista `resources/views/solicitud-puntual/index.blade.php` — catálogo de medios no asignados con buscador, filtro TV/Radio y contador.
-- [ ] 7.2 Modal de solicitud: selector de fecha, campos de hora de inicio y fin, ficha de cobertura en vivo (slots, archivos, bytes) y bloque de comparación franja vs día con la recomendación.
-- [ ] 7.3 Historial: tabla paginada con buscador, encabezados que alternan asc/desc, columnas fecha / medio / rango / modo / archivos / bytes / enlaces / estado, acción de revocar y abrir enlace en pestaña nueva.
-- [ ] 7.4 Componente Alpine `puntualManager()` con estado `medios`, `search`, `kindFilter`, `selected`, `form`, `estimate`, `history`, `page`, `sort`, `dir` y eventos `openRequest`, `submitRequest`, `revoke`, `loadHistory`. Toasts para éxito y error (sin `alert()` nativo).
-- [ ] 7.5 Entrada de sidebar "Solicitud Puntual" en `resources/views/layouts/app.blade.php`, en el grupo cliente inmediatamente después de "Compartidos", con `data-nav-path="/solicitud-puntual"`.
-- [ ] 7.6 Regenerar el CSS compilado (`npm run build`) y pasar `php tests/tailwind_coverage_check.php`.
+- [x] 7.1 Vista `resources/views/solicitud-puntual/index.blade.php` — catálogo de medios no asignados con buscador, filtro TV/Radio y contador.
+- [x] 7.2 Modal de solicitud: selector de fecha, campos de hora de inicio y fin, ficha de cobertura en vivo (slots, archivos, bytes) y bloque de comparación franja vs día con la recomendación.
+- [x] 7.3 Historial: tabla paginada con buscador, encabezados que alternan asc/desc, columnas fecha / medio / rango / modo / archivos / bytes / enlaces / estado, acción de revocar y abrir enlace en pestaña nueva.
+- [x] 7.4 Componente Alpine `puntualManager()` con estado `medios`, `search`, `kindFilter`, `selected`, `form`, `estimate`, `history`, `page`, `sort`, `dir` y eventos `openRequest`, `submitRequest`, `revoke`, `loadHistory`. Toasts para éxito y error (sin `alert()` nativo).
+- [x] 7.5 Entrada de sidebar "Solicitud Puntual" en `resources/views/layouts/app.blade.php`, en el grupo cliente inmediatamente después de "Compartidos", con `data-nav-path="/solicitud-puntual"`.
+- [x] 7.6 Regenerar el CSS compilado (`npm run build`) y pasar `php tests/tailwind_coverage_check.php`.
 
 ## 8. Interfaz de administración
 

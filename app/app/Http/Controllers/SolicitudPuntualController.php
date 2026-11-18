@@ -11,6 +11,7 @@ use App\Services\MisArchivos\PuntualRequestService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Session;
+use Illuminate\View\View;
 use Illuminate\Validation\Rule;
 
 /**
@@ -34,6 +35,14 @@ class SolicitudPuntualController extends Controller
         private readonly MedioCatalogService $catalog,
         private readonly PuntualRequestService $solicitudes,
     ) {
+    }
+
+    /**
+     * Página del módulo.
+     */
+    public function index(): View
+    {
+        return view('solicitud-puntual.index');
     }
 
     /**

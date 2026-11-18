@@ -148,6 +148,7 @@ Route::middleware('auth')->group(function () {
     // Solicitud puntual de TV y Radio (cara del cliente).
     // El cliente pide una franja horaria o el dia completo de un medio que NO
     // tiene asignado y recibe enlaces publicos con vigencia.
+    Route::get('/solicitud-puntual', [App\Http\Controllers\SolicitudPuntualController::class, 'index'])->name('solicitud-puntual.index');
     Route::get('/solicitud-puntual/catalogo', [App\Http\Controllers\SolicitudPuntualController::class, 'catalogo']);
     Route::post('/solicitud-puntual/estimate', [App\Http\Controllers\SolicitudPuntualController::class, 'estimate']);
     Route::post('/solicitud-puntual', [App\Http\Controllers\SolicitudPuntualController::class, 'store']);
