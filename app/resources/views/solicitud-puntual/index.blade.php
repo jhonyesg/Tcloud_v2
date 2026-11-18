@@ -351,8 +351,24 @@
                 <div class="grid gap-3 sm:grid-cols-3">
                     <div>
                         <label class="block text-xs font-semibold text-slate-500 mb-1">Fecha</label>
-                        <input type="date" x-model="form.fecha"
+                        <input type="date" x-model="form.fecha" @change="onFechaCambiada()"
                                class="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+                        <p class="text-[11px] mt-1"
+                           :class="diasMedio.includes(fechaIso(form.fecha)) ? 'text-green-600' : 'text-amber-600'"
+                           x-text="diasMedio.length === 0
+                                ? 'Sin días indexados para este medio'
+                                : (diasMedio.includes(fechaIso(form.fecha))
+                                    ? 'Hay material ese día'
+                                    : 'Ese día no tiene material. Último: ' + fechaLegible(diasMedio[0]))"></p>
+                        <div class="mt-1.5 flex items-center gap-1 flex-wrap" x-show="diasMedio.length > 0" data-puntual-tour="dias">
+                            <span class="text-[11px] text-slate-400">Ir a:</span>
+                            <template x-for="d in diasMedio.slice(0, 4)" :key="d">
+                                <button type="button" @click="usarDia(d)"
+                                        class="px-1.5 py-0.5 rounded text-[11px] font-medium"
+                                        :class="fechaIso(form.fecha) === d ? 'bg-brand-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'"
+                                        x-text="fechaLegible(d)"></button>
+                            </template>
+                        </div>
                     </div>
                     <div>
                         <label class="block text-xs font-semibold text-slate-500 mb-1">Desde</label>
@@ -701,6 +717,7 @@ function puntualManager() {
         form: { fecha: '', desde: '12:00', hasta: '13:00', motivo: '' },
         estimateData: null,
         estimating: false,
+        diasMedio: [],
         submitting: false,
 
         detailOpen: false,
@@ -897,8 +914,76 @@ function puntualManager() {
         openRequest(medio) {
             this.selected = medio;
             this.estimateData = null;
+            this.diasMedio = [];
             this.form = { fecha: this.defaultDate(), desde: '12:00', hasta: '13:00', motivo: '' };
             this.modalOpen = true;
+
+            // Los días con material los conoce el backend. Se piden para
+            // arrancar en el último día que SÍ tiene grabaciones: la mayoría
+            // de las emisoras todavía no grabó el día de hoy, así que abrir en
+            // "hoy" daba "sin material" y parecía un error.
+            this.loadDias(medio);
+        },
+
+        async loadDias(medio) {
+            try {
+                const params = new URLSearchParams({
+                    medio_id: medio.id,
+                    fecha: this.toDisplayDate(this.form.fecha),
+                    desde: this.form.desde,
+                    hasta: this.form.hasta,
+                });
+
+                const res = await fetch('/solicitud-puntual/dias?' + params, {
+                    headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+                });
+
+                if (!res.ok) return;
+
+                const data = await res.json();
+                this.diasMedio = data.dias ?? [];
+
+                // Si el día por defecto no tiene material, saltar al último
+                // que sí, para que el operador no vea "no disponible" sin
+                // motivo.
+                if (this.diasMedio.length > 0 && !this.diasMedio.includes(this.fechaIso(this.form.fecha))) {
+                    this.form.fecha = this.diaAIso(this.diasMedio[0]);
+                    this.estimate();
+                }
+            } catch (e) {
+                // Silencioso: la ausencia de la lista no impide escribir la fecha.
+            }
+        },
+
+        /**
+         * `DDMMYYYY` (formato del backend) -> `YYYY-MM-DD` (input date).
+         */
+        diaAIso(dia) {
+            if (!dia || dia.length !== 8) return '';
+            return `${dia.slice(4, 8)}-${dia.slice(2, 4)}-${dia.slice(0, 2)}`;
+        },
+
+        /**
+         * `YYYY-MM-DD` (input date) -> `DDMMYYYY` (backend).
+         */
+        fechaIso(fecha) {
+            if (!fecha || fecha.length !== 10) return '';
+            const [y, m, d] = fecha.split('-');
+            return `${d}${m}${y}`;
+        },
+
+        fechaLegible(dia) {
+            if (!dia || dia.length !== 8) return '';
+            return `${dia.slice(0, 2)}/${dia.slice(2, 4)}/${dia.slice(4, 8)}`;
+        },
+
+        onFechaCambiada() {
+            this.estimateData = null;
+        },
+
+        usarDia(dia) {
+            this.form.fecha = this.diaAIso(dia);
+            this.estimate();
         },
 
         closeRequest() {
