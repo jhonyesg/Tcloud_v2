@@ -32,6 +32,9 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  */
 class SolicitudPuntualItem extends Model
 {
+    /** @see SolicitudPuntual::$table */
+    protected $table = 'solicitud_puntual_item';
+
     protected $fillable = [
         'solicitud_id',
         'file_id',

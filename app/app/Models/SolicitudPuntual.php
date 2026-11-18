@@ -75,6 +75,13 @@ class SolicitudPuntual extends Model
         self::STATUS_PARTIAL,
     ];
 
+    /**
+     * Nombre explícito: el pluralizador de Laravel convertiría el modelo en
+     * `solicitud_puntuals`. La tabla sigue la convención de
+     * `watermark_audit_log`: singular, en español.
+     */
+    protected $table = 'solicitud_puntual';
+
     protected $fillable = [
         'user_id',
         'medio_id',

@@ -30,13 +30,13 @@
 
 ## 4. Solicitud, enlaces y vigencia
 
-- [ ] 4.1 `config/puntual.php` con `link_validity_days` (3), `umbral_dia_minutos` (120), `min_motivo_length` (10), `max_franja_minutos`.
-- [ ] 4.2 `App\Services\MisArchivos\PuntualRequestService::estimate(User $user, Medio $medio, string $fecha, string $desde, string $hasta): array` — ficha de cobertura con números reales (archivos, bytes, slots) y comparación franja vs día con el número de enlaces de cada alternativa y la marca de recomendación.
-- [ ] 4.3 `PuntualRequestService::create(User $user, Medio $medio, string $fecha, string $desde, string $hasta, string $motivo): SolicitudPuntual` — validar motivo, rango y cobertura; en modo `franja` crear un `Share` de solo lectura por archivo exacto; en modo `dia` crear un `Share` sobre la carpeta del día; persistir `solicitud_puntual` + `solicitud_puntual_item` con snapshot de `name`/`path`/`size`. Todo en una transacción.
-- [ ] 4.4 Idempotencia: devolver la solicitud viva existente para el mismo `(user, medio, fecha, desde, hasta)`; capturar `23505` (con `use Illuminate\Database\QueryException` correcto) para devolver la solicitud ganadora en carrera.
-- [ ] 4.5 `PuntualRequestService::revoke(User $user, SolicitudPuntual $s): SolicitudPuntual` — idempotente, borra los `Share` vinculados, invalida la cache de metadatos públicos (`share:meta:{token}`) y marca `revoked`.
-- [ ] 4.6 `PuntualRequestService::listFor(User $user, array $filtros): array` — historial paginado (más reciente primero), con búsqueda por medio/fecha/estado y ordenamiento por columna (fecha, medio, minutos, bytes).
-- [ ] 4.7 `PuntualRequestService::payload(SolicitudPuntual $s): array` — estado con vocabulario cerrado `ready|expired|unavailable|revoked`, detalle de items con nombre, ruta, bytes, instante de captura y enlace público cuando la solicitud está viva.
+- [x] 4.1 `config/puntual.php` con `link_validity_days` (3), `umbral_dia_minutos` (120), `min_motivo_length` (10), `max_franja_minutos`.
+- [x] 4.2 `App\Services\MisArchivos\PuntualRequestService::estimate(User $user, Medio $medio, string $fecha, string $desde, string $hasta): array` — ficha de cobertura con números reales (archivos, bytes, slots) y comparación franja vs día con el número de enlaces de cada alternativa y la marca de recomendación.
+- [x] 4.3 `PuntualRequestService::create(User $user, Medio $medio, string $fecha, string $desde, string $hasta, string $motivo): SolicitudPuntual` — validar motivo, rango y cobertura; en modo `franja` crear un `Share` de solo lectura por archivo exacto; en modo `dia` crear un `Share` sobre la carpeta del día; persistir `solicitud_puntual` + `solicitud_puntual_item` con snapshot de `name`/`path`/`size`. Todo en una transacción.
+- [x] 4.4 Idempotencia: devolver la solicitud viva existente para el mismo `(user, medio, fecha, desde, hasta)`; capturar `23505` (con `use Illuminate\Database\QueryException` correcto) para devolver la solicitud ganadora en carrera.
+- [x] 4.5 `PuntualRequestService::revoke(User $user, SolicitudPuntual $s): SolicitudPuntual` — idempotente, borra los `Share` vinculados, invalida la cache de metadatos públicos (`share:meta:{token}`) y marca `revoked`.
+- [x] 4.6 `PuntualRequestService::listFor(User $user, array $filtros): array` — historial paginado (más reciente primero), con búsqueda por medio/fecha/estado y ordenamiento por columna (fecha, medio, minutos, bytes).
+- [x] 4.7 `PuntualRequestService::payload(SolicitudPuntual $s): array` — estado con vocabulario cerrado `ready|expired|unavailable|revoked`, detalle de items con nombre, ruta, bytes, instante de captura y enlace público cuando la solicitud está viva.
 
 ## 5. Guard de compartidos (afecta a los dos flujos)
 
