@@ -14,10 +14,10 @@
 - [x] 2.3 `MedioCatalogService::proposeName(string $subpath): array` — propone `name` y `region` a partir de la ruta interna (`<canal> · <región>` cuando hay carpeta regional; el nombre del canal cuando no). Debe desambiguar homónimos entre regiones.
 - [x] 2.4 `MedioCatalogService::declare(StorageProvider $storage, string $subpath, string $name, string $region, string $kind): Medio` — declara el medio sin tocar `storage_providers` ni `files`.
 - [x] 2.4b `MedioCatalogService::resolveTarget()` — si el sub-canal YA tiene un storage propio (56 de 122: `Antioquia/BLU` → storage 72), el medio se declara sobre ese storage con subpath vacío, no sobre el contenedor: ese storage es el dueño de la ruta física y de sus filas en `files`, y declararlo sobre el contenedor crearía una tercera identidad del mismo árbol.
-- [ ] 2.5 Comando `medios:bootstrap` — siembra el catálogo con los storages hoja que tienen media (heurística leaf + `mime_type` video/audio), en modo informe por defecto; `--apply --yes` escribe. No debe crear storages.
-- [ ] 2.6 Comando `medios:remapear --storage=N [--todos] [--apply --yes]` — reutiliza `detectSubchannels()` y `proposeName()` (mismas validaciones que la UI), informe por defecto, y al aplicar declara solo los sub-canales no declarados.
-- [ ] 2.7 `App\Http\Controllers\Admin\MedioController` — `index` (vista), `detect` (JSON de sub-canales detectados), `store` (declarar), `update` (editar nombre/región/activo), `destroy` (dar de baja). Todas bajo `['auth','admin']`.
-- [ ] 2.8 Rutas admin `/admin/medios` (`GET`), `/admin/medios/detect` (`GET`), `/admin/medios` (`POST`), `/admin/medios/{medio}` (`PUT`), `/admin/medios/{medio}` (`DELETE` con `whereNumber`).
+- [x] 2.5 Comando `medios:bootstrap` — siembra el catálogo con los storages hoja que tienen media (heurística leaf + `mime_type` video/audio), en modo informe por defecto; `--apply --yes` escribe. No debe crear storages.
+- [x] 2.6 Comando `medios:remapear --storage=N [--todos] [--apply --yes]` — reutiliza `detectSubchannels()` y `proposeName()` (mismas validaciones que la UI), informe por defecto, y al aplicar declara solo los sub-canales no declarados.
+- [x] 2.7 `App\Http\Controllers\Admin\MedioController` — `index` (vista + JSON), `detect` (JSON de sub-canales detectados), `remapear` (alta masiva), `store` (declarar), `update` (editar nombre/región/activo), `destroy` (dar de baja). Todas bajo `['auth','admin']`.
+- [x] 2.8 Rutas admin `/admin/medios` (`GET`, vista y JSON según `Accept`), `/admin/medios/detect` (`GET`, previsualización), `/admin/medios` (`POST`, alta de un medio), `/admin/medios/remapear` (`POST`, alta masiva del contenedor), `/admin/medios/{medio}` (`PUT`), `/admin/medios/{medio}` (`DELETE` con `whereNumber`).
 
 ## 3. Resolución de material y cobertura
 

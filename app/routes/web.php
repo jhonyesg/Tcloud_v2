@@ -47,6 +47,16 @@ Route::middleware(['auth', 'admin'])->prefix('admin')->group(function () {
     Route::get('/backups/repair-scan', [App\Http\Controllers\Admin\BackupMappingController::class, 'repairScan'])->name('admin.backups.repair-scan');
     Route::post('/backups/{storage}/repair', [App\Http\Controllers\Admin\BackupMappingController::class, 'repairPath'])->whereNumber('storage')->name('admin.backups.repair');
     Route::delete('/backups/{storage}', [App\Http\Controllers\Admin\BackupMappingController::class, 'destroy'])->whereNumber('storage')->name('admin.backups.destroy');
+
+    // Catalogo de medios de TV y Radio (solicitud puntual).
+    // Configuracion de ADMINISTRACION: el cliente ve el complemento de lo
+    // que no tiene asignado, nunca esta pantalla.
+    Route::get('/medios', [App\Http\Controllers\Admin\MedioController::class, 'index'])->name('admin.medios.index');
+    Route::get('/medios/detect', [App\Http\Controllers\Admin\MedioController::class, 'detect'])->name('admin.medios.detect');
+    Route::post('/medios', [App\Http\Controllers\Admin\MedioController::class, 'store'])->name('admin.medios.store');
+    Route::post('/medios/remapear', [App\Http\Controllers\Admin\MedioController::class, 'remapear'])->name('admin.medios.remapear');
+    Route::put('/medios/{medio}', [App\Http\Controllers\Admin\MedioController::class, 'update'])->whereNumber('medio')->name('admin.medios.update');
+    Route::delete('/medios/{medio}', [App\Http\Controllers\Admin\MedioController::class, 'destroy'])->whereNumber('medio')->name('admin.medios.destroy');
     Route::post('/users/{user}/toggle-media-editor', [App\Http\Controllers\UserController::class, 'toggleMediaEditor']);
     Route::get('/media-editor', [App\Http\Controllers\MediaEditorAdminController::class, 'index']);
     Route::get('/media-editor/users', [App\Http\Controllers\MediaEditorAdminController::class, 'users']);
