@@ -457,11 +457,14 @@
                 </div>
 
                 <div>
-                    <label class="block text-xs font-semibold text-slate-500 mb-1">Motivo de la solicitud</label>
+                    <label class="block text-xs font-semibold text-slate-500 mb-1">
+                        Motivo de la solicitud
+                        <span class="font-normal text-slate-400 normal-case">(opcional)</span>
+                    </label>
                     <textarea x-model="form.motivo" rows="2" maxlength="1000"
-                              placeholder="Para qué necesitas el material (mínimo 10 caracteres)"
+                              placeholder="Para qué necesitas el material (opcional, queda en el registro)"
                               class="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"></textarea>
-                    <p class="text-xs text-slate-400 mt-1">Queda registrado en el control de solicitudes.</p>
+                    <p class="text-xs text-slate-400 mt-1">Si lo escribes, queda registrado en el control de solicitudes.</p>
                 </div>
             </div>
 
@@ -621,7 +624,10 @@
                                                         </template>
                                                         <span x-show="!d.links || d.links.length === 0" class="text-xs text-slate-400">—</span>
                                                     </div>
-                                                    <p class="text-[10px] text-slate-400 mt-0.5 truncate" :title="d.motivo" x-text="d.motivo"></p>
+                                                    <p class="text-[10px] text-slate-400 mt-0.5 truncate"
+                                                       x-show="d.motivo"
+                                                       :title="d.motivo"
+                                                       x-text="d.motivo"></p>
                                                 </td>
                                                 <td class="px-4 py-1.5 text-right whitespace-nowrap">
                                                     <button @click="revocarDesdeControl(d, c)"
@@ -688,7 +694,9 @@
 
                 <div class="rounded-xl border border-slate-200 px-4 py-3">
                     <p class="text-xs font-semibold text-slate-500 mb-1">Motivo</p>
-                    <p class="text-sm text-slate-700" x-text="detail?.motivo ?? ''"></p>
+                    <p class="text-sm text-slate-700"
+                       :class="detail?.motivo ? '' : 'italic text-slate-400'"
+                       x-text="detail?.motivo || 'Sin motivo'"></p>
                     <p class="text-xs text-slate-400 mt-2" x-show="detail?.link_expires_at"
                        x-text="detail?.link_expires_at ? 'Los enlaces vencen el ' + new Date(detail.link_expires_at).toLocaleString('es-CO') : ''"></p>
                 </div>

@@ -185,7 +185,7 @@ class SolicitudPuntualController extends Controller
             'fecha' => ['required', 'string', 'max:10'],
             'desde' => ['required', 'string', 'max:8'],
             'hasta' => ['required', 'string', 'max:8'],
-            'motivo' => ['required', 'string', 'max:1000'],
+            'motivo' => ['nullable', 'string', 'max:1000'],
             'modo' => ['nullable', Rule::in(SolicitudPuntual::MODOS)],
         ]);
 
@@ -202,7 +202,7 @@ class SolicitudPuntualController extends Controller
                 (string) $validated['fecha'],
                 (string) $validated['desde'],
                 (string) $validated['hasta'],
-                (string) $validated['motivo'],
+                (string) ($validated['motivo'] ?? ''),
                 (string) ($validated['modo'] ?? SolicitudPuntual::MODO_FRANJA),
             );
         } catch (PuntualRequestException $e) {

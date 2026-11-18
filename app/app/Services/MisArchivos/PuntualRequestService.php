@@ -143,16 +143,18 @@ class PuntualRequestService
         string $fecha,
         string $desde,
         string $hasta,
-        string $motivo,
+        string $motivo = '',
         string $modo = SolicitudPuntual::MODO_FRANJA,
     ): SolicitudPuntual {
+        // El motivo es OPCIONAL: el operador lo escribe cuando le sirve para
+        // el control manual, pero no es un requisito para pedir. Si viene,
+        // se guarda; si no, queda vacío.
         $motivo = trim($motivo);
-        $minimo = (int) config('puntual.min_motivo_length', 10);
 
-        if (mb_strlen($motivo) < $minimo) {
+        if ($motivo !== '' && mb_strlen($motivo) > 1000) {
             throw new PuntualRequestException(
                 'motivo_invalido',
-                "El motivo debe tener al menos {$minimo} caracteres.",
+                'El motivo no puede superar los 1000 caracteres.',
             );
         }
 

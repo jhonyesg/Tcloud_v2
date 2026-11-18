@@ -29,7 +29,9 @@ return [
     'umbral_dia_minutos' => (int) env('PUNTUAL_UMBRAL_DIA_MINUTOS', 120),
 
     /*
-     * Longitud mínima del motivo de la solicitud.
+     * Longitud mínima del motivo. YA NO SE USA: el motivo pasó a ser
+     * opcional (2026-11-18). Se conserva la clave para no romper
+     * despliegues que la lean.
      */
     'min_motivo_length' => (int) env('PUNTUAL_MIN_MOTIVO_LENGTH', 10),
 
