@@ -55,72 +55,148 @@
 
     <!-- ================= CATÁLOGO ================= -->
     <section x-show="tab === 'medios'" class="mb-8" data-puntual-tour="catalogo">
-        <div class="flex items-center justify-between flex-wrap gap-3 mb-4">
-            <h2 class="text-sm font-semibold text-slate-500 uppercase tracking-wider">
-                Medios que puedes solicitar
-                <span class="ml-1 font-normal normal-case text-slate-400" x-text="'(' + medios.length + ')'"></span>
-            </h2>
-            <div class="flex items-center gap-2">
-                <input type="search" x-model="search" @input.debounce.350ms="loadMedios()"
-                       placeholder="Buscar medio, región o canal…"
-                       class="w-72 px-3 py-2 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
-                <select x-model="kind" @change="loadMedios()"
-                        class="px-3 py-2 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
-                    <option value="">Todos</option>
-                    <option value="tv">TV</option>
-                    <option value="radio">Radio</option>
-                </select>
-            </div>
-        </div>
 
-        <div x-show="loadingMedios" class="text-sm text-slate-400 py-8 text-center">
-            <i class="fas fa-spinner fa-spin mr-2"></i>Cargando medios…
-        </div>
-
-        <div x-show="!loadingMedios && medios.length === 0"
-             class="bg-white rounded-xl shadow-sm border border-slate-200 p-8 text-center">
-            <i class="fas fa-check-circle text-3xl text-green-400 mb-3"></i>
-            <p class="text-slate-600 font-medium">No hay medios por solicitar.</p>
-            <p class="text-slate-400 text-sm mt-1">
-                Tienes asignados todos los medios del catálogo. Para lo que ya tienes, usa Mis Archivos.
-            </p>
-        </div>
-
-        <div x-show="!loadingMedios && medios.length > 0"
-             class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            <template x-for="m in mediosPagina()" :key="m.id">
-                <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4 flex items-start justify-between gap-3">
-                    <div class="min-w-0">
-                        <div class="flex items-center gap-2">
-                            <p class="font-semibold text-slate-800 truncate" x-text="m.name"></p>
-                            <span class="px-1.5 py-0.5 rounded text-xs font-semibold shrink-0"
-                                  :class="m.media_kind === 'tv' ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'"
-                                  x-text="m.media_kind.toUpperCase()"></span>
-                        </div>
-                        <p class="text-xs text-slate-400 mt-0.5 truncate"
-                           x-show="m.region"
-                           :title="m.storage"
-                           x-text="m.region"></p>
+        <!-- Barra superior: búsqueda, filtro y paginación -->
+        <div class="bg-white rounded-xl shadow-sm border border-slate-200">
+            <div class="px-4 py-3 flex items-center justify-between flex-wrap gap-3 border-b border-slate-100">
+                <div class="flex items-center gap-2 flex-wrap">
+                    <h2 class="text-sm font-semibold text-slate-500 uppercase tracking-wider">
+                        Medios que puedes solicitar
+                        <span class="ml-1 font-normal normal-case text-slate-400" x-text="'(' + medios.length + ')'"></span>
+                    </h2>
+                </div>
+                <div class="flex items-center gap-2 flex-wrap">
+                    <div class="relative">
+                        <i class="fas fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs"></i>
+                        <input type="search" x-model="search" @input.debounce.350ms="loadMedios()"
+                               placeholder="Buscar medio, región o canal…"
+                               class="w-72 pl-9 pr-3 py-2 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
                     </div>
-                    <button @click="openRequest(m)"
-                            class="shrink-0 px-3 py-1.5 bg-brand-600 hover:bg-brand-700 text-white rounded-lg text-xs font-medium transition-colors">
-                        Solicitar
+                    <select x-model="kind" @change="loadMedios()"
+                            class="px-3 py-2 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+                        <option value="">Todos</option>
+                        <option value="tv">TV</option>
+                        <option value="radio">Radio</option>
+                    </select>
+                    <span class="text-xs text-slate-500 hidden lg:inline"
+                          x-text="'Mostrando ' + rangoMedios().desde + '-' + rangoMedios().hasta + ' de ' + medios.length"></span>
+                    <div class="flex items-center gap-1">
+                        <button @click="paginaMedios = Math.max(1, paginaMedios - 1)" :disabled="paginaMedios <= 1"
+                                class="px-2 py-1 rounded-lg text-xs font-medium text-slate-600 hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed">
+                            <i class="fas fa-chevron-left"></i>
+                        </button>
+                        <template x-for="p in paginasMedios()" :key="'top' + p">
+                            <button @click="paginaMedios = p"
+                                    class="px-2.5 py-1 rounded-lg text-xs font-medium"
+                                    :class="p === paginaMedios ? 'bg-brand-600 text-white' : 'text-slate-600 hover:bg-slate-100'"
+                                    x-text="p"></button>
+                        </template>
+                        <button @click="paginaMedios = Math.min(paginasMedios().slice(-1)[0] || 1, paginaMedios + 1)"
+                                :disabled="paginaMedios >= (paginasMedios().slice(-1)[0] || 1)"
+                                class="px-2 py-1 rounded-lg text-xs font-medium text-slate-600 hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed">
+                            <i class="fas fa-chevron-right"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <div x-show="loadingMedios" class="text-sm text-slate-400 py-10 text-center">
+                <i class="fas fa-spinner fa-spin mr-2"></i>Cargando medios…
+            </div>
+
+            <div x-show="!loadingMedios && medios.length === 0" class="p-10 text-center">
+                <i class="fas fa-check-circle text-3xl text-green-400 mb-3"></i>
+                <p class="text-slate-600 font-medium">No hay medios por solicitar.</p>
+                <p class="text-slate-400 text-sm mt-1">
+                    Tienes asignados todos los medios del catálogo. Para lo que ya tienes, usa Mis Archivos.
+                </p>
+            </div>
+
+            <!-- Tabla -->
+            <div x-show="!loadingMedios && medios.length > 0" class="overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead class="bg-slate-50 text-xs uppercase tracking-wider text-slate-500">
+                        <tr>
+                            <th class="px-4 py-2 text-left font-semibold">
+                                <button @click="ordenarMedios('name')" class="flex items-center gap-1 hover:text-slate-700">
+                                    Medio
+                                    <i class="fas fa-sort text-[10px]" x-show="mediosSort !== 'name'"></i>
+                                    <i class="fas text-[10px] text-brand-600" x-show="mediosSort === 'name'"
+                                       :class="mediosDir === 'asc' ? 'fa-sort-up' : 'fa-sort-down'"></i>
+                                </button>
+                            </th>
+                            <th class="px-4 py-2 text-left font-semibold">
+                                <button @click="ordenarMedios('region')" class="flex items-center gap-1 hover:text-slate-700">
+                                    Región
+                                    <i class="fas fa-sort text-[10px]" x-show="mediosSort !== 'region'"></i>
+                                    <i class="fas text-[10px] text-brand-600" x-show="mediosSort === 'region'"
+                                       :class="mediosDir === 'asc' ? 'fa-sort-up' : 'fa-sort-down'"></i>
+                                </button>
+                            </th>
+                            <th class="px-4 py-2 text-left font-semibold">
+                                <button @click="ordenarMedios('media_kind')" class="flex items-center gap-1 hover:text-slate-700">
+                                    Tipo
+                                    <i class="fas fa-sort text-[10px]" x-show="mediosSort !== 'media_kind'"></i>
+                                    <i class="fas text-[10px] text-brand-600" x-show="mediosSort === 'media_kind'"
+                                       :class="mediosDir === 'asc' ? 'fa-sort-up' : 'fa-sort-down'"></i>
+                                </button>
+                            </th>
+                            <th class="px-4 py-2 text-left font-semibold">
+                                <button @click="ordenarMedios('storage')" class="flex items-center gap-1 hover:text-slate-700">
+                                    Storage
+                                    <i class="fas fa-sort text-[10px]" x-show="mediosSort !== 'storage'"></i>
+                                    <i class="fas text-[10px] text-brand-600" x-show="mediosSort === 'storage'"
+                                       :class="mediosDir === 'asc' ? 'fa-sort-up' : 'fa-sort-down'"></i>
+                                </button>
+                            </th>
+                            <th class="px-4 py-2 text-right font-semibold">Acción</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-100">
+                        <template x-for="m in mediosPagina()" :key="m.id">
+                            <tr class="hover:bg-slate-50">
+                                <td class="px-4 py-2 font-medium text-slate-800" x-text="m.name"></td>
+                                <td class="px-4 py-2 text-slate-600" x-text="m.region || '—'"></td>
+                                <td class="px-4 py-2">
+                                    <span class="px-2 py-0.5 rounded-full text-xs font-semibold"
+                                          :class="m.media_kind === 'tv' ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'"
+                                          x-text="(m.media_kind || '').toUpperCase()"></span>
+                                </td>
+                                <td class="px-4 py-2 text-slate-500 text-xs" x-text="m.storage || '—'"></td>
+                                <td class="px-4 py-2 text-right">
+                                    <button @click="openRequest(m)"
+                                            class="px-3 py-1.5 bg-brand-600 hover:bg-brand-700 text-white rounded-lg text-xs font-medium transition-colors">
+                                        Solicitar
+                                    </button>
+                                </td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Pie: paginación duplicada -->
+            <div x-show="!loadingMedios && medios.length > 0"
+                 class="px-4 py-3 border-t border-slate-100 flex items-center justify-between flex-wrap gap-2">
+                <span class="text-xs text-slate-500"
+                      x-text="'Mostrando ' + rangoMedios().desde + '-' + rangoMedios().hasta + ' de ' + medios.length + ' medios'"></span>
+                <div class="flex items-center gap-1">
+                    <button @click="paginaMedios = Math.max(1, paginaMedios - 1)" :disabled="paginaMedios <= 1"
+                            class="px-2 py-1 rounded-lg text-xs font-medium text-slate-600 hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed">
+                        <i class="fas fa-chevron-left"></i>
+                    </button>
+                    <template x-for="p in paginasMedios()" :key="'bot' + p">
+                        <button @click="paginaMedios = p"
+                                class="px-2.5 py-1 rounded-lg text-xs font-medium"
+                                :class="p === paginaMedios ? 'bg-brand-600 text-white' : 'text-slate-600 hover:bg-slate-100'"
+                                x-text="p"></button>
+                    </template>
+                    <button @click="paginaMedios = Math.min(paginasMedios().slice(-1)[0] || 1, paginaMedios + 1)"
+                            :disabled="paginaMedios >= (paginasMedios().slice(-1)[0] || 1)"
+                            class="px-2 py-1 rounded-lg text-xs font-medium text-slate-600 hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed">
+                        <i class="fas fa-chevron-right"></i>
                     </button>
                 </div>
-            </template>
-        </div>
-
-        <!-- Paginador del catálogo -->
-        <div x-show="!loadingMedios && medios.length > porPagina" class="mt-4 flex items-center justify-between">
-            <span class="text-xs text-slate-500"
-                  x-text="'Mostrando ' + (mediosPagina().length ? (paginaMedios - 1) * porPagina + 1 : 0) + '-' + ((paginaMedios - 1) * porPagina + mediosPagina().length) + ' de ' + medios.length"></span>
-            <div class="flex items-center gap-1">
-                <template x-for="p in paginasMedios()" :key="p">
-                    <button @click="paginaMedios = p"
-                            class="px-2.5 py-1 rounded-lg text-xs font-medium"
-                            :class="p === paginaMedios ? 'bg-brand-600 text-white' : 'text-slate-600 hover:bg-slate-100'"
-                            x-text="p"></button>
-                </template>
             </div>
         </div>
     </section>
@@ -596,6 +672,8 @@ function puntualManager() {
         kind: '',
         paginaMedios: 1,
         porPagina: 60,
+        mediosSort: 'name',
+        mediosDir: 'asc',
 
         history: { data: [], total: 0, page: 1, pages: 1 },
         histSearch: '',
@@ -709,6 +787,61 @@ function puntualManager() {
         },
 
         /**
+         * Ordena el catálogo por columna.
+         *
+         * El orden es en memoria (el catálogo completo ya está cargado): un
+         * clic ordena ascendente, el segundo invierte.
+         */
+        ordenarMedios(columna) {
+            if (this.mediosSort === columna) {
+                this.mediosDir = this.mediosDir === 'asc' ? 'desc' : 'asc';
+            } else {
+                this.mediosSort = columna;
+                this.mediosDir = 'asc';
+            }
+
+            this.paginaMedios = 1;
+        },
+
+        /**
+         * Catálogo con el orden aplicado.
+         */
+        mediosOrdenados() {
+            const clave = (m) => {
+                if (this.mediosSort === 'region') return (m.region || '').toString();
+                if (this.mediosSort === 'storage') return (m.storage || '').toString();
+                if (this.mediosSort === 'media_kind') return (m.media_kind || '').toString();
+                return (m.name || '').toString();
+            };
+
+            const factor = this.mediosDir === 'asc' ? 1 : -1;
+
+            return [...this.medios].sort((a, b) => {
+                const ca = clave(a);
+                const cb = clave(b);
+
+                // Los vacíos siempre al final, en las dos direcciones.
+                if (ca === '' && cb !== '') return 1;
+                if (cb === '' && ca !== '') return -1;
+
+                return ca.localeCompare(cb, 'es', { sensitivity: 'base', numeric: true }) * factor;
+            });
+        },
+
+        /**
+         * Rango visible ("Mostrando 1-60 de 253").
+         */
+        rangoMedios() {
+            const total = this.medios.length;
+            if (total === 0) return { desde: 0, hasta: 0 };
+
+            const desde = (this.paginaMedios - 1) * this.porPagina + 1;
+            const hasta = Math.min(desde + this.mediosPagina().length - 1, total);
+
+            return { desde, hasta };
+        },
+
+        /**
          * Medios de la página actual.
          *
          * El catálogo tiene cientos de medios: sin paginar la pantalla es un
@@ -716,7 +849,7 @@ function puntualManager() {
          */
         mediosPagina() {
             const desde = (this.paginaMedios - 1) * this.porPagina;
-            return this.medios.slice(desde, desde + this.porPagina);
+            return this.mediosOrdenados().slice(desde, desde + this.porPagina);
         },
 
         paginasMedios() {
