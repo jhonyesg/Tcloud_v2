@@ -73,8 +73,8 @@
 ## 9. Verificación
 
 - [x] 9.1 `tests/harness_solicitud_puntual.php` — 38 aserciones contra PostgreSQL y disco reales: catálogo complementario (regla de ancestro), cobertura completa y parcial, franja con N enlaces, día con 1 enlace de carpeta, snapshot del registro, idempotencia, revocación, vigencia de 3 días, recomendación por umbral, y **que el remapeo no altera el conteo de `files` ni crea storages**.
-- [ ] 9.2 Extender `tests/harness_route_contract.php` con las rutas nuevas (cliente y admin) y verificar que ninguna queda huérfana.
-- [ ] 9.3 Extender `tests/harness_shares_module.php` con el guard generalizado: `update`/`destroy` sobre enlaces de ambos flujos → `403`; `bulkDelete` excluye y reporta `protected_count`.
-- [ ] 9.4 Test unitario del resolver (`tests/Unit/PuntualResolverTest.php`): mediana del paso con cadencias distintas (15/21/14 min), slots nominales, parsing de fecha y nombre, detección de homónimos por región.
+- [x] 9.2 `tests/harness_route_contract.php` — 312 rutas verificadas, 0 huérfanas (las 6 rutas nuevas incluidas).
+- [x] 9.3 `tests/harness_shares_module.php` — 8 aserciones nuevas del guard generalizado: `update`/`destroy` sobre un enlace gestionado → `403` con `code: request_managed_share`; el enlace no queda sin vencimiento; `bulkDelete` lo excluye y reporta `protected_count`; un enlace normal NO se marca como gestionado.
+- [x] 9.4 `tests/Unit/PuntualResolverTest.php` — 11 tests: nombre y región de un medio (plano y agrupado), homónimos desambiguados por región, humanizado del nombre, y la cadencia derivada con tres cadencias reales (15 min TV, 15 min radio nacional, 14 min radio regional) más el caso del salto aislado que no arrastra la mediana.
 - [ ] 9.5 Revisión independiente de seguridad (el riesgo alto del change): verificar que no hay ruta que sirva material de un medio no asignado fuera del flujo de solicitud, que la vigencia no puede extenderse ni volverse permanente, y que la revocación deja de servir el enlace.
 - [ ] 9.6 Documentar el contrato del módulo en `AGENTS.md` (sección nueva) y cerrar el change en OpenSpec.
