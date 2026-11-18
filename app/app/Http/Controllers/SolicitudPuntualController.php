@@ -305,6 +305,36 @@ class SolicitudPuntualController extends Controller
         ]);
     }
 
+    /**
+     * Elimina el REGISTRO de una solicitud (solo admin).
+     *
+     * Distinto de revocar: revocar corta el acceso y deja el registro;
+     * eliminar borra el registro para limpiar la vista. Deja un snapshot
+     * completo en el log antes de borrar.
+     */
+    public function eliminar(Request $request, SolicitudPuntual $solicitud): JsonResponse
+    {
+        $user = $this->getUser();
+
+        if ($user === null) {
+            return response()->json(['error' => 'Unauthorized'], 401);
+        }
+
+        try {
+            $snapshot = $this->solicitudes->destroy($user, $solicitud);
+        } catch (PuntualRequestException $e) {
+            return response()->json([
+                'error' => $e->getMessage(),
+                'code' => $e->errorCode,
+            ], $e->status);
+        }
+
+        return response()->json([
+            'deleted' => true,
+            'solicitud' => $snapshot,
+        ]);
+    }
+
     // ------------------------------------------------------------------
     // Control administrativo (solo admin)
     // ------------------------------------------------------------------

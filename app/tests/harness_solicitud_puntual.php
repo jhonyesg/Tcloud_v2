@@ -641,6 +641,64 @@ try {
         );
 
         // ------------------------------------------------------------------
+        h_section('eliminar el registro (solo admin)');
+
+        // Se crea una solicitud nueva para borrarla: las anteriores ya
+        // tienen su propio ciclo en este harness.
+        $paraBorrar = $service->create($usuario, $medioReal, $fecha, '21:00', '21:30', 'Harness: registro a eliminar');
+        $idBorrar = (int) $paraBorrar->id;
+        $itemsBorrar = $paraBorrar->items()->count();
+        $sharesBorrar = $paraBorrar->items()->whereNotNull('share_id')->pluck('share_id')->all();
+
+        $codigoClienteBorrar = null;
+
+        try {
+            $service->destroy($usuario, $paraBorrar);
+        } catch (App\Exceptions\PuntualRequestException $e) {
+            $codigoClienteBorrar = $e->errorCode;
+        }
+
+        h_check(
+            $codigoClienteBorrar === 'no_permission',
+            'el cliente NO puede eliminar el registro de una solicitud',
+            'codigo = ' . ($codigoClienteBorrar ?? 'eliminó'),
+        );
+
+        h_check(
+            SolicitudPuntual::query()->find($idBorrar) !== null,
+            'el registro sigue existiendo tras el intento del cliente',
+        );
+
+        $snapshot = $service->destroy($admin, $paraBorrar->refresh());
+
+        h_check(
+            (int) ($snapshot['id'] ?? 0) === $idBorrar,
+            'el admin elimina el registro y recibe su snapshot',
+            'snapshot id = ' . ($snapshot['id'] ?? 'null'),
+        );
+
+        h_check(
+            count($snapshot['items'] ?? []) === $itemsBorrar,
+            'el snapshot conserva el detalle de los archivos borrados',
+            'items = ' . count($snapshot['items'] ?? []),
+        );
+
+        h_check(
+            SolicitudPuntual::query()->find($idBorrar) === null,
+            'la solicitud desaparece de la base',
+        );
+
+        h_check(
+            SolicitudPuntualItem::query()->where('solicitud_id', $idBorrar)->count() === 0,
+            'el detalle por archivo desaparece con la solicitud',
+        );
+
+        h_check(
+            Share::query()->whereIn('id', $sharesBorrar)->count() === 0,
+            'los enlaces se revocan antes de borrar (no quedan URLs vivas)',
+        );
+
+        // ------------------------------------------------------------------
         h_section('historial');
 
         $historial = $service->listFor($usuario, ['sort' => 'creada', 'dir' => 'desc']);

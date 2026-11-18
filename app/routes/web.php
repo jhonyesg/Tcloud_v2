@@ -162,6 +162,10 @@ Route::middleware('auth')->group(function () {
     Route::get('/solicitud-puntual/control/exportar', [App\Http\Controllers\SolicitudPuntualController::class, 'exportar'])->middleware('throttle:20,1');
     Route::delete('/solicitud-puntual/{solicitud}', [App\Http\Controllers\SolicitudPuntualController::class, 'destroy'])->whereNumber('solicitud')->middleware('throttle:30,1');
 
+    // Eliminar el REGISTRO (no revocar): solo admin, destructivo e
+    // irreversible. Deja un snapshot en el log antes de borrar.
+    Route::delete('/solicitud-puntual/{solicitud}/registro', [App\Http\Controllers\SolicitudPuntualController::class, 'eliminar'])->whereNumber('solicitud')->middleware('throttle:20,1');
+
     Route::resource('files', App\Http\Controllers\FileController::class)->only(['index', 'store', 'show', 'update', 'destroy']);
 
     // Papelera removida en change restore-mis-archivos-august
