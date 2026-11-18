@@ -127,6 +127,25 @@ solicitar → enlace) y declaración de los 7 vínculos pendientes con el operad
   Corrección: `@endsection` antes de `@push('scripts')`, más dos aserciones que comparan
   POSICIONES (`<main` < contenido < `</body>`, y panel lateral antes del contenido). El test
   negativo confirma que sin `@endsection` fallan las dos.
+- **L15** — 2026-11-18 — Petición del operador: "abajo de ese pon los que te salen 'la ruta base
+  no existe en el disco' y escanea los storage para ver si están en otra ruta para actualizarlo en
+  el storage".
+  - **Grupo propio**: los storages con ruta base inexistente van después de los que listan el
+    disco (antes de los que solo falta mapear), con un chip rojo visible. Composición del
+    listado: 28 mapeados → 5 contenedores → 3 con ruta rota → 110 sin mapear.
+  - **Escaneo masivo**: `GET /admin/backups/repair-scan` recorre TODOS los storages con la ruta
+    rota y devuelve sus candidatos; la UI los muestra en un panel con un botón "Actualizar esta
+    ruta" por storage. 700 ms con el índice cacheado, 11 s la primera vez.
+  - **Aplicado**: 16 storages repuntados con el comando `storage:remap-disk --map-file`, usando
+    la regla "el nombre de la carpeta es EXACTAMENTE el mismo" (la carpeta del canal se conservó
+    y solo cambió de disco): 15 inequívocos + 1 ambiguo resuelto porque la ruta RELATIVA se
+    conservó (`Rlocal/Huila/Alerta_Neiva`). Snapshots: `storage_providers_remap_pre_20261118_125144`
+    y `..._125211`. Quedan 3 sin material en ningún disco (19 Claridad Medellin, 27 CNC Pasto,
+    54 Guasca Estereo).
+  - **Defecto propio encontrado y corregido**: la clave del índice de directorios era global
+    (`storage.path_repair.index`), así que el índice construido por el harness sobre su raíz
+    temporal envenenaba el de producción y el escaneo no encontraba nada. Ahora la clave
+    incluye la raíz (`storage.path_repair.index.<hash>`).
 - **L14** — 2026-11-18 — Petición del operador: "la prensa no tiene backup, entonces mejor
   quitarlo de ese módulo, ya que no aportan" + "después de los que están mapeados, [ver] los que
   listan el disco para poderlos revisar".

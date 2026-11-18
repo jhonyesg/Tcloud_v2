@@ -44,6 +44,7 @@ Route::middleware(['auth', 'admin'])->prefix('admin')->group(function () {
     Route::get('/backups/folders', [App\Http\Controllers\Admin\BackupMappingController::class, 'folders'])->name('admin.backups.folders');
     Route::post('/backups', [App\Http\Controllers\Admin\BackupMappingController::class, 'store'])->name('admin.backups.store');
     Route::get('/backups/{storage}/repair-candidates', [App\Http\Controllers\Admin\BackupMappingController::class, 'repairCandidates'])->whereNumber('storage')->name('admin.backups.repair-candidates');
+    Route::get('/backups/repair-scan', [App\Http\Controllers\Admin\BackupMappingController::class, 'repairScan'])->name('admin.backups.repair-scan');
     Route::post('/backups/{storage}/repair', [App\Http\Controllers\Admin\BackupMappingController::class, 'repairPath'])->whereNumber('storage')->name('admin.backups.repair');
     Route::delete('/backups/{storage}', [App\Http\Controllers\Admin\BackupMappingController::class, 'destroy'])->whereNumber('storage')->name('admin.backups.destroy');
     Route::post('/users/{user}/toggle-media-editor', [App\Http\Controllers\UserController::class, 'toggleMediaEditor']);

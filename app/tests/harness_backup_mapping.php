@@ -533,6 +533,35 @@ try {
     h_check($guardado === $nuevo, 'la base_path quedó actualizada');
     h_check($service->pathState(StorageProvider::find($deadId)) === 'ok', 'tras el repunto la ruta reporta ok');
 
+    // ------------------------------------------------------------------
+    h_section('escaneo masivo de rutas rotas');
+    // Storage con la ruta base inexistente (el de la prueba de reparacion ya
+    // fue reparado, asi que se crea otro para el escaneo).
+    $roto = StorageProvider::create([
+        'name' => $tag . ' roto',
+        'type' => 'local',
+        'kind' => 'local',
+        'base_path' => $tmpRoot . '/ruta-que-no-existe',
+        'enabled' => true,
+        'is_accessible' => true,
+    ]);
+    $rotoId = (int) $roto->id;
+
+    $response = $dispatch('GET', '/admin/backups/repair-scan?limit=2');
+    $payload = json_decode($response->getContent(), true);
+    h_check(
+        $response->getStatusCode() === 200 && ($payload['ok'] ?? false) === true,
+        'repair-scan responde 200',
+        'respondió ' . $response->getStatusCode()
+    );
+    h_check(isset($payload['storages']) && is_array($payload['storages']), 'devuelve el listado de storages escaneados');
+    $ids = array_column($payload['storages'] ?? [], 'id');
+    h_check(in_array($rotoId, $ids, true), 'el storage con ruta rota aparece en el escaneo');
+    h_check(! in_array($deadId, $ids, true), 'un storage ya reparado NO aparece en el escaneo');
+
+
+
+
     config(['filesystems.cloud_root' => '/www/wwwroot/data.mediaserver.com.co/Tcloud']);
 
 } catch (\Throwable $e) {
@@ -549,7 +578,7 @@ try {
             // la sesión de prueba puede no haberse creado
         }
     }
-    DB::table('storage_providers')->whereIn('id', array_filter([$sourceId, $backupId, $otherSourceId, $nonLocalId, $deadId ?? null, $personalId ?? null, $prensaId ?? null, $contenedorId ?? null, $canalId ?? null]))->delete();
+    DB::table('storage_providers')->whereIn('id', array_filter([$sourceId, $backupId, $otherSourceId, $nonLocalId, $deadId ?? null, $personalId ?? null, $prensaId ?? null, $contenedorId ?? null, $canalId ?? null, $rotoId ?? null]))->delete();
     DB::table('storage_providers')->where('name', 'like', $tag . '%')->delete();
     @exec('rm -rf ' . escapeshellarg($tmpRoot));
     h_ok('fixtures eliminados');

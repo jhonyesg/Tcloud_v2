@@ -65,7 +65,9 @@ class StoragePathRepairService
      */
     public function index(): array
     {
-        $cacheKey = 'storage.path_repair.index';
+        // La clave incluye la raiz: con una clave global, un indice construido
+        // sobre otra raiz (pruebas) envenena el de produccion.
+        $cacheKey = 'storage.path_repair.index.' . substr(md5($this->cloudRoot()), 0, 12);
 
         $cached = Cache::get($cacheKey);
         if (is_array($cached) && $cached !== []) {
@@ -123,6 +125,34 @@ class StoragePathRepairService
         sort($found);
 
         return $found;
+    }
+
+    /**
+     * Escanea varios storages con ruta inexistente y devuelve, para cada uno, sus
+     * candidatos.
+     *
+     * El índice de directorios se construye UNA vez (cache 300 s) y se reutiliza
+     * para todos los storages del lote.
+     *
+     * @param  iterable<StorageProvider>  $storages
+     * @return array<int,array{id:int,name:string,base_path:string,candidates:array}>
+     */
+    public function scanFor(iterable $storages, int $limit = 3): array
+    {
+        $this->index(); // calienta el índice una sola vez para todo el lote
+
+        $out = [];
+
+        foreach ($storages as $storage) {
+            $out[] = [
+                'id' => (int) $storage->id,
+                'name' => (string) $storage->name,
+                'base_path' => (string) $storage->base_path,
+                'candidates' => $this->candidates($storage, $limit),
+            ];
+        }
+
+        return $out;
     }
 
     /**
@@ -242,7 +272,7 @@ class StoragePathRepairService
         Cache::forget("transcriptor.scope.{$storage->id}");
         Cache::forget("folder_gen:{$storage->id}:null");
         Cache::forget('admin:storages:index');
-        Cache::forget('storage.path_repair.index');
+        Cache::forget('storage.path_repair.index.' . substr(md5($this->cloudRoot()), 0, 12));
 
         try {
             if (app()->bound(\App\Services\Ia\StorageHierarchyService::class)) {

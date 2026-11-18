@@ -18,6 +18,12 @@
                 <i class="fas fa-rotate" :class="loading ? 'fa-spin' : ''"></i>
                 <span>Actualizar</span>
             </button>
+            <button @click="openScan()" x-show="missingCount > 0"
+                    class="flex items-center gap-2 px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-sm font-medium transition-colors">
+                <i class="fas fa-magnifying-glass-location"></i>
+                <span>Escanear rutas rotas</span>
+                <span class="px-1.5 py-0.5 rounded bg-white/25 text-xs font-semibold" x-text="missingCount"></span>
+            </button>
             <button @click="openCreate()" data-backup-tour="assign"
                     class="flex items-center gap-2 px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-xl text-sm font-medium transition-colors">
                 <i class="fas fa-link"></i>
@@ -175,8 +181,8 @@
                                 <p x-show="row.is_container" class="mt-1 inline-flex items-center gap-1 px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 text-[11px] font-medium">
                                     <i class="fas fa-layer-group text-[10px]"></i>Lista el disco: su contenido son emisoras, no un canal
                                 </p>
-                                <p x-show="row.path_state === 'missing'" class="mt-0.5 text-[11px] text-red-600">
-                                    <i class="fas fa-triangle-exclamation mr-0.5"></i>La ruta base no existe en disco
+                                <p x-show="row.path_state === 'missing'" class="mt-1 inline-flex items-center gap-1 px-2 py-0.5 rounded bg-red-50 text-red-700 text-[11px] font-medium">
+                                    <i class="fas fa-triangle-exclamation text-[10px]"></i>La ruta base no existe en el disco
                                 </p>
                                 <p x-show="row.path_state === 'mount_down'" class="mt-0.5 text-[11px] text-amber-600">
                                     <i class="fas fa-plug-circle-xmark mr-0.5"></i>Montaje de red caído
@@ -295,6 +301,84 @@
                     <button @click="showForm = false"
                             class="px-5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-sm font-medium transition-colors">
                         Cancelar
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal: escaneo masivo de rutas rotas -->
+    <div x-cloak x-show="showScan" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" x-transition>
+        <div class="bg-white rounded-2xl w-full max-w-3xl shadow-2xl max-h-[90vh] overflow-y-auto" @click.away="showScan = false">
+            <div class="p-6">
+                <h2 class="text-lg font-bold text-slate-800 mb-1">Escanear rutas rotas</h2>
+                <p class="text-sm text-slate-500 mb-4">
+                    Se busca el material de cada storage cuya ruta base no existe en los demás discos.
+                    El escaneo no escribe nada: vos elegís la ruta y la aplicás.
+                </p>
+
+                <div x-show="scanLoading" class="flex items-center justify-center py-10 gap-3">
+                    <i class="fas fa-spinner fa-spin text-brand-400 text-xl"></i>
+                    <span class="text-sm text-slate-500">Recorriendo los discos...</span>
+                </div>
+
+                <div x-show="!scanLoading && scanError" x-cloak class="p-3 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700">
+                    <i class="fas fa-circle-exclamation mr-1.5"></i><span x-text="scanError"></span>
+                </div>
+
+                <div x-show="!scanLoading && !scanError && scanRows.length === 0" class="py-10 text-center text-sm text-slate-400">
+                    <i class="fas fa-circle-check text-3xl mb-3 block text-emerald-300"></i>
+                    Ningún storage tiene la ruta base rota.
+                </div>
+
+                <div x-show="!scanLoading && !scanError" class="space-y-4">
+                    <template x-for="row in scanRows" :key="row.id">
+                        <div class="border border-slate-200 rounded-xl p-4">
+                            <div class="flex items-start justify-between gap-3">
+                                <div class="min-w-0">
+                                    <p class="text-sm font-semibold text-slate-800" x-text="row.name"></p>
+                                    <p class="text-xs text-slate-400 font-mono break-all" x-text="row.base_path"></p>
+                                </div>
+                                <span class="shrink-0 text-xs px-2 py-0.5 rounded-lg font-medium"
+                                      :class="row.candidates.length > 0 ? 'bg-amber-50 text-amber-700' : 'bg-slate-100 text-slate-500'"
+                                      x-text="row.candidates.length > 0 ? row.candidates.length + ' candidato(s)' : 'sin candidatos'"></span>
+                            </div>
+
+                            <template x-if="row.candidates.length === 0">
+                                <p class="mt-3 text-xs text-slate-400">
+                                    No se encontró esa carpeta en ningún disco: el material ya no está.
+                                </p>
+                            </template>
+
+                            <div x-show="row.candidates.length > 0" class="mt-3 space-y-2">
+                                <template x-for="c in row.candidates" :key="c.path">
+                                    <label class="flex items-start gap-3 p-2.5 rounded-lg border cursor-pointer transition-colors"
+                                           :class="scanSelected[row.id] === c.path ? 'border-brand-500 bg-brand-50' : 'border-slate-200 hover:bg-slate-50'">
+                                        <input type="radio" :name="'scan-' + row.id" x-model="scanSelected[row.id]" :value="c.path" class="mt-1">
+                                        <span class="flex-1 min-w-0">
+                                            <span class="block text-xs text-slate-700 font-mono break-all" x-text="c.path"></span>
+                                            <span class="block mt-0.5 text-[11px] text-slate-500" x-text="c.reasons.join(' · ')"></span>
+                                            <span x-show="c.claimed_by" class="block mt-0.5 text-[11px] text-amber-600"
+                                                  x-text="'Ya lo declara: ' + c.claimed_by.name"></span>
+                                        </span>
+                                        <span class="text-xs font-semibold text-brand-600 shrink-0" x-text="c.score"></span>
+                                    </label>
+                                </template>
+                                <button @click="applyScan(row)" :disabled="!scanSelected[row.id] || scanSaving === row.id"
+                                        class="px-3 py-1.5 bg-brand-600 hover:bg-brand-700 disabled:opacity-50 text-white text-xs font-medium rounded-lg transition-colors">
+                                    <i class="fas fa-check mr-1" x-show="scanSaving !== row.id"></i>
+                                    <i class="fas fa-spinner fa-spin mr-1" x-show="scanSaving === row.id"></i>
+                                    Actualizar esta ruta
+                                </button>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+
+                <div class="flex justify-end mt-6">
+                    <button @click="showScan = false"
+                            class="px-5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-sm font-medium transition-colors">
+                        Cerrar
                     </button>
                 </div>
             </div>
@@ -499,6 +583,12 @@ function backupAdmin() {
         sortKey: '',
         sortDir: 'asc',
         showRepair: false,
+        showScan: false,
+        scanRows: [],
+        scanSelected: {},
+        scanLoading: false,
+        scanSaving: null,
+        scanError: '',
         repairStorage: null,
         repairCandidates: [],
         repairSelected: '',
@@ -549,6 +639,10 @@ function backupAdmin() {
             return this.rows.filter(r => r.is_container).length;
         },
 
+        get missingCount() {
+            return this.rows.filter(r => r.path_state === 'missing').length;
+        },
+
         get brokenSources() {
             return this.rows.filter(r => r.state === 'broken').length;
         },
@@ -596,6 +690,71 @@ function backupAdmin() {
         sortIcon(key) {
             if (this.sortKey !== key) return 'fa-sort';
             return this.sortDir === 'asc' ? 'fa-sort-up' : 'fa-sort-down';
+        },
+
+        /**
+         * Escanea TODOS los storages con ruta base inexistente y muestra, para
+         * cada uno, los candidatos hallados en los demás discos.
+         */
+        async openScan() {
+            this.scanRows = [];
+            this.scanSelected = {};
+            this.scanError = '';
+            this.showScan = true;
+            this.scanLoading = true;
+
+            try {
+                const res = await apiFetch('/admin/backups/repair-scan?limit=3', {
+                    method: 'GET',
+                    credentials: 'include',
+                    headers: { 'Accept': 'application/json' },
+                });
+                const data = await res.json();
+                if (!res.ok || !data.ok) {
+                    this.scanError = data.message || 'No se pudo escanear.';
+                    return;
+                }
+                this.scanRows = data.storages || [];
+                this.scanRows.forEach(r => {
+                    if (r.candidates && r.candidates.length > 0) {
+                        this.scanSelected[r.id] = r.candidates[0].path;
+                    }
+                });
+            } catch (e) {
+                this.scanError = 'No se pudo escanear.';
+            } finally {
+                this.scanLoading = false;
+            }
+        },
+
+        async applyScan(row) {
+            const path = this.scanSelected[row.id];
+            if (!path) return;
+
+            this.scanSaving = row.id;
+            try {
+                const res = await apiFetch(`/admin/backups/${row.id}/repair`, {
+                    method: 'POST',
+                    credentials: 'include',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json',
+                        'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
+                    },
+                    body: JSON.stringify({ path: path }),
+                });
+                const data = await res.json();
+                if (res.ok && data.ok) {
+                    this.showToast(data.message || 'Ruta actualizada', 'success');
+                    window.location.reload();
+                } else {
+                    this.scanError = data.message || 'No se pudo actualizar la ruta.';
+                }
+            } catch (e) {
+                this.scanError = 'No se pudo actualizar la ruta.';
+            } finally {
+                this.scanSaving = null;
+            }
         },
 
         async openRepair(row) {

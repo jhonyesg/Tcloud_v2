@@ -2494,8 +2494,20 @@ el repunto.
 |---|---|
 | `diskRoots()` | raíces `Disco_*` bajo `filesystems.cloud_root` |
 | `index()` | índice de directorios por disco (TTL 300 s en Redis) |
+| `scanFor(iterable $storages, int $limit)` | escanea un lote: reutiliza el índice una sola vez |
 | `candidates(StorageProvider $storage, int $limit)` | candidatos con score y razones |
 | `repair(StorageProvider $storage, string $newPath)` | valida, crea snapshot, actualiza, invalida caches |
+
+La clave del índice incluye la raíz (`storage.path_repair.index.<hash>`): con una
+clave global, un índice construido sobre otra raíz (pruebas) envenena el de
+producción.
+
+**Escaneo masivo**: el botón "Escanear rutas rotas" (visible solo cuando hay
+storages con la ruta rota) llama a `GET /admin/backups/repair-scan`, que escanea
+TODOS los storages con `base_path` inexistente y devuelve, para cada uno, sus
+candidatos. No escribe: el operador elige y aplica con
+`POST /admin/backups/{id}/repair`. El escaneo completo de 19 storages tarda
+~700 ms con el índice cacheado (~11 s la primera vez, reconstruye el índice).
 
 **Score**: +6 mismo nombre de canal · +4 mismo nombre con distinta grafía ·
 +1 por token compartido (máx. 3) · +1 por carpeta padre compartida (máx. 3).

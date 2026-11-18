@@ -104,8 +104,13 @@ class BackupMappingController extends Controller
                 if (! empty($row['is_container'])) {
                     return 1;
                 }
+                // Los que tienen la ruta base inexistente van juntos: son los que
+                // hay que revisar y repuntar.
+                if (($row['path_state'] ?? '') === 'missing') {
+                    return 2;
+                }
 
-                return 2 + ($order[$row['state']] ?? 2);
+                return 3 + ($order[$row['state']] ?? 2);
             };
 
             return [$rank($a), $a['name']] <=> [$rank($b), $b['name']];
@@ -213,6 +218,32 @@ class BackupMappingController extends Controller
         return response()->json([
             'ok' => true,
             'message' => 'Vínculo eliminado.',
+        ]);
+    }
+
+    /**
+     * Escanea TODOS los storages con ruta base inexistente y devuelve, para cada
+     * uno, los candidatos hallados en los demás discos.
+     *
+     * El índice de directorios se construye una vez y se reutiliza para todo el
+     * lote (cache 300 s). NO escribe nada: el operador elige.
+     */
+    public function repairScan(Request $request): JsonResponse
+    {
+        $rootId = $request->integer('root') ?: null;
+        $sources = $this->mappings->candidateSources($rootId);
+
+        $broken = $sources->filter(
+            fn (\App\Models\StorageProvider $s) => $this->mappings->pathState($s) === 'missing'
+        )->values();
+
+        $rows = $this->repair->scanFor($broken, (int) $request->integer('limit', 3));
+
+        return response()->json([
+            'ok' => true,
+            'scanned' => count($rows),
+            'with_candidates' => count(array_filter($rows, fn (array $r) => $r['candidates'] !== [])),
+            'storages' => $rows,
         ]);
     }
 
