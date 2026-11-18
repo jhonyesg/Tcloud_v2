@@ -5,16 +5,16 @@
 @section('content')
 <div class="p-6" x-data="puntualManager()" x-init="init()">
 
-    <div class="mb-6 flex items-start justify-between flex-wrap gap-3">
-        <div>
-            <h1 class="text-2xl font-bold text-slate-800">Solicitud Puntual de TV y Radio</h1>
-            <p class="text-slate-500 mt-0.5">
+    <div class="mb-4 sm:mb-6 flex items-start justify-between gap-3">
+        <div class="min-w-0">
+            <h1 class="text-lg sm:text-2xl font-bold text-slate-800">Solicitud Puntual de TV y Radio</h1>
+            <p class="text-xs sm:text-sm text-slate-500 mt-0.5">
                 Pide una franja horaria o el día completo de un medio que <strong>no</strong> tienes asignado.
                 Recibes enlaces de solo lectura con 3 días de vigencia.
             </p>
         </div>
         <button onclick="startPuntualTour()"
-                class="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-sm font-medium transition-colors"
+                class="shrink-0 flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-sm font-medium transition-colors"
                 title="Guía interactiva">
             <i class="fas fa-map-marked-alt"></i>
             <span class="hidden sm:inline">Guía</span>
@@ -100,7 +100,6 @@
                 </div>
             </template>
         </div>
-    </section>
 
         <!-- Paginador del catálogo -->
         <div x-show="!loadingMedios && medios.length > porPagina" class="mt-4 flex items-center justify-between">
@@ -432,6 +431,7 @@
     </div>
 
 </div>
+@endsection
 
 @push('scripts')
 <script>
