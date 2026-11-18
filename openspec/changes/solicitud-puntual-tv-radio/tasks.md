@@ -47,12 +47,12 @@
 
 ## 6. API del módulo cliente (backend)
 
-- [ ] 6.1 `App\Http\Controllers\SolicitudPuntualController::catalog()` — lista de medios no asignados con búsqueda y filtro por tipo. Autorización por `session('user_id')` (nunca `auth()->user()`).
-- [ ] 6.2 `::estimate()` — ficha de cobertura + recomendación para un medio, fecha y rango. Devuelve `422` con motivo cuando el rango es inválido o el material no existe.
-- [ ] 6.3 `::store()` — crea la solicitud; devuelve `201` con el registro y los enlaces.
-- [ ] 6.4 `::history()` — historial paginado/buscable/ordenable del solicitante.
-- [ ] 6.5 `::destroy()` — revoca una solicitud propia.
-- [ ] 6.6 Rutas `/solicitud-puntual` (`GET` catálogo), `/solicitud-puntual/estimate` (`POST`), `/solicitud-puntual` (`POST`), `/solicitud-puntual/historial` (`GET`), `/solicitud-puntual/{id}` (`DELETE` con `whereNumber`), todas bajo `auth`. Declarar **antes** de cualquier resource con comodín en la misma prefijo.
+- [x] 6.1 `App\Http\Controllers\SolicitudPuntualController::catalog()` — lista de medios no asignados con búsqueda y filtro por tipo. Autorización por `session('user_id')` (nunca `auth()->user()`).
+- [x] 6.2 `::estimate()` — ficha de cobertura + recomendación para un medio, fecha y rango. Devuelve `422` con motivo cuando el rango es inválido o el material no existe.
+- [x] 6.3 `::store()` — crea la solicitud; devuelve `201` con el registro y los enlaces.
+- [x] 6.4 `::history()` — historial paginado/buscable/ordenable del solicitante.
+- [x] 6.5 `::destroy()` — revoca una solicitud propia.
+- [x] 6.6 Rutas `/solicitud-puntual` (`GET` catálogo), `/solicitud-puntual/estimate` (`POST`), `/solicitud-puntual` (`POST`), `/solicitud-puntual/historial` (`GET`), `/solicitud-puntual/{id}` (`DELETE` con `whereNumber`), todas bajo `auth`. Declarar **antes** de cualquier resource con comodín en la misma prefijo.
 
 ## 7. Interfaz del cliente
 

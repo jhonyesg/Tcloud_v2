@@ -145,6 +145,15 @@ Route::middleware('auth')->group(function () {
     Route::post('/files/backup-requests', [App\Http\Controllers\MisArchivos\BackupRequestController::class, 'store']);
     Route::delete('/files/backup-requests/{id}', [App\Http\Controllers\MisArchivos\BackupRequestController::class, 'destroy']);
 
+    // Solicitud puntual de TV y Radio (cara del cliente).
+    // El cliente pide una franja horaria o el dia completo de un medio que NO
+    // tiene asignado y recibe enlaces publicos con vigencia.
+    Route::get('/solicitud-puntual/catalogo', [App\Http\Controllers\SolicitudPuntualController::class, 'catalogo']);
+    Route::post('/solicitud-puntual/estimate', [App\Http\Controllers\SolicitudPuntualController::class, 'estimate']);
+    Route::post('/solicitud-puntual', [App\Http\Controllers\SolicitudPuntualController::class, 'store']);
+    Route::get('/solicitud-puntual/historial', [App\Http\Controllers\SolicitudPuntualController::class, 'historial']);
+    Route::delete('/solicitud-puntual/{solicitud}', [App\Http\Controllers\SolicitudPuntualController::class, 'destroy'])->whereNumber('solicitud');
+
     Route::resource('files', App\Http\Controllers\FileController::class)->only(['index', 'store', 'show', 'update', 'destroy']);
 
     // Papelera removida en change restore-mis-archivos-august
