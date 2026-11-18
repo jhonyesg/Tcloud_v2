@@ -127,6 +127,22 @@ solicitar → enlace) y declaración de los 7 vínculos pendientes con el operad
   Corrección: `@endsection` antes de `@push('scripts')`, más dos aserciones que comparan
   POSICIONES (`<main` < contenido < `</body>`, y panel lateral antes del contenido). El test
   negativo confirma que sin `@endsection` fallan las dos.
+- **L13** — 2026-11-18 — Petición del operador: "que los encabezados se les dé click y organice"
+  y, para los storages cuya ruta base no existe, "matchee si se encuentran esos medios en otros
+  discos y se actualice, así queda como disponible". Implementado en dos partes:
+  1. **Encabezados ordenables**: las cuatro cabeceras de la tabla (Storage de origen, Carpeta de
+     backup, Árbol destino, Estado) son botones con indicador de dirección. El sort es
+     CLIENT-SIDE y estable sobre el orden del servidor, así que el orden por defecto (primero lo
+     ya declarado) se conserva en los empates.
+  2. **Reparación de rutas**: `StoragePathRepairService` indexa los directorios de los discos
+     (TTL 300 s en Redis, ~1,5 s la primera vez) y devuelve candidatos ORDENADOS y EXPLICADOS
+     (score + razones + si otro storage ya declara esa ruta). El operador elige y aplica; el
+     repunto valida (existe, es directorio, está bajo `filesystems.cloud_root`, no está dentro
+     del árbol de producción), crea snapshot `storage_providers_repair_pre_<ts>` e invalida
+     los caches. **La búsqueda NO escribe nada por su cuenta**: apuntar dos storages al mismo
+     material es decisión del operador.
+  Verificado contra los 4 casos reales sin contraparte: el buscador propone carpetas de la misma
+  zona (con el aviso "ya lo declara el storage #N") o ninguna, sin inventar equivalencias.
 - **L12** — 2026-11-18 — Petición del operador: los storages **personales** (`Personal - prueba`,
   `Personal - Multiarchivo`, …) no deben aparecer en el módulo. Son el home de cada usuario
   (`/home/www/Usuarios_tcloud/<user>`): no son material de emisión ni tienen contraparte en el

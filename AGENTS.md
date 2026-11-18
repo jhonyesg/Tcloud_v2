@@ -2452,6 +2452,46 @@ borra ambas al terminar.
 `git revert` del commit. Sin migración: el módulo no cambia el esquema, solo
 escribe las dos columnas que ya existían.
 
+### Encabezados ordenables y reparación de rutas
+
+**Encabezados**: las cabeceras de la tabla son botones. Un click ordena por esa
+columna (ascendente/descendente); el orden por defecto (primero lo ya
+declarado) se preserva en los empates porque el sort es estable sobre esa base.
+
+**Reparación**: un storage cuya `base_path` ya no existe es invisible para el
+cliente (no lista carpetas, no hay nada que compartir). El botón "Buscar" de
+esa fila llama a `GET /admin/backups/{id}/repair-candidates`, que busca la
+misma carpeta en los demás discos y devuelve candidatos ORDENADOS y EXPLICADOS
+(score + por qué). El operador elige y `POST /admin/backups/{id}/repair` aplica
+el repunto.
+
+`App\Services\StoragePathRepairService`:
+
+| Método | Rol |
+|---|---|
+| `diskRoots()` | raíces `Disco_*` bajo `filesystems.cloud_root` |
+| `index()` | índice de directorios por disco (TTL 300 s en Redis) |
+| `candidates(StorageProvider $storage, int $limit)` | candidatos con score y razones |
+| `repair(StorageProvider $storage, string $newPath)` | valida, crea snapshot, actualiza, invalida caches |
+
+**Score**: +6 mismo nombre de canal · +4 mismo nombre con distinta grafía ·
++1 por token compartido (máx. 3) · +1 por carpeta padre compartida (máx. 3).
+Se muestran los de score ≥ 2. Cada candidato dice si OTRO storage ya lo
+declara (`claimed_by`): apuntar dos storages al mismo material es una decisión
+del operador, no un efecto colateral.
+
+**Reglas de `repair()`**: la ruta destino tiene que existir, ser directorio, estar
+bajo `filesystems.cloud_root` y NO estar dentro del árbol de producción (ese
+árbol es el destino del backup, no el origen). Antes de escribir crea el
+snapshot `storage_providers_repair_pre_<ts>`.
+
+**Guarda de NFS**: los exports son `hard`; un `stat()` sobre un montaje caído
+deja PHP-FPM esperando. El índice se construye con `MountGuard` y el recorrido
+ignora los discos con el montaje caído.
+
+**Nota**: `filesystems.cloud_root` se lee de la config CACHEADA. Después de
+cambiar `config/filesystems.php` hay que correr `php artisan config:cache`.
+
 <!-- ODD:BEGIN -->
 ## Organic Driven Development (ODD)
 

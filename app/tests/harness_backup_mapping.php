@@ -462,6 +462,36 @@ try {
     $stored = DB::table('storage_providers')->where('id', $sourceId)->value('backup_folder_name');
     h_check($response->getStatusCode() === 200, 'DELETE responde 200', 'respondió ' . $response->getStatusCode());
     h_check($stored === null, 'el DELETE quita el vínculo');
+
+    // ------------------------------------------------------------------
+    h_section('reparación de rutas: buscar el material en otros discos');
+    $response = $dispatch('GET', "/admin/backups/{$deadId}/repair-candidates");
+    $payload = json_decode($response->getContent(), true);
+    h_check(
+        $response->getStatusCode() === 200 && ($payload['ok'] ?? false) === true,
+        'repair-candidates responde 200',
+        'respondió ' . $response->getStatusCode()
+    );
+    h_check(isset($payload['candidates']) && is_array($payload['candidates']), 'devuelve la lista de candidatos');
+
+    // La reparacion solo acepta rutas bajo la raiz de discos: el harness la
+    // apunta a su temporal para poder ejercitar el camino real.
+    config(['filesystems.cloud_root' => $tmpRoot]);
+
+    $response = $dispatch('POST', "/admin/backups/{$deadId}/repair", ['path' => $tmpRoot . '/tampoco-existe']);
+    h_check($response->getStatusCode() === 422, 'rechaza una ruta destino que no existe');
+    $sinCambio = DB::table('storage_providers')->where('id', $deadId)->value('base_path');
+    h_check($sinCambio === $tmpRoot . '/no-existe', 'el rechazo NO escribe nada');
+
+    $nuevo = $tmpRoot . '/src';
+    $response = $dispatch('POST', "/admin/backups/{$deadId}/repair", ['path' => $nuevo]);
+    $guardado = DB::table('storage_providers')->where('id', $deadId)->value('base_path');
+    h_check($response->getStatusCode() === 200, 'aplica el repunto con una ruta válida', 'respondió ' . $response->getStatusCode());
+    h_check($guardado === $nuevo, 'la base_path quedó actualizada');
+    h_check($service->pathState(StorageProvider::find($deadId)) === 'ok', 'tras el repunto la ruta reporta ok');
+
+    config(['filesystems.cloud_root' => '/www/wwwroot/data.mediaserver.com.co/Tcloud']);
+
 } catch (\Throwable $e) {
     h_fail('excepción: ' . get_class($e) . ' — ' . $e->getMessage());
     echo $e->getTraceAsString() . "\n";

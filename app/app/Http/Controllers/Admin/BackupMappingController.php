@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\StorageProvider;
 use App\Services\MisArchivos\BackupMappingService;
+use App\Services\StoragePathRepairService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -22,8 +23,10 @@ use Illuminate\View\View;
  */
 class BackupMappingController extends Controller
 {
-    public function __construct(private readonly BackupMappingService $mappings)
-    {
+    public function __construct(
+        private readonly BackupMappingService $mappings,
+        private readonly StoragePathRepairService $repair,
+    ) {
     }
 
     /**
@@ -198,6 +201,57 @@ class BackupMappingController extends Controller
             'ok' => true,
             'message' => 'Vínculo eliminado.',
         ]);
+    }
+
+    /**
+     * Busca el material de un storage en los demás discos.
+     *
+     * Para los storages cuya ruta base no existe (el servidor reordenó sus
+     * exports), devuelve candidatos ordenados y explicados. NO escribe nada:
+     * la elección es del operador.
+     */
+    public function repairCandidates(Request $request, int $storage): JsonResponse
+    {
+        $source = StorageProvider::find($storage);
+        if ($source === null) {
+            return response()->json(['ok' => false, 'message' => 'El storage no existe.'], 404);
+        }
+
+        $candidates = $this->repair->candidates($source, (int) $request->integer('limit', 6));
+
+        return response()->json([
+            'ok' => true,
+            'storage' => ['id' => (int) $source->id, 'name' => (string) $source->name],
+            'current_path' => (string) $source->base_path,
+            'candidates' => $candidates,
+        ]);
+    }
+
+    /**
+     * Aplica el repunto a una ruta verificada.
+     */
+    public function repairPath(Request $request, int $storage): JsonResponse
+    {
+        $source = StorageProvider::find($storage);
+        if ($source === null) {
+            return response()->json(['ok' => false, 'message' => 'El storage no existe.'], 404);
+        }
+
+        $validated = $request->validate([
+            'path' => 'required|string|max:500',
+        ]);
+
+        $result = $this->repair->repair($source, (string) $validated['path']);
+
+        if (! $result['ok']) {
+            return response()->json([
+                'ok' => false,
+                'errors' => $result['errors'],
+                'message' => $result['message'],
+            ], 422);
+        }
+
+        return response()->json(['ok' => true, 'message' => $result['message']]);
     }
 
     /**

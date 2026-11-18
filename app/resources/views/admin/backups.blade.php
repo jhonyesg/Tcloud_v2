@@ -127,15 +127,35 @@
             <table class="w-full">
                 <thead class="bg-slate-50 border-b border-slate-200">
                     <tr>
-                        <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Storage de origen</th>
-                        <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Carpeta de backup</th>
-                        <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider hidden lg:table-cell">Árbol destino</th>
-                        <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Estado</th>
+                        <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                            <button @click="toggleSort('name')" class="inline-flex items-center gap-1 hover:text-brand-600 transition-colors">
+                                Storage de origen
+                                <i class="fas fa-sort text-[10px]" :class="sortIcon('name')"></i>
+                            </button>
+                        </th>
+                        <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                            <button @click="toggleSort('folder')" class="inline-flex items-center gap-1 hover:text-brand-600 transition-colors">
+                                Carpeta de backup
+                                <i class="fas fa-sort text-[10px]" :class="sortIcon('folder')"></i>
+                            </button>
+                        </th>
+                        <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider hidden lg:table-cell">
+                            <button @click="toggleSort('destination')" class="inline-flex items-center gap-1 hover:text-brand-600 transition-colors">
+                                Árbol destino
+                                <i class="fas fa-sort text-[10px]" :class="sortIcon('destination')"></i>
+                            </button>
+                        </th>
+                        <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                            <button @click="toggleSort('state')" class="inline-flex items-center gap-1 hover:text-brand-600 transition-colors">
+                                Estado
+                                <i class="fas fa-sort text-[10px]" :class="sortIcon('state')"></i>
+                            </button>
+                        </th>
                         <th class="px-4 py-3 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">Acciones</th>
                     </tr>
                 </thead>
                 <tbody class="divide-y divide-slate-100">
-                    <template x-for="row in filtered()" :key="row.id">
+                    <template x-for="row in sorted()" :key="row.id">
                         <tr class="hover:bg-slate-50">
                             <td class="px-4 py-3">
                                 <p class="text-sm font-medium text-slate-800" x-text="row.name"></p>
@@ -180,10 +200,16 @@
                                         class="ml-1 px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 text-xs font-medium rounded-lg transition-colors">
                                     <i class="fas fa-unlink mr-1"></i>Quitar
                                 </button>
+                                <button @click="openRepair(row)"
+                                        x-show="row.path_state === 'missing'"
+                                        class="ml-1 px-3 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-700 text-xs font-medium rounded-lg transition-colors"
+                                        title="Buscar este material en los otros discos">
+                                    <i class="fas fa-magnifying-glass-location mr-1"></i>Buscar
+                                </button>
                             </td>
                         </tr>
                     </template>
-                    <tr x-show="filtered().length === 0">
+                    <tr x-show="sorted().length === 0">
                         <td colspan="5" class="px-4 py-10 text-center text-sm text-slate-400">
                             Ningún storage coincide con el filtro.
                         </td>
@@ -260,6 +286,61 @@
         </div>
     </div>
 
+    <!-- Modal: buscar el material en los otros discos -->
+    <div x-cloak x-show="showRepair" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" x-transition>
+        <div class="bg-white rounded-2xl w-full max-w-2xl shadow-2xl max-h-[90vh] overflow-y-auto" @click.away="showRepair = false">
+            <div class="p-6">
+                <h2 class="text-lg font-bold text-slate-800 mb-1">Buscar el material en los otros discos</h2>
+                <p class="text-sm text-slate-500 mb-4">
+                    La ruta base de este storage no existe. Se busca la misma carpeta en los demás discos.
+                    <span class="block mt-1 font-mono text-xs text-slate-400" x-text="repairStorage ? repairStorage.base_path : ''"></span>
+                </p>
+
+                <div x-show="repairLoading" class="flex items-center justify-center py-10">
+                    <i class="fas fa-spinner fa-spin text-brand-400 text-xl"></i>
+                </div>
+
+                <div x-show="!repairLoading && repairCandidates.length === 0" class="py-10 text-center text-sm text-slate-400">
+                    <i class="fas fa-folder-minus text-3xl mb-3 block text-slate-200"></i>
+                    No se encontro esa carpeta en ningun disco.
+                </div>
+
+                <div x-show="!repairLoading && repairCandidates.length > 0" class="space-y-2">
+                    <template x-for="c in repairCandidates" :key="c.path">
+                        <label class="flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors"
+                               :class="repairSelected === c.path ? 'border-brand-500 bg-brand-50' : 'border-slate-200 hover:bg-slate-50'">
+                            <input type="radio" x-model="repairSelected" :value="c.path" class="mt-1">
+                            <span class="flex-1 min-w-0">
+                                <span class="block text-sm text-slate-700 font-mono break-all" x-text="c.path"></span>
+                                <span class="block mt-1 text-xs text-slate-500" x-text="c.reasons.join(' · ')"></span>
+                                <span x-show="c.claimed_by" class="block mt-1 text-xs text-amber-600"
+                                      x-text="'Ya lo declara: ' + c.claimed_by.name"></span>
+                            </span>
+                            <span class="text-xs font-semibold text-brand-600 shrink-0" x-text="c.score"></span>
+                        </label>
+                    </template>
+                </div>
+
+                <div x-show="repairError" x-cloak class="mt-4 p-3 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700">
+                    <i class="fas fa-circle-exclamation mr-1.5"></i><span x-text="repairError"></span>
+                </div>
+
+                <div class="flex gap-3 mt-6">
+                    <button @click="applyRepair()" :disabled="!repairSelected || repairSaving"
+                            class="flex-1 py-2.5 bg-brand-600 hover:bg-brand-700 disabled:opacity-50 text-white rounded-xl text-sm font-medium transition-colors">
+                        <i class="fas fa-save mr-1.5" x-show="!repairSaving"></i>
+                        <i class="fas fa-spinner fa-spin mr-1.5" x-show="repairSaving"></i>
+                        Actualizar ruta
+                    </button>
+                    <button @click="showRepair = false"
+                            class="px-5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-sm font-medium transition-colors">
+                        Cerrar
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
 </div>
 
 @endsection
@@ -278,6 +359,15 @@ function backupAdmin() {
 
         search: '',
         onlyUnmapped: false,
+        sortKey: '',
+        sortDir: 'asc',
+        showRepair: false,
+        repairStorage: null,
+        repairCandidates: [],
+        repairSelected: '',
+        repairLoading: false,
+        repairSaving: false,
+        repairError: '',
         orphansOpen: false,
         showForm: false,
         saving: false,
@@ -320,6 +410,112 @@ function backupAdmin() {
 
         get brokenSources() {
             return this.rows.filter(r => r.state === 'broken').length;
+        },
+
+        /**
+         * Ordena por la columna elegida. El orden por defecto del servidor
+         * (primero lo ya declarado) se preserva en los empates: el sort es
+         * estable sobre esa base.
+         */
+        sorted() {
+            const rows = this.filtered();
+            if (!this.sortKey) return rows;
+
+            const dir = this.sortDir === 'asc' ? 1 : -1;
+            const rank = { mapped: 0, broken: 1, unmapped: 2 };
+
+            return rows.slice().sort((a, b) => {
+                const av = this.sortValue(a, this.sortKey);
+                const bv = this.sortValue(b, this.sortKey);
+                if (av === bv) return 0;
+                return (av > bv ? 1 : -1) * dir;
+            });
+        },
+
+        sortValue(row, key) {
+            if (key === 'state') {
+                const rank = { mapped: 0, broken: 1, unmapped: 2 };
+                return rank[row.state] ?? 9;
+            }
+            if (key === 'name' || key === 'folder' || key === 'destination') {
+                return String(row[key] || '').toLowerCase();
+            }
+            return '';
+        },
+
+        toggleSort(key) {
+            if (this.sortKey === key) {
+                this.sortDir = this.sortDir === 'asc' ? 'desc' : 'asc';
+                return;
+            }
+            this.sortKey = key;
+            this.sortDir = 'asc';
+        },
+
+        sortIcon(key) {
+            if (this.sortKey !== key) return 'fa-sort';
+            return this.sortDir === 'asc' ? 'fa-sort-up' : 'fa-sort-down';
+        },
+
+        async openRepair(row) {
+            this.repairStorage = row;
+            this.repairCandidates = [];
+            this.repairSelected = '';
+            this.repairError = '';
+            this.showRepair = true;
+            this.repairLoading = true;
+
+            try {
+                const res = await apiFetch(`/admin/backups/${row.id}/repair-candidates`, {
+                    method: 'GET',
+                    credentials: 'include',
+                    headers: { 'Accept': 'application/json' },
+                });
+                const data = await res.json();
+                if (!res.ok || !data.ok) {
+                    this.repairError = data.message || 'No se pudo buscar el material.';
+                    return;
+                }
+                this.repairCandidates = data.candidates || [];
+                if (this.repairCandidates.length > 0) {
+                    this.repairSelected = this.repairCandidates[0].path;
+                }
+            } catch (e) {
+                this.repairError = 'No se pudo buscar el material.';
+            } finally {
+                this.repairLoading = false;
+            }
+        },
+
+        async applyRepair() {
+            if (!this.repairStorage || !this.repairSelected) return;
+
+            this.repairSaving = true;
+            this.repairError = '';
+
+            try {
+                const res = await apiFetch(`/admin/backups/${this.repairStorage.id}/repair`, {
+                    method: 'POST',
+                    credentials: 'include',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json',
+                        'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
+                    },
+                    body: JSON.stringify({ path: this.repairSelected }),
+                });
+                const data = await res.json();
+                if (res.ok && data.ok) {
+                    this.showToast(data.message || 'Ruta actualizada', 'success');
+                    window.location.reload();
+                } else {
+                    this.repairError = data.message || 'No se pudo actualizar la ruta.';
+                }
+            } catch (e) {
+                this.repairError = 'No se pudo actualizar la ruta.';
+            } finally {
+                this.repairSaving = false;
+            }
         },
 
         filtered() {
