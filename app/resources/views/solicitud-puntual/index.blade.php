@@ -28,9 +28,25 @@
         <span x-text="toast?.msg"></span>
     </div>
 
+    <!-- ================= PESTAÑAS ================= -->
+    <div class="flex items-center gap-1 mb-5 border-b border-slate-200" data-puntual-tour="tabs">
+        <button @click="tab = 'medios'"
+                class="px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors"
+                :class="tab === 'medios' ? 'border-brand-600 text-brand-700' : 'border-transparent text-slate-500 hover:text-slate-700'">
+            <i class="fas fa-satellite-dish mr-1.5"></i>Medios
+            <span class="ml-1 text-xs text-slate-400" x-text="'(' + medios.length + ')'"></span>
+        </button>
+        <button @click="tab = 'solicitudes'"
+                class="px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors"
+                :class="tab === 'solicitudes' ? 'border-brand-600 text-brand-700' : 'border-transparent text-slate-500 hover:text-slate-700'">
+            <i class="fas fa-list-check mr-1.5"></i>Mis solicitudes
+            <span class="ml-1 text-xs text-slate-400" x-text="'(' + (history.total || 0) + ')'"></span>
+        </button>
+    </div>
+
     <!-- ================= CATÁLOGO ================= -->
-    <section class="mb-8" data-puntual-tour="catalogo">
-        <div class="flex items-center justify-between flex-wrap gap-3 mb-3">
+    <section x-show="tab === 'medios'" class="mb-8" data-puntual-tour="catalogo">
+        <div class="flex items-center justify-between flex-wrap gap-3 mb-4">
             <h2 class="text-sm font-semibold text-slate-500 uppercase tracking-wider">
                 Medios que puedes solicitar
                 <span class="ml-1 font-normal normal-case text-slate-400" x-text="'(' + medios.length + ')'"></span>
@@ -63,7 +79,7 @@
 
         <div x-show="!loadingMedios && medios.length > 0"
              class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            <template x-for="m in medios" :key="m.id">
+            <template x-for="m in mediosPagina()" :key="m.id">
                 <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4 flex items-start justify-between gap-3">
                     <div class="min-w-0">
                         <div class="flex items-center gap-2">
@@ -72,7 +88,10 @@
                                   :class="m.media_kind === 'tv' ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'"
                                   x-text="m.media_kind.toUpperCase()"></span>
                         </div>
-                        <p class="text-xs text-slate-400 mt-0.5 truncate" x-text="m.region || m.storage"></p>
+                        <p class="text-xs text-slate-400 mt-0.5 truncate"
+                           x-show="m.region"
+                           :title="m.storage"
+                           x-text="m.region"></p>
                     </div>
                     <button @click="openRequest(m)"
                             class="shrink-0 px-3 py-1.5 bg-brand-600 hover:bg-brand-700 text-white rounded-lg text-xs font-medium transition-colors">
@@ -83,8 +102,23 @@
         </div>
     </section>
 
+        <!-- Paginador del catálogo -->
+        <div x-show="!loadingMedios && medios.length > porPagina" class="mt-4 flex items-center justify-between">
+            <span class="text-xs text-slate-500"
+                  x-text="'Mostrando ' + (mediosPagina().length ? (paginaMedios - 1) * porPagina + 1 : 0) + '-' + ((paginaMedios - 1) * porPagina + mediosPagina().length) + ' de ' + medios.length"></span>
+            <div class="flex items-center gap-1">
+                <template x-for="p in paginasMedios()" :key="p">
+                    <button @click="paginaMedios = p"
+                            class="px-2.5 py-1 rounded-lg text-xs font-medium"
+                            :class="p === paginaMedios ? 'bg-brand-600 text-white' : 'text-slate-600 hover:bg-slate-100'"
+                            x-text="p"></button>
+                </template>
+            </div>
+        </div>
+    </section>
+
     <!-- ================= HISTORIAL ================= -->
-    <section data-puntual-tour="historial">
+    <section x-show="tab === 'solicitudes'" data-puntual-tour="historial">
         <div class="flex items-center justify-between flex-wrap gap-3 mb-3">
             <h2 class="text-sm font-semibold text-slate-500 uppercase tracking-wider">Mis solicitudes</h2>
             <div class="flex items-center gap-2">
@@ -171,11 +205,13 @@
                                 </td>
                             </tr>
                         </template>
-                        <tr x-show="history.data.length === 0">
-                            <td colspan="7" class="px-4 py-8 text-center text-slate-400">
-                                Todavía no has hecho ninguna solicitud.
-                            </td>
-                        </tr>
+                        <template x-if="history.data.length === 0">
+                            <tr>
+                                <td colspan="7" class="px-4 py-8 text-center text-slate-400">
+                                    Todavía no has hecho ninguna solicitud.
+                                </td>
+                            </tr>
+                        </template>
                     </tbody>
                 </table>
             </div>
@@ -330,9 +366,9 @@
                 <div>
                     <h3 class="text-lg font-bold text-slate-800" x-text="detail?.medio?.name || ''"></h3>
                     <p class="text-sm text-slate-500 mt-0.5">
-                        <span x-text="detail?.fecha_legible"></span>
-                        · <span x-text="detail?.hora_inicio + ' → ' + detail?.hora_fin"></span>
-                        · <span x-text="detail?.duracion_minutos + ' minutos'"></span>
+                        <span x-text="detail?.fecha_legible ?? ''"></span>
+                        · <span x-text="detail ? (detail.hora_inicio + ' → ' + detail.hora_fin) : ''"></span>
+                        · <span x-text="detail ? detail.duracion_minutos + ' minutos' : ''"></span>
                     </p>
                 </div>
                 <button @click="detailOpen = false" class="text-slate-400 hover:text-slate-600">
@@ -358,9 +394,9 @@
 
                 <div class="rounded-xl border border-slate-200 px-4 py-3">
                     <p class="text-xs font-semibold text-slate-500 mb-1">Motivo</p>
-                    <p class="text-sm text-slate-700" x-text="detail?.motivo"></p>
+                    <p class="text-sm text-slate-700" x-text="detail?.motivo ?? ''"></p>
                     <p class="text-xs text-slate-400 mt-2" x-show="detail?.link_expires_at"
-                       x-text="'Los enlaces vencen el ' + new Date(detail.link_expires_at).toLocaleString('es-CO')"></p>
+                       x-text="detail?.link_expires_at ? 'Los enlaces vencen el ' + new Date(detail.link_expires_at).toLocaleString('es-CO') : ''"></p>
                 </div>
 
                 <div x-show="detail?.estado === 'revoked'" class="rounded-xl bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700">
@@ -370,7 +406,7 @@
                 <div x-show="detail?.links?.length">
                     <p class="text-xs font-semibold text-slate-500 mb-2">Enlaces de entrega</p>
                     <div class="divide-y divide-slate-100 rounded-xl border border-slate-200">
-                        <template x-for="(l, i) in detail.links" :key="i">
+                        <template x-for="(l, i) in (detail?.links ?? [])" :key="i">
                             <div class="px-4 py-2.5 flex items-center justify-between gap-3">
                                 <div class="min-w-0">
                                     <p class="text-sm text-slate-700 truncate" x-text="l.nombre"></p>
@@ -401,10 +437,13 @@
 <script>
 function puntualManager() {
     return {
+        tab: 'medios',
         medios: [],
         loadingMedios: false,
         search: '',
         kind: '',
+        paginaMedios: 1,
+        porPagina: 60,
 
         history: { data: [], total: 0, page: 1, pages: 1 },
         histSearch: '',
@@ -434,6 +473,7 @@ function puntualManager() {
         // Catálogo
         // ---------------------------------------------------------------
         async loadMedios() {
+            this.paginaMedios = 1;
             this.loadingMedios = true;
             const params = new URLSearchParams();
             if (this.search) params.set('q', this.search);
@@ -451,6 +491,27 @@ function puntualManager() {
             } finally {
                 this.loadingMedios = false;
             }
+        },
+
+        /**
+         * Medios de la página actual.
+         *
+         * El catálogo tiene cientos de medios: sin paginar la pantalla es un
+         * muro de tarjetas y no hay forma de ubicar nada.
+         */
+        mediosPagina() {
+            const desde = (this.paginaMedios - 1) * this.porPagina;
+            return this.medios.slice(desde, desde + this.porPagina);
+        },
+
+        paginasMedios() {
+            const total = Math.ceil(this.medios.length / this.porPagina) || 1;
+            const actual = this.paginaMedios;
+            const desde = Math.max(1, actual - 2);
+            const hasta = Math.min(total, desde + 4);
+            const out = [];
+            for (let p = desde; p <= hasta; p++) out.push(p);
+            return out;
         },
 
         // ---------------------------------------------------------------

@@ -6,6 +6,7 @@ use App\Models\Medio;
 use App\Models\StorageProvider;
 use App\Models\User;
 use App\Services\MountGuard;
+use App\Support\Utf8;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Log;
 
@@ -219,7 +220,7 @@ class MedioCatalogService
             $out[] = [
                 'storage_id' => $storage->id,
                 'subpath' => '',
-                'name' => (string) $storage->name,
+                'name' => Utf8::repair((string) $storage->name),
                 'region' => null,
                 'media_kind' => $kind,
                 'declared' => $declared[$storage->id . '|'] ?? false,
@@ -236,6 +237,13 @@ class MedioCatalogService
     /**
      * Medios que el usuario NO tiene asignados: el catálogo del módulo.
      *
+     * EXCEPCIÓN: el ADMIN ve el catálogo COMPLETO. Tiene por definición
+     * acceso a todo (y de hecho `00 Discos`, la raíz del árbol, entre sus
+     * permisos), así que el filtro de complemento le dejaría el catálogo
+     * vacío — un módulo que no muestra nada. Para el admin el módulo es una
+     * herramienta de emisión de entregas con registro contable, no una
+     * petición de material ajeno.
+     *
      * @return Collection<int,Medio>
      */
     public function availableFor(User $user): Collection
@@ -248,6 +256,10 @@ class MedioCatalogService
 
         if ($medios->isEmpty()) {
             return $medios;
+        }
+
+        if ($user->isAdmin()) {
+            return $medios->values();
         }
 
         $assigned = $this->assignedBasePaths($user);
@@ -733,6 +745,10 @@ class MedioCatalogService
         $name = trim(str_replace('_', ' ', $folder));
         $name = preg_replace('/\s+/', ' ', $name) ?? $name;
 
-        return $name !== '' ? $name : $folder;
+        if ($name === '') {
+            return $folder;
+        }
+
+        return Utf8::repair($name);
     }
 }

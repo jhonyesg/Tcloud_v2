@@ -362,6 +362,12 @@ class PuntualRequestService
             );
         }
 
+        // El admin tiene acceso a todo: el filtro de complemento no le
+        // aplica (ver `MedioCatalogService::availableFor()`).
+        if ($user->isAdmin()) {
+            return;
+        }
+
         $asignados = $this->catalog->assignedBasePaths($user);
 
         if ($asignados !== [] && $this->catalog->isAssignedTo($medio, $asignados)) {
