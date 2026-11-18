@@ -46,6 +46,25 @@ class MedioCatalogService
      * (`$RECYCLE.BIN` de un disco Windows recycle un directorio de sistema
      * con subcarpetas de fecha).
      */
+    /**
+     * Regiones conocidas. Si la carpeta padre es una de estas, es la REGIÓN
+     * y la hoja es la emisora, aunque el nombre del archivo empiece por el
+     * padre ("11_cundinamarca_punto5" es Punto5, de Cundinamarca, no una
+     * marca llamada "Cundinamarca").
+     *
+     * @var list<string>
+     */
+    public const REGIONES = [
+        'antioquia', 'atlantico', 'bolivar', 'boyaca', 'caldas', 'caqueta', 'casanare',
+        'cauca', 'cesar', 'choco', 'cordoba', 'cundinamarca', 'guainia', 'guaviare',
+        'huila', 'laguajira', 'guajira', 'magdalena', 'meta', 'narino', 'nortesantander',
+        'norsantander', 'putumayo', 'quindio', 'risaralda', 'sanandres', 'santander',
+        'sucre', 'tolima', 'vallecauca', 'valle', 'vaupes', 'vichada', 'arauca',
+        'amazonas', 'bogota', 'manizales', 'popayan', 'santamarta', 'pereira',
+        'armenia', 'neiva', 'ibague', 'pasto', 'monteria', 'villavicencio', 'cucuta',
+        'barranquilla', 'cartagena', 'bucaramanga', 'sincelejo', 'medellin', 'cali',
+    ];
+
     public const DENYLIST = [
         'System Volume Information',
         '$RECYCLE.BIN',
@@ -354,7 +373,8 @@ class MedioCatalogService
      */
     private function proposal(StorageProvider $storage, string $subpath, array $declared): array
     {
-        $proposed = $this->proposeName($subpath);
+        $channelPath = rtrim((string) $storage->base_path, '/') . '/' . trim($subpath, '/');
+        $proposed = $this->proposeName($subpath, $this->sampleFilePrefix($channelPath));
         [$targetStorageId, $targetSubpath, $isStorage] = $this->resolveTarget($storage, $subpath);
 
         return [
@@ -472,6 +492,181 @@ class MedioCatalogService
     }
 
     /**
+     * ¿La carpeta padre es la MARCA (y la hoja el dial), o es la REGIÓN?
+     *
+     * La evidencia es el NOMBRE DEL ARCHIVO que escribe el grabador, que es
+     * la única fuente que dice qué es cada cosa:
+     *
+     *     Antioquia/La_Fm      -> 09_la_fm_antioquia      padre al FINAL  -> REGION
+     *     TROPICANA_REGIONAL/  -> tropicanabarranquilla    padre al INICIO -> MARCA
+     *       barranquilla
+     *
+     * Cuando el padre está al final del prefijo, la hoja es la emisora y el
+     * padre la región ("La Fm de Antioquia"). Cuando el padre está al
+     * principio, la hoja es el DIAL y el padre la marca ("Tropicana
+     * Barranquilla"): el nombre visible debe llevar la marca, o doce
+     * emisoras distintas se leerían como departamentos sueltos.
+     */
+    private function parentLooksLikeBrand(string $parent, string $leaf, string $prefijoArchivo): bool
+    {
+        $limpiar = function (string $texto): string {
+            $texto = $this->normalizarParaComparar($texto);
+
+            return preg_replace('/^[0-9]+/', '', $texto) ?? $texto;
+        };
+
+        $padre = $limpiar($parent);
+        $hoja = $limpiar($leaf);
+        $prefijo = $limpiar($prefijoArchivo);
+
+        if ($padre === '' || $prefijo === '') {
+            return false;
+        }
+
+        // 0) Si el padre es una región conocida, NO es marca. Es la señal
+        //    más fuerte: "Cundinamarca/Punto5" es Punto5 de Cundinamarca,
+        //    por más que el archivo se llame "11_cundinamarca_punto5".
+        $marcaSinSufijo = preg_replace('/(regional|nacional)$/', '', $padre) ?? $padre;
+
+        if (in_array($marcaSinSufijo, self::REGIONES, true)) {
+            return false;
+        }
+
+        // 1) El padre aparece al FINAL del prefijo: es la REGIÓN que el
+        //    grabador puso detrás del nombre del canal.
+        //    ("11_cundinamarca_punto5" termina en "cundinamarca")
+        if (str_ends_with($prefijo, $padre)) {
+            return false;
+        }
+
+        // 2) El padre ABRE el prefijo y la hoja lo cierra: MARCA + dial.
+        //    ("tropicanabarranquilla": abre "tropicana", cierra "barranquilla")
+        $marca = preg_replace('/(regional|nacional)$/', '', $padre) ?? $padre;
+
+        if ($marca !== '' && str_starts_with($prefijo, $marca) && str_ends_with($prefijo, $hoja)) {
+            return true;
+        }
+
+        // 3) El padre abre el prefijo pero la hoja no lo cierra
+        //    ("tropicana" + "barranquilla" con la hoja en otro orden): se
+        //    exige que el padre no sea un departamento conocido para no
+        //    inventar marcas.
+        if ($marca !== '' && str_starts_with($prefijo, $marca) && ! str_ends_with($prefijo, $marca)) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Nombre visible de una emisora cuya carpeta padre es la marca.
+     *
+     * `TROPICANA_REGIONAL/barranquilla` -> "Tropicana Barranquilla".
+     * La marca sale de la carpeta con una grafía legible y el dial se
+     * capitaliza palabra por palabra.
+     */
+    private function nombreDeMarca(string $parent, string $leaf): string
+    {
+        $marca = $this->humanize($parent);
+
+        // "REGIONAL" y "NACIONAL" describen el alcance de la carpeta, no la
+        // marca: "TROPICANA REGIONAL" se lee "Tropicana".
+        $marca = preg_replace('/\b(REGIONAL|NACIONAL)\b/i', '', $marca) ?? $marca;
+        $marca = trim(preg_replace('/\s+/', ' ', $marca) ?? $marca);
+
+        if ($marca === '') {
+            return $this->titulo($leaf);
+        }
+
+        // El nombre del archivo ya trae la marca: si el dial la repite, no
+        // se duplica.
+        $dial = $this->titulo($leaf);
+
+        if (mb_stripos($this->normalizarParaComparar($dial), $this->normalizarParaComparar($marca)) === 0) {
+            return $this->titulo($dial);
+        }
+
+        return $this->titulo($marca) . ' ' . $dial;
+    }
+
+    /**
+     * Capitaliza cada palabra sin cambiar las mayúsculas internas.
+     */
+    private function titulo(string $texto): string
+    {
+        $texto = trim($this->humanize($texto));
+
+        if ($texto === '') {
+            return '';
+        }
+
+        // Si el nombre ya tiene mayúsculas mezcladas (una marca como
+        // "BLURADIO"), se respeta tal cual.
+        if (preg_match('/[A-Z]/', $texto) && ! preg_match('/^[A-Z\s]+$/', $texto)) {
+            return $texto;
+        }
+
+        return mb_convert_case(mb_strtolower($texto), MB_CASE_TITLE, 'UTF-8');
+    }
+
+    /**
+     * Normaliza para comparar nombres de carpeta con prefijos de archivo:
+     * sin acentos, sin números de orden, sin separadores.
+     */
+    private function normalizarParaComparar(string $texto): string
+    {
+        $texto = mb_strtolower(trim($texto));
+
+        // "é" -> "e": los nombres de archivo del grabador a veces traen
+        // acentos y la carpeta no, o al revés.
+        $texto = strtr($texto, [
+            'á' => 'a', 'é' => 'e', 'í' => 'i', 'ó' => 'o', 'ú' => 'u', 'ü' => 'u', 'ñ' => 'n',
+        ]);
+
+        $texto = preg_replace('/[^a-z0-9]+/', '', $texto) ?? $texto;
+
+        // El prefijo numérico de orden ("09_la_fm") no es parte del nombre.
+        return preg_replace('/^[0-9]+/', '', $texto) ?? $texto;
+    }
+
+    /**
+     * Prefijo del nombre de archivo que escribe el grabador en un canal.
+     *
+     * Devuelve, por ejemplo, `09_la_fm_antioquia` o `tropicanabarranquilla`.
+     * Es la evidencia de qué es cada carpeta.
+     */
+    private function sampleFilePrefix(string $channelPath): ?string
+    {
+        if (! is_dir($channelPath)) {
+            return null;
+        }
+
+        $days = array_values(array_filter($this->childDirectories($channelPath), fn (string $d) => preg_match('/^\d{8}$/', $d)));
+        sort($days);
+
+        foreach ($days as $day) {
+            $dir = $channelPath . '/' . $day;
+            $entries = @scandir($dir);
+
+            if ($entries === false) {
+                continue;
+            }
+
+            foreach ($entries as $entry) {
+                if ($entry === '.' || $entry === '..' || ! is_file($dir . '/' . $entry)) {
+                    continue;
+                }
+
+                if (preg_match('/^(.*?)_([0-9]{8})_([0-9]{6})\.[a-z0-9]+$/i', $entry, $m)) {
+                    return $m[1];
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * Nombre y región propuestos para un sub-canal.
      *
      * La región desambigua los homónimos: `Antioquia/Caracol` y
@@ -481,15 +676,45 @@ class MedioCatalogService
      *
      * @return array{name:string,region:?string}
      */
-    public function proposeName(string $subpath): array
+    public function proposeName(string $subpath, ?string $prefijoArchivo = null): array
     {
-        $segments = array_values(array_filter(explode('/', trim($subpath, '/'))));
-        $channel = array_pop($segments) ?? trim($subpath, '/');
-        $region = $segments === [] ? null : (string) end($segments);
+        $subpath = trim($subpath, '/');
+
+        // Sin subpath el medio ES el storage: no hay carpeta que interpretar
+        // y el nombre lo pone quien declara (el nombre del storage).
+        if ($subpath === '') {
+            return ['name' => '', 'region' => null];
+        }
+
+        $segments = array_values(array_filter(explode('/', $subpath)));
+        $channel = (string) array_pop($segments);
+        $parent = $segments === [] ? null : (string) end($segments);
+
+        // Sin padre no hay nada que decidir: la hoja es el canal.
+        if ($parent === null) {
+            return [
+                'name' => $this->humanize($channel),
+                'region' => null,
+            ];
+        }
+
+        // Con evidencia del archivo y padre que parece la MARCA, la hoja es
+        // el dial y el nombre visible lleva la marca: "Tropicana
+        // Barranquilla". Si no hay evidencia, se mantiene el criterio de
+        // región (el padre es el departamento).
+        if ($prefijoArchivo !== null && $this->parentLooksLikeBrand($parent, $channel, $prefijoArchivo)) {
+            // La marca es el padre sin el sufijo de la carpeta
+            // ("TROPICANA_REGIONAL" -> "Tropicana") y con la grafía del
+            // nombre de la emisora, que es la que el cliente reconoce.
+            return [
+                'name' => $this->nombreDeMarca($parent, $channel),
+                'region' => null,
+            ];
+        }
 
         return [
             'name' => $this->humanize($channel),
-            'region' => $region,
+            'region' => $parent,
         ];
     }
 

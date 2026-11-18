@@ -91,6 +91,77 @@ class PuntualResolverTest extends TestCase
     }
 
     // ------------------------------------------------------------------
+    // Marca vs. región (el padre de la carpeta)
+    // ------------------------------------------------------------------
+
+    /**
+     * La única evidencia de qué es cada carpeta es el nombre del archivo que
+     * escribe el grabador: cuando el padre abre el prefijo es la MARCA
+     * (`tropicanabarranquilla`), cuando lo cierra es la REGIÓN
+     * (`11_cundinamarca_punto5`).
+     */
+    public function test_el_padre_que_abre_el_archivo_es_la_marca(): void
+    {
+        $propuesta = $this->catalog->proposeName('TROPICANA_REGIONAL/barranquilla', 'tropicanabarranquilla');
+
+        $this->assertSame('Tropicana Barranquilla', $propuesta['name']);
+        $this->assertNull($propuesta['region']);
+    }
+
+    public function test_el_padre_que_cierra_el_archivo_es_la_region(): void
+    {
+        $propuesta = $this->catalog->proposeName('Cundinamarca/Punto5', '11_cundinamarca_punto5');
+
+        $this->assertSame('Punto5', $propuesta['name']);
+        $this->assertSame('Cundinamarca', $propuesta['region']);
+    }
+
+    public function test_un_departamento_conocido_nunca_es_marca(): void
+    {
+        // El prefijo abre por "cundinamarca", pero Cundinamarca es una
+        // región conocida: la hoja es la emisora.
+        $propuesta = $this->catalog->proposeName('Cundinamarca/Armonia', '12_cundinamarca_armonia');
+
+        $this->assertSame('Armonia', $propuesta['name']);
+        $this->assertSame('Cundinamarca', $propuesta['region']);
+    }
+
+    public function test_la_marca_no_duplica_el_dial(): void
+    {
+        // Cuando la carpeta padre y la hoja dicen lo mismo, el nombre no se
+        // repite: queda "tropicana" como canal de la marca "TROPICANA" (no
+        // hay dial distinto que agregar). El caso real de duplicación es el
+        // de la carpeta nacional, que se verifica abajo.
+        $propuesta = $this->catalog->proposeName('TROPICANA/tropicana', 'tropicana');
+
+        $this->assertSame('tropicana', $propuesta['name']);
+        $this->assertSame('TROPICANA', $propuesta['region']);
+
+        // El dial ya repite la marca ("tropicana"): no se duplica.
+        $nacional = $this->catalog->proposeName('TROPICANA_REGIONAL/tropicana', 'tropicanatropicana');
+        $this->assertSame('Tropicana', $nacional['name']);
+        $this->assertNull($nacional['region']);
+    }
+
+    public function test_sin_evidencia_del_archivo_se_mantiene_la_region(): void
+    {
+        $propuesta = $this->catalog->proposeName('Antioquia/La_Fm');
+
+        $this->assertSame('La Fm', $propuesta['name']);
+        $this->assertSame('Antioquia', $propuesta['region']);
+    }
+
+    public function test_el_medio_raiz_no_propone_nombre(): void
+    {
+        // El nombre de un medio raíz es el del storage: aquí no hay carpeta
+        // que interpretar.
+        $propuesta = $this->catalog->proposeName('');
+
+        $this->assertSame('', $propuesta['name']);
+        $this->assertNull($propuesta['region']);
+    }
+
+    // ------------------------------------------------------------------
     // Cadencia derivada
     // ------------------------------------------------------------------
 
