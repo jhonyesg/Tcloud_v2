@@ -74,6 +74,89 @@ class MedioCatalogService
     public function __construct(private readonly MountGuard $mountGuard) {}
 
     // ------------------------------------------------------------------
+    // Canales planos (semilla del catálogo)
+    // ------------------------------------------------------------------
+
+    /**
+     * Storages que son un canal plano: sus carpetas-día cuelgan
+     * DIRECTAMENTE del `base_path`.
+     *
+     * Es una prueba ESTRUCTURAL, no de nombre: el árbol de producción
+     * (`30 Television Bk`) tiene carpetas de canal y no días, así que no
+     * entra; la prensa y las aplicaciones tampoco. Y evita por completo
+     * agregar `mime_type` sobre 1,2 M filas de `files` (medido: 18,9 s).
+     *
+     * @return Collection<int,StorageProvider>
+     */
+    public function flatChannelStorages(): Collection
+    {
+        return StorageProvider::query()
+            ->where('kind', 'local')
+            ->where('enabled', true)
+            ->where('is_personal', false)
+            ->orderBy('name')
+            ->get()
+            ->filter(function (StorageProvider $storage) {
+                $base = rtrim((string) $storage->base_path, '/');
+
+                if ($base === '' || ! is_dir($base)) {
+                    return false;
+                }
+
+                if ($this->mountGuard->isNetworkMountDown($base)) {
+                    return false;
+                }
+
+                return $this->hasDayFolders($base);
+            })
+            ->values();
+    }
+
+    /**
+     * Propuesta de medios para los canales planos.
+     *
+     * Un canal plano es el storage completo: el medio va con `subpath`
+     * vacío. El tipo (TV o radio) se deduce de la extensión de un archivo
+     * real del canal.
+     *
+     * @return list<array{storage_id:int,subpath:string,name:string,region:?string,media_kind:string,declared:bool}>
+     */
+    public function bootstrapProposals(): array
+    {
+        $declared = $this->declaredTargets();
+        $out = [];
+
+        foreach ($this->flatChannelStorages() as $storage) {
+            $extension = $this->sampleExtension(rtrim((string) $storage->base_path, '/'));
+
+            if ($extension === null) {
+                continue;
+            }
+
+            if (in_array($extension, self::AUDIO_EXTENSIONS, true)) {
+                $kind = Medio::KIND_RADIO;
+            } elseif (in_array($extension, self::VIDEO_EXTENSIONS, true)) {
+                $kind = Medio::KIND_TV;
+            } else {
+                // No es material de audio ni de video (imágenes, PDF, texto):
+                // no es un medio de TV/Radio.
+                continue;
+            }
+
+            $out[] = [
+                'storage_id' => $storage->id,
+                'subpath' => '',
+                'name' => (string) $storage->name,
+                'region' => null,
+                'media_kind' => $kind,
+                'declared' => $declared[$storage->id . '|'] ?? false,
+            ];
+        }
+
+        return $out;
+    }
+
+    // ------------------------------------------------------------------
     // Complemento no asignado
     // ------------------------------------------------------------------
 
