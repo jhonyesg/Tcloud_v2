@@ -117,6 +117,7 @@
                 <table class="w-full text-sm">
                     <thead class="bg-slate-50 text-xs uppercase tracking-wider text-slate-500">
                         <tr>
+                            <th class="px-3 py-2 text-right font-semibold text-slate-400 w-14" title="Numeración del listado">#</th>
                             <th class="px-4 py-2 text-left font-semibold">
                                 <button @click="ordenarMedios('name')" class="flex items-center gap-1 hover:text-slate-700">
                                     Medio
@@ -153,8 +154,10 @@
                         </tr>
                     </thead>
                     <tbody class="divide-y divide-slate-100">
-                        <template x-for="m in mediosPagina()" :key="m.id">
+                        <template x-for="(m, idx) in mediosPagina()" :key="m.id">
                             <tr class="hover:bg-slate-50">
+                                <td class="px-3 py-2 text-right text-xs font-mono text-slate-400 tabular-nums"
+                                    x-text="numeroFila(idx)"></td>
                                 <td class="px-4 py-2 font-medium text-slate-800" x-text="m.name"></td>
                                 <td class="px-4 py-2 text-slate-600" x-text="m.region || '—'"></td>
                                 <td class="px-4 py-2">
@@ -840,6 +843,18 @@ function puntualManager() {
 
                 return ca.localeCompare(cb, 'es', { sensitivity: 'base', numeric: true }) * factor;
             });
+        },
+
+        /**
+         * Número de fila del listado, de tres dígitos y CONTINUO entre
+         * páginas: la página 2 empieza en 061, no en 001. Así el operador
+         * puede referirse a "el medio 137" sin ambigüedad.
+         */
+        numeroFila(indice) {
+            const numero = (this.paginaMedios - 1) * this.porPagina + indice + 1;
+
+            // Con más de 999 medios el ancho crece solo: padStart no recorta.
+            return String(numero).padStart(3, '0');
         },
 
         /**
