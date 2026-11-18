@@ -1243,8 +1243,10 @@ function puntualManager() {
         statusLabel(status) {
             return {
                 ready: 'vigente',
+                partial: 'parcial',
                 expired: 'expirada',
                 unavailable: 'sin material',
+                material_no_indexado: 'sin indexar',
                 revoked: 'revocada',
             }[status] || status;
         },
@@ -1252,6 +1254,8 @@ function puntualManager() {
         statusClass(status) {
             return {
                 ready: 'bg-green-100 text-green-700',
+                partial: 'bg-amber-100 text-amber-700',
+                material_no_indexado: 'bg-blue-100 text-blue-700',
                 expired: 'bg-slate-100 text-slate-600',
                 unavailable: 'bg-amber-100 text-amber-700',
                 revoked: 'bg-red-100 text-red-700',
