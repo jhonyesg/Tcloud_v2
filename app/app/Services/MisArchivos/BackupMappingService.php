@@ -409,8 +409,12 @@ class BackupMappingService
      * `Prensa`: los diarios y revistas son material impreso, no emisión. El árbol de
      * producción (backup de TV) no tiene contraparte para ellos, así que en este
      * módulo solo serían ruido: nunca se van a poder mapear.
+     *
+     * `Aplicaciones`: scripts de emission, documentacion, tutoriales, multimedia y
+     * configuracion de puntuales. Es software y soporte, no material de emision: el
+     * arbol de produccion no lo replica.
      */
-    private const EXCLUDED_PATH_SEGMENTS = ['Prensa'];
+    private const EXCLUDED_PATH_SEGMENTS = ['Prensa', 'Aplicaciones'];
 
     /**
      * Candidatos a storage de ORIGEN: locales, con ruta base, fuera del árbol de backup,
@@ -432,6 +436,11 @@ class BackupMappingService
             ->where('is_personal', false)
             ->whereNotNull('base_path')
             ->whereRaw("rtrim(base_path, '/') <> ''")
+            // `backupMapping()` necesita el árbol destino para decidir si el
+            // vínculo es válido. Sin eager load hacía una query por cada uno de
+            // los 61 orígenes (medido 2026-11-18: 61 queries / 37 ms de los 73
+            // que hacía la pantalla).
+            ->with('backupStorage')
             ->orderBy('name')
             ->get()
             ->filter(function (StorageProvider $storage) use ($rootBase) {

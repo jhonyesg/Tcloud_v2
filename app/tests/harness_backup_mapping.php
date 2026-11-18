@@ -272,8 +272,22 @@ try {
     ]);
     $prensaId = (int) $prensa->id;
 
+    // Scripts, documentacion, multimedia y config de puntuales: no son material
+    // de emision, el arbol de produccion no los replica.
+    mkdir($tmpRoot . '/Disco_Z/Aplicaciones/99_Multimedia', 0755, true);
+    $aplicaciones = StorageProvider::create([
+        'name' => $tag . ' aplicaciones',
+        'type' => 'local',
+        'kind' => 'local',
+        'base_path' => $tmpRoot . '/Disco_Z/Aplicaciones/99_Multimedia',
+        'enabled' => true,
+        'is_accessible' => true,
+    ]);
+    $aplicacionesId = (int) $aplicaciones->id;
+
     $candidatos = $service->candidateSources(null)->pluck('id')->all();
     h_check(! in_array($prensaId, $candidatos, true), 'un storage de prensa no aparece como candidato a origen');
+    h_check(! in_array($aplicacionesId, $candidatos, true), 'un storage de Aplicaciones no aparece como candidato a origen');
 
     // ------------------------------------------------------------------
     h_section('contenedores de disco (los que listan el disco)');
@@ -578,7 +592,7 @@ try {
             // la sesión de prueba puede no haberse creado
         }
     }
-    DB::table('storage_providers')->whereIn('id', array_filter([$sourceId, $backupId, $otherSourceId, $nonLocalId, $deadId ?? null, $personalId ?? null, $prensaId ?? null, $contenedorId ?? null, $canalId ?? null, $rotoId ?? null]))->delete();
+    DB::table('storage_providers')->whereIn('id', array_filter([$sourceId, $backupId, $otherSourceId, $nonLocalId, $deadId ?? null, $personalId ?? null, $prensaId ?? null, $aplicacionesId ?? null, $contenedorId ?? null, $canalId ?? null, $rotoId ?? null]))->delete();
     DB::table('storage_providers')->where('name', 'like', $tag . '%')->delete();
     @exec('rm -rf ' . escapeshellarg($tmpRoot));
     h_ok('fixtures eliminados');

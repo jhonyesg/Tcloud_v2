@@ -127,6 +127,14 @@ solicitar → enlace) y declaración de los 7 vínculos pendientes con el operad
   Corrección: `@endsection` antes de `@push('scripts')`, más dos aserciones que comparan
   POSICIONES (`<main` < contenido < `</body>`, y panel lateral antes del contenido). El test
   negativo confirma que sin `@endsection` fallan las dos.
+- **L16** — 2026-11-18 — Petición del operador: "la carpeta 99 multimedia, documentaciones,
+  puntuales config, puntuales media... esos no tienen backup, por lo que no deben aparecer en el
+  módulo de backup". Son los storages del árbol `Aplicaciones/`: `00 Aplicaciones`,
+  `99_Multimedia`, `Documentaciones`, `100 Tutoriales y Cobertura de medios`, `Puntuales Config
+  siglo` y `40 Config Puntual`. Es software y soporte (scripts de emisión, documentación,
+  tutoriales, multimedia, configuración de puntuales), NO material de emisión: el árbol de
+  producción no lo replica. `Aplicaciones` se suma a `EXCLUDED_PATH_SEGMENTS` y el listado pasó
+  de 146 a **140** filas.
 - **L15** — 2026-11-18 — Petición del operador: "abajo de ese pon los que te salen 'la ruta base
   no existe en el disco' y escanea los storage para ver si están en otra ruta para actualizarlo en
   el storage".

@@ -2458,10 +2458,11 @@ escribe las dos columnas que ya existían.
 |---|---|
 | **Personales** (`Personal - Multiarchivo`, …) | son el home de cada usuario (`/home/www/Usuarios_tcloud/<user>`): no son material de emisión ni tienen contraparte en el árbol de producción |
 | **Prensa** (`/Disco_C/Prensa/…`) | material impreso (diarios y revistas), no emisión: el árbol de producción no tiene contraparte para ellos |
+| **Aplicaciones** (`/Aplicaciones/…`) | scripts de emisión, documentación, tutoriales, multimedia y configuración de puntuales: es software y soporte, no material de emisión |
 
-Ambas exclusiones viven en `BackupMappingService::candidateSources()`
-(`is_personal = false` + el segmento de ruta `Prensa` en
-`EXCLUDED_PATH_SEGMENTS`). El listado del módulo pasó de 169 a **146** filas.
+Las tres exclusiones viven en `BackupMappingService::candidateSources()`
+(`is_personal = false` + los segmentos de ruta `Prensa` y `Aplicaciones` en
+`EXCLUDED_PATH_SEGMENTS`). El listado del módulo pasó de 169 a **140** filas.
 
 ### Los que "listan el disco"
 
