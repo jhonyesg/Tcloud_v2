@@ -428,6 +428,97 @@ class PuntualRequestService
         return $solicitud->refresh();
     }
 
+    /**
+     * Elimina el REGISTRO de una solicitud (solo admin).
+     *
+     * Diferencia con `revoke()`:
+     *  - Revocar CORTA el acceso (borra los enlaces) pero deja el registro
+     *    contable y la solicitud en estado `revoked`.
+     *  - Eliminar BORRA la solicitud y su detalle: el operador la usa para
+     *    limpiar su vista de pruebas o de pedidos que no deben figurar.
+     *
+     * Es IRREVERSIBLE, por eso:
+     *  1. Solo el admin.
+     *  2. Antes de borrar se escribe un snapshot completo en el log
+     *     (`puntual.request.deleted`) con el actor, el cliente, el medio, el
+     *     rango, los totales y el detalle por archivo. El rastro contable
+     *     queda en el log aunque la fila desaparezca.
+     *  3. Los enlaces se revocan primero (se borran las shares y se invalida
+     *     su cache), para que no queden URLs públicas vivas de un registro
+     *     que ya no existe.
+     *
+     * @return array<string,mixed> el snapshot de lo borrado
+     *
+     * @throws PuntualRequestException
+     */
+    public function destroy(User $user, SolicitudPuntual $solicitud): array
+    {
+        if (! $user->isAdmin()) {
+            throw new PuntualRequestException(
+                'no_permission',
+                'Solo un administrador puede eliminar una solicitud.',
+                403,
+            );
+        }
+
+        $solicitud->loadMissing(['medio.storage', 'user', 'items.share', 'share']);
+
+        // Snapshot ANTES de tocar nada: es lo que queda en el log.
+        $snapshot = [
+            'id' => (int) $solicitud->id,
+            'cliente_id' => (int) $solicitud->user_id,
+            'cliente' => (string) ($solicitud->user?->username ?? '—'),
+            'medio_id' => (int) $solicitud->medio_id,
+            'medio' => (string) ($solicitud->medio?->name ?? '—'),
+            'storage' => (string) ($solicitud->medio?->storage?->name ?? ''),
+            'fecha' => (string) $solicitud->fecha,
+            'hora_inicio' => substr((string) $solicitud->hora_inicio, 0, 8),
+            'hora_fin' => substr((string) $solicitud->hora_fin, 0, 8),
+            'duracion_minutos' => (int) $solicitud->duracion_minutos,
+            'modo' => (string) $solicitud->modo,
+            'status' => (string) $solicitud->status,
+            'motivo' => (string) $solicitud->motivo,
+            'archivos_total' => (int) $solicitud->archivos_total,
+            'bytes_total' => (int) $solicitud->bytes_total,
+            'links_total' => (int) $solicitud->links_total,
+            'link_expires_at' => $solicitud->link_expires_at?->toIso8601String(),
+            'created_at' => $solicitud->created_at?->toIso8601String(),
+            'items' => $solicitud->items->map(fn ($item) => [
+                'name' => (string) $item->name,
+                'path' => (string) $item->path,
+                'size' => (int) $item->size,
+                'slot_inicio' => $item->slot_inicio?->toIso8601String(),
+                'slot_fin' => $item->slot_fin?->toIso8601String(),
+            ])->all(),
+        ];
+
+        // Los enlaces primero: una URL publica no puede sobrevivir al
+        // registro que la justificaba.
+        $shareIds = $solicitud->items->whereNotNull('share_id')->pluck('share_id')->all();
+
+        if ($solicitud->share_id !== null) {
+            $shareIds[] = $solicitud->share_id;
+        }
+
+        foreach (Share::query()->whereIn('id', $shareIds)->get() as $share) {
+            Cache::forget("share:meta:{$share->token}");
+            $share->delete();
+        }
+
+        DB::transaction(function () use ($solicitud) {
+            $solicitud->items()->delete();
+            $solicitud->delete();
+        });
+
+        Log::warning('puntual.request.deleted', [
+            'actor_id' => (int) $user->id,
+            'actor' => (string) $user->username,
+            'snapshot' => $snapshot,
+        ]);
+
+        return $snapshot;
+    }
+
     // ------------------------------------------------------------------
     // Historial
     // ------------------------------------------------------------------

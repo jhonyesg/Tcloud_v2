@@ -633,10 +633,15 @@
                                                     <button @click="revocarDesdeControl(d, c)"
                                                             x-show="d.estado !== 'revoked'"
                                                             class="px-2 py-1 rounded-lg text-xs font-medium text-red-600 hover:bg-red-50"
-                                                            title="Revocar: los enlaces dejan de servir el material">
+                                                            title="Revocar: los enlaces dejan de servir el material, el registro queda">
                                                         Revocar
                                                     </button>
-                                                    <span x-show="d.estado === 'revoked'" class="text-xs text-slate-400">revocada</span>
+                                                    <span x-show="d.estado === 'revoked'" class="text-xs text-slate-400 mr-1">revocada</span>
+                                                    <button @click="eliminarDesdeControl(d, c)"
+                                                            class="px-2 py-1 rounded-lg text-xs font-medium text-slate-500 hover:bg-slate-100 hover:text-red-700"
+                                                            title="Eliminar el registro: desaparece de la vista. Queda trazado en el log.">
+                                                        <i class="fas fa-trash-can text-[11px]"></i>
+                                                    </button>
                                                 </td>
                                             </tr>
                                         </template>
@@ -847,6 +852,54 @@ function puntualManager() {
                 this.loadControl();
             } catch (e) {
                 this.showToast('No se pudo revocar: ' + e.message, 'error');
+            }
+        },
+
+        /**
+         * Elimina el REGISTRO de una solicitud.
+         *
+         * Es destructivo e irreversible, y quita el registro contable de la
+         * vista. Se pide confirmacion explicita con los datos a la vista: el
+         * operador tiene que leer qué va a borrar antes de aceptar.
+         */
+        async eliminarDesdeControl(detalle, cliente) {
+            const resumen = [
+                `Cliente: ${cliente.nombre} (${cliente.username})`,
+                `Medio: ${detalle.medio}`,
+                `Fecha: ${detalle.fecha_legible}  ${detalle.hora_inicio} → ${detalle.hora_fin}`,
+                `Archivos: ${detalle.archivos} · ${this.humanBytes(detalle.bytes)} · ${detalle.enlaces} enlace(s)`,
+            ].join('\n');
+
+            const confirmado = window.confirm(
+                'ELIMINAR EL REGISTRO de la solicitud #' + detalle.id + '?\n\n' +
+                resumen + '\n\n' +
+                'Esto es IRREVERSIBLE: la solicitud desaparece del control y del historial, ' +
+                'y sus enlaces dejan de funcionar.\n\n' +
+                'Queda una copia en el log de la plataforma para auditoria.\n\n' +
+                'Si solo quieres cortar el acceso sin borrar el registro, usa Revocar.'
+            );
+
+            if (! confirmado) return;
+
+            try {
+                const res = await fetch(`/solicitud-puntual/${detalle.id}/registro`, {
+                    method: 'DELETE',
+                    headers: {
+                        'Accept': 'application/json',
+                        'X-Requested-With': 'XMLHttpRequest',
+                        'X-CSRF-TOKEN': this.csrf(),
+                    },
+                });
+
+                const data = await res.json();
+
+                if (!res.ok) throw new Error(data.error || ('respuesta ' + res.status));
+
+                this.showToast(`Registro #${detalle.id} eliminado.`, 'success');
+                this.loadControl();
+                this.loadHistory(this.history.page);
+            } catch (e) {
+                this.showToast('No se pudo eliminar: ' + e.message, 'error');
             }
         },
 
