@@ -33,6 +33,19 @@ class StorageProvider extends Model
     }
 
     /**
+     * Medios de TV y Radio declarados sobre este storage.
+     *
+     * Un medio es un índice `(storage_id, subpath)`: el storage puede
+     * contener varios canales (layout agrupado por subcarpeta, como
+     * `02 Emisoras 01 Reg` → `Antioquia/BLU`). `subpath` vacío significa que
+     * el medio ES el storage completo.
+     */
+    public function medios(): HasMany
+    {
+        return $this->hasMany(Medio::class, 'storage_id');
+    }
+
+    /**
      * Storage que contiene la carpeta de backup declarada para este storage.
      *
      * Es el árbol de "Producción": el export NFS de difusor02 montado en
