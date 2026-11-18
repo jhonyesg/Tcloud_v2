@@ -5,16 +5,16 @@
 @section('content')
 <div class="p-6" x-data="puntualManager()" x-init="init()" data-admin="{{ session('user_role') === 'admin' ? '1' : '0' }}">
 
-    <div class="mb-6 flex items-start justify-between flex-wrap gap-3">
-        <div>
-            <h1 class="text-2xl font-bold text-slate-800">Solicitud Puntual de TV y Radio</h1>
-            <p class="text-slate-500 mt-0.5">
+    <div class="mb-4 sm:mb-6 flex items-start justify-between gap-3">
+        <div class="min-w-0">
+            <h1 class="text-lg sm:text-2xl font-bold text-slate-800">Solicitud Puntual de TV y Radio</h1>
+            <p class="text-xs sm:text-sm text-slate-500 mt-0.5">
                 Pide una franja horaria o el día completo de un medio que <strong>no</strong> tienes asignado.
                 Recibes enlaces de solo lectura con 3 días de vigencia.
             </p>
         </div>
         <button onclick="startPuntualTour()"
-                class="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-sm font-medium transition-colors"
+                class="shrink-0 flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-sm font-medium transition-colors"
                 title="Guía interactiva">
             <i class="fas fa-map-marked-alt"></i>
             <span class="hidden sm:inline">Guía</span>
@@ -117,6 +117,7 @@
                 <table class="w-full text-sm">
                     <thead class="bg-slate-50 text-xs uppercase tracking-wider text-slate-500">
                         <tr>
+                            <th class="px-3 py-2 text-right font-semibold text-slate-400 w-14" title="Numeración del listado">#</th>
                             <th class="px-4 py-2 text-left font-semibold">
                                 <button @click="ordenarMedios('name')" class="flex items-center gap-1 hover:text-slate-700">
                                     Medio
@@ -153,8 +154,10 @@
                         </tr>
                     </thead>
                     <tbody class="divide-y divide-slate-100">
-                        <template x-for="m in mediosPagina()" :key="m.id">
+                        <template x-for="(m, idx) in mediosPagina()" :key="m.id">
                             <tr class="hover:bg-slate-50">
+                                <td class="px-3 py-2 text-right text-xs font-mono text-slate-400 tabular-nums"
+                                    x-text="numeroFila(idx)"></td>
                                 <td class="px-4 py-2 font-medium text-slate-800" x-text="m.name"></td>
                                 <td class="px-4 py-2 text-slate-600" x-text="m.region || '—'"></td>
                                 <td class="px-4 py-2">
@@ -673,6 +676,7 @@
     </div>
 
 </div>
+@endsection
 
 @push('scripts')
 <script>
@@ -839,6 +843,18 @@ function puntualManager() {
 
                 return ca.localeCompare(cb, 'es', { sensitivity: 'base', numeric: true }) * factor;
             });
+        },
+
+        /**
+         * Número de fila del listado, de tres dígitos y CONTINUO entre
+         * páginas: la página 2 empieza en 061, no en 001. Así el operador
+         * puede referirse a "el medio 137" sin ambigüedad.
+         */
+        numeroFila(indice) {
+            const numero = (this.paginaMedios - 1) * this.porPagina + indice + 1;
+
+            // Con más de 999 medios el ancho crece solo: padStart no recorta.
+            return String(numero).padStart(3, '0');
         },
 
         /**
