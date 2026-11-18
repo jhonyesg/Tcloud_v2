@@ -175,11 +175,25 @@
                 </table>
             </div>
 
-            <!-- Pie: paginación duplicada -->
+            <!-- Pie: buscador y paginación duplicados -->
             <div x-show="!loadingMedios && medios.length > 0"
-                 class="px-4 py-3 border-t border-slate-100 flex items-center justify-between flex-wrap gap-2">
-                <span class="text-xs text-slate-500"
-                      x-text="'Mostrando ' + rangoMedios().desde + '-' + rangoMedios().hasta + ' de ' + medios.length + ' medios'"></span>
+                 class="px-4 py-3 border-t border-slate-100 flex items-center justify-between flex-wrap gap-3">
+                <div class="flex items-center gap-2 flex-wrap">
+                    <span class="text-xs text-slate-500"
+                          x-text="'Mostrando ' + rangoMedios().desde + '-' + rangoMedios().hasta + ' de ' + medios.length + ' medios'"></span>
+                    <div class="relative">
+                        <i class="fas fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs"></i>
+                        <input type="search" x-model="search" @input.debounce.350ms="loadMedios()"
+                               placeholder="Buscar medio, región o canal…"
+                               class="w-64 pl-9 pr-3 py-1.5 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+                    </div>
+                    <select x-model="kind" @change="loadMedios()"
+                            class="px-3 py-1.5 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+                        <option value="">Todos</option>
+                        <option value="tv">TV</option>
+                        <option value="radio">Radio</option>
+                    </select>
+                </div>
                 <div class="flex items-center gap-1">
                     <button @click="paginaMedios = Math.max(1, paginaMedios - 1)" :disabled="paginaMedios <= 1"
                             class="px-2 py-1 rounded-lg text-xs font-medium text-slate-600 hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed">
