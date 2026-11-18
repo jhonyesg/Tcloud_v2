@@ -1296,17 +1296,17 @@ function puntualManager() {
  *
  * Usa el motor compartido (`public/js/interactive-tour.js`). Los selectores
  * son CSS válidos; si un paso apunta a algo que no esta en pantalla (por
- * ejemplo la recomendacion, que solo aparece cuando la franja supera el
+ * ejemplo la recomendación, que solo aparece cuando la franja supera el
  * umbral), el motor lo muestra centrado sin romper el tour.
  *
- * Los pasos que necesitan la pestana de Medios se aseguran de estar en ella
+ * Los pasos que necesitan la pestaña de Medios se aseguran de estar en ella
  * antes de resaltar: `onBeforeStep` no existe en el motor, asi que el paso 1
- * arranca desde la pestana correcta y el resto son elementos de la misma.
+ * arranca desde la pestaña correcta y el resto son elementos de la misma.
  */
 function startPuntualTour() {
     if (typeof TcloudTour === 'undefined') {
         // Sin el motor cargado el boton no debe quedar mudo: se avisa.
-        alert('La guia no esta disponible en este momento. Recarga la pagina e intenta de nuevo.');
+        alert('La guía no está disponible en este momento. Recarga la página e intenta de nuevo.');
         return;
     }
 
@@ -1314,10 +1314,10 @@ function startPuntualTour() {
         steps: [
             {
                 title: 'Bienvenido a Solicitud Puntual',
-                content: 'Aqui <strong>pides material de TV o Radio que no tienes asignado</strong>. ' +
+                content: 'Aquí <strong>pides material de TV o Radio que no tienes asignado</strong>. ' +
                          'En lugar de pedir un dia entero, puedes pedir una <strong>franja horaria exacta</strong> ' +
                          '(por ejemplo, Caracol del 14 de noviembre de 12:00 a 13:00). ' +
-                         'Al final recibes enlaces publicos de solo lectura que vencen en 3 dias.<br><br>' +
+                         'Al final recibes enlaces públicos de solo lectura que vencen en 3 días.<br><br>' +
                          'Te muestro el paso a paso en 10 pasos. Puedes salir cuando quieras con <kbd>Esc</kbd>.',
                 icon: 'fa-satellite-dish',
                 color: '#6366f1',
@@ -1325,8 +1325,8 @@ function startPuntualTour() {
                 position: 'center',
             },
             {
-                title: 'Paso 1: elige la pestana Medios',
-                content: 'El modulo tiene tres pestanas. <strong>Medios</strong> es donde pides. ' +
+                title: 'Paso 1: elige la pestaña Medios',
+                content: 'El módulo tiene tres pestañas. <strong>Medios</strong> es donde pides. ' +
                          'En <strong>Mis solicitudes</strong> ves lo que ya pediste. ' +
                          'Si eres administrador, en <strong>Control por cliente</strong> llevas el control contable.',
                 icon: 'fa-table-columns',
@@ -1337,8 +1337,8 @@ function startPuntualTour() {
             {
                 title: 'Paso 2: solo aparece lo que NO tienes',
                 content: 'Esta lista es el <strong>complemento</strong> de tus storages asignados. ' +
-                         'Si un medio ya lo tienes, no aparece aqui: para ese material entra a <strong>Mis Archivos</strong>. ' +
-                         'Asi no pides dos veces lo mismo.',
+                         'Si un medio ya lo tienes, no aparece aquí: para ese material entra a <strong>Mis Archivos</strong>. ' +
+                         'Así no pides dos veces lo mismo.',
                 icon: 'fa-filter',
                 color: '#3b82f6',
                 selector: '[data-puntual-tour="catalogo"]',
@@ -1346,9 +1346,9 @@ function startPuntualTour() {
             },
             {
                 title: 'Paso 3: busca y filtra',
-                content: 'Escribe el nombre del medio (o la region) en el buscador, o filtra por <strong>TV</strong> ' +
-                         'y <strong>Radio</strong>. La busqueda tambien esta <strong>al pie de la tabla</strong>: ' +
-                         'las dos barras hacen lo mismo, usa la que tengas mas a mano.',
+                content: 'Escribe el nombre del medio (o la región) en el buscador, o filtra por <strong>TV</strong> ' +
+                         'y <strong>Radio</strong>. La búsqueda también está <strong>al pie de la tabla</strong>: ' +
+                         'las dos barras hacen lo mismo, usa la que tengas más a mano.',
                 icon: 'fa-magnifying-glass',
                 color: '#3b82f6',
                 selector: '[data-puntual-tour="catalogo"] input[type="search"]',
@@ -1356,7 +1356,7 @@ function startPuntualTour() {
             },
             {
                 title: 'Paso 4: ordena por cualquier columna',
-                content: 'Haz clic en el encabezado de <strong>Medio</strong>, <strong>Region</strong>, ' +
+                content: 'Haz clic en el encabezado de <strong>Medio</strong>, <strong>Región</strong>, ' +
                          '<strong>Tipo</strong> o <strong>Storage</strong> para ordenar. El primer clic ordena de A a Z ' +
                          'y el segundo invierte. El triangulo del encabezado te dice en que direccion estas.',
                 icon: 'fa-sort',
@@ -1366,9 +1366,9 @@ function startPuntualTour() {
             },
             {
                 title: 'Paso 5: toca Solicitar',
-                content: 'Cada fila tiene su boton <strong>Solicitar</strong>. El <strong>numero de la izquierda</strong> ' +
-                         '(001, 002...) te sirve para referirte a un medio: es continuo entre paginas, ' +
-                         'asi que "el medio 137" siempre es el mismo.',
+                content: 'Cada fila tiene su boton <strong>Solicitar</strong>. El <strong>número de la izquierda</strong> ' +
+                         '(001, 002...) te sirve para referirte a un medio: es continuo entre páginas, ' +
+                         'así que "el medio 137" siempre es el mismo.',
                 icon: 'fa-hand-pointer',
                 color: '#6366f1',
                 selector: '[data-puntual-tour="catalogo"] tbody',
@@ -1376,10 +1376,10 @@ function startPuntualTour() {
             },
             {
                 title: 'Paso 6: fecha y horario exacto',
-                content: 'Elige el dia y el rango. Fijate en el aviso bajo la fecha: te dice si ese dia tiene ' +
-                         'grabaciones o no, y te ofrece <strong>atajos a los dias mas recientes</strong>. ' +
-                         'Casi ninguna emisora graba el dia de hoy todavia, asi que el sistema abre directo ' +
-                         'en el ultimo dia que si tiene material.',
+                content: 'Elige el día y el rango. Fíjate en el aviso bajo la fecha: te dice si ese día tiene ' +
+                         'grabaciones o no, y te ofrece <strong>atajos a los días más recientes</strong>. ' +
+                         'Casi ninguna emisora graba el día de hoy todavía, asi que el sistema abre directo ' +
+                         'en el último día que sí tiene material.',
                 icon: 'fa-clock',
                 color: '#8b5cf6',
                 selector: '[data-puntual-tour="modal"]',
@@ -1387,21 +1387,21 @@ function startPuntualTour() {
             },
             {
                 title: 'Paso 7: consulta la cobertura',
-                content: 'Antes de pedir, el sistema comprueba el material <strong>real</strong> (no el catalogo) ' +
-                         'y te muestra cuantos archivos hay, cuanto pesan y si falta algun tramo. ' +
+                content: 'Antes de pedir, el sistema comprueba el material <strong>real</strong> (no el catálogo) ' +
+                         'y te muestra cuántos archivos hay, cuánto pesan y si falta algun tramo. ' +
                          'Si dice <strong>cobertura completa</strong>, tienes todo el rango. ' +
-                         'Si dice <strong>parcial</strong>, te dice exactamente que hueco hay.',
+                         'Si dice <strong>parcial</strong>, te dice exactamente qué hueco hay.',
                 icon: 'fa-chart-simple',
                 color: '#8b5cf6',
                 selector: '[data-puntual-tour="modal"]',
                 position: 'top',
             },
             {
-                title: 'Paso 8: el dia completo sale mas barato',
-                content: 'Si pides mas de <strong>2 horas</strong>, cada tramo es un enlace distinto que vence por ' +
-                         'separado. El dia completo es <strong>un solo enlace</strong> sobre la carpeta del dia. ' +
-                         'El sistema te lo recomienda con los numeros reales, pero <strong>tu decides</strong>: ' +
-                         'la recomendacion no te obliga.',
+                title: 'Paso 8: el día completo sale más barato',
+                content: 'Si pides más de <strong>2 horas</strong>, cada tramo es un enlace distinto que vence por ' +
+                         'separado. El día completo es <strong>un solo enlace</strong> sobre la carpeta del día. ' +
+                         'El sistema te lo recomienda con los números reales, pero <strong>tú decides</strong>: ' +
+                         'la recomendación no te obliga.',
                 icon: 'fa-lightbulb',
                 color: '#f59e0b',
                 selector: '[data-puntual-tour="recomendacion"]',
@@ -1409,9 +1409,9 @@ function startPuntualTour() {
             },
             {
                 title: 'Paso 9: el motivo es opcional',
-                content: 'Puedes escribir para que necesitas el material. <strong>No es obligatorio</strong>: ' +
-                         'si lo dejas vacio, la solicitud se registra igual. Lo que si queda registrado siempre ' +
-                         'es el medio, la fecha, el horario, los archivos y su tamano.',
+                content: 'Puedes escribir para qué necesitas el material. <strong>No es obligatorio</strong>: ' +
+                         'si lo dejas vacío, la solicitud se registra igual. Lo que sí queda registrado siempre ' +
+                         'es el medio, la fecha, el horario, los archivos y su tamaño.',
                 icon: 'fa-comment-dots',
                 color: '#10b981',
                 selector: '[data-puntual-tour="modal"] textarea',
@@ -1420,7 +1420,7 @@ function startPuntualTour() {
             {
                 title: 'Paso 10: sigue tu solicitud en Mis solicitudes',
                 content: 'Cada pedido queda con su horario exacto, el detalle de archivos entregados y su tamano. ' +
-                         'Aqui ves los <strong>enlaces</strong> de cada archivo y los abres cuando los necesites. ' +
+                         'Aquí ves los <strong>enlaces</strong> de cada archivo y los abres cuando los necesites. ' +
                          'Puedes ordenar por cualquier columna y buscar.',
                 icon: 'fa-list-check',
                 color: '#10b981',
@@ -1430,10 +1430,10 @@ function startPuntualTour() {
             {
                 title: 'Listo: tres cosas que conviene recordar',
                 content: '<ul class="text-left list-disc pl-4 space-y-1">' +
-                         '<li>Los enlaces <strong>vencen a los 3 dias</strong>. Si necesitas el material por mas tiempo, descargalo.</li>' +
-                         '<li>La <strong>revocacion la hace el administrador</strong>, no el cliente: es parte del control contable.</li>' +
-                         '<li>Si un dia aparece <strong>sin material</strong>, revisa el aviso de la fecha: casi siempre es que ese dia no se grabo.</li>' +
-                         '</ul><br>Puedes volver a abrir esta guia cuando quieras con el boton <strong>Guia</b>.',
+                         '<li>Los enlaces <strong>vencen a los 3 días</strong>. Si necesitas el material por más tiempo, descárgalo.</li>' +
+                         '<li>La <strong>revocación la hace el administrador</strong>, no el cliente: es parte del control contable.</li>' +
+                         '<li>Si un día aparece <strong>sin material</strong>, revisa el aviso de la fecha: casi siempre es que ese día no se grabó.</li>' +
+                         '</ul><br>Puedes volver a abrir esta guía cuando quieras con el botón <strong>Guía</strong>.',
                 icon: 'fa-circle-check',
                 color: '#10b981',
                 selector: null,
