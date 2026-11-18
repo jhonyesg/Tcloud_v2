@@ -386,8 +386,17 @@ class PuntualRequestService
      */
     public function revoke(User $user, SolicitudPuntual $solicitud): SolicitudPuntual
     {
-        if ((int) $solicitud->user_id !== (int) $user->id) {
-            throw new PuntualRequestException('no_permission', 'Esa solicitud no es tuya.', 403);
+        // Revocar es una decisión de CONTROL CONTABLE, no una acción del
+        // cliente. Un cliente podía pedir el material, descargarlo y revocar
+        // el enlace para que no quedara rastro del uso; el registro contable
+        // quedaba igual pero el operador perdía la evidencia del enlace.
+        // Ahora solo el admin revoca.
+        if (! $user->isAdmin()) {
+            throw new PuntualRequestException(
+                'no_permission',
+                'Solo un administrador puede revocar una solicitud.',
+                403,
+            );
         }
 
         if ($solicitud->status === SolicitudPuntual::STATUS_REVOKED) {

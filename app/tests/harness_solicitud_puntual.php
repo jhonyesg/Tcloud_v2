@@ -497,13 +497,39 @@ try {
         );
 
         // ------------------------------------------------------------------
-        h_section('revocación');
+        h_section('revocación (solo admin)');
 
-        $revocada = $service->revoke($usuario, $solicitud->refresh());
+        // El CLIENTE no puede revocar: podía pedir, descargar y revocar para
+        // borrar el rastro del uso. Es una decisión de control contable.
+        $codigoCliente = null;
+
+        try {
+            $service->revoke($usuario, $solicitud->refresh());
+        } catch (App\Exceptions\PuntualRequestException $e) {
+            $codigoCliente = $e->errorCode;
+        }
+
+        h_check(
+            $codigoCliente === 'no_permission',
+            'el cliente NO puede revocar su propia solicitud',
+            'codigo = ' . ($codigoCliente ?? 'revocó'),
+        );
+
+        h_check(
+            $solicitud->refresh()->status !== SolicitudPuntual::STATUS_REVOKED,
+            'la solicitud sigue viva tras el intento del cliente',
+        );
+
+        // El ADMIN sí revoca cualquier solicitud.
+        $admin = User::query()->where('role', 'admin')->first();
+
+        h_check($admin !== null, 'hay un administrador para la prueba');
+
+        $revocada = $service->revoke($admin, $solicitud->refresh());
 
         h_check(
             $revocada->status === SolicitudPuntual::STATUS_REVOKED,
-            'la solicitud queda revocada',
+            'el admin revoca la solicitud',
         );
 
         h_check(
@@ -511,7 +537,7 @@ try {
             'los enlaces de la solicitud dejan de existir',
         );
 
-        $revocadaDos = $service->revoke($usuario, $revocada);
+        $revocadaDos = $service->revoke($admin, $revocada);
 
         h_check(
             $revocadaDos->status === SolicitudPuntual::STATUS_REVOKED,
@@ -570,6 +596,18 @@ try {
             (bool) preg_match('/^control-solicitudes-[a-z0-9]+-[a-z0-9]+\.txt$/', $reportes->nombreArchivo($reporte)),
             'el nombre del archivo es el esperado',
             'nombre = ' . $reportes->nombreArchivo($reporte),
+        );
+
+        // El panel de control muestra los enlaces de cada solicitud.
+        $detalleCliente = $cliente['detalle'][0] ?? null;
+
+        h_check(
+            isset($detalleCliente['links'])
+            && is_array($detalleCliente['links'])
+            && $detalleCliente['links'] !== []
+            && str_starts_with((string) ($detalleCliente['links'][0]['url'] ?? ''), 'http'),
+            'el reporte expone los enlaces públicos de cada solicitud',
+            'links = ' . json_encode($detalleCliente['links'] ?? null),
         );
 
         // El reporte es de solo lectura: no puede crear ni modificar filas.

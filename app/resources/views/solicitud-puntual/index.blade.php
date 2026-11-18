@@ -298,11 +298,18 @@
                                             class="px-2 py-1 rounded-lg text-xs font-medium text-brand-700 hover:bg-brand-50">
                                         Ver
                                     </button>
+                                    {{-- Revocar es del admin: un cliente podía
+                                         descargar el material y revocar para borrar
+                                         el rastro. El admin revoca desde "Control
+                                         por cliente". --}}
+                                    @if(session('user_role') === 'admin')
                                     <button @click="revoke(s)"
                                             x-show="s.status !== 'revoked'"
-                                            class="px-2 py-1 rounded-lg text-xs font-medium text-red-600 hover:bg-red-50">
+                                            class="px-2 py-1 rounded-lg text-xs font-medium text-red-600 hover:bg-red-50"
+                                            title="Revocar (administrador)">
                                         Revocar
                                     </button>
+                                    @endif
                                 </td>
                             </tr>
                         </template>
@@ -579,7 +586,8 @@
                                             <th class="px-4 py-1.5 text-right font-semibold">Archivos</th>
                                             <th class="px-4 py-1.5 text-right font-semibold">Tamaño</th>
                                             <th class="px-4 py-1.5 text-left font-semibold">Estado</th>
-                                            <th class="px-4 py-1.5 text-left font-semibold">Motivo</th>
+                                            <th class="px-4 py-1.5 text-left font-semibold">Enlaces</th>
+                                            <th class="px-4 py-1.5 text-right font-semibold">Acciones</th>
                                         </tr>
                                     </thead>
                                     <tbody class="divide-y divide-slate-100">
@@ -601,7 +609,29 @@
                                                           :class="statusClass(d.estado)"
                                                           x-text="statusLabel(d.estado)"></span>
                                                 </td>
-                                                <td class="px-4 py-1.5 text-slate-500 text-xs max-w-xs truncate" :title="d.motivo" x-text="d.motivo"></td>
+                                                <td class="px-3 py-1.5">
+                                                    <div class="flex items-center gap-1 flex-wrap max-w-xs">
+                                                        <template x-for="(l, li) in (d.links || [])" :key="li">
+                                                            <a :href="l.url" target="_blank" rel="noopener"
+                                                               class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-100 hover:bg-brand-50 text-slate-600 hover:text-brand-700 text-[11px] font-medium"
+                                                               :title="l.nombre">
+                                                                <i class="fas fa-link text-[9px]"></i>
+                                                                <span x-text="l.inicio || 'día'"></span>
+                                                            </a>
+                                                        </template>
+                                                        <span x-show="!d.links || d.links.length === 0" class="text-xs text-slate-400">—</span>
+                                                    </div>
+                                                    <p class="text-[10px] text-slate-400 mt-0.5 truncate" :title="d.motivo" x-text="d.motivo"></p>
+                                                </td>
+                                                <td class="px-4 py-1.5 text-right whitespace-nowrap">
+                                                    <button @click="revocarDesdeControl(d, c)"
+                                                            x-show="d.estado !== 'revoked'"
+                                                            class="px-2 py-1 rounded-lg text-xs font-medium text-red-600 hover:bg-red-50"
+                                                            title="Revocar: los enlaces dejan de servir el material">
+                                                        Revocar
+                                                    </button>
+                                                    <span x-show="d.estado === 'revoked'" class="text-xs text-slate-400">revocada</span>
+                                                </td>
                                             </tr>
                                         </template>
                                     </tbody>
@@ -776,6 +806,35 @@ function puntualManager() {
                 this.showToast('No se pudo cargar el control: ' + e.message, 'error');
             } finally {
                 this.controlLoading = false;
+            }
+        },
+
+        /**
+         * Revoca una solicitud desde el panel de control.
+         *
+         * El admin revoca CUALQUIER solicitud: es una decisión de control
+         * contable. El cliente ya no puede revocar la suya (ver
+         * `PuntualRequestService::revoke`).
+         */
+        async revocarDesdeControl(detalle, cliente) {
+            try {
+                const res = await fetch(`/solicitud-puntual/${detalle.id}`, {
+                    method: 'DELETE',
+                    headers: {
+                        'Accept': 'application/json',
+                        'X-Requested-With': 'XMLHttpRequest',
+                        'X-CSRF-TOKEN': this.csrf(),
+                    },
+                });
+
+                const data = await res.json();
+
+                if (!res.ok) throw new Error(data.error || ('respuesta ' + res.status));
+
+                this.showToast(`Solicitud #${detalle.id} de ${cliente.username} revocada.`, 'success');
+                this.loadControl();
+            } catch (e) {
+                this.showToast('No se pudo revocar: ' + e.message, 'error');
             }
         },
 

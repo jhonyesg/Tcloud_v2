@@ -41,7 +41,7 @@ class PuntualReportService
         $estado = (string) ($filtros['estado'] ?? 'todas');
 
         $query = SolicitudPuntual::query()
-            ->with(['medio.storage', 'user'])
+            ->with(['medio.storage', 'user', 'share', 'items.share'])
             ->when($desde !== null, fn ($q) => $q->whereDate('fecha', '>=', $desde->toDateString()))
             ->when($hasta !== null, fn ($q) => $q->whereDate('fecha', '<=', $hasta->toDateString()))
             ->when(isset($filtros['user_id']) && $filtros['user_id'] !== null, fn ($q) => $q->where('user_id', (int) $filtros['user_id']));
@@ -111,6 +111,7 @@ class PuntualReportService
 
             $fila['detalle'][] = [
                 'id' => (int) $solicitud->id,
+                'links' => $this->linksDe($solicitud),
                 'fecha' => $fecha,
                 'fecha_legible' => Carbon::parse($fecha)->format('d/m/Y'),
                 'hora_inicio' => substr((string) $solicitud->hora_inicio, 0, 8),
@@ -291,6 +292,50 @@ class PuntualReportService
             default:
                 break;
         }
+    }
+
+    /**
+     * Enlaces públicos de una solicitud, con el nombre de lo que sirve cada
+     * uno. El panel de control los muestra para que el operador pueda abrir
+     * el material exacto que se entregó.
+     *
+     * @return list<array{nombre:string,url:string,inicio:?string}>
+     */
+    private function linksDe(SolicitudPuntual $solicitud): array
+    {
+        $links = [];
+
+        // Modo día: un enlace a la carpeta del día.
+        if ($solicitud->share_id !== null) {
+            $share = $solicitud->relationLoaded('share') ? $solicitud->share : $solicitud->share()->first();
+
+            if ($share !== null && $share->token !== null) {
+                $links[] = [
+                    'nombre' => 'Carpeta del día',
+                    'url' => url('/s/' . $share->token),
+                    'inicio' => null,
+                ];
+            }
+        }
+
+        // Modo franja: un enlace por archivo.
+        $items = $solicitud->relationLoaded('items') ? $solicitud->items : $solicitud->items()->with('share')->get();
+
+        foreach ($items as $item) {
+            $share = $item->share;
+
+            if ($share === null || $share->token === null) {
+                continue;
+            }
+
+            $links[] = [
+                'nombre' => (string) $item->name,
+                'url' => url('/s/' . $share->token),
+                'inicio' => $item->slot_inicio?->format('H:i:s'),
+            ];
+        }
+
+        return $links;
     }
 
     /**
