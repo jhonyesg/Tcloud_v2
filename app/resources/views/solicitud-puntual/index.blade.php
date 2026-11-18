@@ -72,12 +72,26 @@
                                placeholder="Buscar medio, región o canal…"
                                class="w-72 pl-9 pr-3 py-2 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
                     </div>
-                    <select x-model="kind" @change="loadMedios()"
-                            class="px-3 py-2 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
-                        <option value="">Todos</option>
-                        <option value="tv">TV</option>
-                        <option value="radio">Radio</option>
-                    </select>
+<div class="inline-flex rounded-xl border border-slate-200 bg-slate-50 p-0.5" role="group" aria-label="Filtrar por tipo">
+                    <button type="button" @click="setKind('')"
+                            class="px-3 py-1.5 rounded-[10px] text-xs font-semibold transition-colors"
+                            :class="kind === '' ? 'bg-white text-slate-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'"
+                            title="Ver TV y Radio">
+                        Todos
+                    </button>
+                    <button type="button" @click="setKind('tv')"
+                            class="px-3 py-1.5 rounded-[10px] text-xs font-semibold transition-colors inline-flex items-center gap-1.5"
+                            :class="kind === 'tv' ? 'bg-green-600 text-white shadow-sm' : 'text-green-700 hover:bg-green-50'"
+                            title="Solo televisión">
+                        <i class="fas fa-tv text-[10px]"></i> TV
+                    </button>
+                    <button type="button" @click="setKind('radio')"
+                            class="px-3 py-1.5 rounded-[10px] text-xs font-semibold transition-colors inline-flex items-center gap-1.5"
+                            :class="kind === 'radio' ? 'bg-blue-600 text-white shadow-sm' : 'text-blue-700 hover:bg-blue-50'"
+                            title="Solo radio">
+                        <i class="fas fa-tower-broadcast text-[10px]"></i> Radio
+                    </button>
+                    </div>
                     <span class="text-xs text-slate-500 hidden lg:inline"
                           x-text="'Mostrando ' + rangoMedios().desde + '-' + rangoMedios().hasta + ' de ' + medios.length"></span>
                     <div class="flex items-center gap-1">
@@ -190,12 +204,26 @@
                                placeholder="Buscar medio, región o canal…"
                                class="w-64 pl-9 pr-3 py-1.5 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
                     </div>
-                    <select x-model="kind" @change="loadMedios()"
-                            class="px-3 py-1.5 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
-                        <option value="">Todos</option>
-                        <option value="tv">TV</option>
-                        <option value="radio">Radio</option>
-                    </select>
+<div class="inline-flex rounded-xl border border-slate-200 bg-slate-50 p-0.5" role="group" aria-label="Filtrar por tipo">
+                    <button type="button" @click="setKind('')"
+                            class="px-3 py-1.5 rounded-[10px] text-xs font-semibold transition-colors"
+                            :class="kind === '' ? 'bg-white text-slate-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'"
+                            title="Ver TV y Radio">
+                        Todos
+                    </button>
+                    <button type="button" @click="setKind('tv')"
+                            class="px-3 py-1.5 rounded-[10px] text-xs font-semibold transition-colors inline-flex items-center gap-1.5"
+                            :class="kind === 'tv' ? 'bg-green-600 text-white shadow-sm' : 'text-green-700 hover:bg-green-50'"
+                            title="Solo televisión">
+                        <i class="fas fa-tv text-[10px]"></i> TV
+                    </button>
+                    <button type="button" @click="setKind('radio')"
+                            class="px-3 py-1.5 rounded-[10px] text-xs font-semibold transition-colors inline-flex items-center gap-1.5"
+                            :class="kind === 'radio' ? 'bg-blue-600 text-white shadow-sm' : 'text-blue-700 hover:bg-blue-50'"
+                            title="Solo radio">
+                        <i class="fas fa-tower-broadcast text-[10px]"></i> Radio
+                    </button>
+                    </div>
                 </div>
                 <div class="flex items-center gap-1">
                     <button @click="paginaMedios = Math.max(1, paginaMedios - 1)" :disabled="paginaMedios <= 1"
@@ -946,6 +974,18 @@ function puntualManager() {
             } finally {
                 this.loadingMedios = false;
             }
+        },
+
+        /**
+         * Filtra por tipo desde los botones: TV, Radio o Todos.
+         *
+         * Un clic en el boton ya activo lo apaga (vuelve a "Todos"), que es
+         * el comportamiento esperado de un grupo de botones y evita tener
+         * que ir al boton "Todos" para limpiar el filtro.
+         */
+        setKind(valor) {
+            this.kind = this.kind === valor ? '' : valor;
+            this.loadMedios();
         },
 
         /**
