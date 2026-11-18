@@ -162,6 +162,57 @@ class PuntualResolverTest extends TestCase
     }
 
     // ------------------------------------------------------------------
+    // Región por defecto cuando la ruta no la trae
+    // ------------------------------------------------------------------
+
+    public function test_un_canal_de_tv_suelto_es_de_colombia(): void
+    {
+        $tv = new \App\Models\StorageProvider();
+        $tv->base_path = '/data/Tcloud/Disco_B/television/Canal_caracol';
+        $tv->folder_layout = 'flat';
+        $tv->kind = 'local';
+
+        $this->assertSame('Colombia', $this->catalog->regionPorDefecto($tv));
+    }
+
+    public function test_una_emisora_de_bogota_es_de_bogota(): void
+    {
+        $radio = new \App\Models\StorageProvider();
+        $radio->base_path = '/data/Tcloud/Disco_A/television/Radios/Bogota/LA_FM';
+        $radio->folder_layout = 'flat';
+        $radio->kind = 'local';
+
+        $this->assertSame('Bogotá', $this->catalog->regionPorDefecto($radio));
+    }
+
+    public function test_un_canal_dentro_de_un_contenedor_regional_toma_su_region(): void
+    {
+        $regional = new \App\Models\StorageProvider();
+        $regional->base_path = '/data/Tcloud/Disco_I/television/RD1/Antioquia/CamaraFm';
+        $regional->folder_layout = 'flat';
+        $regional->kind = 'local';
+
+        $this->assertSame('Antioquia', $this->catalog->regionPorDefecto($regional));
+        $this->assertSame('Valle del Cauca', $this->catalog->regionPorDefecto(
+            tap(new \App\Models\StorageProvider(), function ($s) {
+                $s->base_path = '/data/Tcloud/Disco_I/television/RD1/Valle_Cauca/Caracol';
+                $s->folder_layout = 'flat';
+                $s->kind = 'local';
+            })
+        ));
+    }
+
+    public function test_un_contenedor_de_emisoras_no_es_de_colombia(): void
+    {
+        $contenedor = new \App\Models\StorageProvider();
+        $contenedor->base_path = '/data/Tcloud/Disco_I/television/RD1';
+        $contenedor->folder_layout = 'grouped_by_subfolder';
+        $contenedor->kind = 'local';
+
+        $this->assertNull($this->catalog->regionPorDefecto($contenedor));
+    }
+
+    // ------------------------------------------------------------------
     // Cadencia derivada
     // ------------------------------------------------------------------
 
