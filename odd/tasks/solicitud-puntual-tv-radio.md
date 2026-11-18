@@ -77,27 +77,27 @@
 
 ## Tasks
 
-- [ ] **T1 — Esquema: `medio`, `solicitud_puntual`, `solicitud_puntual_item` + índice único parcial** (S1,S2,S4,S5) — inline — pending — risk: item 1 (migración de esquema; aditiva y reversible)
-- [ ] **T2 — Modelos `Medio`, `SolicitudPuntual`, `SolicitudPuntualItem` + relaciones inversas** (S1,S4,S5) — inline — pending — risk: none
-- [ ] **T3 — `MedioCatalogService`: complemento no asignado (regla de ancestro)** (S2) — inline — pending — risk: none
-- [ ] **T4 — `MedioCatalogService`: detección de sub-canales por layout + denylist + nombre con región** (S10) — inline — pending — risk: none
-- [ ] **T5 — Comandos `medios:bootstrap` y `medios:remapear` (informe por defecto)** (S10) — inline — pending — risk: item 1 (escribe `medio`; dry-run por defecto)
-- [ ] **T6 — `MedioController` + rutas `/admin/medios`** (S10) — inline — pending — risk: item 2 (superficie HTTP admin que escribe el catálogo)
-- [ ] **T7 — `PuntualResolver`: localización por nombre + derivación de paso + slots nominales** (S3,S7) — inline — pending — risk: item 3 (concurrencia con el sync: el catálogo cambia mientras se resuelve)
-- [ ] **T8 — `PuntualResolver`: cobertura (completa/parcial), verificación en disco, carpeta del día** (S3,S8,S12) — inline — pending — risk: none
-- [ ] **T9 — `PuntualRequestService`: estimate, create, idempotencia, revoke, historial, payload** (S4,S5,S6,S7,S8,S9) — inline — pending — risk: item 2 (emite enlaces públicos a material no asignado)
-- [ ] **T10 — `config/puntual.php`** (S5,S6) — inline — pending — risk: none
-- [ ] **T11 — Guard de compartidos generalizado (`isRequestManaged`) + fix del `use` faltante en `BackupRequestService`** (S5,S9) — inline — pending — risk: item 3 (cambia el comportamiento de `ShareController` para las dos familias)
-- [ ] **T12 — `SolicitudPuntualController` + rutas `/solicitud-puntual`** (S1,S2,S5,S9) — inline — pending — risk: item 2 (nueva superficie HTTP que emite enlaces públicos)
-- [ ] **T13 — Vista cliente: catálogo + modal de solicitud con cobertura y recomendación** (S1,S3,S6,S7,S8,S11) — inline — pending — risk: none
-- [ ] **T14 — Vista cliente: historial paginado, buscable y ordenable** (S9) — inline — pending — risk: none
-- [ ] **T15 — Alpine `puntualManager()` + sidebar + build de Tailwind** (S1,S6,S9,S11) — inline — pending — risk: none
-- [ ] **T16 — Vista admin: medios declarados + acción de remapeo con previsualización** (S10) — inline — pending — risk: none
-- [ ] **T17 — Harness `tests/harness_solicitud_puntual.php`** (S2,S3,S4,S5,S6,S7,S8,S9,S10,S12) — inline — pending — risk: none
-- [ ] **T18 — Extender `harness_route_contract.php` y `harness_shares_module.php`** (S5,S9,S11,S12) — inline — pending — risk: none
-- [ ] **T19 — Test unitario `tests/Unit/PuntualResolverTest.php`** (S3,S10) — inline — pending — risk: none
-- [ ] **T20 — Verificador independiente de seguridad** (S2,S5) — delegated — pending — risk: item 2 (revisión de seguridad obligatoria)
-- [ ] **T21 — Documentar el contrato en `AGENTS.md` y cerrar el change** (S1,S2,S4,S5,S9,S11,S12) — inline — pending — risk: none
+- [x] **T1 — Esquema: `medios`, `solicitud_puntual`, `solicitud_puntual_item` + índice único parcial** (S1,S4,S5) — inline — `caf6cda` — risk: item 1 (migración de esquema; aditiva y reversible) — 3 migraciones aplicadas, `down()` verificado, el índice parcial rechaza el duplicado con 23505
+- [x] **T2 — Modelos `Medio`, `SolicitudPuntual`, `SolicitudPuntualItem` + relaciones inversas** (S1,S4,S5) — inline — `caf6cda` — risk: none — `Share::solicitudPuntualItem()` y `Share::solicitudPuntual()` para las dos familias de enlace; `StorageProvider::medios()`
+- [x] **T3 — `MedioCatalogService::availableFor()`: el complemento no asignado** (S2) — inline — `a3ee014` — risk: none — regla de ancestro verificada con Punto (90 de 106 asignados, el sub-canal dentro de un storage asignado desaparece)
+- [x] **T4 — `MedioCatalogService::detectSubchannels()` + `proposeName()` + `declare()` + `resolveTarget()`** (S10) — inline — `a3ee014`, `a0b26f5` — risk: none — 122 canales detectados en los 5 contenedores; 56 ya tienen storage propio y se reaprovechan
+- [x] **T5 — Comandos `medios:bootstrap` y `medios:remapear`** (S10) — inline — `2ddd85b` — risk: item 1 (escribe `medios`; dry-run por defecto) — bootstrap 1,1 s / 124 canales; remapeo 214 detectados
+- [x] **T6 — `Admin\MedioController` + rutas `/admin/medios`** (S10) — inline — `2ddd85b` — risk: item 2 (superficie HTTP de administración que escribe el catálogo) — 200 con sesión admin; 403 sin ella
+- [x] **T7 — `PuntualResolver`: localización, cadencia y slots** (S3,S7) — inline — `a9d68f3` — risk: none — cobertura mínima de intervalos; paso por mediana; anclaje por nombre
+- [x] **T8 — `PuntualResolver::coverage()` + `dayFolder()` + materialización** (S3,S8,S12) — inline — `a9d68f3` — risk: item 3 (el sync escribe `files`; idempotente, con guardas de purga) — Caracol TV 14/11 12:00-13:00 → 4 archivos, 904.352.402 bytes, 100 %
+- [x] **T9 — `PuntualRequestService`: estimate, create, revoke, listFor, payload** (S4,S5,S6,S7,S8,S9) — inline — `73ae53c`, `575584a` — risk: item 2 (emite enlaces públicos a material no asignado) — ciclo completo verificado: alta, idempotencia, historial, revocación
+- [x] **T10 — `config/puntual.php`** (S5,S6) — inline — `73ae53c` — risk: none — vigencia 3 días, umbral 120 min, motivo mínimo 10
+- [x] **T11 — Guard de compartidos generalizado + fix del `use` faltante + bug del `confirm_count`** (S5,S9) — inline — `98fcb87` — risk: item 3 (cambia `ShareController` para las dos familias) — `isRequestManaged()` cubre las tres relaciones; el `catch (QueryException)` ya es alcanzable
+- [x] **T12 — `SolicitudPuntualController` + rutas cliente** (S1,S2,S5,S9) — inline — `bbf33a2` — risk: item 2 (nueva superficie HTTP que emite enlaces) — 6 rutas con `auth`; throttle añadido después de la auditoría
+- [x] **T13 — Vista del cliente: catálogo + modal de solicitud** (S1,S3,S6,S7,S8,S11) — inline — `e17ec48` — risk: none — 58.530 bytes renderizados
+- [x] **T14 — Vista del cliente: historial paginado, buscable y ordenable** (S9) — inline — `e17ec48` — risk: none
+- [x] **T15 — Alpine `puntualManager()` + sidebar + build de Tailwind + guía interactiva** (S1,S6,S9,S11) — inline — `e17ec48` — risk: none — el CSS compilado bajaba de 106 KB a 89 KB (el commiteado arrastraba utilidades muertas del Play CDN retirado)
+- [x] **T16 — Vista de administración: medios declarados + acción de remapeo** (S10) — inline — `2ddd85b` — risk: none
+- [x] **T17 — `tests/harness_solicitud_puntual.php`** (S2,S3,S4,S5,S6,S7,S8,S9,S10,S12) — inline — `98fcb87`, `575584a` — risk: none — 46 aserciones, todas en verde
+- [x] **T18 — Extender `harness_route_contract.php` y `harness_shares_module.php`** (S5,S9,S11,S12) — inline — `5c964f1` — risk: none — 312 rutas 0 huérfanas; 8 aserciones nuevas del guard
+- [x] **T19 — `tests/Unit/PuntualResolverTest.php`** (S3,S10) — inline — `5c964f1` — risk: none — 11 tests
+- [x] **T20 — Verificador independiente de seguridad** (S2,S5) — delegated — `575584a` — risk: item 2 — 2 CRÍTICOS, 2 ALTOS, 2 MEDIOS, todos corregidos y re-verificados (15/15)
+- [x] **T21 — Documentar el contrato en `AGENTS.md` y cerrar el change** (todas) — inline — pendiente de commit — risk: none
 
 ## Acceptance Criteria
 
@@ -116,29 +116,37 @@
 
 ## Verification
 
-Checks observados (se completan a medida que avanza la implementación):
+Checks observados (ejecutados contra PostgreSQL, Redis y el disco de producción):
 
 | Check | Resultado |
 |---|---|
-| `openspec validate solicitud-puntual-tv-radio --strict` | OK — "Change 'solicitud-puntual-tv-radio' is valid" |
-| `php tests/harness_solicitud_puntual.php` | pendiente |
-| `php vendor/bin/phpunit tests/Unit/PuntualResolverTest.php` | pendiente |
-| `php tests/harness_route_contract.php` | pendiente |
-| `php tests/harness_shares_module.php` | pendiente |
-| `php tests/harness_backup_requests.php` | pendiente (regresión del fix del `use`) |
-| `php tests/tailwind_coverage_check.php` | pendiente |
-| `php artisan view:cache` | pendiente |
-| Verificador independiente (T20) | pendiente |
+| `php tests/harness_solicitud_puntual.php` | OK — 46 aserciones |
+| `php vendor/bin/phpunit tests/Unit/PuntualResolverTest.php` | OK — 11 tests, 16 assertions |
+| `php vendor/bin/phpunit --testsuite Unit` | 418 tests · 10 errores · 7 fallos — **idéntico a HEAD** (407/10/7): los 17 son preexistentes |
+| `php tests/harness_route_contract.php` | OK — 312 rutas verificadas, 0 huérfanas |
+| `php tests/harness_shares_module.php` | OK — todas las aserciones |
+| `php tests/harness_backup_requests.php` | OK — todas las aserciones |
+| `php tests/tailwind_coverage_check.php` | OK — 28.919 clases verificadas |
+| `php artisan view:cache` | OK — Blade compilado |
+| Flujo HTTP real (sesión de Punto) | catálogo 140 medios · estimate 200 · alta 201 con 4 enlaces · historial 200 · revocación 200 · motivo corto 422 |
+| Verificador independiente | 2 CRÍTICOS + 2 ALTOS + 2 MEDIOS → corregidos y re-verificados 15/15 |
 
 ## Progress
 
-- 2026-11-18 — Exploración completa sobre el código y la BD de producción. Hallazgos que condicionan el diseño: `files` no tiene columna de duración; coexisten dos formatos de `path`; la grilla de emisión no es uniforme entre medios (15/21/~14/20 min); los sub-canales de Emisoras 01/02/03/04 son ~84 y no son storages; el árbol de origen retiene 48 días y el de producción 13.
+- 2026-11-18 — Exploración completa sobre el código y la BD de producción. Hallazgos que condicionan el diseño: `files` no tiene columna de duración; coexisten dos formatos de `path`; la grilla de emisión no es uniforme entre medios (15/21/~14/20 min); los sub-canales de Emisoras 01/02/03/04 son 122 y no son storages; el árbol de origen retiene 48 días y el de producción 13.
 - 2026-11-18 — Decisiones del usuario resueltas y registradas en Specs: S2 (solo no asignados), S4 (registro contable sin tarifas), S9 (historial paginado/buscable/ordenable), S12 (48–50 días), S6 (umbral de 2 h → día), S10 (botón de remapeo en admin), S11 (navegación).
-- 2026-11-18 — Change OpenSpec `solicitud-puntual-tv-radio` creado con 4/4 artefactos y `validate --strict` en verde. Este documento ODD creado antes de la primera escritura de código.
+- 2026-11-18 — Change OpenSpec `solicitud-puntual-tv-radio` creado con 4/4 artefactos y `validate --strict` en verde.
+- 2026-11-18 — Implementación en un **worktree aislado** (`/tmp/kilo/tcloud-puntual`, rama `feat/solicitud-puntual-tv-radio` desde `f0d4890`): el checkout principal tenía cambios sin commitear de otra feature, y `StorageProvider.php` —un archivo que este change toca— estaba entre ellos. 12 commits, una unidad de trabajo cada uno.
+- 2026-11-18 — Auditoría de seguridad por subagente independiente (riesgo alto del change): 2 CRÍTICOS, 2 ALTOS, 2 MEDIOS. Todos corregidos y re-verificados con 15/15 comprobaciones antes de cerrar.
+- 2026-11-18 — Catálogo poblado en producción: 253 medios activos (35 TV + 218 radio), 128 con ruta interna. El medio del árbol de producción (`35 Red Mas BK`) quedó dado de baja.
 
 ## Next Step
 
-Crear la rama `feat/solicitud-puntual-tv-radio` desde `main` y arrancar T1 (esquema). T20 (verificador de seguridad) es bloqueante para cerrar: el acceso por enlace público a material de medios no asignados es el ítem de riesgo alto del change.
+El change queda listo para archivar. Lo que falta es del lado del operador, no del código:
+
+1. **Decidir el merge.** La rama `feat/solicitud-puntual-tv-radio` está en el worktree `/tmp/kilo/tcloud-puntual`, no en el checkout principal. El CSS compilado (`app/public/css/app.css`) hay que **reconstruirlo en el destino**: el checkout principal tenía un build pendiente de otra feature y las dos ramas tocan el mismo archivo.
+2. **Revisar el catálogo con el operador.** 253 medios y 122 sub-canales declarados a partir de la detección física. Los nombres y las regiones son propuestos por el sistema y editables en `/admin/medios`.
+3. **Abrir los tickets de los hallazgos preexistentes** que el verificador encontró fuera de este change: `can_create_shares` sin aplicar en `POST /shares`, `FileController::index` con `sync=1` sin comprobar permiso, el soft-404 con HTTP 200 del visor público y la ruta huérfana de transcripción.
 
 ## Log
 
@@ -159,3 +167,19 @@ Crear la rama `feat/solicitud-puntual-tv-radio` desde `main` y arrancar T1 (esqu
 - **L7** — 2026-11-18 — Tercer hallazgo: la grilla de emisión **no es uniforme** (15 min TV, 21 min radio nacional, ~14 min irregular en radio regional, 20 min en el árbol NFS de producción). El paso se deriva por medio con la mediana de los deltas entre inicios de captura consecutivos. Una constante global daría cobertura falsa en tres de los cuatro casos.
 
 - **L8** — 2026-11-18 — Cuarto hallazgo (bug preexistente, no del change): `BackupRequestService` usa `catch (QueryException $e)` sin el `use Illuminate\Database\QueryException`. En PHP eso resuelve a `App\Services\MisArchivos\QueryException`, que no existe: una violación real de `23505` no entra al catch y sube como 500 en vez de devolver la solicitud ganadora. El harness actual no lo detecta porque provoca el `23505` con SQL crudo. Se corrige en T11, que también generaliza el guard de compartidos.
+
+- **L9** — 2026-11-18 — El checkout principal tenía cambios SIN COMMITear de otra feature (`StorageProvider.php` entre ellos, +197 líneas), y `f0d4890` tiene 19 commits que `main` no tiene: **el módulo de backup vive en esa cadena, no en `main`**. Implementar sobre `main` habríaSquared la base del módulo de backup del que este change es patrón. Se creó un worktree aislado con `.env` y `node_modules` enlazados (el `.env` que lee Laravel es `app/.env`, NO el de la raíz del repo: hay dos, y el de la raíz tiene `REDIS_PASSWORD=null` — el config cacheado es el que tiene el valor bueno).
+
+- **L10** — 2026-11-18 — Se inventaron dos tablas con nombre singular (`medios`, `solicitud_puntual`) y Laravel las pluralizaba (`medios` ok, `solicitud_puntuals` no). Los modelos fijan el nombre de tabla explícito, como `watermark_audit_log`.
+
+- **L11** — 2026-11-18 — **Auditoría de seguridad (subagente independiente, T20).** Hallazgos y correcciones:
+  - **CRÍTICO C1**: la ficha de cobertura devolvía `file_id` y `path`, que eran el oráculo de un hueco PREEXISTENTE en `/media/{id}/preview` (`MediaPreviewController` no comprobaba permiso). Con el oráculo, la vigencia de 3 días y la revocación eran decorativas. Corregido por los dos lados: la respuesta ya no lleva identificadores internos y `MediaPreviewController` comprueba el mismo permiso que `FileController::preview()`.
+  - **CRÍTICO C2**: el árbol de producción (`Disco_D/backup`) estaba en el catálogo del cliente y era pedible con enlaces de 3 días. El design lo excluía como fuente. Corregido: `flatChannelStorages()`, `availableFor()` y `declare()` lo excluyen; el medio `35 Red Mas BK` quedó dado de baja.
+  - **ALTO A1**: `create()` no revalidaba que el medio estuviera activo ni que no estuviera asignado al solicitante (el catálogo filtraba, un POST directo se saltaba el filtro).
+  - **ALTO A2**: `estimate()` materializaba el catálogo: escribía filas en `files` desde una API de solo lectura, y cada petición podía disparar `scandir` síncronos sobre NFS `hard`.
+  - **MEDIO M1/M2**: `24:00`, `25:00`, `abc` y `-1:00` daban 500 opaco o se persistían.
+  - **Preexistentes, fuera de scope** (con repro para ticket): `can_create_shares` sin aplicar en `POST /shares`, `FileController::index` con `sync=1` sin comprobar permiso, soft-404 con HTTP 200 en el visor público, ruta huérfana de transcripción.
+
+- **L12** — 2026-11-18 — El harness del change usa una fila **sintética** de `files` para probar que el snapshot contable sobrevive al prune: una versión anterior borraba una fila de catálogo REAL de producción. El `storage:sync --force` se usó para reindexar el storage afectado.
+
+- **L13** — 2026-11-18 — La suite Unit da 418 tests / 10 errores / 7 fallos con estos cambios, frente a **407 / 10 / 7 en HEAD limpio** (worktree separado). La diferencia son los 11 tests nuevos: cero regresiones. Los 17 problemas son preexistentes.

@@ -2654,6 +2654,126 @@ se deduce del nombre (los dos lados no coinciden: `09 Redmas` ↔ `05_Redmas`).
 La pantalla de administración es `/admin/backups` y su Guía lo explica paso a
 paso. Hoy: **28 de 205** storages con vínculo declarado.
 
+## Solicitud Puntual de TV y Radio (change `solicitud-puntual-tv-radio`, 2026-11-18)
+
+Módulo de cliente en `/solicitud-puntual` (sidebar: bajo "Compartidos"). El
+cliente pide una **franja horaria** o el **día completo** de un medio que
+**NO tiene asignado**, y recibe enlaces de solo lectura con 3 días de
+vigencia. La pantalla de administración del catálogo es `/admin/medios`.
+
+### El medio es un índice, no un storage
+
+La tabla `medios` identifica un canal como par `(storage_id, subpath)`.
+`subpath` vacío = el medio ES el storage; con valor = el canal cuelga de una
+carpeta interna (`Antioquia/BLU` dentro de `02 Emisoras 01 Reg`).
+
+**Regla dura: NO se crea un `storage_providers` por sub-canal.** El cron
+`storage:sync --all` (cada 15 min) recorre el árbol FÍSICO del storage
+contenedor y volvería a catalogar sus filas bajo el contenedor: duplicación
+de `files` y navegación BD-first huérfana. Precedente: el change de backup
+ya descartó ese patrón. Si un sub-canal tiene storage propio (56 de 122),
+el medio se declara sobre **ese** storage (`MedioCatalogService::resolveTarget()`).
+
+### El módulo es el COMPLEMENTO de lo asignado
+
+`MedioCatalogService::availableFor()` devuelve los medios que el usuario no
+tiene. Un medio cuenta como asignado si el usuario tiene lectura sobre su
+storage **o sobre cualquier ancestro** por ruta física (`isAssignedTo()`).
+Lo asignado NO aparece en el módulo: para eso está Mis Archivos.
+
+`POST /solicitud-puntual` revalida las tres reglas (activo, no asignado, no
+árbol de producción): un POST directo no puede saltarse el filtro del
+catálogo.
+
+### La cobertura NO es una rejilla rígida
+
+La cadencia de emisión real **no es uniforme** (medido 2026-11-18):
+
+```
+  01 Caracol Tv             15 min, desfase +13 s
+  Caracol Radio Bogotá      15 min con saltos de hasta 17 min
+  Antioquia/BLU (regional)  ~14 min IRREGULAR (13:59 / 14:01 / 14:00)
+  producción (NFS)          20 min   <-- otro maestro, no es fuente
+```
+
+`PuntualResolver::coverage()` calcula el conjunto **mínimo de intervalos**
+que cubre el rango (voraz), que es la pregunta física ("¿hay material que
+cubra cada instante?"). La tolerancia de borde (60 s) hace que el desfase
+del grabador no cuente como hueco. El paso (`deriveStep()`) es la **mediana**
+de los deltas entre inicios consecutivos: la moda se rompe con las pausas de
+programación.
+
+El anclaje del material es el **nombre** del archivo (`_DDMMYYYY_HHMMSS.ext`),
+no el `path`: conviven dos formatos de `path` (relativo al `base_path` y
+legacy relativo a la raíz Tcloud) y tres layouts físicos. El `parent_id` no
+sirve: hay filas planas con `parent_id` nulo.
+
+### Entrega por franja y por día
+
+```
+  MODO FRANJA                          MODO DÍA
+  1 enlace por archivo exacto          1 enlace sobre la carpeta del día
+  N tokens, N vencimientos             1 token, 1 vencimiento
+```
+
+**En modo franja NUNCA un enlace a la carpeta del día**: esa carpeta tiene
+las 96 capturas del día (18 GB en TV) y el cliente pidió una hora.
+
+Por encima de `puntual.umbral_dia_minutos` (120) la interfaz recomienda el
+día: una franja de 2 h 30 son 8-10 enlaces que vencen por separado.
+
+### La solicitud es la fuente de verdad, no el share
+
+`shares.file_id` es FK `ON DELETE CASCADE`: cuando el prune borra la fila de
+`files`, el share muere solo. `solicitud_puntual_item` guarda el **snapshot**
+de nombre, ruta y bytes, así que el control contable sobrevive al prune.
+
+Los enlaces de un flujo de solicitud (backup **o** puntual) están protegidos:
+`ShareController::isRequestManaged()` los excluye de editar, borrar y de la
+purga masiva. La vía para desactivarlos es revocar la solicitud.
+
+### Reglas de seguridad (verificadas por verificador independiente)
+
+- La ficha de cobertura **NO** devuelve `file_id` ni `path`: son el oráculo
+  que convierte un id adivinable en la ruta confirmada de material no
+  asignado. La interfaz solo usa instante, nombre y tamaño.
+- `MediaPreviewController` comprueba el mismo permiso que
+  `FileController::preview()` (admin, lectura sobre el storage, o el dueño).
+  Sin esto, la vigencia de 3 días y la revocación eran decorativas.
+- El **árbol de producción** (`Disco_D/backup`) no es fuente ni es pedible:
+  es un maestro distinto (otra bitrate, grilla de 20 min, 13 días, NFS
+  `hard`). Se excluye por `config('backups.root_storage_id')` o, si no está
+  declarada, por el `backup_storage_id` de los canales mapeados.
+- `estimate()` es de **solo lectura**: no materializa el catálogo. Si el día
+  está en disco pero sin indexar, lo dice (`material_no_indexado`) y la
+  materialización ocurre al confirmar.
+- Las rutas del módulo llevan `throttle`.
+
+### Materialización bajo demanda
+
+El catálogo puede estar **atrasado** respecto del disco (el storage 49 tenía
+indexados los días hasta septiembre para `Antioquia/BLU` con 48 días en
+disco). `PuntualResolver::materializeDay()` lo pone al día por la vía
+canónica (`StorageSyncService::syncFolder`, un nivel por llamada: carpeta del
+medio → carpeta-día → archivos). Nunca SQL inline: Mis Archivos es el único
+escritor de `files`.
+
+### Verificación
+
+```bash
+cd app
+php tests/harness_solicitud_puntual.php        # 46 aserciones
+php vendor/bin/phpunit tests/Unit/PuntualResolverTest.php --no-coverage
+php tests/harness_route_contract.php           # 312 rutas, 0 huérfanas
+php tests/harness_shares_module.php            # guard de compartidos
+php tests/tailwind_coverage_check.php
+```
+
+Comandos: `medios:bootstrap` (siembra los canales planos) y
+`medios:remapear --todos` (da de alta los sub-canales de los contenedores
+Emisoras 01/02/03/04). Los dos son informe por defecto y escriben solo con
+`--apply --yes`. La UI y la consola comparten `MedioCatalogService`.
+
 <!-- ODD:BEGIN -->
 ## Organic Driven Development (ODD)
 
