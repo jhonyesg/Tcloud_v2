@@ -150,6 +150,7 @@ Route::middleware('auth')->group(function () {
     // tiene asignado y recibe enlaces publicos con vigencia.
     Route::get('/solicitud-puntual', [App\Http\Controllers\SolicitudPuntualController::class, 'index'])->name('solicitud-puntual.index');
     Route::get('/solicitud-puntual/catalogo', [App\Http\Controllers\SolicitudPuntualController::class, 'catalogo'])->middleware('throttle:60,1');
+    Route::get('/solicitud-puntual/dias', [App\Http\Controllers\SolicitudPuntualController::class, 'dias'])->middleware('throttle:60,1');
     Route::post('/solicitud-puntual/estimate', [App\Http\Controllers\SolicitudPuntualController::class, 'estimate'])->middleware('throttle:30,1');
     Route::post('/solicitud-puntual', [App\Http\Controllers\SolicitudPuntualController::class, 'store'])->middleware('throttle:20,1');
     Route::get('/solicitud-puntual/historial', [App\Http\Controllers\SolicitudPuntualController::class, 'historial'])->middleware('throttle:60,1');

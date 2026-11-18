@@ -59,7 +59,9 @@ class PuntualReportService
                 $porCliente[$userId] = [
                     'user_id' => $userId,
                     'username' => (string) ($solicitud->user?->username ?? '—'),
-                    'nombre' => (string) ($solicitud->user?->name ?? $solicitud->user?->username ?? '—'),
+                    // `users` no tiene columna `name`: el nombre visible es
+                    // `username`.
+                    'nombre' => (string) ($solicitud->user?->username ?? '—'),
                     'email' => (string) ($solicitud->user?->email ?? ''),
                     'solicitudes' => 0,
                     'entregadas' => 0,

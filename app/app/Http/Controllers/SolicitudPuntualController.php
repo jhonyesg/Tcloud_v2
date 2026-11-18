@@ -219,6 +219,45 @@ class SolicitudPuntualController extends Controller
     }
 
     /**
+     * Días con material de un medio, del más reciente al más antiguo.
+     *
+     * El operador necesita saber ANTES de pedir qué días tienen grabaciones:
+     * la fecha por defecto es hoy, y la mayoría de las emisoras todavía no
+     * grabó el día en curso, así que el modal abría en un día sin material y
+     * parecía un error del módulo.
+     */
+    public function dias(Request $request): JsonResponse
+    {
+        $user = $this->getUser();
+
+        if ($user === null) {
+            return response()->json(['error' => 'Unauthorized'], 401);
+        }
+
+        $validated = $request->validate([
+            'medio_id' => ['required', 'integer', 'exists:medios,id'],
+        ]);
+
+        $medio = Medio::find($validated['medio_id']);
+
+        if ($medio === null) {
+            return response()->json(['error' => 'El medio no existe.'], 404);
+        }
+
+        return response()->json([
+            'dias' => $this->resolverDias($medio),
+        ]);
+    }
+
+    /**
+     * @return list<string> `DDMMYYYY`, del más reciente al más antiguo
+     */
+    private function resolverDias(Medio $medio): array
+    {
+        return app(\App\Services\MisArchivos\PuntualResolver::class)->availableDays($medio);
+    }
+
+    /**
      * Historial de solicitudes del usuario.
      */
     public function historial(Request $request): JsonResponse
@@ -332,16 +371,19 @@ class SolicitudPuntualController extends Controller
             return response()->json(['error' => 'Forbidden'], 403);
         }
 
+        // `users` no tiene columna `name`: el nombre visible es `username`
+        // (y el correo). Pedir una columna inexistente lanzaba un 500.
         $clientes = \App\Models\SolicitudPuntual::query()
             ->join('users', 'users.id', '=', 'solicitud_puntual.user_id')
-            ->select('users.id', 'users.username', 'users.name')
+            ->select('users.id', 'users.username', 'users.email')
             ->distinct()
             ->orderBy('users.username')
             ->get()
             ->map(fn ($c) => [
                 'id' => (int) $c->id,
                 'username' => (string) $c->username,
-                'nombre' => (string) ($c->name ?? $c->username),
+                'nombre' => (string) $c->username,
+                'email' => (string) ($c->email ?? ''),
             ])
             ->values();
 
