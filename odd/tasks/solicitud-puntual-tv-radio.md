@@ -97,7 +97,7 @@
 - [x] **T18 — Extender `harness_route_contract.php` y `harness_shares_module.php`** (S5,S9,S11,S12) — inline — `5c964f1` — risk: none — 312 rutas 0 huérfanas; 8 aserciones nuevas del guard
 - [x] **T19 — `tests/Unit/PuntualResolverTest.php`** (S3,S10) — inline — `5c964f1` — risk: none — 11 tests
 - [x] **T20 — Verificador independiente de seguridad** (S2,S5) — delegated — `575584a` — risk: item 2 — 2 CRÍTICOS, 2 ALTOS, 2 MEDIOS, todos corregidos y re-verificados (15/15)
-- [x] **T21 — Documentar el contrato en `AGENTS.md` y cerrar el change** (todas) — inline — pendiente de commit — risk: none
+- [x] **T21 — Documentar el contrato en `AGENTS.md` y cerrar el change** (todas) — inline — `6b32839` — risk: none
 
 ## Acceptance Criteria
 
