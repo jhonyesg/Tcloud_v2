@@ -2654,6 +2654,62 @@ se deduce del nombre (los dos lados no coinciden: `09 Redmas` ↔ `05_Redmas`).
 La pantalla de administración es `/admin/backups` y su Guía lo explica paso a
 paso. Hoy: **28 de 205** storages con vínculo declarado.
 
+## Badge azul del botón "Compartir" (`share-badge-azul`, 2026-11-18)
+
+En Mis Archivos, la columna Acciones (vista lista y vista tarjetas) pinta el
+botón **Compartir** con fondo azul (`bg-blue-100` / `text-blue-600`) cuando el
+archivo o carpeta **ya tiene al menos un enlace generado**; sin enlaces mantiene
+su aspecto original (`bg-white hover:bg-indigo-100` en tarjetas, gris en lista).
+Permite distinguir a simple vista qué ya se compartió.
+
+### Cómo se resuelve el flag
+
+- `FileController::annotateShareFlags()` anota `has_share_link` en **cada
+  entrada del listado** (BD-first, sync, auto-scan y fs-first) con **una sola
+  query `IN` sobre `shares.file_id`**. Entradas sin `id` (fs-first sin fila en
+  BD) quedan en `false`.
+- La anotación corre en el **path de computo, antes de cachear** el payload
+  (`folder_listing:{storage}:{pid}:{gen}:{page}`). El cache hit NO se re-anota:
+  la frescura la garantiza `folder_gen` (ver abajo).
+
+### Frescura: `FileController::bumpListingGeneration(storage, parent)`
+
+Al crear o revocar un enlace se incrementa `folder_gen:{storage}:{parent}`, la
+misma invalidación O(1) que ya usan sync/repair/remap. La siguiente carga de la
+carpeta cambia de key, recalcula y el badge queda correcto (antes el TTL del
+listing llegaba a 86400 s). Call sites:
+
+- `ShareController::store()` / `destroy()` — alta y revocación individual.
+- `ShareController::bulkDelete()` — los pares se resuelven
+  (`listingPairsFor()`) **ANTES** del delete porque `shares.file_id` es
+  `ON DELETE CASCADE`.
+- `BackupRequestService::create()` / `revoke()` — enlaces de solicitud de
+  backup (creados por el servicio, no por `store()`).
+
+En la vista, `generateShareLink()` / `deleteShareLink()` / `bulkDeleteShares()`
+además reflejan el flag en el objeto local (`selectedFile.has_share_link`) para
+que el badge cambie al instante, sin recargar.
+
+### Semántica (supuestos del usuario, 2026-11-18)
+
+- Cuenta **cualquier** fila en `shares` con `file_id` = la entrada, incluidos
+  enlaces **vencidos** y enlaces de backup: "ya genere link" = existe historial.
+- Borrar el último enlace vuelve el botón a gris.
+- No se toca el TTL ni la estructura de la cache.
+
+### Verificación
+
+```bash
+cd app
+php tests/harness_share_badge.php      # 26 aserciones (flag, bump, cache, bulk, fs-first)
+php tests/tailwind_coverage_check.php   # las clases azules en public/css/app.css
+php tests/harness_route_contract.php
+php tests/harness_shares_module.php
+```
+
+**Rollback**: `git revert` del commit. Sin migración ni estado persistente
+(los bump de `folder_gen` son degradables).
+
 <!-- ODD:BEGIN -->
 ## Organic Driven Development (ODD)
 

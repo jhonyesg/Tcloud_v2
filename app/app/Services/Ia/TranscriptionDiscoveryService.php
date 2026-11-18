@@ -163,8 +163,10 @@ class TranscriptionDiscoveryService
         $q = DB::table('files')
             ->join('storage_providers as sp', 'sp.id', '=', 'files.storage_provider_id')
             ->where('files.is_folder', false)
-            ->where('files.is_trashed', false)
-            ->whereNull('files.deleted_at')
+            // La papelera se retiró (migration 2026_09_20_120000): `files` ya
+            // no tiene `is_trashed` ni `deleted_at`. Filtrarlas producía
+            // SQLSTATE[42703] Undefined column: 500 opaco en el módulo
+            // (medido 2026-11-18).
             ->where('files.file_modified_at', '<', $cutoff)
             ->select([
                 'files.id as file_id',

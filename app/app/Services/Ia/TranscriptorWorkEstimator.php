@@ -220,7 +220,8 @@ class TranscriptorWorkEstimator
         $q = DB::table('files')
             ->join('storage_providers as sp', 'sp.id', '=', 'files.storage_provider_id')
             ->where('files.is_folder', false)
-            ->where('files.is_trashed', false)
+            // La papelera se retiró (migration 2026_09_20_120000): `files`
+            // ya no tiene `is_trashed`.
             ->whereExists(function ($sub) {
                 $sub->selectRaw('1')
                     ->from('storage_providers as a')

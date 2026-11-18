@@ -416,6 +416,35 @@ class ShareController extends Controller
         return max(1, (int) config('shares.max_bulk_items', 200));
     }
 
+    /**
+     * Pares (storage, parent) de los archivos de unos shares, para
+     * `share-badge-azul`: hay que resolverlos ANTES de borrar los shares
+     * porque la FK `shares.file_id` es ON DELETE CASCADE y después del
+     * delete ya no hay join posible.
+     *
+     * @param  list<int>  $shareIds
+     * @return list<array{0:int, 1:?int}>
+     */
+    private function listingPairsFor(array $shareIds): array
+    {
+        if ($shareIds === []) {
+            return [];
+        }
+
+        $rows = DB::table('shares')
+            ->join('files', 'files.id', '=', 'shares.file_id')
+            ->whereIn('shares.id', $shareIds)
+            ->select('files.storage_provider_id', 'files.parent_id')
+            ->distinct()
+            ->get();
+
+        return $rows
+            ->map(fn ($r) => [(int) $r->storage_provider_id, $r->parent_id !== null ? (int) $r->parent_id : null])
+            ->unique(fn ($p) => $p[0] . ':' . ($p[1] ?? 'null'))
+            ->values()
+            ->all();
+    }
+
     // ------------------------------------------------------------------
     // Alta / edicion / revocacion
     // ------------------------------------------------------------------
@@ -457,6 +486,11 @@ class ShareController extends Controller
             'permissions' => $request->input('permissions'),
             'created_by' => $user->id,
         ]);
+
+        // `share-badge-azul`: invalida el listado de la carpeta que contiene
+        // el archivo para que el badge azul del botón "Compartir" se recalcule
+        // en la siguiente navegación (ver FileController::bumpListingGeneration).
+        FileController::bumpListingGeneration((int) $file->storage_provider_id, $file->parent_id !== null ? (int) $file->parent_id : null);
 
         if ($request->boolean('send_email') && $request->filled('email_destinatario')) {
             try {
@@ -589,7 +623,7 @@ class ShareController extends Controller
             return response()->json(['error' => 'Unauthorized'], 401);
         }
 
-        $share = Share::find($id);
+        $share = Share::with('file')->find($id);
         if (! $share) {
             return response()->json(['error' => 'Share not found'], 404);
         }
@@ -609,7 +643,14 @@ class ShareController extends Controller
         }
 
         Cache::forget("share:meta:{$share->token}");
+        $file = $share->file;
         $share->delete();
+
+        // `share-badge-azul`: al revocar, el badge azul del botón "Compartir"
+        // debe apagarse en la siguiente carga de la carpeta.
+        if ($file !== null) {
+            FileController::bumpListingGeneration((int) $file->storage_provider_id, $file->parent_id !== null ? (int) $file->parent_id : null);
+        }
 
         return response()->json(['message' => 'Share deleted']);
     }
@@ -819,6 +860,10 @@ class ShareController extends Controller
             $authorizedIds = $authorizedIds->diff($protectedIds)->values();
         }
 
+        // `share-badge-azul`: los pares (storage, parent) se resuelven ANTES
+        // del delete porque la FK shares.file_id es ON DELETE CASCADE.
+        $listingPairs = $this->listingPairsFor($authorizedIds->all());
+
         try {
             DB::transaction(function () use ($authorizedIds) {
                 foreach ($authorizedIds->chunk(100) as $chunk) {
@@ -836,6 +881,12 @@ class ShareController extends Controller
 
         foreach ($shares as $share) {
             Cache::forget("share:meta:{$share->token}");
+        }
+
+        // `share-badge-azul`: invalida los listados afectados para que el
+        // badge del botón "Compartir" se apague en la siguiente carga.
+        foreach ($listingPairs as $pair) {
+            FileController::bumpListingGeneration($pair[0], $pair[1]);
         }
 
         Log::warning('shares.bulk_delete.completed', [

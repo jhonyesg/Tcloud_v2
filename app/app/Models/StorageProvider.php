@@ -104,6 +104,15 @@ class StorageProvider extends Model
      */
     public static function forgetInheritedTranscriptionScope(?int $rootId): void
     {
+        // El set y el mapa de hijos en memoria alimentan el BFS del scope: si
+        // no se limpian, una mutación de `base_path`/`transcription_enabled` en
+        // el mismo request seguiría viendo la jerarquía vieja.
+        static::$scopeSetCache = null;
+        static::$scopeChildrenCache = null;
+        static::$scopeMemo = [];
+        // El TTL NO se limpia: no depende de esta mutación. Si se limpiara,
+        // cada toggle pagaría una lectura extra a `system_settings`.
+
         $cache = \Illuminate\Support\Facades\Cache::store();
         if ($rootId === null) {
             // No hay un patron "por prefijo" en cache; lo mas seguro es no
@@ -116,6 +125,42 @@ class StorageProvider extends Model
         $cache->forget("transcriptor.scope.inherited.{$rootId}");
         $cache->forget("transcriptor.scope.inherited.info.{$rootId}");
     }
+
+    /**
+     * `id => [base_path, transcription_enabled]` de TODOS los storages, cargado
+     * UNA vez por proceso.
+     *
+     * Por qué existe: `resolveInheritedTranscriptionScope()` corría el BFS con
+     * un `LIKE` por nodo visitado. `/ia/api-transcriptor` la invoca 2× por cada
+     * uno de los 186 storages, y como 13 storages tienen `base_path` vacío el
+     * prefijo les queda `/` y matchean el universo entero: 2.394 queries y
+     * ~1,9 s por render (medido 2026-11-18).
+     *
+     * Se guardan arrays planos y NO modelos Eloquent: leer `$model->base_path`
+     * 35.000 veces cuesta 533 ms; con arrays son 2 ms (mismo predicado).
+     *
+     * Invalidación: cualquier mutación de `base_path` o `transcription_enabled`
+     * llama a `forgetInheritedTranscriptionScope()`, que limpia esto.
+     *
+     * @var array<int,array{0:string,1:bool}>|null
+     */
+    private static ?array $scopeSetCache = null;
+
+    /**
+     * Mapa `parent_id => [child_id, ...]` derivado del prefijo de `base_path`,
+     * armado UNA vez por proceso.
+     *
+     * @var array<int,list<int>>|null
+     */
+    private static ?array $scopeChildrenCache = null;
+
+    /**
+     * Scope ya resuelto por root, para que la segunda invocación del mismo
+     * storage (el controller la hace dos veces) no repita el BFS.
+     *
+     * @var array<int,list<int>>
+     */
+    private static array $scopeMemo = [];
 
     /**
      * Retorna el set de storage IDs que forman el scope "virtual" de
@@ -136,36 +181,158 @@ class StorageProvider extends Model
      */
     public static function resolveInheritedTranscriptionScope(int $rootId): array
     {
-        $root = static::find($rootId);
-        if (!$root) {
+        $ttl = static::scopeCacheTtl();
+
+        // TTL 0 = BYPASS (freno de emergencia): no se cachea nada, ni en Redis
+        // ni en memoria, para que una mutación directa en BD (harness, tinker,
+        // seeder) se vea en la siguiente llamada.
+        if ($ttl === 0) {
+            return static::computeInheritedTranscriptionScope($rootId);
+        }
+
+        if (isset(static::$scopeMemo[$rootId])) {
+            return static::$scopeMemo[$rootId];
+        }
+
+        $key = 'transcriptor.scope.inherited.' . $rootId;
+
+        $scope = \Illuminate\Support\Facades\Cache::remember(
+            $key,
+            $ttl,
+            fn () => static::computeInheritedTranscriptionScope($rootId)
+        );
+
+        // Redis devuelve el array tal cual lo serializamos; se normaliza a
+        // `int[]` porque un driver puede devolver strings.
+        $scope = array_map('intval', (array) $scope);
+
+        return static::$scopeMemo[$rootId] = $scope;
+    }
+
+    /**
+     * BFS puro sobre el set en memoria (sin cache). Es la parte que la cache
+     * protege: con el mapa de hijos precomputado cuesta ~0,05 ms.
+     *
+     * @return list<int>
+     */
+    private static function computeInheritedTranscriptionScope(int $rootId): array
+    {
+        if (!isset(static::scopeSet()[$rootId])) {
             return [];
         }
 
+        $children = static::scopeChildren();
+
         $visited = [$rootId => true];
         $order = [$rootId];
-        $queue = [$root];
+        $queue = [$rootId];
 
         while (!empty($queue)) {
             $current = array_shift($queue);
-            $basePrefix = rtrim($current->base_path, '/') . '/';
 
-            $descendants = static::query()
-                ->where('id', '!=', $current->id)
-                ->where('transcription_enabled', true)
-                ->where('base_path', 'LIKE', $basePrefix . '%')
-                ->get(['id', 'base_path']);
-
-            foreach ($descendants as $desc) {
-                if (isset($visited[$desc->id])) {
+            foreach ($children[$current] ?? [] as $childId) {
+                if (isset($visited[$childId])) {
                     continue;
                 }
-                $visited[$desc->id] = true;
-                $order[] = $desc->id;
-                $queue[] = $desc;
+                $visited[$childId] = true;
+                $order[] = $childId;
+                $queue[] = $childId;
             }
         }
 
         return $order;
+    }
+
+    /**
+     * TTL de la cache del scope, en segundos. `0` = bypass.
+     *
+     * Se lee de `SystemSetting('transcriptor_scope_cache_ttl')` (default 300,
+     * rango válido 0..3600). El valor se memoiza en Redis 60 s para no pegarle
+     * a `system_settings` en cada resolución, y en una propiedad estática para
+     * no pagar ni eso dentro del mismo request.
+     */
+    private static function scopeCacheTtl(): int
+    {
+        // Sin memo estático: `Cache::forget('transcriptor.scope.ttl')` es el
+        // mecanismo documentado para forzar la relectura del setting, y un
+        // memo estático lo volvería inoperante hasta el próximo request.
+        // El costo es un GET a Redis (sub-ms); la lectura a `system_settings`
+        // sí queda memoizada 60 s en esa key.
+        $raw = \Illuminate\Support\Facades\Cache::get('transcriptor.scope.ttl');
+
+        if ($raw === null) {
+            $raw = \App\Models\SystemSetting::get('transcriptor_scope_cache_ttl');
+            \Illuminate\Support\Facades\Cache::put('transcriptor.scope.ttl', $raw ?? '300', 60);
+        }
+
+        if ($raw === null || $raw === '' || !is_numeric($raw)) {
+            return 300;
+        }
+
+        $ttl = (int) $raw;
+
+        return (($ttl < 0 || $ttl > 3600) ? 300 : $ttl);
+    }
+
+    /**
+     * Carga (una vez por proceso) las columnas mínimas que necesita el BFS del
+     * scope heredado, como arrays planos indexados por id.
+     *
+     * @return array<int,array{0:string,1:bool}>
+     */
+    private static function scopeSet(): array
+    {
+        if (static::$scopeSetCache !== null) {
+            return static::$scopeSetCache;
+        }
+
+        $set = [];
+        foreach (static::query()->get(['id', 'base_path', 'transcription_enabled']) as $row) {
+            $set[(int) $row->id] = [(string) $row->base_path, (bool) $row->transcription_enabled];
+        }
+
+        return static::$scopeSetCache = $set;
+    }
+
+    /**
+     * Arma (una vez por proceso) el mapa de hijos por prefijo de `base_path`.
+     *
+     * Es exactamente el predicado de la consulta anterior
+     * (`id != parent AND transcription_enabled AND base_path LIKE '<base>/%'`),
+     * comparado en memoria. El BFS después es O(aristas), no O(n²) por root.
+     *
+     * @return array<int,list<int>>
+     */
+    private static function scopeChildren(): array
+    {
+        if (static::$scopeChildrenCache !== null) {
+            return static::$scopeChildrenCache;
+        }
+
+        $set = static::scopeSet();
+        $children = [];
+
+        // Sólo los storages con transcripción encendida pueden ser hijo: el
+        // predicado original filtraba por `transcription_enabled = true`.
+        $candidates = [];
+        foreach ($set as $id => [$base, $enabled]) {
+            if ($enabled) {
+                $candidates[$id] = $base;
+            }
+        }
+
+        foreach ($set as $parentId => [$parentBase, $_]) {
+            $prefix = rtrim($parentBase, '/') . '/';
+
+            foreach ($candidates as $childId => $childBase) {
+                if ($childId === $parentId || !str_starts_with($childBase, $prefix)) {
+                    continue;
+                }
+                $children[$parentId][] = $childId;
+            }
+        }
+
+        return static::$scopeChildrenCache = $children;
     }
 
     /**

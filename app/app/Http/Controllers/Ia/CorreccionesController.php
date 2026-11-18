@@ -27,11 +27,10 @@ class CorreccionesController extends Controller
 
     public function index(TranscriptorSettings $transcriptorSettings)
     {
-        $approved = Correction::approved()
-            ->with('proposedBy', 'approvedBy')
-            ->orderByDesc('applies_count')
-            ->get();
-
+        // Las aprobadas NO se cargan acá: la tabla las pide por AJAX paginado
+        // (`loadApproved()` → `GET /ia/correcciones/approved`). Cargar las 2.582
+        // filas con sus relaciones costaba 623 ms y 14,4 MB por render, y la
+        // vista nunca leía la variable (medido 2026-11-18).
         $pendingCount = Correction::pending()->count();
         $approvedCount = Correction::approved()->count();
         $rejectedCount = Correction::where('status', 'rejected')->count();
@@ -44,7 +43,6 @@ class CorreccionesController extends Controller
         $aiCoherenceEnabled = $transcriptorSettings->bool('ai_coherence_enabled');
 
         return view('ia.correcciones.index', [
-            'approved' => $approved,
             'pendingCount' => $pendingCount,
             'approvedCount' => $approvedCount,
             'rejectedCount' => $rejectedCount,

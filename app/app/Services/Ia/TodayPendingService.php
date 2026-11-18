@@ -124,8 +124,10 @@ class TodayPendingService
                     );
             })
             ->where('files.is_folder', false)
-            ->where('files.is_trashed', false)
-            ->whereNull('files.deleted_at')
+            // La papelera se retiró (migration 2026_09_20_120000): `files` ya
+            // no tiene `is_trashed` ni `deleted_at`. Filtrarlas producía
+            // SQLSTATE[42703] Undefined column: 500 opaco en el módulo
+            // (medido 2026-11-18).
             ->where('files.file_modified_at', '>=', $todayStart)
             ->selectRaw('files.storage_provider_id AS sid')
             ->selectRaw("COUNT(*) FILTER (WHERE t.id IS NULL) AS missing")
@@ -269,8 +271,7 @@ class TodayPendingService
                         );
                 })
                 ->where('files.is_folder', false)
-                ->where('files.is_trashed', false)
-                ->whereNull('files.deleted_at')
+                // (papelera retirada: ver nota arriba)
                 ->where('files.file_modified_at', '>=', $todayStart)
                 ->where(function ($q) use ($pending) {
                     $q->whereNull('t.id')

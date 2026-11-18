@@ -1552,6 +1552,10 @@ deleteConfirmFile: null,
         });
 
         if (res.ok) {
+            // `share-badge-azul`: reflejo inmediato del badge azul en la fila
+            // sin recargar la carpeta. El servidor igual invalida folder_gen
+            // para las navegaciones siguientes.
+            if (this.selectedFile) this.selectedFile.has_share_link = true;
             // No se inserta la respuesta cruda en la lista: se vuelve a pedir
             // el listado del recurso para que la vista quede consistente con
             // el servidor y no dependa de la forma de la respuesta.
@@ -1653,6 +1657,9 @@ deleteConfirmFile: null,
             // confirmo como eliminados.
             await this.loadFileShares(this.selectedFile.id);
             this.selectedShareIds = this.selectedShareIds.filter(id => !ids.includes(id));
+            // `share-badge-azul`: si la depuración vació la lista, se apaga
+            // el badge del botón "Compartir".
+            if (this.selectedFile) this.selectedFile.has_share_link = this.fileShares.length > 0;
 
             if (failed > 0 || omitted > 0) {
                 this.showToast(`${deleted} eliminados, ${omitted} omitidos, ${failed} fallidos`, 'error');
@@ -1681,6 +1688,8 @@ deleteConfirmFile: null,
 
         if (res.ok) {
             this.fileShares = this.fileShares.filter(s => s.id !== shareId);
+            // `share-badge-azul`: si era el último enlace, se apaga el badge.
+            if (this.selectedFile) this.selectedFile.has_share_link = this.fileShares.length > 0;
             this.shareFeedback = { type: 'success', message: 'Enlace eliminado' };
             setTimeout(() => this.shareFeedback = { type: '', message: '' }, 3000);
         }
@@ -2995,8 +3004,10 @@ deleteConfirmFile: null,
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h6"/>
                                     </svg>
                                 </button>
-                                <button x-show="currentStorageCanShare" @click.stop="openDetailModal(file)" class="p-1.5 sm:p-2 bg-white hover:bg-indigo-100 rounded-lg shadow-sm transition-colors" title="Compartir">
-                                    <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <button x-show="currentStorageCanShare" @click.stop="openDetailModal(file)" title="Compartir"
+                                        :class="file.has_share_link ? 'bg-blue-100 hover:bg-blue-200' : 'bg-white hover:bg-indigo-100'"
+                                        class="p-1.5 sm:p-2 rounded-lg shadow-sm transition-colors">
+                                    <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4" :class="file.has_share_link ? 'text-blue-600' : 'text-indigo-600'" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z"/>
                                     </svg>
                                 </button>
@@ -3171,8 +3182,10 @@ deleteConfirmFile: null,
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h6"/>
                                                 </svg>
                                             </button>
-                                            <button x-show="currentStorageCanShare" @click.stop="openDetailModal(file)" class="p-1.5 sm:p-2 hover:bg-slate-200 rounded-lg transition-colors" title="Compartir">
-                                                <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <button x-show="currentStorageCanShare" @click.stop="openDetailModal(file)" title="Compartir"
+                                                    :class="file.has_share_link ? 'bg-blue-100 hover:bg-blue-200 text-blue-600' : 'hover:bg-slate-200 text-slate-600'"
+                                                    class="p-1.5 sm:p-2 rounded-lg transition-colors">
+                                                <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z"/>
                                                 </svg>
                                             </button>

@@ -3,6 +3,7 @@
 namespace App\Services\MisArchivos;
 
 use App\Exceptions\BackupRequestException;
+use App\Http\Controllers\FileController;
 use App\Models\BackupRequest;
 use App\Models\File;
 use App\Models\Share;
@@ -190,13 +191,24 @@ class BackupRequestService
             throw $e;
         }
 
+        // `share-badge-azul`: el enlace se creó sobre la carpeta-día del
+        // árbol de producción; se invalida su listado para que el badge del
+        // botón "Compartir" se pinte en la siguiente carga.
+        $shareFile = File::find($resolved['file_id']);
+        if ($shareFile !== null) {
+            FileController::bumpListingGeneration(
+                (int) $shareFile->storage_provider_id,
+                $shareFile->parent_id !== null ? (int) $shareFile->parent_id : null,
+            );
+        }
+
         Log::info('backup_request.created', [
             'request_id' => $request->id,
             'actor_id' => $user->id,
             'source_storage_id' => $storage->id,
             'day' => $resolved['day'],
             'status' => BackupRequest::STATUS_READY,
-            'backup_path' => $resolved['backup_path'],
+            'share_id' => $request->share_id,
             'expires_at' => $expiresAt->toIso8601String(),
         ]);
 
@@ -220,12 +232,22 @@ class BackupRequestService
         }
 
         if ($request->share_id !== null) {
-            $share = Share::find($request->share_id);
+            $share = Share::with('file')->find($request->share_id);
             if ($share !== null) {
                 // La vista pública cachea los escalares del enlace una hora:
                 // sin invalidarla, el enlace seguiría sirviendo el material.
                 Cache::forget("share:meta:{$share->token}");
+                $shareFile = $share->file;
                 $share->delete();
+
+                // `share-badge-azul`: al revocar, el badge del botón
+                // "Compartir" de la carpeta-día debe apagarse.
+                if ($shareFile !== null) {
+                    FileController::bumpListingGeneration(
+                        (int) $shareFile->storage_provider_id,
+                        $shareFile->parent_id !== null ? (int) $shareFile->parent_id : null,
+                    );
+                }
             }
         }
 

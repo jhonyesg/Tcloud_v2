@@ -8,6 +8,7 @@ use App\Models\StorageProvider;
 use App\Services\FileBreadcrumbIntegrityService;
 use App\Services\MisArchivos\FilesystemListingService;
 use App\Services\StorageSyncService;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -92,8 +93,8 @@ class FileController extends Controller
                     });
                 }
 
-                $files = $query->orderBy('is_folder', 'desc')->orderBy('created_at', 'desc')->limit(500)->get();
-                return response()->json($files);
+            $files = $query->orderBy('is_folder', 'desc')->orderBy('created_at', 'desc')->limit(500)->get();
+            return response()->json($this->annotateShareFlags($files->all()));
             }
 
             $parentId  = $request->has('parent_id')  ? (int) $request->parent_id  : null;
@@ -152,7 +153,7 @@ class FileController extends Controller
                     $syncService->invalidateFolderCache($storageId, $parentId);
                     $pagination = ['page' => 1, 'per_page' => count($files), 'total' => count($files), 'has_more' => false];
 
-                    $payload = ['files' => $files, 'breadcrumbs' => $breadcrumbs, 'pagination' => $pagination];
+                    $payload = ['files' => $this->annotateShareFlags($files), 'breadcrumbs' => $breadcrumbs, 'pagination' => $pagination];
 
                     // Las estadisticas solo viajan al refresco explicito: es el
                     // unico que las muestra, y silentSync no debe pagar el peso.
@@ -216,7 +217,7 @@ class FileController extends Controller
                     $files = $syncService->syncFolder($storage, $parentId, $user->id);
                     if (count($files) > 0) {
                         $pagination = ['page' => 1, 'per_page' => count($files), 'total' => count($files), 'has_more' => false];
-                        return response()->json(['files' => $files, 'breadcrumbs' => $breadcrumbs, 'pagination' => $pagination]);
+                        return response()->json(['files' => $this->annotateShareFlags($files), 'breadcrumbs' => $breadcrumbs, 'pagination' => $pagination]);
                     }
                 }
             }
@@ -228,7 +229,7 @@ class FileController extends Controller
                 'has_more' => $page * $perPage < $paginator->total(),
             ];
 
-            $responseData = ['files' => $paginator->items(), 'breadcrumbs' => $breadcrumbs, 'pagination' => $pagination];
+            $responseData = ['files' => $this->annotateShareFlags($paginator->items()), 'breadcrumbs' => $breadcrumbs, 'pagination' => $pagination];
 
             // TTL: root=60s, today's folder=300s, past folder=86400s
             if ($parentId === null) {
@@ -1595,7 +1596,7 @@ class FileController extends Controller
         return in_array($storageId, array_map('intval', $canary), true);
     }
 
-    private function indexFilesystemPrimary(Request $request, User $user, int $storageId)
+    private function indexFilesystemPrimary(Request $request, User $user, int $storageId): JsonResponse
     {
         $parentId = $request->has('parent_id') ? (int) $request->parent_id : null;
         $subPath = null;
@@ -1622,6 +1623,79 @@ class FileController extends Controller
             return response()->json(['error' => 'permission_denied'], 403);
         }
 
+        if (isset($response['files']) && is_array($response['files'])) {
+            $response['files'] = $this->annotateShareFlags($response['files']);
+        }
+
         return response()->json($response);
+    }
+
+    /**
+     * Anota cada entrada del listado con `has_share_link`.
+     *
+     * Feature `share-badge-azul`: el botón "Compartir" de la columna Acciones
+     * pinta un fondo azul cuando el archivo/carpeta ya tiene enlace generado,
+     * para que el operador distinga a simple vista qué ya se compartió.
+     *
+     * Se anota en el path de COMPUTO (la query fresca), justo antes de
+     * cachear el payload. El path de cache hit no se re-anota: la frescura
+     * la garantiza `folder_gen`, que cambia la key de cache al crear o
+     * revocar un enlace (ver `bumpListingGeneration`), de modo que la
+     * siguiente carga vuelve a computar con el estado actual de `shares`.
+     * Una sola query `IN` sobre `shares.file_id` (índice existente) por
+     * listado; las entradas sin `id` (fs-first sin fila en BD) quedan `false`.
+     *
+     * @param  array<int, mixed>  $items
+     * @return array<int, mixed>
+     */
+    private function annotateShareFlags(array $items): array
+    {
+        $ids = [];
+        foreach ($items as $item) {
+            $id = is_array($item) ? ($item['id'] ?? null) : ($item->id ?? null);
+            if ($id !== null && $id !== '') {
+                $ids[] = (int) $id;
+            }
+        }
+
+        $shared = $ids === [] ? [] : DB::table('shares')
+            ->whereIn('file_id', array_unique($ids))
+            ->distinct()
+            ->pluck('file_id')
+            ->map(fn ($v) => (int) $v)
+            ->all();
+
+        foreach ($items as $i => $item) {
+            $flag = false;
+            if (is_array($item)) {
+                $id = $item['id'] ?? null;
+                $flag = $id !== null && $id !== '' && in_array((int) $id, $shared, true);
+                $item['has_share_link'] = $flag;
+                $items[$i] = $item;
+            } else {
+                $id = $item->id ?? null;
+                $flag = $id !== null && in_array((int) $id, $shared, true);
+                $item->setAttribute('has_share_link', $flag);
+            }
+        }
+
+        return $items;
+    }
+
+    /**
+     * Incrementa `folder_gen` de un par (storage, parent) para invalidar la
+     * cache del listado (`folder_listing:{storage}:{pid}:{gen}:{page}`).
+     *
+     * Feature `share-badge-azul`: al crear o revocar un enlace, el siguiente
+     * listado de la carpeta debe recalcularse; de lo contrario el badge del
+     * botón "Compartir" quedaría stale hasta vencer el TTL (hasta 24 h).
+     * Misma invalidación O(1) que ya usan sync, repair y remap.
+     */
+    public static function bumpListingGeneration(?int $storageId, ?int $parentId): void
+    {
+        if ($storageId === null || $storageId <= 0) {
+            return;
+        }
+        Cache::increment("folder_gen:{$storageId}:" . ($parentId ?? 'null'));
     }
 }
