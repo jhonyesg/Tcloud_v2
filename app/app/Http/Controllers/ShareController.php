@@ -563,15 +563,15 @@ class ShareController extends Controller
             return response()->json(['error' => 'Forbidden'], 403);
         }
 
-        // Los enlaces de backup los administra el submódulo de Mis Archivos:
-        // su vigencia (2 días) y su alcance (solo lectura) son parte del
-        // contrato de la solicitud, no una opción del propietario. Sin este
-        // guard, `PUT {"expires_at": null}` convertiría el enlace temporal al
-        // master de producción en un enlace PERMANENTE.
-        if ($this->isBackupManaged($share)) {
+        // Los enlaces de un flujo de solicitud los administra ese flujo:
+        // su vigencia (2 días en el backup, 3 en la solicitud puntual) y su
+        // alcance (solo lectura) son parte del contrato de la solicitud, no
+        // una opción del propietario. Sin este guard, `PUT {"expires_at":
+        // null}` convertiría el enlace temporal en un enlace PERMANENTE.
+        if ($this->isRequestManaged($share)) {
             return response()->json([
-                'error' => 'Este enlace pertenece a una solicitud de backup. Revoca la solicitud en Mis Archivos para desactivarlo.',
-                'code' => 'backup_managed_share',
+                'error' => 'Este enlace pertenece a una solicitud. Revoca la solicitud en su módulo para desactivarlo.',
+                'code' => 'request_managed_share',
             ], 403);
         }
 
@@ -632,13 +632,13 @@ class ShareController extends Controller
             return response()->json(['error' => 'Forbidden'], 403);
         }
 
-        // Ver `update()`: un enlace de backup se revoca desde Mis Archivos,
-        // no desde el módulo de compartidos. Borrarlo aquí dejaría la
-        // solicitud apuntando a un enlace muerto.
-        if ($this->isBackupManaged($share)) {
+        // Ver `update()`: un enlace de un flujo de solicitud se revoca desde
+        // ese flujo, no desde el módulo de compartidos. Borrarlo aquí
+        // dejaría la solicitud apuntando a un enlace muerto.
+        if ($this->isRequestManaged($share)) {
             return response()->json([
-                'error' => 'Este enlace pertenece a una solicitud de backup. Revoca la solicitud en Mis Archivos para desactivarlo.',
-                'code' => 'backup_managed_share',
+                'error' => 'Este enlace pertenece a una solicitud. Revoca la solicitud en su módulo para desactivarlo.',
+                'code' => 'request_managed_share',
             ], 403);
         }
 
@@ -656,39 +656,69 @@ class ShareController extends Controller
     }
 
     /**
-     * ¿Este enlace lo administra el submódulo de solicitudes de backup?
+     * ¿Este enlace lo administra un flujo de solicitud?
      *
-     * Los enlaces de backup se crean a nombre del solicitante (para que
-     * aparezcan en su historial), pero su vigencia y su alcance son parte del
-     * contrato de la solicitud. Editarlos o borrarlos desde el módulo de
-     * compartidos se lo saltaría.
+     * Los enlaces de un flujo de solicitud (backup de producción o
+     * solicitud puntual de TV y Radio) se crean a nombre del solicitante
+     * (para que aparezcan en su historial), pero su vigencia y su alcance
+     * son parte del contrato de la solicitud. Editarlos o borrarlos desde el
+     * módulo de compartidos se lo saltaría.
+     *
+     * En el flujo puntual hay dos formas: el enlace de la carpeta del día
+     * (`solicitud_puntual.share_id`) y el enlace de un slot concreto
+     * (`solicitud_puntual_item.share_id`).
      */
-    private function isBackupManaged(Share $share): bool
+    private function isRequestManaged(Share $share): bool
     {
-        return $share->relationLoaded('backupRequest')
-            ? $share->backupRequest !== null
-            : $share->backupRequest()->exists();
+        if ($share->relationLoaded('backupRequest')) {
+            if ($share->backupRequest !== null) {
+                return true;
+            }
+        } elseif ($share->backupRequest()->exists()) {
+            return true;
+        }
+
+        if ($share->relationLoaded('solicitudPuntualItem')) {
+            if ($share->solicitudPuntualItem !== null) {
+                return true;
+            }
+        } elseif ($share->solicitudPuntualItem()->exists()) {
+            return true;
+        }
+
+        if ($share->relationLoaded('solicitudPuntual')) {
+            return $share->solicitudPuntual !== null;
+        }
+
+        return $share->solicitudPuntual()->exists();
     }
 
     /**
-     * Ids de los enlaces de backup dentro de un conjunto (una sola query).
+     * Ids de los enlaces gestionados por un flujo de solicitud dentro de un
+     * conjunto (una sola query por familia).
      *
      * @param  array<int,mixed>  $shareIds
      * @return list<int>
      */
-    private function backupManagedIds(array $shareIds): array
+    private function managedIds(array $shareIds): array
     {
         $ids = array_values(array_unique(array_map('intval', $shareIds)));
         if ($ids === []) {
             return [];
         }
 
-        return Share::whereIn('id', $ids)
-            ->whereHas('backupRequest')
+        $managed = Share::whereIn('id', $ids)
+            ->where(function ($query) {
+                $query->whereHas('backupRequest')
+                    ->orWhereHas('solicitudPuntualItem')
+                    ->orWhereHas('solicitudPuntual');
+            })
             ->pluck('id')
             ->map(fn ($id) => (int) $id)
             ->values()
             ->all();
+
+        return $managed;
     }
 
     /**
@@ -787,7 +817,7 @@ class ShareController extends Controller
         // Los enlaces de backup los administra Mis Archivos: no entran en la
         // depuración masiva. Se excluyen del conteo para que la
         // previsualización y la depuración coincidan.
-        $protectedIds = $this->backupManagedIds($shares->pluck('id')->all());
+        $protectedIds = $this->managedIds($shares->pluck('id')->all());
         if ($protectedIds !== []) {
             $shares = $shares->reject(fn (Share $share) => in_array((int) $share->id, $protectedIds, true))->values();
             $total = $shares->count();
@@ -840,24 +870,30 @@ class ShareController extends Controller
             ], 422);
         }
 
-        $confirmedCount = (int) $request->input('confirm_count', -1);
-        if ($confirmedCount !== $total) {
-            return response()->json([
-                'error' => 'La seleccion cambio. Vuelve a previsualizar antes de confirmar.',
-                'current_count' => $total,
-            ], 409);
-        }
-
         $shares = $query->get(['shares.id', 'shares.token']);
         $authorizedIds = $shares->pluck('id')->map(fn ($id) => (int) $id)->values();
         $omittedIds = $allMatching ? collect() : $requestedIds->diff($authorizedIds)->values();
 
-        // Los enlaces de backup no se borran en la purga masiva: los
-        // administra el submódulo de Mis Archivos (ver `isBackupManaged()`).
-        // Se reportan aparte para que la UI explique por qué no se tocaron.
-        $protectedIds = $this->backupManagedIds($authorizedIds->all());
+        // Los enlaces de un flujo de solicitud no se borran en la purga
+        // masiva: los administra ese flujo (ver `isRequestManaged()`). Se
+        // reportan aparte para que la UI explique por qué no se tocaron.
+        $protectedIds = $this->managedIds($authorizedIds->all());
+
         if ($protectedIds !== []) {
             $authorizedIds = $authorizedIds->diff($protectedIds)->values();
+        }
+
+        // El conteo que se compara es el MISMO que reporta la
+        // previsualización: la selección menos los enlaces protegidos. Si se
+        // comparara contra el total sin excluir, cualquier cliente con
+        // enlaces de solicitud recibiría un 409 sin poder confirmar.
+        $confirmedCount = (int) $request->input('confirm_count', -1);
+
+        if ($confirmedCount !== $authorizedIds->count()) {
+            return response()->json([
+                'error' => 'La seleccion cambio. Vuelve a previsualizar antes de confirmar.',
+                'current_count' => $authorizedIds->count(),
+            ], 409);
         }
 
         // `share-badge-azul`: los pares (storage, parent) se resuelven ANTES

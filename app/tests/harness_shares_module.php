@@ -534,6 +534,113 @@ try {
     // ------------------------------------------------------------------
     // Enlace publico con contrasena
     // ------------------------------------------------------------------
+    // ------------------------------------------------------------------
+    h_section('Guard de enlaces gestionados por un flujo de solicitud');
+
+    // Un enlace gestionado (backup o solicitud puntual) no se puede editar
+    // ni borrar desde el módulo de compartidos: su vigencia y su alcance
+    // son parte del contrato de la solicitud.
+    $medio = App\Models\Medio::query()->where('subpath', '')->first();
+
+    if ($medio === null) {
+        h_ok('no hay medios en el catálogo (caso no aplicable)');
+    } else {
+        $solicitud = App\Models\SolicitudPuntual::create([
+            'user_id' => $owner->id,
+            'medio_id' => $medio->id,
+            'fecha' => now()->format('Y-m-d'),
+            'modo' => 'franja',
+            'hora_inicio' => '12:00:00',
+            'hora_fin' => '13:00:00',
+            'duracion_minutos' => 60,
+            'status' => 'ready',
+            'motivo' => 'harness ' . $tag,
+            'archivos_total' => 0,
+            'bytes_total' => 0,
+            'links_total' => 0,
+            'link_expires_at' => now()->addDays(3),
+        ]);
+
+        $managedShare = Share::create([
+            'file_id' => $file->id,
+            'path_snapshot' => $file->path,
+            'token' => $tag . '_managed_' . substr(bin2hex(random_bytes(4)), 0, 8),
+            'expires_at' => now()->addDays(3),
+            'permissions' => 'read',
+            'created_by' => $owner->id,
+        ]);
+
+        $managedItem = App\Models\SolicitudPuntualItem::create([
+            'solicitud_id' => $solicitud->id,
+            'file_id' => $file->id,
+            'share_id' => $managedShare->id,
+            'slot_inicio' => now(),
+            'slot_fin' => now()->addMinutes(15),
+            'name' => $tag . '_managed.m4a',
+            'path' => $tag . '_managed.m4a',
+            'size' => 10,
+        ]);
+
+        $shareIds[] = $managedShare->id;
+
+        $resUpdate = h_call(fn () => $controller->update(h_request('/shares/' . $managedShare->id, 'PUT', [
+            'expires_at' => null,
+        ]), (int) $managedShare->id));
+        h_check($resUpdate['status'] === 403, 'editar un enlace gestionado por una solicitud responde 403', "respondio {$resUpdate['status']}");
+        h_check(
+            ($resUpdate['body']['code'] ?? '') === 'request_managed_share',
+            'el 403 identifica el enlace como gestionado por una solicitud',
+            'code = ' . ($resUpdate['body']['code'] ?? 'null'),
+        );
+        h_check(
+            Share::find($managedShare->id)?->expires_at !== null,
+            'el enlace gestionado no quedo sin vencimiento',
+        );
+
+        $resDestroy = h_call(fn () => $controller->destroy((int) $managedShare->id));
+        h_check($resDestroy['status'] === 403, 'borrar un enlace gestionado por una solicitud responde 403', "respondio {$resDestroy['status']}");
+        h_check(Share::find($managedShare->id) !== null, 'el enlace gestionado sobrevive al borrado');
+
+        // La purga masiva lo excluye y lo reporta.
+        $resBulk = h_call(fn () => $controller->bulkDelete(h_request('/shares/bulk-delete', 'POST', [
+            'ids' => [$managedShare->id],
+            'confirm_count' => 0,
+        ])));
+        h_check(
+            ($resBulk['body']['deleted_count'] ?? -1) === 0
+            && ($resBulk['body']['protected_count'] ?? -1) === 1,
+            'la purga masiva excluye el enlace gestionado y lo reporta',
+            'deleted=' . ($resBulk['body']['deleted_count'] ?? 'null') . ' protected=' . ($resBulk['body']['protected_count'] ?? 'null'),
+        );
+        h_check(Share::find($managedShare->id) !== null, 'el enlace gestionado sobrevivio a la purga masiva');
+
+        // Y un enlace normal NO se marca como gestionado. Se crea uno
+        // propio: los del resto del harness ya pudieron ser purgados.
+        $normal = Share::create([
+            'file_id' => $file->id,
+            'path_snapshot' => $file->path,
+            'token' => $tag . '_normal_' . substr(bin2hex(random_bytes(4)), 0, 8),
+            'expires_at' => now()->addDays(7),
+            'permissions' => 'read',
+            'created_by' => $owner->id,
+        ]);
+        $shareIds[] = $normal->id;
+        $reflexion = new ReflectionMethod(ShareController::class, 'isRequestManaged');
+        $reflexion->setAccessible(true);
+
+        h_check(
+            $normal !== null && ! $reflexion->invoke($controller, $normal),
+            'un enlace normal no se marca como gestionado',
+        );
+        h_check(
+            $reflexion->invoke($controller, $managedShare),
+            'el enlace de la solicitud se marca como gestionado',
+        );
+
+        $solicitud->delete();
+        $managedItem->delete();
+    }
+
     h_section('Enlace publico con contrasena');
 
     $protected = Share::whereIn('id', $shareIds)->whereNotNull('password_hash')->first();

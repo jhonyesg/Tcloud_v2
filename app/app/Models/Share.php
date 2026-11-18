@@ -49,6 +49,31 @@ class Share extends Model
         return $this->hasOne(BackupRequest::class, 'share_id');
     }
 
+    /**
+     * Item de solicitud puntual que originó este enlace, si lo hay.
+     *
+     * En el flujo de TV y Radio cada archivo entregado lleva su propio
+     * enlace, y ese enlace hereda la vigencia de la solicitud (3 días) en
+     * lugar de la política general de compartidos. La vía para desactivarlo
+     * es revocar la solicitud, no editar el enlace: por eso el módulo de
+     * compartidos se niega a editarlo o borrarlo.
+     */
+    public function solicitudPuntualItem(): HasOne
+    {
+        return $this->hasOne(SolicitudPuntualItem::class, 'share_id');
+    }
+
+    /**
+     * Solicitud puntual que originó este enlace, si lo hay.
+     *
+     * Es el caso del modo "día": un único enlace sobre la carpeta del día,
+     * con la solicitud referenciada desde `solicitud_puntual.share_id`.
+     */
+    public function solicitudPuntual(): HasOne
+    {
+        return $this->hasOne(SolicitudPuntual::class, 'share_id');
+    }
+
     public function isExpired(): bool
     {
         return $this->expires_at && $this->expires_at->isPast();

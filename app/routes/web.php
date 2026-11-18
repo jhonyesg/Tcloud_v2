@@ -47,6 +47,16 @@ Route::middleware(['auth', 'admin'])->prefix('admin')->group(function () {
     Route::get('/backups/repair-scan', [App\Http\Controllers\Admin\BackupMappingController::class, 'repairScan'])->name('admin.backups.repair-scan');
     Route::post('/backups/{storage}/repair', [App\Http\Controllers\Admin\BackupMappingController::class, 'repairPath'])->whereNumber('storage')->name('admin.backups.repair');
     Route::delete('/backups/{storage}', [App\Http\Controllers\Admin\BackupMappingController::class, 'destroy'])->whereNumber('storage')->name('admin.backups.destroy');
+
+    // Catalogo de medios de TV y Radio (solicitud puntual).
+    // Configuracion de ADMINISTRACION: el cliente ve el complemento de lo
+    // que no tiene asignado, nunca esta pantalla.
+    Route::get('/medios', [App\Http\Controllers\Admin\MedioController::class, 'index'])->name('admin.medios.index');
+    Route::get('/medios/detect', [App\Http\Controllers\Admin\MedioController::class, 'detect'])->name('admin.medios.detect');
+    Route::post('/medios', [App\Http\Controllers\Admin\MedioController::class, 'store'])->name('admin.medios.store');
+    Route::post('/medios/remapear', [App\Http\Controllers\Admin\MedioController::class, 'remapear'])->name('admin.medios.remapear');
+    Route::put('/medios/{medio}', [App\Http\Controllers\Admin\MedioController::class, 'update'])->whereNumber('medio')->name('admin.medios.update');
+    Route::delete('/medios/{medio}', [App\Http\Controllers\Admin\MedioController::class, 'destroy'])->whereNumber('medio')->name('admin.medios.destroy');
     Route::post('/users/{user}/toggle-media-editor', [App\Http\Controllers\UserController::class, 'toggleMediaEditor']);
     Route::get('/media-editor', [App\Http\Controllers\MediaEditorAdminController::class, 'index']);
     Route::get('/media-editor/users', [App\Http\Controllers\MediaEditorAdminController::class, 'users']);
@@ -134,6 +144,16 @@ Route::middleware('auth')->group(function () {
     Route::get('/files/backup-requests', [App\Http\Controllers\MisArchivos\BackupRequestController::class, 'index']);
     Route::post('/files/backup-requests', [App\Http\Controllers\MisArchivos\BackupRequestController::class, 'store']);
     Route::delete('/files/backup-requests/{id}', [App\Http\Controllers\MisArchivos\BackupRequestController::class, 'destroy']);
+
+    // Solicitud puntual de TV y Radio (cara del cliente).
+    // El cliente pide una franja horaria o el dia completo de un medio que NO
+    // tiene asignado y recibe enlaces publicos con vigencia.
+    Route::get('/solicitud-puntual', [App\Http\Controllers\SolicitudPuntualController::class, 'index'])->name('solicitud-puntual.index');
+    Route::get('/solicitud-puntual/catalogo', [App\Http\Controllers\SolicitudPuntualController::class, 'catalogo'])->middleware('throttle:60,1');
+    Route::post('/solicitud-puntual/estimate', [App\Http\Controllers\SolicitudPuntualController::class, 'estimate'])->middleware('throttle:30,1');
+    Route::post('/solicitud-puntual', [App\Http\Controllers\SolicitudPuntualController::class, 'store'])->middleware('throttle:20,1');
+    Route::get('/solicitud-puntual/historial', [App\Http\Controllers\SolicitudPuntualController::class, 'historial'])->middleware('throttle:60,1');
+    Route::delete('/solicitud-puntual/{solicitud}', [App\Http\Controllers\SolicitudPuntualController::class, 'destroy'])->whereNumber('solicitud')->middleware('throttle:30,1');
 
     Route::resource('files', App\Http\Controllers\FileController::class)->only(['index', 'store', 'show', 'update', 'destroy']);
 

@@ -9,6 +9,7 @@ use App\Models\File;
 use App\Models\Share;
 use App\Models\StorageProvider;
 use App\Models\User;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
