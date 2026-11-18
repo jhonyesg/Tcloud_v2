@@ -519,6 +519,70 @@ try {
         );
 
         // ------------------------------------------------------------------
+        h_section('control por cliente (solo admin)');
+
+        $reportes = app(App\Services\MisArchivos\PuntualReportService::class);
+
+        $reporte = $reportes->porCliente([]);
+
+        h_check(
+            isset($reporte['totales']['solicitudes'], $reporte['totales']['clientes'], $reporte['clientes']),
+            'el reporte devuelve totales y el detalle por cliente',
+        );
+
+        h_check(
+            $reporte['totales']['solicitudes'] === array_sum(array_column($reporte['clientes'], 'solicitudes')),
+            'el total de solicitudes cuadra con la suma por cliente',
+        );
+
+        $cliente = collect($reporte['clientes'])->firstWhere('user_id', (int) $usuario->id);
+
+        h_check($cliente !== null, 'el cliente de la prueba aparece en el reporte');
+
+        if ($cliente !== null) {
+            h_check(
+                $cliente['solicitudes'] === count($cliente['detalle']),
+                'el conteo del cliente coincide con su detalle',
+            );
+
+            h_check(
+                $cliente['minutos'] === array_sum(array_column($cliente['detalle'], 'duracion_minutos')),
+                'los minutos del cliente son la suma de sus solicitudes',
+            );
+        }
+
+        $revocadas = $reportes->porCliente(['estado' => 'revocadas']);
+
+        $todasRevocadas = collect($revocadas['clientes'])
+            ->flatMap(fn (array $c) => $c['detalle'])
+            ->every(fn (array $d) => $d['estado'] === 'revoked');
+
+        h_check($todasRevocadas, 'el filtro de revocadas solo trae solicitudes revocadas');
+
+        $txt = $reportes->toTxt($reporte);
+
+        h_check(str_contains($txt, 'CONTROL DE SOLICITUDES PUNTUALES DE TV Y RADIO'), 'el TXT lleva el encabezado');
+        h_check(str_contains($txt, 'TOTALES:'), 'el TXT lleva los totales');
+        h_check(str_contains($txt, 'CLIENTE:'), 'el TXT lista los clientes');
+        h_check(mb_check_encoding($txt, 'UTF-8'), 'el TXT es texto UTF-8 válido');
+
+        h_check(
+            (bool) preg_match('/^control-solicitudes-[a-z0-9]+-[a-z0-9]+\.txt$/', $reportes->nombreArchivo($reporte)),
+            'el nombre del archivo es el esperado',
+            'nombre = ' . $reportes->nombreArchivo($reporte),
+        );
+
+        // El reporte es de solo lectura: no puede crear ni modificar filas.
+        $antesReporte = SolicitudPuntual::query()->count();
+        $reportes->porCliente([]);
+        $reportes->toTxt($reporte);
+
+        h_check(
+            SolicitudPuntual::query()->count() === $antesReporte,
+            'el reporte no escribe ninguna fila',
+        );
+
+        // ------------------------------------------------------------------
         h_section('historial');
 
         $historial = $service->listFor($usuario, ['sort' => 'creada', 'dir' => 'desc']);

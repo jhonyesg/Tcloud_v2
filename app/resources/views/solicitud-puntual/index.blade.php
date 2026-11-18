@@ -3,7 +3,7 @@
 @section('title', 'Solicitud Puntual de TV y Radio - Tcloud')
 
 @section('content')
-<div class="p-6" x-data="puntualManager()" x-init="init()">
+<div class="p-6" x-data="puntualManager()" x-init="init()" data-admin="{{ session('user_role') === 'admin' ? '1' : '0' }}">
 
     <div class="mb-4 sm:mb-6 flex items-start justify-between gap-3">
         <div class="min-w-0">
@@ -42,6 +42,15 @@
             <i class="fas fa-list-check mr-1.5"></i>Mis solicitudes
             <span class="ml-1 text-xs text-slate-400" x-text="'(' + (history.total || 0) + ')'"></span>
         </button>
+        {{-- Pestaña de CONTROL: solo para el administrador. El cliente no la ve. --}}
+        @if(session('user_role') === 'admin')
+        <button @click="tab = 'control'; if (!control) loadControl()"
+                data-puntual-tour="control"
+                class="px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors"
+                :class="tab === 'control' ? 'border-brand-600 text-brand-700' : 'border-transparent text-slate-500 hover:text-slate-700'">
+            <i class="fas fa-chart-column mr-1.5"></i>Control por cliente
+        </button>
+        @endif
     </div>
 
     <!-- ================= CATÁLOGO ================= -->
@@ -356,6 +365,149 @@
         </div>
     </div>
 
+    {{-- ================= CONTROL POR CLIENTE (solo admin) ================= --}}
+    @if(session('user_role') === 'admin')
+    <section x-show="tab === 'control'" data-puntual-tour="control-panel">
+        <div class="flex items-center justify-between flex-wrap gap-3 mb-4">
+            <div>
+                <h2 class="text-sm font-semibold text-slate-500 uppercase tracking-wider">Control de solicitudes por cliente</h2>
+                <p class="text-xs text-slate-400 mt-0.5">Para el control manual del cobro. Exportable a TXT para imprimir o archivar.</p>
+            </div>
+            <div class="flex items-center gap-2 flex-wrap">
+                <input type="date" x-model="controlFiltros.desde" @change="loadControl()"
+                       class="px-3 py-2 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+                <span class="text-slate-400 text-xs">a</span>
+                <input type="date" x-model="controlFiltros.hasta" @change="loadControl()"
+                       class="px-3 py-2 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+                <select x-model="controlFiltros.estado" @change="loadControl()"
+                        class="px-3 py-2 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+                    <option value="todas">Todas</option>
+                    <option value="entregadas">Solo entregadas</option>
+                    <option value="vigentes">Solo vigentes</option>
+                    <option value="revocadas">Solo revocadas</option>
+                    <option value="sin_material">Sin material</option>
+                </select>
+                <select x-model="controlFiltros.user_id" @change="loadControl()"
+                        class="px-3 py-2 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+                    <option value="">Todos los clientes</option>
+                    <template x-for="c in controlClientes" :key="c.id">
+                        <option :value="c.id" x-text="c.nombre + ' (' + c.username + ')'"></option>
+                    </template>
+                </select>
+                <button @click="exportarControl()"
+                        class="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-xl text-sm font-medium transition-colors">
+                    <i class="fas fa-file-arrow-down mr-1"></i>Exportar TXT
+                </button>
+            </div>
+        </div>
+
+        <div x-show="controlLoading" class="text-sm text-slate-400 py-8 text-center">
+            <i class="fas fa-spinner fa-spin mr-2"></i>Cargando reporte…
+        </div>
+
+        <template x-if="control && !controlLoading">
+            <div>
+                <div class="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-5">
+                    <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+                        <p class="text-2xl font-bold text-slate-800" x-text="control.totales.solicitudes"></p>
+                        <p class="text-xs text-slate-500 mt-0.5">Solicitudes</p>
+                    </div>
+                    <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+                        <p class="text-2xl font-bold text-slate-800" x-text="control.totales.clientes"></p>
+                        <p class="text-xs text-slate-500 mt-0.5">Clientes</p>
+                    </div>
+                    <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+                        <p class="text-2xl font-bold text-slate-800" x-text="control.totales.minutos"></p>
+                        <p class="text-xs text-slate-500 mt-0.5">Minutos</p>
+                    </div>
+                    <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+                        <p class="text-2xl font-bold text-slate-800" x-text="control.totales.archivos"></p>
+                        <p class="text-xs text-slate-500 mt-0.5">Archivos</p>
+                    </div>
+                    <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+                        <p class="text-2xl font-bold text-slate-800" x-text="humanBytes(control.totales.bytes)"></p>
+                        <p class="text-xs text-slate-500 mt-0.5">Entregado</p>
+                    </div>
+                </div>
+
+                <div class="space-y-4">
+                    <template x-for="c in control.clientes" :key="c.user_id">
+                        <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                            <div class="px-4 py-3 border-b border-slate-100 flex items-start justify-between flex-wrap gap-2">
+                                <div class="min-w-0">
+                                    <p class="font-semibold text-slate-800">
+                                        <span x-text="c.nombre"></span>
+                                        <span class="text-slate-400 font-normal text-sm" x-text="'(' + c.username + ')'"></span>
+                                    </p>
+                                    <p class="text-xs text-slate-400" x-text="c.email"></p>
+                                </div>
+                                <div class="flex items-center gap-3 text-xs text-slate-600 flex-wrap">
+                                    <span><strong x-text="c.solicitudes"></strong> solicitudes</span>
+                                    <span class="text-slate-300">·</span>
+                                    <span><strong x-text="c.minutos"></strong> min</span>
+                                    <span class="text-slate-300">·</span>
+                                    <span><strong x-text="c.archivos"></strong> archivos</span>
+                                    <span class="text-slate-300">·</span>
+                                    <span><strong x-text="humanBytes(c.bytes)"></strong></span>
+                                    <span class="text-slate-300">·</span>
+                                    <span class="text-green-700" x-text="c.vigentes + ' vigentes'"></span>
+                                    <span x-show="c.revocadas > 0" class="text-red-600" x-text="'· ' + c.revocadas + ' revocadas'"></span>
+                                    <span x-show="c.expiradas > 0" class="text-slate-500" x-text="'· ' + c.expiradas + ' expiradas'"></span>
+                                </div>
+                            </div>
+                            <div class="overflow-x-auto">
+                                <table class="w-full text-sm">
+                                    <thead class="bg-slate-50 text-xs uppercase tracking-wider text-slate-500">
+                                        <tr>
+                                            <th class="px-4 py-1.5 text-left font-semibold">Fecha</th>
+                                            <th class="px-4 py-1.5 text-left font-semibold">Medio</th>
+                                            <th class="px-4 py-1.5 text-left font-semibold">Horario</th>
+                                            <th class="px-4 py-1.5 text-right font-semibold">Min</th>
+                                            <th class="px-4 py-1.5 text-right font-semibold">Archivos</th>
+                                            <th class="px-4 py-1.5 text-right font-semibold">Tamaño</th>
+                                            <th class="px-4 py-1.5 text-left font-semibold">Estado</th>
+                                            <th class="px-4 py-1.5 text-left font-semibold">Motivo</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody class="divide-y divide-slate-100">
+                                        <template x-for="d in c.detalle" :key="d.id">
+                                            <tr>
+                                                <td class="px-4 py-1.5 text-slate-700 whitespace-nowrap" x-text="d.fecha_legible"></td>
+                                                <td class="px-4 py-1.5 text-slate-800">
+                                                    <span x-text="d.medio"></span>
+                                                    <span class="ml-1 px-1.5 py-0.5 rounded text-xs font-semibold"
+                                                          :class="d.media_kind === 'tv' ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'"
+                                                          x-text="(d.media_kind || '').toUpperCase()"></span>
+                                                </td>
+                                                <td class="px-4 py-1.5 text-slate-600 whitespace-nowrap" x-text="d.hora_inicio + ' → ' + d.hora_fin"></td>
+                                                <td class="px-4 py-1.5 text-slate-600 text-right" x-text="d.duracion_minutos"></td>
+                                                <td class="px-4 py-1.5 text-slate-600 text-right" x-text="d.archivos"></td>
+                                                <td class="px-4 py-1.5 text-slate-600 text-right" x-text="humanBytes(d.bytes)"></td>
+                                                <td class="px-4 py-1.5">
+                                                    <span class="px-2 py-0.5 rounded-full text-xs font-semibold"
+                                                          :class="statusClass(d.estado)"
+                                                          x-text="statusLabel(d.estado)"></span>
+                                                </td>
+                                                <td class="px-4 py-1.5 text-slate-500 text-xs max-w-xs truncate" :title="d.motivo" x-text="d.motivo"></td>
+                                            </tr>
+                                        </template>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </template>
+
+                    <div x-show="control.clientes.length === 0"
+                         class="bg-white rounded-xl shadow-sm border border-slate-200 p-8 text-center">
+                        <i class="fas fa-inbox text-3xl text-slate-300 mb-3"></i>
+                        <p class="text-slate-500">No hay solicitudes en el período seleccionado.</p>
+                    </div>
+                </div>
+            </div>
+        </template>
+    </section>
+    @endif
+
     <!-- ================= DETALLE DE UNA SOLICITUD ================= -->
     <div x-cloak x-show="detailOpen" x-transition.opacity
          class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50"
@@ -459,6 +611,12 @@ function puntualManager() {
         detailOpen: false,
         detail: null,
 
+        // Control por cliente (solo admin)
+        control: null,
+        controlLoading: false,
+        controlClientes: [],
+        controlFiltros: { desde: '', hasta: '', estado: 'todas', user_id: '' },
+
         sort: 'creada',
         dir: 'desc',
 
@@ -467,6 +625,63 @@ function puntualManager() {
         init() {
             this.loadMedios();
             this.loadHistory(1);
+        },
+
+        // ---------------------------------------------------------------
+        // Control por cliente (solo admin)
+        // ---------------------------------------------------------------
+        async loadControl() {
+            this.controlLoading = true;
+
+            const params = new URLSearchParams();
+            if (this.controlFiltros.desde) params.set('desde', this.controlFiltros.desde);
+            if (this.controlFiltros.hasta) params.set('hasta', this.controlFiltros.hasta);
+            if (this.controlFiltros.estado) params.set('estado', this.controlFiltros.estado);
+            if (this.controlFiltros.user_id) params.set('user_id', this.controlFiltros.user_id);
+
+            try {
+                if (this.controlClientes.length === 0) {
+                    const rc = await fetch('/solicitud-puntual/control/clientes', {
+                        headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+                    });
+                    if (rc.ok) {
+                        this.controlClientes = (await rc.json()).clientes ?? [];
+                    }
+                }
+
+                const res = await fetch(`/solicitud-puntual/control?${params}`, {
+                    headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+                });
+
+                if (!res.ok) throw new Error('respuesta ' + res.status);
+
+                this.control = await res.json();
+            } catch (e) {
+                this.showToast('No se pudo cargar el control: ' + e.message, 'error');
+            } finally {
+                this.controlLoading = false;
+            }
+        },
+
+        /**
+         * Descarga el reporte en TXT con los filtros vigentes.
+         *
+         * Se navega con un enlace temporal en vez de `fetch`: la respuesta es
+         * un adjunto y el navegador la guarda con su nombre.
+         */
+        exportarControl() {
+            const params = new URLSearchParams();
+            if (this.controlFiltros.desde) params.set('desde', this.controlFiltros.desde);
+            if (this.controlFiltros.hasta) params.set('hasta', this.controlFiltros.hasta);
+            if (this.controlFiltros.estado) params.set('estado', this.controlFiltros.estado);
+            if (this.controlFiltros.user_id) params.set('user_id', this.controlFiltros.user_id);
+
+            const a = document.createElement('a');
+            a.href = '/solicitud-puntual/control/exportar?' + params.toString();
+            a.download = '';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
         },
 
         // ---------------------------------------------------------------

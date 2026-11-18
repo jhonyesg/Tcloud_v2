@@ -153,6 +153,12 @@ Route::middleware('auth')->group(function () {
     Route::post('/solicitud-puntual/estimate', [App\Http\Controllers\SolicitudPuntualController::class, 'estimate'])->middleware('throttle:30,1');
     Route::post('/solicitud-puntual', [App\Http\Controllers\SolicitudPuntualController::class, 'store'])->middleware('throttle:20,1');
     Route::get('/solicitud-puntual/historial', [App\Http\Controllers\SolicitudPuntualController::class, 'historial'])->middleware('throttle:60,1');
+
+    // Control administrativo: el cliente NO tiene esta pestana. El operador
+    // lleva el cobro a mano y necesita el reporte por cliente y su TXT.
+    Route::get('/solicitud-puntual/control', [App\Http\Controllers\SolicitudPuntualController::class, 'control'])->middleware('throttle:60,1');
+    Route::get('/solicitud-puntual/control/clientes', [App\Http\Controllers\SolicitudPuntualController::class, 'clientes'])->middleware('throttle:60,1');
+    Route::get('/solicitud-puntual/control/exportar', [App\Http\Controllers\SolicitudPuntualController::class, 'exportar'])->middleware('throttle:20,1');
     Route::delete('/solicitud-puntual/{solicitud}', [App\Http\Controllers\SolicitudPuntualController::class, 'destroy'])->whereNumber('solicitud')->middleware('throttle:30,1');
 
     Route::resource('files', App\Http\Controllers\FileController::class)->only(['index', 'store', 'show', 'update', 'destroy']);

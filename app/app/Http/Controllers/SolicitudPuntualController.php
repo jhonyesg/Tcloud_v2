@@ -7,6 +7,7 @@ use App\Models\Medio;
 use App\Models\SolicitudPuntual;
 use App\Models\User;
 use App\Services\MisArchivos\MedioCatalogService;
+use App\Services\MisArchivos\PuntualReportService;
 use App\Services\MisArchivos\PuntualRequestService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -34,6 +35,7 @@ class SolicitudPuntualController extends Controller
     public function __construct(
         private readonly MedioCatalogService $catalog,
         private readonly PuntualRequestService $solicitudes,
+        private readonly PuntualReportService $reportes,
     ) {
     }
 
@@ -262,6 +264,101 @@ class SolicitudPuntualController extends Controller
         return response()->json([
             'solicitud' => $this->solicitudes->payload($revocada),
         ]);
+    }
+
+    // ------------------------------------------------------------------
+    // Control administrativo (solo admin)
+    // ------------------------------------------------------------------
+
+    /**
+     * Reporte de solicitudes por cliente.
+     *
+     * Es la pestaña que el cliente NO tiene: el operador la usa para llevar
+     * el control manual de lo que pidió cada uno.
+     */
+    public function control(Request $request): JsonResponse
+    {
+        $user = $this->getUser();
+
+        if ($user === null) {
+            return response()->json(['error' => 'Unauthorized'], 401);
+        }
+
+        if (! $user->isAdmin()) {
+            return response()->json(['error' => 'Forbidden'], 403);
+        }
+
+        $filtros = $this->filtrosReporte($request);
+
+        return response()->json($this->reportes->porCliente($filtros));
+    }
+
+    /**
+     * Exportación del reporte en texto plano.
+     *
+     * Se descarga como adjunto para imprimir o archivar.
+     */
+    public function exportar(Request $request)
+    {
+        $user = $this->getUser();
+
+        if ($user === null) {
+            return response()->json(['error' => 'Unauthorized'], 401);
+        }
+
+        if (! $user->isAdmin()) {
+            return response()->json(['error' => 'Forbidden'], 403);
+        }
+
+        $reporte = $this->reportes->porCliente($this->filtrosReporte($request));
+        $contenido = $this->reportes->toTxt($reporte);
+        $nombre = $this->reportes->nombreArchivo($reporte);
+
+        return response($contenido, 200, [
+            'Content-Type' => 'text/plain; charset=UTF-8',
+            'Content-Disposition' => 'attachment; filename="' . $nombre . '"',
+            'Cache-Control' => 'no-store',
+        ]);
+    }
+
+    /**
+     * Lista de clientes con solicitudes, para el selector del reporte.
+     */
+    public function clientes(): JsonResponse
+    {
+        $user = $this->getUser();
+
+        if ($user === null || ! $user->isAdmin()) {
+            return response()->json(['error' => 'Forbidden'], 403);
+        }
+
+        $clientes = \App\Models\SolicitudPuntual::query()
+            ->join('users', 'users.id', '=', 'solicitud_puntual.user_id')
+            ->select('users.id', 'users.username', 'users.name')
+            ->distinct()
+            ->orderBy('users.username')
+            ->get()
+            ->map(fn ($c) => [
+                'id' => (int) $c->id,
+                'username' => (string) $c->username,
+                'nombre' => (string) ($c->name ?? $c->username),
+            ])
+            ->values();
+
+        return response()->json(['clientes' => $clientes]);
+    }
+
+    /**
+     * @return array{desde:?string,hasta:?string,estado:string,user_id:?int}
+     */
+    private function filtrosReporte(Request $request): array
+    {
+        return [
+            'desde' => $request->query('desde') !== null ? (string) $request->query('desde') : null,
+            'hasta' => $request->query('hasta') !== null ? (string) $request->query('hasta') : null,
+            'estado' => (string) $request->query('estado', 'todas'),
+            'user_id' => $request->query('user_id') !== null ? (int) $request->query('user_id') : null,
+        ];
     }
 
     /**
