@@ -525,6 +525,26 @@ try {
 
         h_check($admin !== null, 'hay un administrador para la prueba');
 
+        // El motivo es OPCIONAL: se puede pedir sin escribir nada.
+        $sinMotivo = $service->create($usuario, $medioReal, $fecha, '20:00', '20:30', '');
+        $sinMotivo->refresh();
+
+        h_check(
+            (int) $sinMotivo->id > 0 && $sinMotivo->motivo === '',
+            'la solicitud se crea SIN motivo (es opcional)',
+            'motivo = ' . json_encode($sinMotivo->motivo),
+        );
+
+        h_check(
+            $sinMotivo->archivos_total > 0,
+            'la solicitud sin motivo igual entrega el material',
+        );
+
+        // Se revoca con el admin para no dejar enlaces vivos.
+        $service->revoke($admin, $sinMotivo);
+        $sinMotivo->items()->delete();
+        $sinMotivo->delete();
+
         $revocada = $service->revoke($admin, $solicitud->refresh());
 
         h_check(
