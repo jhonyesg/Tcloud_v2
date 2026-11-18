@@ -404,7 +404,12 @@ class BackupMappingService
     }
 
     /**
-     * Candidatos a storage de ORIGEN: locales, con ruta base y fuera del árbol de backup.
+     * Candidatos a storage de ORIGEN: locales, con ruta base, fuera del árbol de backup y
+     * NO personales.
+     *
+     * Los personales (el home de cada usuario: `/home/www/Usuarios_tcloud/<user>`) no tienen
+     * contraparte en el árbol de producción: no son material de emisión y no se pueden
+     * respaldar. No tienen nada que declarar acá.
      *
      * @return Collection<int,StorageProvider>
      */
@@ -415,6 +420,7 @@ class BackupMappingService
 
         return StorageProvider::query()
             ->where('kind', 'local')
+            ->where('is_personal', false)
             ->whereNotNull('base_path')
             ->whereRaw("rtrim(base_path, '/') <> ''")
             ->orderBy('name')

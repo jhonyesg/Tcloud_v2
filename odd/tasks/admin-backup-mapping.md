@@ -127,6 +127,12 @@ solicitar → enlace) y declaración de los 7 vínculos pendientes con el operad
   Corrección: `@endsection` antes de `@push('scripts')`, más dos aserciones que comparan
   POSICIONES (`<main` < contenido < `</body>`, y panel lateral antes del contenido). El test
   negativo confirma que sin `@endsection` fallan las dos.
+- **L12** — 2026-11-18 — Petición del operador: los storages **personales** (`Personal - prueba`,
+  `Personal - Multiarchivo`, …) no deben aparecer en el módulo. Son el home de cada usuario
+  (`/home/www/Usuarios_tcloud/<user>`): no son material de emisión ni tienen contraparte en el
+  árbol de producción. `BackupMappingService::candidateSources()` ahora filtra
+  `is_personal = false`. El listado pasó de 169 a 157 filas y el panel de cobertura se
+  recalculó sobre el mismo universo.
 - **L11** — 2026-11-09 — Cierre de las 7 carpetas huérfanas del árbol. Se buscaron las
   contrapartes por CONTENIDO (prefijo de archivo + días solapados), no por parecido de nombre:
   `01_Caracol_internacional` ↔ 32 Caracol Internacional (3/3 días), `02_Canal_Rcn_bk` ↔ 02 RCN Tv

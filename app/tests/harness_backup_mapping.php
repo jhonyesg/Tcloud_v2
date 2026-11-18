@@ -238,6 +238,28 @@ try {
     );
 
     // ------------------------------------------------------------------
+    h_section('los storages personales no son candidatos');
+    $personal = StorageProvider::create([
+        'name' => $tag . ' personal',
+        'type' => 'local',
+        'kind' => 'local',
+        'base_path' => $tmpRoot . '/personal',
+        'enabled' => true,
+        'is_accessible' => true,
+        'is_personal' => true,
+    ]);
+    $personalId = (int) $personal->id;
+
+    $candidatos = $service->candidateSources(null)->pluck('id')->all();
+    h_check(! in_array($personalId, $candidatos, true), 'un storage personal no aparece como candidato a origen');
+    h_check(in_array($sourceId, $candidatos, true), 'un storage local normal sí aparece como candidato');
+    $root = $service->rootStorage(null);
+    h_check(
+        $root === null || ! in_array((int) $root->id, $candidatos, true),
+        'el árbol de backup no aparece como candidato a origen (esta dentro de si mismo)'
+    );
+
+    // ------------------------------------------------------------------
     h_section('estado de la ruta base del storage');
     h_check($service->pathState(StorageProvider::find($sourceId)) === 'ok', 'una ruta base existente reporta ok');
     h_check($service->pathState(StorageProvider::find($backupId)) === 'ok', 'el árbol de backup reporta ok');
@@ -328,6 +350,25 @@ try {
         h_check(str_contains($html, $needle), "la página contiene «{$needle}»");
     }
     h_check(str_contains($html, '01_Caracol_BK'), 'la página lista las carpetas reales del árbol de producción');
+
+    // Guía interactiva del módulo (change `dashboard-perf-backup-guide`, S4/S5).
+    // El vínculo no se puede deducir del nombre: si la pantalla no lo explica,
+    // el operador no tiene forma de saber por qué solo algunos canales ofrecen
+    // "Solicitar backup".
+    h_check(str_contains($html, 'startBackupTour'), 'la página expone el botón de Guía', 'falta la Guía del módulo de backup');
+    h_check(str_contains($html, 'interactive-tour.js'), 'la página carga el motor de tours');
+    foreach (['assign', 'listing', 'search', 'coverage-folders', 'coverage-mapped', 'coverage-sources', 'coverage-broken', 'orphans'] as $anchorName) {
+        h_check(
+            str_contains($html, 'data-backup-tour="' . $anchorName . '"'),
+            "la guía tiene el ancla data-backup-tour=\"{$anchorName}\"",
+            "falta el ancla {$anchorName} (el paso quedaría sin spotlight)"
+        );
+    }
+    h_check(
+        str_contains($html, 'se declara') || str_contains($html, 'se DECLARA') || str_contains($html, 'declara a mano'),
+        'la guía explica que el vínculo se declara y no se deduce del nombre',
+        'la guía no explica el carácter declarativo del vínculo'
+    );
 
     // El chrome del layout (header, sidebar, footer) tiene que ENVOLVER al
     // contenido. Sin `@endsection`, la sección queda abierta: el contenido se
@@ -435,7 +476,7 @@ try {
             // la sesión de prueba puede no haberse creado
         }
     }
-    DB::table('storage_providers')->whereIn('id', array_filter([$sourceId, $backupId, $otherSourceId, $nonLocalId, $deadId ?? null]))->delete();
+    DB::table('storage_providers')->whereIn('id', array_filter([$sourceId, $backupId, $otherSourceId, $nonLocalId, $deadId ?? null, $personalId ?? null]))->delete();
     DB::table('storage_providers')->where('name', 'like', $tag . '%')->delete();
     @exec('rm -rf ' . escapeshellarg($tmpRoot));
     h_ok('fixtures eliminados');

@@ -39,13 +39,21 @@ class StorageRemapDisk extends Command
     protected $signature = 'storage:remap-disk
                             {--from=Disco_G : Disco origen (default Disco_G)}
                             {--to=Disco_H : Disco destino (default Disco_H)}
+                            {--map=* : Repunto explicito id:ruta (repetible). Modo mapa}
+                            {--map-file= : Archivo JSON con el mapa explicito id -> ruta (repetible el modo mapa)}
                             {--apply : Ejecuta los cambios (default dry-run)}
                             {--yes : Skip confirmacion en --apply}';
 
-    protected $description = 'Remap base_path de storages de Disco_G a Disco_H + merge overlapping + reescribe transcriptions.source_absolute_path.';
+    protected $description = 'Remap base_path de storages de Disco_G a Disco_H + merge overlapping + reescribe transcriptions.source_absolute_path. Con --map/--map-file repunta storages concretos a rutas verificadas (sin merge).';
 
     public function handle(): int
     {
+        $map = $this->explicitMap();
+
+        if ($map !== []) {
+            return $this->handleExplicitMap($map);
+        }
+
         $from = (string) $this->option('from');
         $to = (string) $this->option('to');
         $apply = (bool) $this->option('apply');
@@ -301,5 +309,246 @@ class StorageRemapDisk extends Command
         $this->line("Transcripciones aun con '{$fromToken}': {$remainingTx} (esperado 0)");
 
         return Command::SUCCESS;
+    }
+
+    /**
+     * Modo mapa explicito: cada storage declara su ruta destino.
+     *
+     * Se usa cuando los exports se reagruparon (no es un intercambio 1:1 de
+     * discos): el modo `--from`/`--to` moveria storages que ya estan bien y un
+     * segundo paso devolveria al primero lo movido en el primero.
+     *
+     * Diferencias con el modo de intercambio:
+     *   - NO hace merge: las colisiones de ruta destino se REPORTAN. Que dos
+     *     storages apunten al mismo material es una decision del operador
+     *     (que ficha sobrevive, que permisos se heredan).
+     *   - Verifica en disco que la ruta destino existe ANTES de escribir.
+     */
+    private function handleExplicitMap(array $map): int
+    {
+        $apply = (bool) $this->option('apply');
+        $yes = (bool) $this->option('yes');
+        $tag = 'hsrm_' . substr(bin2hex(random_bytes(4)), 0, 8);
+        $snapshotTable = 'storage_providers_remap_pre_' . date('Ymd_His');
+
+        $this->info("== storage:remap-disk (modo mapa explicito) ==");
+        $this->line('mode: ' . ($apply ? 'APPLY' : 'dry-run'));
+        $this->line("tag: {$tag}");
+        $this->line("snapshot table (apply only): {$snapshotTable}");
+        $this->newLine();
+
+        $rows = [];
+        $sinContraparte = [];
+        $colisiones = [];
+
+        foreach ($map as $id => $newPath) {
+            $storage = StorageProvider::find($id);
+            if ($storage === null) {
+                $this->error("  #{$id}: el storage no existe");
+                continue;
+            }
+
+            $oldPath = (string) $storage->base_path;
+            $newPath = rtrim($newPath, '/');
+
+            if ($oldPath === $newPath) {
+                $this->line("  #{$id} '{$storage->name}': ya apunta ahi (sin cambios)");
+                continue;
+            }
+
+            $exists = is_dir($newPath);
+            if (! $exists) {
+                $sinContraparte[] = [$id, $storage->name, $oldPath, $newPath];
+                $this->warn("  #{$id} '{$storage->name}': SIN CONTRAPARTE, la ruta destino no existe");
+                $this->line("    viejo: {$oldPath}");
+                $this->line("    nuevo: {$newPath} (no existe)");
+                continue;
+            }
+
+            $colisiones[$newPath][] = $id;
+            $rows[] = [
+                'id' => (int) $id,
+                'name' => (string) $storage->name,
+                'old' => $oldPath,
+                'new' => $newPath,
+                'files' => DB::table('files')->where('storage_provider_id', $id)->count(),
+                'tx' => DB::table('transcriptions')
+                    ->whereIn('file_id', DB::table('files')->where('storage_provider_id', $id)->select('id'))
+                    ->count(),
+            ];
+        }
+
+        if ($rows === []) {
+            $this->warn('No hay repuntos validos que aplicar.');
+            return Command::SUCCESS;
+        }
+
+        $this->info('Repuntos a aplicar:');
+        $this->table(
+            ['ID', 'Nombre', 'files', 'tx', 'base_path viejo', 'base_path nuevo'],
+            array_map(fn (array $r) => [$r['id'], $r['name'], $r['files'], $r['tx'], $r['old'], $r['new']], $rows)
+        );
+
+        $dupes = array_filter($colisiones, fn (array $ids) => count($ids) > 1);
+        if ($dupes !== []) {
+            $this->newLine();
+            $this->warn('COLISIONES de ruta destino (se REPORTAN, no se resuelven):');
+            foreach ($dupes as $path => $ids) {
+                $this->line('  ' . $path . ' <- #' . implode(', #', $ids));
+            }
+        }
+
+        if ($sinContraparte !== []) {
+            $this->newLine();
+            $this->warn('Sin contraparte (NO se modifican):');
+            foreach ($sinContraparte as [$id, $name, $old, $new]) {
+                $this->line("  #{$id} '{$name}': {$old} -> {$new}");
+            }
+        }
+
+        if (! $apply) {
+            $this->newLine();
+            $this->warn('DRY-RUN. Para aplicar: --apply --yes');
+            return Command::SUCCESS;
+        }
+
+        if (! $yes && ! $this->confirm('Aplicar el repunto de ' . count($rows) . ' storages?', true)) {
+            $this->warn('Abortado por usuario.');
+            return Command::SUCCESS;
+        }
+
+        $affectedIds = array_column($rows, 'id');
+
+        DB::transaction(function () use ($rows, $snapshotTable, $tag, $affectedIds) {
+            $this->newLine();
+            $this->info("[{$tag}] Creando snapshot {$snapshotTable}...");
+            DB::statement("CREATE TABLE {$snapshotTable} AS SELECT * FROM storage_providers WHERE id IN (" . implode(',', $affectedIds) . ')');
+            DB::statement("CREATE INDEX ON {$snapshotTable} (id)");
+
+            $this->line("[{$tag}] UPDATE storage_providers.base_path...");
+            foreach ($rows as $r) {
+                DB::table('storage_providers')->where('id', $r['id'])->update(['base_path' => $r['new']]);
+                $this->line("  #{$r['id']} '{$r['name']}': {$r['old']} -> {$r['new']}");
+            }
+
+            $this->line("[{$tag}] UPDATE transcriptions.source_absolute_path...");
+            $txTotal = 0;
+            foreach ($rows as $r) {
+                $txTotal += DB::table('transcriptions')
+                    ->where('source_absolute_path', 'LIKE', $r['old'] . '/%')
+                    ->update(['source_absolute_path' => DB::raw("REPLACE(source_absolute_path, " . DB::getPdo()->quote($r['old'] . '/') . ', ' . DB::getPdo()->quote($r['new'] . '/') . ')')]);
+            }
+            $this->line("  {$txTotal} transcripciones actualizadas.");
+
+            $this->line("[{$tag}] Invalidate caches...");
+            foreach ($affectedIds as $id) {
+                Cache::forget("transcriptor.scope.inherited.{$id}");
+                Cache::forget("transcriptor.scope.{$id}");
+                Cache::forget("folder_gen:{$id}:null");
+            }
+            Cache::forget('admin:storages:index');
+
+            try {
+                if (class_exists(\App\Services\Ia\CacheEpoch::class)) {
+                    \App\Services\Ia\CacheEpoch::bump();
+                }
+            } catch (\Throwable $e) {
+                $this->warn('  CacheEpoch::bump() no disponible: ' . $e->getMessage());
+            }
+
+            try {
+                if (app()->bound(\App\Services\Ia\StorageHierarchyService::class)) {
+                    $hierarchy = app(\App\Services\Ia\StorageHierarchyService::class);
+                    if (method_exists($hierarchy, 'forgetAll')) {
+                        $hierarchy->forgetAll();
+                    }
+                    foreach ($affectedIds as $id) {
+                        if (method_exists($hierarchy, 'forget')) {
+                            $hierarchy->forget((int) $id);
+                        }
+                    }
+                }
+            } catch (\Throwable $e) {
+                $this->warn('  StorageHierarchyService::forget* no disponible: ' . $e->getMessage());
+            }
+
+            Log::info('storage_remap_disk.map_applied', [
+                'tag' => $tag,
+                'mode' => 'explicit_map',
+                'snapshot_table' => $snapshotTable,
+                'storages_count' => count($rows),
+                'affected_storage_ids' => $affectedIds,
+            ]);
+        });
+
+        $this->newLine();
+        $this->info('APPLY OK. Snapshot en: ' . $snapshotTable);
+        $this->line('Verificacion post-apply:');
+        $after = StorageProvider::query()->whereIn('id', $affectedIds)->orderBy('id')->get(['id', 'name', 'base_path']);
+        $this->table(['ID', 'Nombre', 'base_path'], $after->map(fn ($s) => [(int) $s->id, $s->name, $s->base_path])->toArray());
+
+        $missing = 0;
+        foreach ($after as $s) {
+            if (! is_dir((string) $s->base_path)) {
+                $missing++;
+                $this->warn("  #{$s->id} la ruta sigue sin existir: {$s->base_path}");
+            }
+        }
+        $this->line("Storages con ruta inexistente tras el repunto: {$missing} (esperado 0)");
+
+        return Command::SUCCESS;
+    }
+
+    /**
+     * Mapa explicito id => ruta, desde `--map=id:ruta` y/o `--map-file`.
+     *
+     * @return array<int,string>
+     */
+    private function explicitMap(): array
+    {
+        $map = [];
+
+        $file = (string) $this->option('map-file');
+        if ($file !== '') {
+            if (! is_file($file)) {
+                $this->error("No se encuentra el archivo de mapa: {$file}");
+                return [];
+            }
+
+            $decoded = json_decode((string) file_get_contents($file), true);
+            if (! is_array($decoded)) {
+                $this->error('El archivo de mapa no es un JSON valido.');
+                return [];
+            }
+
+            foreach ($decoded as $key => $value) {
+                if (is_array($value)) {
+                    $id = (int) ($value['id'] ?? 0);
+                    $path = (string) ($value['path'] ?? $value['base_path'] ?? '');
+                } else {
+                    $id = (int) $key;
+                    $path = (string) $value;
+                }
+                if ($id > 0 && $path !== '') {
+                    $map[$id] = $path;
+                }
+            }
+        }
+
+        foreach ((array) $this->option('map') as $entry) {
+            $entry = (string) $entry;
+            if (! str_contains($entry, ':')) {
+                $this->error("Entrada de mapa invalida (se espera id:ruta): {$entry}");
+                continue;
+            }
+            [$id, $path] = explode(':', $entry, 2);
+            $id = (int) $id;
+            $path = trim($path);
+            if ($id > 0 && $path !== '') {
+                $map[$id] = $path;
+            }
+        }
+
+        return $map;
     }
 }
