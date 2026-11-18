@@ -40,10 +40,10 @@
 
 ## 5. Guard de compartidos (afecta a los dos flujos)
 
-- [ ] 5.1 Generalizar `ShareController::isBackupManaged()` a `isRequestManaged()`: una enlace está gestionado si tiene `backupRequest` o `solicitudPuntualItem`.
-- [ ] 5.2 Aplicar el guard en `update()` y `destroy()` con respuesta `403` y el mensaje que indique que hay que revocar desde el módulo de origen.
-- [ ] 5.3 Actualizar `backupManagedIds()` → `managedIds()` y usarlo en `bulkPreview()` y `bulkDelete()`, reportando `protected_count` y `protected_ids`. Corregir la discrepancia de `confirm_count` entre previsualización y depuración cuando hay enlaces protegidos.
-- [ ] 5.4 **Corrección de bug**: añadir `use Illuminate\Database\QueryException;` en `App\Services\MisArchivos\BackupRequestService` (hoy el `catch` resuelve a una clase inexistente y una violación real de `23505` sube como 500). Cubrirlo con una aserción en el harness de backup.
+- [x] 5.1 Generalizar `ShareController::isBackupManaged()` a `isRequestManaged()`: una enlace está gestionado si tiene `backupRequest` o `solicitudPuntualItem`.
+- [x] 5.2 Aplicar el guard en `update()` y `destroy()` con respuesta `403` y el mensaje que indique que hay que revocar desde el módulo de origen.
+- [x] 5.3 Actualizar `backupManagedIds()` → `managedIds()` y usarlo en `bulkPreview()` y `bulkDelete()`, reportando `protected_count` y `protected_ids`. Corregir la discrepancia de `confirm_count`: `bulkDelete()` comparaba contra el total SIN excluir los protegidos mientras la previsualización sí los excluía (la UI envía el `count` de la previsualización) → 409 en cuanto había un enlace gestionado en la selección.
+- [x] 5.4 **Corrección de bug**: añadir `use Illuminate\Database\QueryException;` en `App\Services\MisArchivos\BackupRequestService` (hoy el `catch` resuelve a una clase inexistente y una violación real de `23505` sube como 500). Cubrirlo con una aserción en el harness de backup.
 
 ## 6. API del módulo cliente (backend)
 
@@ -65,14 +65,14 @@
 
 ## 8. Interfaz de administración
 
-- [ ] 8.1 Vista `resources/views/admin/medios.blade.php` — listado de medios declarados con buscador, filtro TV/Radio y edición de nombre, región y estado.
-- [ ] 8.2 Bloque de contenedores con la acción "Remapear": previsualización del sub-canal detectado, nombre y región propuestos, marca de ya declarado, y confirmación explícita antes de escribir.
-- [ ] 8.3 Guard de cliente en `Admin\MedioController`: las acciones de escritura exigen sesión de admin (`session('user_role') === 'admin'`).
-- [ ] 8.4 Regenerar el CSS compilado (`npm run build`) y pasar `php tests/tailwind_coverage_check.php`.
+- [x] 8.1 Vista `resources/views/admin/medios.blade.php` — listado de medios declarados con buscador, filtro TV/Radio y edición de nombre, región y estado.
+- [x] 8.2 Bloque de contenedores con la acción "Remapear": previsualización del sub-canal detectado, nombre y región propuestos, marca de ya declarado, y confirmación explícita antes de escribir.
+- [x] 8.3 Guard de cliente en `Admin\MedioController`: las acciones de escritura exigen sesión de admin (`session('user_role') === 'admin'`).
+- [x] 8.4 Regenerar el CSS compilado (`npm run build`) y pasar `php tests/tailwind_coverage_check.php`.
 
 ## 9. Verificación
 
-- [ ] 9.1 `tests/harness_solicitud_puntual.php` — contrato del módulo contra PostgreSQL y disco reales: catálogo complementario (regla de ancestro), cobertura completa y parcial, franja con N enlaces, día con 1 enlace de carpeta, snapshot del registro, idempotencia, revocación, vigencia de 3 días, recomendación por umbral, y **que el remapeo no altera el conteo de `files` ni crea storages**.
+- [x] 9.1 `tests/harness_solicitud_puntual.php` — 38 aserciones contra PostgreSQL y disco reales: catálogo complementario (regla de ancestro), cobertura completa y parcial, franja con N enlaces, día con 1 enlace de carpeta, snapshot del registro, idempotencia, revocación, vigencia de 3 días, recomendación por umbral, y **que el remapeo no altera el conteo de `files` ni crea storages**.
 - [ ] 9.2 Extender `tests/harness_route_contract.php` con las rutas nuevas (cliente y admin) y verificar que ninguna queda huérfana.
 - [ ] 9.3 Extender `tests/harness_shares_module.php` con el guard generalizado: `update`/`destroy` sobre enlaces de ambos flujos → `403`; `bulkDelete` excluye y reporta `protected_count`.
 - [ ] 9.4 Test unitario del resolver (`tests/Unit/PuntualResolverTest.php`): mediana del paso con cadencias distintas (15/21/14 min), slots nominales, parsing de fecha y nombre, detección de homónimos por región.

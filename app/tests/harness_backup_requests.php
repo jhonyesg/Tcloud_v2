@@ -331,9 +331,12 @@ try {
 
         // La purga masiva tampoco puede llevárselo.
         Illuminate\Support\Facades\Session::put('user_id', $usuario->id);
+        // `confirm_count` es el conteo que devuelve la PREVISUALIZACIÓN, que
+        // excluye los enlaces protegidos: por eso aquí es 0 y no 1. Es lo
+        // que envía la interfaz (`confirm_count: this.bulkModal.count`).
         $resBulk = $shareCtrl->bulkDelete(new Illuminate\Http\Request([
             'ids' => [$solicitud->share_id],
-            'confirm_count' => 1,
+            'confirm_count' => 0,
         ]));
         $bulk = json_decode($resBulk->getContent(), true);
         h_check(

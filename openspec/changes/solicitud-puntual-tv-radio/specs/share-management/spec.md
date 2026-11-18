@@ -28,3 +28,24 @@ El enlace SHALL seguir siendo accesible por su URL pública mientras la solicitu
 
 - **WHEN** el titular abre la URL pública de un enlace gestionado por una solicitud viva
 - **THEN** el enlace sirve el material correctamente
+
+### Requirement: El conteo de la previsualización es el que se confirma
+
+La previsualización de la depuración masiva SHALL devolver como `count` el número de enlaces que la operación va a eliminar, es decir, la selección menos los enlaces gestionados por un flujo de solicitud, y SHALL reportar aparte cuántos quedan protegidos en `protected_count`.
+
+La depuración masiva SHALL comparar el `confirm_count` recibido contra ese mismo número, y SHALL rechazar la operación con `409` si no coinciden. El valor que confirma la interfaz es el `count` de la previsualización.
+
+#### Scenario: Previsualización con enlaces protegidos
+
+- **WHEN** la selección incluye 3 enlaces gestionados por una solicitud y 7 normales
+- **THEN** la previsualización devuelve `count` 7 y `protected_count` 3
+
+#### Scenario: Confirmación con el conteo de la previsualización
+
+- **WHEN** el cliente confirma la depuración con `confirm_count` 7
+- **THEN** la operación elimina los 7 enlaces no gestionados, deja intactos los 3 protegidos y los reporta en `protected_count` y `protected_ids`
+
+#### Scenario: Conteo desactualizado
+
+- **WHEN** el cliente confirma con un `confirm_count` que no corresponde a la previsualización
+- **THEN** el servidor responde `409` y no borra nada

@@ -144,7 +144,12 @@ class PuntualRequestService
         }
 
         $date = $this->parseDate($fecha);
-        $rango = $this->parseRange($desde, $hasta);
+
+        // En modo DÍA el rango es el día completo: lo que se pide es el día,
+        // no una franja. El horario recibido se ignora a propósito.
+        $rango = $modo === SolicitudPuntual::MODO_DIA
+            ? ['desde' => '00:00:00', 'hasta' => '23:59:59', 'minutos' => 24 * 60]
+            : $this->parseRange($desde, $hasta);
 
         $maximo = (int) config('puntual.max_franja_minutos', 720);
 
