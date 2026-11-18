@@ -397,10 +397,14 @@
                          :class="estimateData?.cobertura?.estado === 'completa' ? 'bg-green-50' : (estimateData?.cobertura?.estado === 'parcial' ? 'bg-amber-50' : 'bg-red-50')">
                         <div class="flex items-center gap-2">
                             <i class="fas"
-                               :class="estimateData?.cobertura?.estado === 'completa' ? 'fa-circle-check text-green-600' : (estimateData?.cobertura?.estado === 'parcial' ? 'fa-triangle-exclamation text-amber-600' : 'fa-circle-xmark text-red-600')"></i>
+                               :class="estimateData?.cobertura?.estado === 'completa' ? 'fa-circle-check text-green-600'
+                                     : (estimateData?.cobertura?.estado === 'parcial' ? 'fa-triangle-exclamation text-amber-600'
+                                     : (estimateData?.cobertura?.estado === 'material_no_indexado' ? 'fa-database text-brand-600' : 'fa-circle-xmark text-red-600'))"></i>
                             <span class="font-semibold text-sm"
-                                  :class="estimateData?.cobertura?.estado === 'completa' ? 'text-green-800' : (estimateData?.cobertura?.estado === 'parcial' ? 'text-amber-800' : 'text-red-800')"
-                                  x-text="estimateData?.cobertura?.estado === 'completa' ? 'Cobertura completa' : (estimateData?.cobertura?.estado === 'parcial' ? 'Cobertura parcial' : 'Sin material para ese horario')"></span>
+                                  :class="estimateData?.cobertura?.estado === 'completa' ? 'text-green-800' : (estimateData?.cobertura?.estado === 'parcial' ? 'text-amber-800' : (estimateData?.cobertura?.estado === 'material_no_indexado' ? 'text-brand-800' : 'text-red-800'))"
+                                  x-text="estimateData?.cobertura?.estado === 'completa' ? 'Cobertura completa'
+                                        : (estimateData?.cobertura?.estado === 'parcial' ? 'Cobertura parcial'
+                                        : (estimateData?.cobertura?.estado === 'material_no_indexado' ? 'Material disponible, pendiente de indexar' : 'Sin material para ese horario'))"></span>
                         </div>
                         <span class="text-xs text-slate-500"
                               x-text="estimateData ? estimateData.cobertura.archivos + ' archivos · ' + humanBytes(estimateData.cobertura.bytes) : ''"></span>
@@ -464,7 +468,7 @@
                         Cancelar
                     </button>
                     <button @click="submit()"
-                            :disabled="submitting || estimateData?.cobertura?.estado === 'unavailable'"
+                            :disabled="submitting || !puedeSolicitar()"
                             class="px-4 py-2 bg-brand-600 hover:bg-brand-700 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-xl text-sm font-medium transition-colors">
                         <i class="fas fa-paper-plane mr-1" :class="submitting ? 'fa-spin' : ''"></i>
                         <span x-text="submitting ? 'Enviando…' : 'Solicitar'"></span>
@@ -1185,6 +1189,20 @@ function puntualManager() {
                 unavailable: 'bg-amber-100 text-amber-700',
                 revoked: 'bg-red-100 text-red-700',
             }[status] || 'bg-slate-100 text-slate-600';
+        },
+
+        /**
+         * ¿Se puede confirmar la solicitud con la cobertura actual?
+         *
+         * Un día con material en disco pero sin indexar SÍ se puede pedir: el
+         * alta lo indexa y genera los enlaces.
+         */
+        puedeSolicitar() {
+            if (! this.estimateData) return false;
+
+            const estado = this.estimateData.cobertura?.estado;
+
+            return estado === 'completa' || estado === 'parcial' || estado === 'material_no_indexado';
         },
 
         csrf() {
