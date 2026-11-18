@@ -146,14 +146,47 @@ La otra mitad del problema: el catálogo puede estar **atrasado** respecto del d
 
 **Por qué un umbral y no el punto de equilibrio de una tarifa.** No hay tarifas en el sistema y no se introducen. El umbral captura la misma intuición —"por encima de dos horas el día sale más barato" — en términos operativos (nº de enlaces que hay que emitir, vencer y revocar) y queda en configuración para poder ajustarlo sin desplegar.
 
+### D11 — El árbol de producción no es fuente ni es pedible
+
+**Decisión.** Ningún storage que cuelgue del árbol de producción del backup (`config('backups.root_storage_id')`, o el storage al que apuntan los `backup_storage_id` de los canales mapeados) puede ser un medio: queda fuera de `flatChannelStorages()`, fuera del catálogo del cliente y `declare()` lo rechaza.
+
+**Por qué.** El árbol de producción (`Disco_D/backup`) es un maestro DISTINTO: lo escribe difusor02, con otra bitrate, otra grilla de emisión (20 min frente a 15) y 13 días de retención frente a los 48 del árbol de origen. Montaje NFS en modo `hard`. `35 Red Mas BK` (storage 131) cuelga de él y el bootstrap lo declaraba como medio: el módulo estaba publicando el master de producción en el catálogo del cliente, contra el propio design.
+
+**Consecuencia.** El medio `35 Red Mas BK` queda dado de baja y su storage excluido del catálogo.
+
+### D12 — La ficha de cobertura no filtra identificadores internos
+
+**Decisión.** La respuesta de `POST /solicitud-puntual/estimate` NO incluye el `file_id` ni la ruta física del material. El servicio los necesita para crear los enlaces, pero no salen del servidor.
+
+**Por qué.** `MediaPreviewController::preview()` servía `/media/{id}/preview` SIN comprobar permiso (hueco preexistente). Con el `file_id` y el `path` en la respuesta, el módulo entregaba el oráculo que convierte un id adivinable en la ruta confirmada de material que el cliente no tiene asignado: la vigencia de 3 días y la revocación quedaban como decorado, porque el material se podía pedir directamente por id.
+
+La interfaz solo consume el instante de emisión, el nombre y el tamaño, así que quitar ambos campos no rompe nada.
+
+### D13 — La previsualización de media exige permiso de lectura
+
+**Decisión.** `MediaPreviewController::preview()` y `thumbnail()` comprueban el mismo permiso que `FileController::preview()`: el admin puede todo; el resto necesita lectura sobre el storage del archivo, y sin storage, tiene que ser el dueño.
+
+**Por qué.** Es el hueco de raíz del hallazgo D12. Sin cerrarlo, las tres garantías del módulo (vigencia, revocación, aislamiento por token) se pueden saltar por una ruta que no participa de ellas. Es un bug de plataforma preexistente, pero el módulo se apoya en que el material no se sirve fuera de sus enlaces, así que cerrarlo es parte del contrato de esta feature y no un extra.
+
+**Verificación.** Con permiso: 200. Sin permiso: 403. Los flujos legítimos (Mis Archivos, el visor público de compartidos que usa su propia ruta `/s/{token}/media/...`) siguen sirviendo.
+
+### D14 — La previsualización no escribe y el alta revalida
+
+**Decisión.** `estimate()` es de SOLO LECTURA: no materializa el catálogo. Si el día existe en disco pero todavía no está indexado, lo dice (`material_no_indexado`) y la materialización ocurre al confirmar, que es un acto deliberado del usuario.
+
+`create()` revalida las tres reglas del contrato antes de escribir: el medio tiene que estar activo, no puede estar en el árbol de producción y no puede estar asignado al solicitante (el catálogo ya las filtra, pero un POST directo se salta el filtro).
+
+**Por qué.** La previsualización se dispara al mover un control de hora: con materialización, un usuario sin permisos podía forzar el indexado de cualquier storage (escritura en `files` desde una API de solo lectura) y provocar `scandir` síncronos sobre NFS `hard` con cada petición.
+
 ## Risks / Trade-offs
 
-- **[El enlace de un medio no asignado expone material que el cliente no puede leer en la plataforma]** → El acceso es por URL pública con vigencia y sin credenciales, lo que es un escalón por encima de la lectura directa. Mitigación: el enlace expira en 3 días, es revocable, el guard impide volverlo permanente, y se registra quién pidió qué y cuándo. **Riesgo alto: exige verificador independiente antes de cerrar.**
+- **[El enlace de un medio no asignado expone material que el cliente no puede leer en la plataforma]** → El acceso es por URL pública con vigencia y sin credenciales, lo que es un escalón por encima de la lectura directa. Mitigación: el enlace expira en 3 días, es revocable, el guard impide volverlo permanente, la ficha de cobertura no filtra identificadores internos (D12) y la previsualización de media exige permiso de lectura (D13). Se registra quién pidió qué y cuándo. **Riesgo alto: exige verificador independiente antes de cerrar.**
 - **[La cobertura parcial se entrega sin el hueco]** → El sistema cuantifica los slots faltantes y los muestra en el registro. Si el cliente necesita exactitud, la franja no se sirve. Mitigación: mostrar el hueco en el modal antes de confirmar.
 - **[La consulta de cobertura usa un filtro por sufijo de `path` y no aprovecha índice]** → Está acotada por `storage_provider_id` y los storages participantes son de 2 k–45 k filas. Mitigación: medir en el harness; si el tiempo lo justifica, agregar un índice funcional sobre `path` reversed.
 - **[El.bootstrap de medios crea ~190 filas que hay que mantener]** → El botón de remapeo cubre el alta; la baja y la edición se hacen en la misma pantalla. Mitigación: los medios inactivos no aparecen en el listado del cliente.
 - **[Los sub-canonales adicionales cambian el conteo de `files` por storage si alguien los indexa como storage]** → El botón de remapeo solo crea filas en `medio`; no toca `storage_providers` ni `files`. Mitigación: el harness verifica que el conteo de `files` no cambia.
 - **[El tree de `00 Discos` (212 k filas) hace que un `LIKE '%/…'` accidental sea lento]** → Los contenedores no son medios y la consulta siempre filtra por `storage_provider_id` primero. Mitigación: verificar tiempo en el harness con el storage más grande.
+- **[Un medio dado de baja deja de ofrecerse pero sus solicitudes vivas siguen sirviendo]** → El guard de compartidos impide editarlos, pero no los revoca. Se acepta: la baja es una medida de catálogo, no de entrega; para cortar la entrega está la revocación, que es del solicitante. Mitigación: `create()` no acepta medios inactivos (D14), así que no se generan entregas nuevas sobre un medio dado de baja.
 - **[El `share_id` por slot multiplica las filas de `shares` (96 por solicitud en modo día)** → En modo día solo hay 1 enlace (el de la carpeta); los items no llevan `share_id`. Las filas de `solicitud_puntual_item` sí son 96, y eso es deliberado: es el registro contable.
 - **[El historial del cliente se mezcla con sus enlaces en "Compartidos"** → Los enlaces de entrega aparecen en `/shares` porque `created_by` es el solicitante. Decisión: se mantienen visibles (el cliente puede reenviarlos) y el guard los blinda. Si molesta, un campo `managed_by` en `shares` permitiría filtrarlos; queda como follow-up.
 

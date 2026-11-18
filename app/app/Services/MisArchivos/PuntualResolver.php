@@ -319,7 +319,7 @@ class PuntualResolver
      *     mensajes:list<string>
      * }
      */
-    public function coverage(Medio $medio, Carbon $date, string $desde, string $hasta): array
+    public function coverage(Medio $medio, Carbon $date, string $desde, string $hasta, bool $materialize = true): array
     {
         $requested = $this->range($date, $desde, $hasta);
 
@@ -328,7 +328,7 @@ class PuntualResolver
         }
 
         [$start, $end] = $requested;
-        $files = $this->filesForDay($medio, $date, true);
+        $files = $this->filesForDay($medio, $date, $materialize);
 
         if ($files->isEmpty()) {
             return $this->emptyCoverage('unavailable', [
@@ -487,6 +487,36 @@ class PuntualResolver
         }
 
         return $this->findDayFolder($medio, $prefix, $day);
+    }
+
+    /**
+     * ¿Existe la carpeta del día en DISCO?
+     *
+     * Distingue "no hay material" de "el material existe pero el catálogo
+     * va detrás". Es una lectura de disco, no escribe nada.
+     */
+    public function dayExistsOnDisk(Medio $medio, Carbon $date): bool
+    {
+        $storage = $medio->storage;
+
+        if ($storage === null) {
+            return false;
+        }
+
+        $base = rtrim((string) $storage->base_path, '/');
+
+        if ($base === '') {
+            return false;
+        }
+
+        if ($this->mountGuard->isNetworkMountDown($base)) {
+            return false;
+        }
+
+        $relative = trim((string) $medio->subpath, '/');
+        $relative = $relative === '' ? $date->format('dmY') : $relative . '/' . $date->format('dmY');
+
+        return is_dir($base . '/' . $relative);
     }
 
     /**

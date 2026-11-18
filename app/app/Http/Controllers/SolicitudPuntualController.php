@@ -139,7 +139,32 @@ class SolicitudPuntualController extends Controller
             ], $e->status);
         }
 
-        return response()->json($estimate);
+        return response()->json($this->stripInternalIds($estimate));
+    }
+
+    /**
+     * Quita de la respuesta los identificadores internos del material.
+     *
+     * La interfaz solo usa el instante de emisión, el nombre y el tamaño.
+     * El `file_id` y la ruta física NO viajan: son el oráculo que convierte
+     * un id adivinable en una ruta confirmada de material que el cliente no
+     * tiene asignado. El servicio los necesita para crear los enlaces, pero
+     * eso ocurre dentro del servidor.
+     *
+     * @param  array<string,mixed>  $estimate
+     * @return array<string,mixed>
+     */
+    private function stripInternalIds(array $estimate): array
+    {
+        if (isset($estimate['cobertura']['completos']) && is_array($estimate['cobertura']['completos'])) {
+            $estimate['cobertura']['completos'] = array_map(function (array $item) {
+                unset($item['file_id'], $item['path']);
+
+                return $item;
+            }, $estimate['cobertura']['completos']);
+        }
+
+        return $estimate;
     }
 
     /**

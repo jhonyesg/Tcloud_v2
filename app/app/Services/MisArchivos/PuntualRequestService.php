@@ -51,6 +51,7 @@ class PuntualRequestService
 {
     public function __construct(
         private readonly PuntualResolver $resolver,
+        private readonly MedioCatalogService $catalog,
     ) {
     }
 
@@ -74,7 +75,18 @@ class PuntualRequestService
         $date = $this->parseDate($fecha);
         $rango = $this->parseRange($desde, $hasta);
 
-        $cobertura = $this->resolver->coverage($medio, $date, $rango['desde'], $rango['hasta']);
+        // La previsualización es de SOLO LECTURA: no materializa el
+        // catálogo. Si el día todavía no está indexado, se dice
+        // explícitamente (el material existe en disco pero el índice va
+        // detrás); la materialización ocurre al confirmar, que es un acto
+        // deliberado del usuario.
+        $cobertura = $this->resolver->coverage($medio, $date, $rango['desde'], $rango['hasta'], false);
+
+        if ($cobertura['estado'] === 'unavailable' && $this->resolver->dayExistsOnDisk($medio, $date)) {
+            $cobertura['estado'] = 'material_no_indexado';
+            $cobertura['mensajes'][] = 'El material existe en disco pero todavía no está indexado. '
+                . 'Se indexará al confirmar la solicitud.';
+        }
 
         $dia = $this->daySummary($medio, $date);
 
@@ -142,6 +154,8 @@ class PuntualRequestService
                 "El motivo debe tener al menos {$minimo} caracteres.",
             );
         }
+
+        $this->assertSolicitable($user, $medio);
 
         $date = $this->parseDate($fecha);
 
@@ -315,6 +329,48 @@ class PuntualRequestService
     // ------------------------------------------------------------------
     // Revocación
     // ------------------------------------------------------------------
+
+    /**
+     * ¿Este medio se puede pedir por este usuario?
+     *
+     * Tres reglas, las tres del contrato:
+     *  1. El medio tiene que estar activo (un medio dado de baja no se
+     *     ofrece ni se sirve).
+     *  2. El medio tiene que NO estar asignado al solicitante: el módulo
+     *     es para el complemento. Pedir lo que ya se tiene es ruido para
+     *     el control contable.
+     *  3. El medio no puede vivir en el árbol de producción del backup.
+     *
+     * El catálogo ya filtra por las dos primeras, pero un POST directo se
+     * salta el filtro: aquí se vuelve a comprobar.
+     */
+    private function assertSolicitable(User $user, Medio $medio): void
+    {
+        if (! $medio->activo) {
+            throw new PuntualRequestException(
+                'medio_inactivo',
+                'Ese medio no está disponible para solicitudes.',
+            );
+        }
+
+        $storage = $medio->storage;
+
+        if ($storage !== null && $this->catalog->isProductionTree($storage)) {
+            throw new PuntualRequestException(
+                'medio_no_solicitable',
+                'Ese medio no se puede pedir por este módulo.',
+            );
+        }
+
+        $asignados = $this->catalog->assignedBasePaths($user);
+
+        if ($asignados !== [] && $this->catalog->isAssignedTo($medio, $asignados)) {
+            throw new PuntualRequestException(
+                'medio_asignado',
+                'Ese medio ya lo tienes asignado. Para ese material usa Mis Archivos.',
+            );
+        }
+    }
 
     /**
      * Revoca una solicitud: sus enlaces dejan de servir el material.
@@ -573,8 +629,12 @@ class PuntualRequestService
         $desde = $this->normalizeTime($desde);
         $hasta = $this->normalizeTime($hasta);
 
-        $inicio = Carbon::createFromFormat('H:i:s', $desde);
-        $fin = Carbon::createFromFormat('H:i:s', $hasta);
+        try {
+            $inicio = Carbon::createFromFormat('H:i:s', $desde);
+            $fin = Carbon::createFromFormat('H:i:s', $hasta);
+        } catch (\Throwable $e) {
+            throw new PuntualRequestException('rango_invalido', 'El rango horario no es válido.');
+        }
 
         if (! $inicio || ! $fin) {
             throw new PuntualRequestException('rango_invalido', 'El rango horario no es válido.');
@@ -599,11 +659,21 @@ class PuntualRequestService
     {
         $time = trim($time);
 
-        if (preg_match('/^(\d{1,2}):(\d{2})(?::(\d{2}))?/', $time, $m)) {
-            return sprintf('%02d:%02d:%02d', (int) $m[1], (int) $m[2], (int) ($m[3] ?? 0));
+        // Hora de 00 a 23: Carbon normaliza `24:00` a la medianoche del
+        // día siguiente y `25:00` revienta la columna `time` de PostgreSQL.
+        if (preg_match('/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/', $time, $m)) {
+            $hora = (int) $m[1];
+            $minuto = (int) $m[2];
+            $segundo = (int) ($m[3] ?? 0);
+
+            if ($hora > 23 || $minuto > 59 || $segundo > 59) {
+                throw new PuntualRequestException('rango_invalido', 'El rango horario no es válido.');
+            }
+
+            return sprintf('%02d:%02d:%02d', $hora, $minuto, $segundo);
         }
 
-        return $time;
+        throw new PuntualRequestException('rango_invalido', 'El rango horario no es válido.');
     }
 
     /**

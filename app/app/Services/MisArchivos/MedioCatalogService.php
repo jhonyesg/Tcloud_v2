@@ -71,6 +71,12 @@ class MedioCatalogService
         'mp3', 'm4a', 'aac', 'wav', 'flac', 'ogg', 'oga', 'opus', 'wma', 'amr',
     ];
 
+    /** Ruta del árbol de producción cacheada en la instancia (null = no configurado). */
+    private ?string $productionRoot = null;
+
+    /** ¿La raíz del árbol de producción ya se consultó? */
+    private bool $productionRootResolved = false;
+
     public function __construct(private readonly MountGuard $mountGuard) {}
 
     // ------------------------------------------------------------------
@@ -85,6 +91,12 @@ class MedioCatalogService
      * (`30 Television Bk`) tiene carpetas de canal y no días, así que no
      * entra; la prensa y las aplicaciones tampoco. Y evita por completo
      * agregar `mime_type` sobre 1,2 M filas de `files` (medido: 18,9 s).
+     *
+     * EXCLUYE el árbol de producción del backup (`Disco_D/backup`): es un
+     * maestro DISTINTO del que se sirve el módulo (otra bitrate, otra
+     * grilla, 13 días de retención y montaje NFS `hard`), y el design lo
+     * descarta explícitamente como fuente. `35 Red Mas BK` (storage 131)
+     * cuelga de ese árbol y no puede ser un medio.
      *
      * @return Collection<int,StorageProvider>
      */
@@ -103,6 +115,10 @@ class MedioCatalogService
                     return false;
                 }
 
+                if ($this->isProductionTree($storage)) {
+                    return false;
+                }
+
                 if ($this->mountGuard->isNetworkMountDown($base)) {
                     return false;
                 }
@@ -110,6 +126,63 @@ class MedioCatalogService
                 return $this->hasDayFolders($base);
             })
             ->values();
+    }
+
+    /**
+     * ¿Este storage vive dentro del árbol de producción del backup?
+     *
+     * La raíz del árbol es el storage declarado en
+     * `config('backups.root_storage_id')` (`30 Television Bk`, base_path
+     * `Tcloud/Disco_D/backup`). Todo storage cuya ruta cuelgue de ahí es
+     * material de producción: otro maestro, otra cadencia y otra ventana de
+     * retención. Este módulo sirve el árbol de ORIGEN.
+     */
+    public function isProductionTree(StorageProvider $storage): bool
+    {
+        $rootPath = $this->productionRootPath();
+        $base = rtrim((string) $storage->base_path, '/');
+
+        if ($rootPath === null || $base === '') {
+            return false;
+        }
+
+        return $base === $rootPath || str_starts_with($base . '/', $rootPath . '/');
+    }
+
+    /**
+     * Ruta base del árbol de producción del backup, o null si no está
+     * configurado.
+     */
+    private function productionRootPath(): ?string
+    {
+        if ($this->productionRootResolved) {
+            return $this->productionRoot;
+        }
+
+        // 1) La raíz declarada por configuración (`BACKUP_ROOT_STORAGE_ID`).
+        $rootId = config('backups.root_storage_id');
+        $root = $rootId === null ? null : StorageProvider::find((int) $rootId);
+
+        // 2) Si no está declarada, se deriva de los datos: la raíz del
+        //    árbol de producción es el storage al que apuntan los
+        //    `backup_storage_id` de los canales mapeados.
+        if ($root === null) {
+            $derived = StorageProvider::query()
+                ->select('backup_storage_id')
+                ->whereNotNull('backup_storage_id')
+                ->groupBy('backup_storage_id')
+                ->orderByDesc(\Illuminate\Support\Facades\DB::raw('COUNT(*)'))
+                ->value('backup_storage_id');
+
+            $root = $derived === null ? null : StorageProvider::find((int) $derived);
+        }
+
+        $this->productionRoot = $root === null
+            ? null
+            : (rtrim((string) $root->base_path, '/') ?: null);
+        $this->productionRootResolved = true;
+
+        return $this->productionRoot;
     }
 
     /**
@@ -185,6 +258,13 @@ class MedioCatalogService
 
         return $medios
             ->reject(fn (Medio $medio) => $this->isAssignedTo($medio, $assigned))
+            // El árbol de producción no es fuente de este módulo: ni
+            // siquiera debe aparecer en el catálogo del cliente.
+            ->reject(function (Medio $medio) {
+                $storage = $medio->storage;
+
+                return $storage !== null && $this->isProductionTree($storage);
+            })
             ->values();
     }
 
@@ -417,6 +497,24 @@ class MedioCatalogService
     ): Medio {
         $subpath = trim($subpath, '/');
         $proposed = $this->proposeName($subpath);
+
+        if ($this->isProductionTree($storage)) {
+            throw new \InvalidArgumentException(
+                'Un medio no puede declararse sobre el árbol de producción del backup.'
+            );
+        }
+
+        if ($storage->is_personal) {
+            throw new \InvalidArgumentException(
+                'Un medio no puede declararse sobre un storage personal.'
+            );
+        }
+
+        if (! $storage->enabled) {
+            throw new \InvalidArgumentException(
+                'Un medio no puede declararse sobre un storage deshabilitado.'
+            );
+        }
 
         $medio = Medio::query()
             ->where('storage_id', $storage->id)

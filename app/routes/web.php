@@ -149,11 +149,11 @@ Route::middleware('auth')->group(function () {
     // El cliente pide una franja horaria o el dia completo de un medio que NO
     // tiene asignado y recibe enlaces publicos con vigencia.
     Route::get('/solicitud-puntual', [App\Http\Controllers\SolicitudPuntualController::class, 'index'])->name('solicitud-puntual.index');
-    Route::get('/solicitud-puntual/catalogo', [App\Http\Controllers\SolicitudPuntualController::class, 'catalogo']);
-    Route::post('/solicitud-puntual/estimate', [App\Http\Controllers\SolicitudPuntualController::class, 'estimate']);
-    Route::post('/solicitud-puntual', [App\Http\Controllers\SolicitudPuntualController::class, 'store']);
-    Route::get('/solicitud-puntual/historial', [App\Http\Controllers\SolicitudPuntualController::class, 'historial']);
-    Route::delete('/solicitud-puntual/{solicitud}', [App\Http\Controllers\SolicitudPuntualController::class, 'destroy'])->whereNumber('solicitud');
+    Route::get('/solicitud-puntual/catalogo', [App\Http\Controllers\SolicitudPuntualController::class, 'catalogo'])->middleware('throttle:60,1');
+    Route::post('/solicitud-puntual/estimate', [App\Http\Controllers\SolicitudPuntualController::class, 'estimate'])->middleware('throttle:30,1');
+    Route::post('/solicitud-puntual', [App\Http\Controllers\SolicitudPuntualController::class, 'store'])->middleware('throttle:20,1');
+    Route::get('/solicitud-puntual/historial', [App\Http\Controllers\SolicitudPuntualController::class, 'historial'])->middleware('throttle:60,1');
+    Route::delete('/solicitud-puntual/{solicitud}', [App\Http\Controllers\SolicitudPuntualController::class, 'destroy'])->whereNumber('solicitud')->middleware('throttle:30,1');
 
     Route::resource('files', App\Http\Controllers\FileController::class)->only(['index', 'store', 'show', 'update', 'destroy']);
 

@@ -43,3 +43,4 @@ El cliente no tiene vía para pedir material de un medio que **no** tiene asigna
 - **Vistas**: `resources/views/solicitud-puntual/index.blade.php` y `resources/views/admin/medios.blade.php`; sidebar en `layouts/app.blade.php`; `config/puntual.php`.
 - **Harness nuevo**: `tests/harness_solicitud_puntual.php`; se extienden `harness_route_contract.php` y `harness_shares_module.php`.
 - **Riesgo alto**: el cliente accede por enlace público a material de medios que no tiene asignados → exige verificador independiente antes de cerrar.
+- **Cierra un hueco preexistente**: `MediaPreviewController::preview()` servía `/media/{id}/preview` sin comprobar permiso. El módulo se apoyaba en que el material no se sirve fuera de sus enlaces, así que se cierra con el mismo permiso que usa `FileController::preview()`.

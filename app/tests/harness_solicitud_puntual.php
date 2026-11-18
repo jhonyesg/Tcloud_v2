@@ -151,6 +151,71 @@ try {
     }
 
     // ------------------------------------------------------------------
+    h_section('seguridad: lo que el módulo NO puede filtrar ni aceptar');
+
+    // El árbol de producción del backup es un maestro DISTINTO del que
+    // sirve el módulo: no puede estar en el catálogo ni ser pedible.
+    $catalogo = $catalog->availableFor($usuario);
+    $enProduccion = $catalogo->filter(fn (Medio $m) => $m->storage !== null && $catalog->isProductionTree($m->storage));
+
+    h_check($enProduccion->isEmpty(), 'el árbol de producción no aparece en el catálogo del cliente');
+
+    $medioProducto = $catalogo->first();
+
+    if ($medioProducto !== null) {
+        // La ficha de cobertura no puede filtrar el identificador interno
+        // del archivo ni su ruta física: son el oráculo que convierte un id
+        // adivinable en la ruta confirmada de material no asignado.
+        $estimate = app(PuntualRequestService::class)->estimate($usuario, $medioProducto, '14/11/2026', '12:00', '13:00');
+
+        $filtrado = ! isset($estimate['cobertura']['completos'][0]['file_id'])
+            && ! isset($estimate['cobertura']['completos'][0]['path']);
+
+        h_check($filtrado, 'la ficha de cobertura NO devuelve file_id ni path');
+
+        $completos = $estimate['cobertura']['completos'] ?? [];
+
+        if ($completos === []) {
+            h_ok('el medio elegido no tiene material en esa fecha (caso no aplicable)');
+        } else {
+            h_check(
+                isset($completos[0]['name']) && isset($completos[0]['size']),
+                'la ficha de cobertura SÍ devuelve el nombre y el tamaño (los que usa la interfaz)',
+            );
+        }
+    }
+
+    // La previsualización es de solo lectura: no puede materializar el
+    // catálogo (escribir filas en `files`).
+    $antes = DB::table('files')->where('storage_provider_id', 6)->count();
+
+    if ($medioProducto !== null) {
+        app(PuntualRequestService::class)->estimate($usuario, $medioProducto, '14/11/2026', '12:00', '13:00');
+    }
+
+    $despues = DB::table('files')->where('storage_provider_id', 6)->count();
+
+    h_check($antes === $despues, 'la previsualización no escribe filas en `files`');
+
+    // Un horario malformado no puede reventar el request: responde 422 con
+    // un código estable, no un 500 opaco.
+    foreach (['abc', '-1:00', '25:00', '24:00'] as $malo) {
+        $codigo = null;
+
+        try {
+            app(PuntualRequestService::class)->estimate($usuario, $medioProducto ?? new Medio(), '14/11/2026', $malo, '13:00');
+        } catch (\App\Exceptions\PuntualRequestException $e) {
+            $codigo = $e->errorCode;
+        }
+
+        h_check(
+            $codigo === 'rango_invalido',
+            "el horario \"{$malo}\" se rechaza con rango_invalido",
+            "codigo = " . ($codigo ?? 'null'),
+        );
+    }
+
+    // ------------------------------------------------------------------
     h_section('cobertura: paso derivado y cobertura del rango');
 
     // Un medio real con material indexado: el canal de TV de Caracol.
