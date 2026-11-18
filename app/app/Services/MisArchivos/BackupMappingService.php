@@ -404,8 +404,17 @@ class BackupMappingService
     }
 
     /**
-     * Candidatos a storage de ORIGEN: locales, con ruta base, fuera del árbol de backup y
-     * NO personales.
+     * Segmentos de ruta que NUNCA son candidatos a origen.
+     *
+     * `Prensa`: los diarios y revistas son material impreso, no emisión. El árbol de
+     * producción (backup de TV) no tiene contraparte para ellos, así que en este
+     * módulo solo serían ruido: nunca se van a poder mapear.
+     */
+    private const EXCLUDED_PATH_SEGMENTS = ['Prensa'];
+
+    /**
+     * Candidatos a storage de ORIGEN: locales, con ruta base, fuera del árbol de backup,
+     * NO personales y NO de prensa.
      *
      * Los personales (el home de cada usuario: `/home/www/Usuarios_tcloud/<user>`) no tienen
      * contraparte en el árbol de producción: no son material de emisión y no se pueden
@@ -428,9 +437,72 @@ class BackupMappingService
             ->filter(function (StorageProvider $storage) use ($rootBase) {
                 $base = rtrim((string) $storage->base_path, '/');
 
-                return $rootBase === '' || ! $this->isPathWithinBase($rootBase, $base);
+                if ($rootBase !== '' && $this->isPathWithinBase($rootBase, $base)) {
+                    return false;
+                }
+
+                foreach (self::EXCLUDED_PATH_SEGMENTS as $segment) {
+                    if ($this->hasPathSegment($base, $segment)) {
+                        return false;
+                    }
+                }
+
+                return true;
             })
             ->values();
+    }
+
+    /**
+     * ¿Este storage es un CONTENEDOR de disco?
+     *
+     * Su `base_path` es la raíz de los discos o una carpeta de primer nivel de un disco
+     * (`Disco_E/RD4`, `Disco_H/Emisoras`, `Disco_C/Prensa`...). Son los storages que
+     * LISTAN el disco: su contenido son las emisoras, no material de un canal. Se
+     * listan aparte en la pantalla para poder revisarlos, porque nunca son candidatos
+     * a origen de un backup (no son un canal).
+     *
+     * Carpetas que NO son de disco (`Aplicaciones/...`) no cuentan.
+     */
+    public function isDiskContainer(StorageProvider $storage): bool
+    {
+        $base = rtrim((string) $storage->base_path, '/');
+        if ($base === '') {
+            return false;
+        }
+
+        $prefix = rtrim((string) config('filesystems.cloud_root'), '/');
+        if ($prefix === '' || ! str_starts_with($base . '/', $prefix . '/')) {
+            return false;
+        }
+
+        $relative = trim(substr($base, strlen($prefix)), '/');
+        $segments = $relative === '' ? [] : explode('/', $relative);
+
+        // La raiz de discos ("00 Discos") lista todos los discos.
+        if ($segments === []) {
+            return true;
+        }
+
+        // A partir de ahi, solo el disco y sus carpetas de primer nivel.
+        if (! preg_match('/^Disco_/i', $segments[0])) {
+            return false;
+        }
+
+        return count($segments) <= 2;
+    }
+
+    /**
+     * ¿La ruta contiene ese segmento como componente completo?
+     */
+    private function hasPathSegment(string $path, string $segment): bool
+    {
+        foreach (explode('/', trim($path, '/')) as $part) {
+            if (strcasecmp($part, $segment) === 0) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

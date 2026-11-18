@@ -127,6 +127,23 @@ solicitar → enlace) y declaración de los 7 vínculos pendientes con el operad
   Corrección: `@endsection` antes de `@push('scripts')`, más dos aserciones que comparan
   POSICIONES (`<main` < contenido < `</body>`, y panel lateral antes del contenido). El test
   negativo confirma que sin `@endsection` fallan las dos.
+- **L14** — 2026-11-18 — Petición del operador: "la prensa no tiene backup, entonces mejor
+  quitarlo de ese módulo, ya que no aportan" + "después de los que están mapeados, [ver] los que
+  listan el disco para poderlos revisar".
+  - **Prensa fuera del módulo**: `candidateSources()` excluye el segmento de ruta `Prensa`
+    (`EXCLUDED_PATH_SEGMENTS`). Los diarios y revistas son material impreso: el árbol de
+    producción no tiene contraparte, así que en este módulo solo serían ruido. El listado pasó
+    de 157 a **146** filas.
+  - **Renombrados**: los 11 storages de prensa lose el número de "baja" (que en la prensa no
+    aplica): `200_Diarios`→`Diarios`, `201 Tiempo`→`Tiempo`, `202 Espectador`→`Espectador`,
+    `203 Opinion`→`Opinion`, `204 Pais`→`Pais`, `205 Nacion`→`Nacion`,
+    `206 Portafolio`→`Portafolio`, `207 QHB Manizales`→`QHB Manizales`, `208 Revistas`→`Revistas`,
+    `209 Publimetros`→`Publimetros`, `210 Agencia de Viajes`→`Agencia de Viajes`. Snapshot:
+    `storage_providers_prensa_pre_20261118_122619`.
+  - **Los que listan el disco**: `isDiskContainer()` (raíz de discos o carpeta de primer nivel
+    de un disco; `Aplicaciones/...` NO cuenta). En la pantalla van después de los 28 mapeados,
+    con etiqueta "Lista el disco" y filtro propio. Composición final del listado:
+    28 mapeados → 5 contenedores → 113 sin mapear.
 - **L13** — 2026-11-18 — Petición del operador: "que los encabezados se les dé click y organice"
   y, para los storages cuya ruta base no existe, "matchee si se encuentran esos medios en otros
   discos y se actualice, así queda como disponible". Implementado en dos partes:

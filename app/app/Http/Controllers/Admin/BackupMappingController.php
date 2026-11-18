@@ -86,16 +86,29 @@ class BackupMappingController extends Controller
                 'suggestion' => $suggestions[(int) $source->id] ?? null,
                 'reason' => $broken[(int) $source->id] ?? null,
                 'path_state' => $this->mappings->pathState($source),
+                'is_container' => $this->mappings->isDiskContainer($source),
             ];
         }
 
         // Orden de revisión: primero lo que YA está declarado (para revisarlo),
-        // después los vínculos inválidos (que también tienen carpeta asignada y
-        // hay que corregir), y al final lo que falta por asignar.
+        // después los CONTENEDORES de disco (los que listan el disco: su contenido
+        // son emisoras, no un canal, y no son candidatos a backup), luego los
+        // vínculos inválidos (que también tienen carpeta asignada y hay que
+        // corregir), y al final lo que falta por asignar.
         usort($rows, function (array $a, array $b) {
             $order = ['mapped' => 0, 'broken' => 1, 'unmapped' => 2];
+            $rank = function (array $row) use ($order) {
+                if (($row['state'] ?? '') === 'mapped') {
+                    return 0;
+                }
+                if (! empty($row['is_container'])) {
+                    return 1;
+                }
 
-            return [$order[$a['state']], $a['name']] <=> [$order[$b['state']], $b['name']];
+                return 2 + ($order[$row['state']] ?? 2);
+            };
+
+            return [$rank($a), $a['name']] <=> [$rank($b), $b['name']];
         });
 
         return view('admin.backups', [

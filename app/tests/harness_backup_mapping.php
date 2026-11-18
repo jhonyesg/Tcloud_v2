@@ -260,6 +260,49 @@ try {
     );
 
     // ------------------------------------------------------------------
+    h_section('la prensa no es candidata (no tiene contraparte de producción)');
+    mkdir($tmpRoot . '/Disco_Z/Prensa/El_Pais', 0755, true);
+    $prensa = StorageProvider::create([
+        'name' => $tag . ' prensa',
+        'type' => 'local',
+        'kind' => 'local',
+        'base_path' => $tmpRoot . '/Disco_Z/Prensa/El_Pais',
+        'enabled' => true,
+        'is_accessible' => true,
+    ]);
+    $prensaId = (int) $prensa->id;
+
+    $candidatos = $service->candidateSources(null)->pluck('id')->all();
+    h_check(! in_array($prensaId, $candidatos, true), 'un storage de prensa no aparece como candidato a origen');
+
+    // ------------------------------------------------------------------
+    h_section('contenedores de disco (los que listan el disco)');
+    config(['filesystems.cloud_root' => $tmpRoot]);
+    mkdir($tmpRoot . '/Disco_Z/Emisoras/Canal_Uno', 0755, true);
+
+    $contenedor = StorageProvider::create([
+        'name' => $tag . ' contenedor',
+        'type' => 'local',
+        'kind' => 'local',
+        'base_path' => $tmpRoot . '/Disco_Z/Emisoras',
+        'enabled' => true,
+        'is_accessible' => true,
+    ]);
+    $canal = StorageProvider::create([
+        'name' => $tag . ' canal',
+        'type' => 'local',
+        'kind' => 'local',
+        'base_path' => $tmpRoot . '/Disco_Z/Emisoras/Canal_Uno',
+        'enabled' => true,
+        'is_accessible' => true,
+    ]);
+
+    h_check($service->isDiskContainer(StorageProvider::find($contenedor->id)), 'una carpeta de primer nivel del disco ES un contenedor');
+    h_check(! $service->isDiskContainer(StorageProvider::find($canal->id)), 'un canal dentro del disco NO es un contenedor');
+
+    config(['filesystems.cloud_root' => '/www/wwwroot/data.mediaserver.com.co/Tcloud']);
+
+    // ------------------------------------------------------------------
     h_section('estado de la ruta base del storage');
     h_check($service->pathState(StorageProvider::find($sourceId)) === 'ok', 'una ruta base existente reporta ok');
     h_check($service->pathState(StorageProvider::find($backupId)) === 'ok', 'el árbol de backup reporta ok');
@@ -506,7 +549,7 @@ try {
             // la sesión de prueba puede no haberse creado
         }
     }
-    DB::table('storage_providers')->whereIn('id', array_filter([$sourceId, $backupId, $otherSourceId, $nonLocalId, $deadId ?? null, $personalId ?? null]))->delete();
+    DB::table('storage_providers')->whereIn('id', array_filter([$sourceId, $backupId, $otherSourceId, $nonLocalId, $deadId ?? null, $personalId ?? null, $prensaId ?? null, $contenedorId ?? null, $canalId ?? null]))->delete();
     DB::table('storage_providers')->where('name', 'like', $tag . '%')->delete();
     @exec('rm -rf ' . escapeshellarg($tmpRoot));
     h_ok('fixtures eliminados');

@@ -2452,6 +2452,29 @@ borra ambas al terminar.
 `git revert` del commit. Sin migración: el módulo no cambia el esquema, solo
 escribe las dos columnas que ya existían.
 
+### Qué NO aparece en el módulo: personales y prensa
+
+| Excluido | Por qué |
+|---|---|
+| **Personales** (`Personal - Multiarchivo`, …) | son el home de cada usuario (`/home/www/Usuarios_tcloud/<user>`): no son material de emisión ni tienen contraparte en el árbol de producción |
+| **Prensa** (`/Disco_C/Prensa/…`) | material impreso (diarios y revistas), no emisión: el árbol de producción no tiene contraparte para ellos |
+
+Ambas exclusiones viven en `BackupMappingService::candidateSources()`
+(`is_personal = false` + el segmento de ruta `Prensa` en
+`EXCLUDED_PATH_SEGMENTS`). El listado del módulo pasó de 169 a **146** filas.
+
+### Los que "listan el disco"
+
+`BackupMappingService::isDiskContainer()` marca los storages cuya `base_path` es
+la raíz de los discos o una carpeta de PRIMER NIVEL de un disco
+(`Disco_E/RD4`, `Disco_H/Emisoras`, `Disco_H/RD6`, `Disco_E/backup`). Su
+contenido son las emisoras, no el material de un canal: nunca son candidatos
+a origen de un backup.
+
+En la pantalla van **después de los ya mapeados** (orden de revisión:
+primero lo declarado → luego los contenedores → luego lo que falta), con
+una etiqueta "Lista el disco" y un filtro "Solo los que listan el disco".
+
 ### Encabezados ordenables y reparación de rutas
 
 **Encabezados**: las cabeceras de la tabla son botones. Un click ordena por esa

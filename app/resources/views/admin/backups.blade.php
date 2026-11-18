@@ -112,11 +112,17 @@
                 <input type="checkbox" x-model="onlyUnmapped" class="rounded border-slate-300">
                 Solo sin mapear
             </label>
+            <label class="flex items-center gap-2 text-sm text-slate-600 cursor-pointer">
+                <input type="checkbox" x-model="onlyContainers" class="rounded border-slate-300">
+                Solo los que listan el disco
+            </label>
             <div class="flex items-center gap-2 text-xs">
                 <span class="px-2 py-1 rounded-lg bg-emerald-50 text-emerald-700 font-medium"
                       x-text="mappedCount + ' mapeados'"></span>
                 <span x-show="brokenCount > 0" class="px-2 py-1 rounded-lg bg-red-50 text-red-700 font-medium"
                       x-text="brokenCount + ' inválidos'"></span>
+                <span class="px-2 py-1 rounded-lg bg-indigo-50 text-indigo-700 font-medium"
+                      x-text="containerCount + ' listan el disco'"></span>
                 <span class="px-2 py-1 rounded-lg bg-slate-100 text-slate-500 font-medium"
                       x-text="unmappedCount + ' sin mapear'"></span>
             </div>
@@ -160,6 +166,9 @@
                             <td class="px-4 py-3">
                                 <p class="text-sm font-medium text-slate-800" x-text="row.name"></p>
                                 <p class="text-xs text-slate-400 truncate max-w-sm" x-text="row.base_path"></p>
+                                <p x-show="row.is_container" class="mt-1 inline-flex items-center gap-1 px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 text-[11px] font-medium">
+                                    <i class="fas fa-layer-group text-[10px]"></i>Lista el disco: su contenido son emisoras, no un canal
+                                </p>
                                 <p x-show="row.path_state === 'missing'" class="mt-0.5 text-[11px] text-red-600">
                                     <i class="fas fa-triangle-exclamation mr-0.5"></i>La ruta base no existe en disco
                                 </p>
@@ -359,6 +368,7 @@ function backupAdmin() {
 
         search: '',
         onlyUnmapped: false,
+        onlyContainers: false,
         sortKey: '',
         sortDir: 'asc',
         showRepair: false,
@@ -406,6 +416,10 @@ function backupAdmin() {
 
         get unmappedCount() {
             return this.rows.filter(r => r.state === 'unmapped').length;
+        },
+
+        get containerCount() {
+            return this.rows.filter(r => r.is_container).length;
         },
 
         get brokenSources() {
@@ -522,6 +536,7 @@ function backupAdmin() {
             const q = this.search.trim().toLowerCase();
             return this.rows.filter(r => {
                 if (this.onlyUnmapped && r.state !== 'unmapped') return false;
+                if (this.onlyContainers && !r.is_container) return false;
                 if (!q) return true;
                 return r.name.toLowerCase().includes(q)
                     || (r.base_path || '').toLowerCase().includes(q)
