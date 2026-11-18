@@ -75,17 +75,18 @@ class PuntualRequestService
         $date = $this->parseDate($fecha);
         $rango = $this->parseRange($desde, $hasta);
 
-        // La previsualización es de SOLO LECTURA: no materializa el
-        // catálogo. Si el día todavía no está indexado, se dice
-        // explícitamente (el material existe en disco pero el índice va
-        // detrás); la materialización ocurre al confirmar, que es un acto
-        // deliberado del usuario.
+        // La previsualización NO materializa el catálogo por su cuenta: si el
+        // día no está indexado se dice explícitamente. La materialización
+        // ocurre al confirmar (ver `create()`), que es un acto deliberado.
         $cobertura = $this->resolver->coverage($medio, $date, $rango['desde'], $rango['hasta'], false);
 
         if ($cobertura['estado'] === 'unavailable' && $this->resolver->dayExistsOnDisk($medio, $date)) {
+            $enDisco = $this->resolver->countDayFilesOnDisk($medio, $date);
+
             $cobertura['estado'] = 'material_no_indexado';
-            $cobertura['mensajes'][] = 'El material existe en disco pero todavía no está indexado. '
-                . 'Se indexará al confirmar la solicitud.';
+            $cobertura['archivos'] = $enDisco;
+            $cobertura['mensajes'][] = 'El día tiene grabaciones en disco, pero el índice todavía no las '
+                . 'incluyó. Al confirmar la solicitud se indexan y se generan los enlaces.';
         }
 
         $dia = $this->daySummary($medio, $date);

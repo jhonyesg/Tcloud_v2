@@ -610,6 +610,88 @@ class MedioCatalogService
     }
 
     /**
+     * Región por defecto de un medio que no la trae de su ruta.
+     *
+     * Tres casos reales del sistema, deducibles de la ruta física del
+     * storage:
+     *
+     *  1. Emisora de la capital: su storage vive bajo `Radios/Bogota`
+     *     (`01 Radio FM Bogota`, y los sub-canales de `01 Emisoras 01` como
+     *     CANDELA, LA X, LOS 40). La carpeta Bogotá ES la sectorización.
+     *  2. Canal de TV nacional: su storage es un canal suelto de
+     *     `television` (`01 Caracol Tv`, `02 RCN Tv`). Son señales de
+     *     cobertura nacional, no de un departamento.
+     *  3. Canal suelto dentro de un contenedor regional
+     *     (`RD1/Antioquia/CamaraFm`): la región es el segmento anterior.
+     *
+     * Los CONTENEDORES (`folder_layout = grouped_by_subfolder`) quedan
+     * fuera: un contenedor de regionales no es "de Colombia".
+     */
+    public function regionPorDefecto(StorageProvider $storage, string $subpath = ''): ?string
+    {
+        $base = (string) $storage->base_path;
+
+        if ($base === '') {
+            return null;
+        }
+
+        // 1) Emisora de Bogotá.
+        if (preg_match('#/Radios/Bogota(/|$)#i', $base) === 1) {
+            return 'Bogotá';
+        }
+
+        // 1b) Canal suelto dentro de un contenedor regional.
+        if (trim($subpath, '/') === ''
+            && preg_match('#/(RD\d+|Emisoras)/([^/]+)/[^/]+$#i', rtrim($base, '/'), $m) === 1) {
+            return $this->nombreRegion($m[2]);
+        }
+
+        // 2) Canal de TV nacional.
+        $esContenedor = $storage->folder_layout === 'grouped_by_subfolder';
+
+        if (trim($subpath, '/') === ''
+            && ! $esContenedor
+            && preg_match('#/television/[^/]+$#i', rtrim($base, '/')) === 1
+            && preg_match('#/(RD\d+|Emisoras|Radios)(/|$)#i', $base) !== 1) {
+            return 'Colombia';
+        }
+
+        return null;
+    }
+
+    /**
+     * Nombre legible de una región a partir del nombre de la carpeta.
+     *
+     * `Valle_Cauca` -> "Valle del Cauca".
+     */
+    private function nombreRegion(string $carpeta): string
+    {
+        $region = $this->humanize($carpeta);
+        $clave = $this->normalizarParaComparar($region);
+
+        $conocidas = [
+            'vallecauca' => 'Valle del Cauca',
+            'nortedesantander' => 'Norte de Santander',
+            'norsantander' => 'Norte de Santander',
+            'santamarta' => 'Santa Marta',
+            'bogota' => 'Bogotá',
+            'narino' => 'Nariño',
+            'choco' => 'Chocó',
+            'caqueta' => 'Caquetá',
+            'guajira' => 'La Guajira',
+            'laguajira' => 'La Guajira',
+            'boyaca' => 'Boyacá',
+            'cordoba' => 'Córdoba',
+        ];
+
+        if (isset($conocidas[$clave])) {
+            return $conocidas[$clave];
+        }
+
+        return $this->titulo($region);
+    }
+
+    /**
      * Normaliza para comparar nombres de carpeta con prefijos de archivo:
      * sin acentos, sin números de orden, sin separadores.
      */

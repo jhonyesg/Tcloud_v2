@@ -490,6 +490,37 @@ class PuntualResolver
     }
 
     /**
+     * Cuántos archivos de grabación tiene el día en DISCO.
+     *
+     * Se usa en la previsualización cuando el catálogo todavía no indexó el
+     * día: así el operador ve una cifra real en vez de cero.
+     */
+    public function countDayFilesOnDisk(Medio $medio, Carbon $date): int
+    {
+        $base = rtrim((string) $medio->storage?->base_path, '/');
+
+        if ($base === '') {
+            return 0;
+        }
+
+        $path = $base . '/' . $this->relativePrefix($medio) . $date->format('dmY');
+
+        if ($this->mountGuard->isNetworkMountDown($path) || ! is_dir($path)) {
+            return 0;
+        }
+
+        $entries = @scandir($path);
+
+        if ($entries === false) {
+            return 0;
+        }
+
+        return count(array_filter($entries, fn (string $entry) => $entry !== '.' && $entry !== '..'
+            && is_file($path . '/' . $entry)
+            && preg_match('/_[0-9]{8}_[0-9]{6}\.[a-z0-9]+$/i', $entry) === 1));
+    }
+
+    /**
      * ¿Existe la carpeta del día en DISCO?
      *
      * Distingue "no hay material" de "el material existe pero el catálogo
@@ -532,7 +563,7 @@ class PuntualResolver
     {
         $prefix = $this->relativePrefix($medio);
 
-        $days = File::query()
+        $dias = File::query()
             ->where('storage_provider_id', $medio->storage_id)
             ->where('is_folder', true)
             ->get()
@@ -544,7 +575,111 @@ class PuntualResolver
             ->values()
             ->all();
 
-        return $days;
+        // La carpeta-día puede estar catalogada sin sus archivos: el índice
+        // va un nivel por detrás del sync. Un día así NO tiene material para
+        // pedir, y ofrecerlo llevaría al operador a un "sin material"
+        // inexplicable. Se contrasta contra el disco, que es la verdad.
+        $verificados = array_values(array_filter($dias, function (string $day) use ($medio) {
+            $base = rtrim((string) $medio->storage?->base_path, '/');
+
+            if ($base === '') {
+                return false;
+            }
+
+            $physical = $base . '/' . $this->relativePrefix($medio) . $day;
+
+            if ($this->mountGuard->isNetworkMountDown($physical)) {
+                return false;
+            }
+
+            return is_dir($physical) && $this->tieneArchivos($physical);
+        }));
+
+        if ($verificados !== []) {
+            return $verificados;
+        }
+
+        // El catálogo no tiene NINGÚN día vigente (va muy por detrás del
+        // disco: medido el 2026-11-18, CANDELA tenía días catalogados hasta
+        // mayo y grabaciones hasta octubre). En vez de devolver una lista
+        // vacía que deja al operador sin poder pedir nada, se lee el DISCO:
+        // es barato (un nivel de carpetas) y es la única fuente que dice la
+        // verdad sobre qué días existen.
+        return $this->diasDesdeDisco($medio);
+    }
+
+    /**
+     * Días con material leídos DIRECTAMENTE del disco.
+     *
+     * Solo se usa como respaldo cuando el catálogo está tan atrasado que no
+     * tiene ningún día vigente. Devuelve `DDMMYYYY`, del más reciente al más
+     * antiguo.
+     *
+     * @return list<string>
+     */
+    private function diasDesdeDisco(Medio $medio): array
+    {
+        $base = rtrim((string) $medio->storage?->base_path, '/');
+
+        if ($base === '') {
+            return [];
+        }
+
+        $carpeta = $base . '/' . $this->relativePrefix($medio);
+        $carpeta = rtrim($carpeta, '/');
+
+        if (! is_dir($carpeta) || $this->mountGuard->isNetworkMountDown($carpeta)) {
+            return [];
+        }
+
+        $dias = [];
+
+        $entries = @scandir($carpeta);
+
+        if ($entries === false) {
+            return [];
+        }
+
+        foreach ($entries as $hijo) {
+            if ($hijo === '.' || $hijo === '..' || ! preg_match('/^\d{8}$/', $hijo)) {
+                continue;
+            }
+
+            if (is_dir($carpeta . '/' . $hijo) && $this->tieneArchivos($carpeta . '/' . $hijo)) {
+                $dias[] = $hijo;
+            }
+        }
+
+        usort($dias, fn (string $a, string $b) => $this->sortableDay($b) <=> $this->sortableDay($a));
+
+        return $dias;
+    }
+
+    /**
+     * ¿La carpeta tiene al menos un archivo de grabación dentro?
+     *
+     * Se busca la forma `<nombre>_DDMMYYYY_HHMMSS.<ext>`: el `scandir` de
+     * una carpeta vacía o con basura no debe contar como material.
+     */
+    private function tieneArchivos(string $path): bool
+    {
+        $entries = @scandir($path);
+
+        if ($entries === false) {
+            return false;
+        }
+
+        foreach ($entries as $entry) {
+            if ($entry === '.' || $entry === '..') {
+                continue;
+            }
+
+            if (is_file($path . '/' . $entry) && preg_match('/_[0-9]{8}_[0-9]{6}\.[a-z0-9]+$/i', $entry)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
