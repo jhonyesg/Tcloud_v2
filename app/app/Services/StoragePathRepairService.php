@@ -39,7 +39,7 @@ class StoragePathRepairService
     /** Raíz donde viven los discos (se deriva de la config, no se hardcodea). */
     private function cloudRoot(): string
     {
-        return rtrim((string) config('filesystems.cloud_root', '/www/wwwroot/data.mediaserver.com.co/Tcloud'), '/');
+        return rtrim((string) config('filesystems.cloud_root'), '/');
     }
 
     /**
