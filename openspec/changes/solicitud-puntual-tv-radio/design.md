@@ -80,11 +80,17 @@ Una constante global (15 min, el valor de TV) produce una cobertura falsa en los
 
 **Validación de cobertura.** Se listan los slots nominales whose slot cae en `[r0, r1)`. Los slots sin archivo se reportan como faltantes. La cobertura es `completa` si no falta ninguno, `parcial` si falta alguno. El intervalo de captura real de cada archivo se toma de `file_modified_at` (fin de escritura), ya corregido de la deriva de zona horaria por `App\Support\FilesystemTime`.
 
-### D4 — La disponibilidad se comprueba en disco, nunca solo en el catálogo
+### D4 — La disponibilidad se comprueba en disco, y el catálogo se materializa si le falta
 
 **Decisión.** Tras resolver por catálogo, cada archivo candidato del rango se verifica contra el sistema de archivos antes de incluirlo. Si el catálogo tiene la fila pero el archivo no existe, se trata como no disponible.
 
+Y al revés: si el catálogo **no** tiene el material que sí está en disco, se materializa por la vía canónica (`StorageSyncService::syncFolder`), nunca con SQL inline. El sync es de un nivel por llamada, así que la cadena es: carpeta del medio → carpeta-día → archivos del día.
+
 **Por qué.** El catálogo arrastra registros fantasma (el restore de agosto 2026 dejó filas de carpetas que ya no existen) y el árbol rota: una franja de hace 40 días puede tener filas pero no material.
+
+La otra mitad del problema: el catálogo puede estar **atrasado** respecto del disco. Medido el 2026-11-18, el storage 49 (`02 Emisoras 01 Reg`) tiene indexados los días hasta septiembre para `Antioquia/BLU`, mientras el disco tiene los 48 días hasta el 18/11. Sin materializar, el módulo serviría "no disponible" para un canal cuyo material está en el disco. La materialización es idempotente y el cron `storage:sync --all` (cada 15 min) sigue siendo el responsable del mantenimiento.
+
+**Costo.** La primera resolución de un día no indexado paga el sync (~1,5 s medido); las siguientes son de catálogo (~80 ms).
 
 ### D5 — La entrega por franja genera N enlaces; la entrega por día genera 1
 

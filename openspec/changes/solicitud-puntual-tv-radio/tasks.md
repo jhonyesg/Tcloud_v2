@@ -21,12 +21,12 @@
 
 ## 3. Resolución de material y cobertura
 
-- [ ] 3.1 `App\Services\MisArchivos\PuntualResolver::filesForDay(Medio $medio, Carbon $date): Collection` — localiza por `storage_provider_id` + `name ~ '_{DDMMYYYY}_[0-9]{6}\.'` + sufijo de `path` (`%/{subpath}/{DDMMYYYY}/` o `%/{DDMMYYYY}/` cuando `subpath` es vacío). Debe tolerar los dos formatos de `path` coexistentes.
-- [ ] 3.2 `PuntualResolver::deriveStep(Collection $files): int` — paso en segundos = mediana de los deltas entre inicios de captura consecutivos. Devolver `null` si no hay al menos dos archivos.
-- [ ] 3.3 `PuntualResolver::gridSlots(Collection $files, int $step): Collection` — slot nominal de cada archivo (`floor(inicio/step)*step`) con su inicio real y su fin real (`file_modified_at` vía `App\Support\FilesystemTime`).
-- [ ] 3.4 `PuntualResolver::coverage(Medio $medio, Carbon $date, string $desde, string $hasta): array` — slots nominales dentro del rango, archivos resueltos, slots faltantes, `cobertura` `completa|parcial`, `archivos`, `bytes`. Verificar en disco la existencia de cada archivo candidato (fuera de catálogo = no disponible).
-- [ ] 3.5 `PuntualResolver::dayFolder(Medio $medio, Carbon $date): ?File` — devuelve la fila de carpeta del día; si no existe, materializarla por la vía canónica `StorageSyncService::syncFolder()` (nunca SQL inline).
-- [ ] 3.6 Verificar el rendimiento de `filesForDay()` contra el storage más grande que participa como medio y registrar la medición en el harness.
+- [x] 3.1 `App\Services\MisArchivos\PuntualResolver::filesForDay(Medio $medio, Carbon $date): Collection` — localiza por `storage_provider_id` + `name ~ '_{DDMMYYYY}_[0-9]{6}\.'` + sufijo de `path` (`%/{subpath}/{DDMMYYYY}/` o `%/{DDMMYYYY}/` cuando `subpath` es vacío). Debe tolerar los dos formatos de `path` coexistentes.
+- [x] 3.2 `PuntualResolver::deriveStep(Collection $files): int` — paso en segundos = mediana de los deltas entre inicios de captura consecutivos. Devolver `null` si no hay al menos dos archivos.
+- [x] 3.3 `PuntualResolver::gridSlots(Collection $files, int $step): Collection` — slot nominal de cada archivo (`floor(inicio/step)*step`) con su inicio real y su fin real (`file_modified_at` vía `App\Support\FilesystemTime`).
+- [x] 3.4 `PuntualResolver::coverage(Medio $medio, Carbon $date, string $desde, string $hasta): array` — slots nominales dentro del rango, archivos resueltos, slots faltantes, `cobertura` `completa|parcial`, `archivos`, `bytes`. Verificar en disco la existencia de cada archivo candidato (fuera de catálogo = no disponible).
+- [x] 3.5 `PuntualResolver::dayFolder(Medio $medio, Carbon $date): ?File` — devuelve la fila de carpeta del día; si no existe, materializarla por la vía canónica `StorageSyncService::syncFolder()` (nunca SQL inline).
+- [x] 3.6 Verificar el rendimiento de `filesForDay()` contra el storage más grande que participa como medio y registrar la medición en el harness. La cobertura calcula la **cobertura mínima de intervalos** (voraz) en vez de una rejilla rígida, porque la cadencia real es irregular (15 min en TV, 15 min con saltos de hasta 17 min en radio nacional, ~14 min irregular en radio regional). El catálogo puede estar atrasado respecto del disco: si el día no está indexado, se materializa con la vía canónica (`StorageSyncService::syncFolder`, un nivel por llamada: carpeta del medio → carpeta-día → archivos).
 
 ## 4. Solicitud, enlaces y vigencia
 
