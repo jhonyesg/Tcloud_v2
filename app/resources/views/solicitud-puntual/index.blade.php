@@ -1471,7 +1471,7 @@ function startPuntualTour() {
                          'En lugar de pedir un dia entero, puedes pedir una <strong>franja horaria exacta</strong> ' +
                          '(por ejemplo, Caracol del 14 de noviembre de 12:00 a 13:00). ' +
                          'Al final recibes enlaces públicos de solo lectura que vencen en 3 días.<br><br>' +
-                         'Te muestro el paso a paso en 10 pasos. Puedes salir cuando quieras con <kbd>Esc</kbd>.',
+                         'Te muestro el paso a paso completo. Puedes salir cuando quieras con <kbd>Esc</kbd>.',
                 icon: 'fa-satellite-dish',
                 color: '#6366f1',
                 selector: null,
@@ -1539,6 +1539,27 @@ function startPuntualTour() {
                 position: 'top',
             },
             {
+                title: 'Paso 6b: los días con grabaciones',
+                content: 'Debajo de la fecha verás <strong>atajos a los últimos días que sí tienen material</strong>. ' +
+                         'Es más rápido que abrir el calendario, y te evita caer en un día sin grabaciones. ' +
+                         'El aviso de arriba te dice si el día elegido tiene material o no.',
+                icon: 'fa-calendar-days',
+                color: '#8b5cf6',
+                selector: '[data-puntual-tour="dias"]',
+                position: 'bottom',
+            },
+            {
+                title: 'Paso 6c: el check del día completo',
+                content: 'Si necesitas todo el día, <strong>no escribas el horario</strong>: marca este check. ' +
+                         'Las horas se deshabilitan solas y el pedido se hace sobre la <strong>carpeta del día</strong>, ' +
+                         'que se entrega con <strong>un solo enlace</strong>. Es la opción más económica cuando ' +
+                         'vas a pedir más de dos horas.',
+                icon: 'fa-square-check',
+                color: '#8b5cf6',
+                selector: '[data-puntual-tour="dia-completo"]',
+                position: 'top',
+            },
+            {
                 title: 'Paso 7: consulta la cobertura',
                 content: 'Antes de pedir, el sistema comprueba el material <strong>real</strong> (no el catálogo) ' +
                          'y te muestra cuántos archivos hay, cuánto pesan y si falta algun tramo. ' +
@@ -1581,11 +1602,35 @@ function startPuntualTour() {
                 position: 'top',
             },
             {
+                title: 'Para el administrador: Control por cliente',
+                content: 'Si eres administrador tienes una pestaña extra. Reúne las solicitudes de ' +
+                         '<strong>todos los clientes</strong> con sus totales (solicitudes, minutos, archivos, GB) ' +
+                         'y el detalle de cada pedido con los <strong>enlaces</strong> que se entregaron. ' +
+                         'Sirve para el control manual del cobro.',
+                icon: 'fa-chart-column',
+                color: '#0ea5e9',
+                selector: '[data-puntual-tour="control"]',
+                position: 'bottom',
+            },
+            {
+                title: 'Control: revocar o eliminar',
+                content: 'En cada fila del control tienes dos acciones, y <strong>no son lo mismo</strong>:' +
+                         '<ul class="text-left list-disc pl-4 space-y-1 mt-2">' +
+                         '<li><strong>Revocar</strong>: corta el acceso (borra los enlaces) pero <strong>conserva el registro</strong>. Es lo que se usa cuando el cliente ya no debe poder descargar.</li>' +
+                         '<li><strong>Eliminar</strong> (papelera): borra el registro para limpiar la vista. Es irreversible y deja una copia en el log de la plataforma.</li>' +
+                         '</ul>Además puedes <strong>exportar todo a TXT</strong> para imprimir o archivar.',
+                icon: 'fa-screwdriver-wrench',
+                color: '#0ea5e9',
+                selector: '[data-puntual-tour="control-panel"]',
+                position: 'top',
+            },
+            {
                 title: 'Listo: tres cosas que conviene recordar',
                 content: '<ul class="text-left list-disc pl-4 space-y-1">' +
                          '<li>Los enlaces <strong>vencen a los 3 días</strong>. Si necesitas el material por más tiempo, descárgalo.</li>' +
                          '<li>La <strong>revocación la hace el administrador</strong>, no el cliente: es parte del control contable.</li>' +
                          '<li>Si un día aparece <strong>sin material</strong>, revisa el aviso de la fecha: casi siempre es que ese día no se grabó.</li>' +
+                         '<li>Si dudas entre franja y día, la nota del catálogo te recuerda la regla: <strong>más de dos horas, pide el día</strong>.</li>' +
                          '</ul><br>Puedes volver a abrir esta guía cuando quieras con el botón <strong>Guía</strong>.',
                 icon: 'fa-circle-check',
                 color: '#10b981',
