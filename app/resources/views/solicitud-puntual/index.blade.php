@@ -466,7 +466,9 @@
                                         : (estimateData?.cobertura?.estado === 'material_no_indexado' ? 'Material disponible, pendiente de indexar' : 'Sin material para ese horario'))"></span>
                         </div>
                         <span class="text-xs text-slate-500"
-                              x-text="estimateData ? estimateData.cobertura.archivos + ' archivos · ' + humanBytes(estimateData.cobertura.bytes) : ''"></span>
+                              x-text="estimateData ? (form.diaCompleto
+                                    ? estimateData.cobertura.archivos + ' archivos del día · ' + humanBytes(estimateData.cobertura.bytes)
+                                    : estimateData.cobertura.archivos + ' archivos · ' + humanBytes(estimateData.cobertura.bytes)) : ''"></span>
                     </div>
 
                     <div x-show="estimateData?.cobertura?.mensajes?.length" class="px-4 py-2 bg-amber-50 border-t border-amber-200">
@@ -487,7 +489,7 @@
                 </div>
 
                 <!-- Recomendación: el día completo sale más barato -->
-                <div x-show="estimateData && estimateData.comparacion.recomendado === 'dia'"
+                <div x-show="estimateData && estimateData.comparacion.recomendado === 'dia' && !form.diaCompleto"
                      class="rounded-xl border border-brand-200 bg-brand-50 p-4" data-puntual-tour="recomendacion">
                     <div class="flex items-start gap-3">
                         <i class="fas fa-lightbulb text-brand-600 mt-0.5"></i>
