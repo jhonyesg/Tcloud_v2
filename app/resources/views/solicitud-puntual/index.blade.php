@@ -59,11 +59,19 @@
         <!-- Barra superior: búsqueda, filtro y paginación -->
         <div class="bg-white rounded-xl shadow-sm border border-slate-200">
             <div class="px-4 py-3 flex items-center justify-between flex-wrap gap-3 border-b border-slate-100">
-                <div class="flex items-center gap-2 flex-wrap">
+                <div class="min-w-0">
                     <h2 class="text-sm font-semibold text-slate-500 uppercase tracking-wider">
                         Medios que puedes solicitar
                         <span class="ml-1 font-normal normal-case text-slate-400" x-text="'(' + medios.length + ')'"></span>
                     </h2>
+                    {{-- Nota de cobro: la informacion que necesita el cliente
+                         para decidir entre franja y dia antes de pedir. --}}
+                    <p class="text-xs text-slate-500 mt-1 leading-relaxed max-w-2xl">
+                        Las solicitudes puntuales se cobran a la tarifa normal.
+                        Si necesitas <strong class="text-slate-600">más de dos horas</strong>,
+                        te sale más económico pedir el
+                        <strong class="text-slate-600">día completo</strong>.
+                    </p>
                 </div>
                 <div class="flex items-center gap-2 flex-wrap">
                     <div class="relative">
