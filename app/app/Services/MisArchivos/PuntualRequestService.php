@@ -73,7 +73,13 @@ class PuntualRequestService
         string $modo = SolicitudPuntual::MODO_FRANJA,
     ): array {
         $date = $this->parseDate($fecha);
-        $rango = $this->parseRange($desde, $hasta);
+
+        // En modo DÍA la ficha es la del día completo: el rango recibido se
+        // ignora, igual que en el alta. Asi el check "dia completo" del modal
+        // muestra la cobertura real de la carpeta y no la de una franja.
+        $rango = $modo === SolicitudPuntual::MODO_DIA
+            ? ['desde' => '00:00:00', 'hasta' => '23:59:59', 'minutos' => 24 * 60]
+            : $this->parseRange($desde, $hasta);
 
         // La previsualización NO materializa el catálogo por su cuenta: si el
         // día no está indexado se dice explícitamente. La materialización
@@ -81,12 +87,22 @@ class PuntualRequestService
         $cobertura = $this->resolver->coverage($medio, $date, $rango['desde'], $rango['hasta'], false);
 
         if ($cobertura['estado'] === 'unavailable' && $this->resolver->dayExistsOnDisk($medio, $date)) {
-            $enDisco = $this->resolver->countDayFilesOnDisk($medio, $date);
-
+            // El catálogo todavía no indexó el día, pero el material ESTÁ en
+            // disco. Se reporta como "pendiente de indexar" y se DESCARTA el
+            // mensaje de "no hay material": decir las dos cosas a la vez era
+            // contradictorio.
             $cobertura['estado'] = 'material_no_indexado';
-            $cobertura['archivos'] = $enDisco;
+            $cobertura['mensajes'] = [];
             $cobertura['mensajes'][] = 'El día tiene grabaciones en disco, pero el índice todavía no las '
                 . 'incluyó. Al confirmar la solicitud se indexan y se generan los enlaces.';
+
+            // `archivos` es lo que la interfaz usa para contar los enlaces
+            // que se van a generar. Un día sin indexar NO se puede prometer
+            // por slot: se deja en 0 y se informa aparte cuántos hay en disco
+            // (`archivos_en_disco`), para no anunciar 120 enlaces de una
+            // franja de una hora.
+            $cobertura['archivos'] = 0;
+            $cobertura['archivos_en_disco'] = $this->resolver->countDayFilesOnDisk($medio, $date);
         }
 
         $dia = $this->daySummary($medio, $date);

@@ -415,15 +415,31 @@
                     </div>
                     <div>
                         <label class="block text-xs font-semibold text-slate-500 mb-1">Desde</label>
-                        <input type="time" x-model="form.desde" step="1"
-                               class="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+                        <input type="time" x-model="form.desde" step="1" :disabled="form.diaCompleto"
+                               class="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 disabled:bg-slate-50 disabled:text-slate-400">
                     </div>
                     <div>
                         <label class="block text-xs font-semibold text-slate-500 mb-1">Hasta</label>
-                        <input type="time" x-model="form.hasta" step="1"
-                               class="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+                        <input type="time" x-model="form.hasta" step="1" :disabled="form.diaCompleto"
+                               class="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 disabled:bg-slate-50 disabled:text-slate-400">
                     </div>
                 </div>
+
+                {{-- Dia completo: evita escribir el horario. Marca el rango a
+                     00:00-23:59 y la solicitud se crea en modo `dia`, que
+                     entrega UN enlace sobre la carpeta del dia. --}}
+                <label class="flex items-start gap-3 rounded-xl border border-slate-200 bg-slate-50/60 px-4 py-3 cursor-pointer hover:bg-slate-50 transition-colors"
+                       data-puntual-tour="dia-completo">
+                    <input type="checkbox" x-model="form.diaCompleto" @change="onDiaCompleto()"
+                           class="mt-0.5 h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500">
+                    <span class="min-w-0">
+                        <span class="block text-sm font-semibold text-slate-700">Quiero el día completo</span>
+                        <span class="block text-xs text-slate-500 mt-0.5">
+                            Se entrega <strong>un solo enlace</strong> con la carpeta del día.
+                            Si necesitas más de dos horas, es la opción más económica.
+                        </span>
+                    </span>
+                </label>
 
                 <div class="flex items-center gap-2">
                     <button @click="estimate()" :disabled="estimating"
@@ -506,7 +522,12 @@
 
             <div class="px-6 py-4 border-t border-slate-200 flex items-center justify-between">
                 <span class="text-xs text-slate-400" x-show="estimateData?.cobertura?.estado !== 'unavailable'">
-                    Se generarán <span x-text="estimateData?.comparacion?.franja?.links"></span> enlace(s) con 3 días de vigencia.
+                    <template x-if="form.diaCompleto">
+                        <span>Se generará <strong>1 enlace</strong> sobre la carpeta del día, con 3 días de vigencia.</span>
+                    </template>
+                    <template x-if="!form.diaCompleto">
+                        <span>Se generarán <span x-text="estimateData?.comparacion?.franja?.links"></span> enlace(s) con 3 días de vigencia.</span>
+                    </template>
                 </span>
                 <div class="flex items-center gap-2">
                     <button @click="closeRequest()"
@@ -1091,7 +1112,7 @@ function puntualManager() {
             this.selected = medio;
             this.estimateData = null;
             this.diasMedio = [];
-            this.form = { fecha: this.defaultDate(), desde: '12:00', hasta: '13:00', motivo: '' };
+            this.form = { fecha: this.defaultDate(), desde: '12:00', hasta: '13:00', motivo: '', diaCompleto: false };
             this.modalOpen = true;
 
             // Los días con material los conoce el backend. Se piden para
@@ -1157,6 +1178,33 @@ function puntualManager() {
             this.estimateData = null;
         },
 
+        /**
+         * Marca/desmarca el dia completo.
+         *
+         * Con el check puesto, el rango es el dia entero y los campos de hora
+         * quedan deshabilitados: no tiene sentido pedir "dia completo de
+         * 12:00 a 13:00". Al consultar, la solicitud se crea en modo `dia`.
+         */
+        onDiaCompleto() {
+            if (this.form.diaCompleto) {
+                this.form.desde = '00:00';
+                this.form.hasta = '23:59';
+            } else {
+                this.form.desde = '12:00';
+                this.form.hasta = '13:00';
+            }
+
+            this.estimateData = null;
+            this.estimate();
+        },
+
+        /**
+         * Modo que se manda al backend segun el check.
+         */
+        modoActual() {
+            return this.form.diaCompleto ? 'dia' : 'franja';
+        },
+
         usarDia(dia) {
             this.form.fecha = this.diaAIso(dia);
             this.estimate();
@@ -1201,6 +1249,7 @@ function puntualManager() {
                         fecha: this.toDisplayDate(this.form.fecha),
                         desde: this.form.desde,
                         hasta: this.form.hasta,
+                        modo: this.modoActual(),
                     }),
                 });
 
@@ -1246,6 +1295,7 @@ function puntualManager() {
                         desde: this.form.desde,
                         hasta: this.form.hasta,
                         motivo: this.form.motivo,
+                        modo: this.modoActual(),
                     }),
                 });
 
