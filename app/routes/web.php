@@ -42,6 +42,13 @@ Route::middleware(['auth', 'admin'])->prefix('admin')->group(function () {
     // Configuracion de ADMINISTRACION: el cliente nunca ve estas rutas.
     Route::get('/backups', [App\Http\Controllers\Admin\BackupMappingController::class, 'index'])->name('admin.backups.index');
     Route::get('/backups/folders', [App\Http\Controllers\Admin\BackupMappingController::class, 'folders'])->name('admin.backups.folders');
+    // Control administrativo de las solicitudes de backup POR CLIENTE.
+    // El cliente NO ve estas rutas: su historial (`/files/backup-requests`)
+    // esta filtrado por `user_id`. Se declaran antes que las rutas con
+    // `{storage}` para que ningun comodin se coma el prefijo `control`.
+    Route::get('/backups/control', [App\Http\Controllers\Admin\BackupRequestController::class, 'control'])->middleware('throttle:60,1')->name('admin.backups.control');
+    Route::get('/backups/control/clientes', [App\Http\Controllers\Admin\BackupRequestController::class, 'clientes'])->middleware('throttle:60,1')->name('admin.backups.control-clientes');
+    Route::get('/backups/control/exportar', [App\Http\Controllers\Admin\BackupRequestController::class, 'exportar'])->middleware('throttle:20,1')->name('admin.backups.control-exportar');
     Route::post('/backups', [App\Http\Controllers\Admin\BackupMappingController::class, 'store'])->name('admin.backups.store');
     Route::get('/backups/{storage}/repair-candidates', [App\Http\Controllers\Admin\BackupMappingController::class, 'repairCandidates'])->whereNumber('storage')->name('admin.backups.repair-candidates');
     Route::get('/backups/repair-scan', [App\Http\Controllers\Admin\BackupMappingController::class, 'repairScan'])->name('admin.backups.repair-scan');
