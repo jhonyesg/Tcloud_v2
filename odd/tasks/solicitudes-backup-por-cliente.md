@@ -65,7 +65,8 @@
   evidence: paso nuevo "Quién pidió backup" con el ancla `data-backup-tour="requests"`; `php tests/harness_backup_mapping.php` → la guía tiene las 9 anclas (incluida `requests`) — risk: none
 - [x] **T7 — CSS compilado (Tailwind build + guardarraíl)** (S1, S3) — inline — done — commit: c7b9d78b —
   evidence: `npm run build` → `public/css/app.css` 87.8 KB; `php tests/tailwind_coverage_check.php` → "✓ Todas las clases estáticas del markup existen en el CSS compilado" (29884 clases) — risk: none
-- [ ] **T8 — Documentar en `AGENTS.md` + este documento** (S1, S5) — inline — in_progress — commit: - — evidence: - — risk: none
+- [x] **T8 — Documentar en `AGENTS.md` + este documento** (S1, S5) — inline — done — commit: d2923e0a —
+  evidence: sección "Control de solicitudes de backup por cliente (change `solicitudes-backup-por-cliente`, 2026-11-20)" en `AGENTS.md` (endpoints, estado efectivo, solo lectura, verificación, rollback) + este documento — risk: none
 
 ## Acceptance Criteria
 
@@ -107,6 +108,9 @@ Verificación manual (admin):
 - Implementación completa en la branch `feat/solicitudes-backup-por-cliente` (base `edf8c1bb`): servicio, endpoint admin, sección en la pantalla, exportación TXT, harness, guía y CSS compilado.
 - Los cuatro supuestos de L5 quedaron implementados como estaban planteados (ubicación en `/admin/backups`, solo lectura, enlace vivo visible para el admin, exportación TXT incluida).
 - Pendiente: T8 (documentación). No se hizo push ni PR.
+- T8 cerrado: la documentación está en `AGENTS.md` (commit d2923e0a). Todas las tareas quedan `done`.
+- Tamaño de la entrega: 7 unidades de trabajo, 1638 líneas modificadas (sin contar el CSS compilado, que va en su propio commit). La unidad de T1 (731 líneas) quedó por encima del presupuesto de ~400: el servicio de reporte y la delegación del estado efectivo son un solo comportamiento y separarlos dejaba el modelo sin la regla que el servicio usa.
+- TDD desactivado (`odd/config.yaml` → `tdd.mode: off`): la verificación fue funcional (harnesses + HTTP real), sin ciclo RED→GREEN.
 
 ## Next Step
 
