@@ -2529,6 +2529,65 @@ ignora los discos con el montaje caído.
 cambiar `config/filesystems.php` hay que correr `php artisan config:cache`.
 
 
+## Control de solicitudes de backup por cliente (change `solicitudes-backup-por-cliente`, 2026-11-20)
+
+**Pantalla**: dentro de `/admin/backups` (Administración → Backup), la sección
+"Solicitudes de backup por cliente". Antes, `/admin/backups` solo declaraba
+vínculos y el único listado de solicitudes era
+`BackupRequestService::listFor(User $user)` → `GET /files/backup-requests`,
+filtrado por `user_id`: el administrador veía SU historial (vacío) y no sabía
+quién pedía qué.
+
+**Endpoints** (grupo `auth` + `admin`, con `throttle`):
+
+| Ruta | Método | Notas |
+|---|---|---|
+| `GET /admin/backups/control` | GET | reporte por cliente: `{totales, clientes[], canales[]}` |
+| `GET /admin/backups/control/clientes` | GET | clientes con solicitudes, para el selector |
+| `GET /admin/backups/control/exportar` | GET | el reporte en TXT (`text/plain`, adjunto) |
+
+Filtros: `desde`, `hasta` (sobre `created_at`), `estado`
+(`todas` | `vigentes` | `expiradas` | `revocadas` | `sin_material`) y
+`user_id`. Un estado fuera del vocabulario cae en `todas`.
+
+**El estado que se reporta es el EFECTIVO**, no el de la columna: vive en
+`BackupRequest::effectiveStatus()` (el modelo) y lo usan el historial del
+cliente y este reporte. Una fila `ready` con el enlace vencido se reporta
+`expired`; una `ready` sin share se reporta `unavailable`. El filtro por
+estado se aplica sobre la columna y la vigencia, así que una fila `ready` sin
+share aparece en `todas` y se reporta `unavailable` en el detalle.
+
+**El enlace solo se expone si la solicitud está viva** (`isLive()`): estado
+`ready`, `share_id` presente y vigencia no vencida. Un enlace muerto no se
+muestra: no hay token que exponer.
+
+**Es de SOLO LECTURA**: no crea, no revoca y no borra. La revocación sigue
+siendo del cliente ("Revocar la solicitud en Mis Archivos es la única forma de
+desactivar ese enlace"). `BackupRequestController` repite la guarda de admin
+DENTRO del controller, además del middleware: si alguien mueve la ruta a otro
+grupo, el reporte no queda expuesto por accidente.
+
+**La demanda por canal** (`canales[]`) agrupa por storage de origen: es lo que
+le dice al administrador qué canales se piden y, por tanto, cuáles merecen un
+backup declarado.
+
+**Verificación**:
+
+```bash
+cd app
+php tests/harness_backup_control_por_cliente.php   # 57 aserciones del control
+php tests/harness_backup_requests.php               # el módulo cliente sigue funcionando
+php tests/harness_backup_mapping.php                # el módulo admin sigue funcionando
+php tests/harness_route_contract.php                # ninguna ruta huérfana
+php tests/tailwind_coverage_check.php               # clases nuevas en el CSS compilado
+```
+
+**Rollback**: `git revert` de los commits del change. Sin migración: solo
+lee `backup_requests`, `users`, `storage_providers` y `shares`. El cambio de
+`BackupRequestService::effectiveStatus()` es una delegación al modelo (misma
+lógica), reversible con el mismo revert.
+
+
 ## Rendimiento del dashboard y CSS compilado (change `dashboard-perf-backup-guide`, 2026-11-18)
 
 **Veredicto de memoria: no hay fuga por request.** 6 renders consecutivos de
