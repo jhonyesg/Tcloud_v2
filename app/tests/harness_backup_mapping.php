@@ -414,7 +414,7 @@ try {
     // "Solicitar backup".
     h_check(str_contains($html, 'startBackupTour'), 'la página expone el botón de Guía', 'falta la Guía del módulo de backup');
     h_check(str_contains($html, 'interactive-tour.js'), 'la página carga el motor de tours');
-    foreach (['assign', 'listing', 'search', 'coverage-folders', 'coverage-mapped', 'coverage-sources', 'coverage-broken', 'orphans'] as $anchorName) {
+    foreach (['assign', 'listing', 'search', 'coverage-folders', 'coverage-mapped', 'coverage-sources', 'coverage-broken', 'orphans', 'requests'] as $anchorName) {
         h_check(
             str_contains($html, 'data-backup-tour="' . $anchorName . '"'),
             "la guía tiene el ancla data-backup-tour=\"{$anchorName}\"",

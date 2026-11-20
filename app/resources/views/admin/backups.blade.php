@@ -751,6 +751,19 @@ function startBackupTour() {
                 position: 'center',
             },
             {
+                title: 'Quién pidió backup',
+                content: 'Esta sección es el otro lado del módulo: <strong>quién pidió qué material</strong> de producción. ' +
+                         'Puedes filtrar por período, estado y cliente, y exportar el reporte en TXT. ' +
+                         'Es de <strong>solo lectura</strong>: el enlace vive 2 días y lo revoca el cliente desde Mis Archivos, ' +
+                         'aquí no se toca nada. Abajo, la <strong>demanda por canal</strong> dice qué storage de origen se está pidiendo: ' +
+                         'es la señal de qué canal todavía merece un backup declarado.',
+                icon: 'fa-users',
+                color: '#0891b2',
+                selector: function () { return anchor('requests'); },
+                position: 'bottom',
+                onShow: function () { scrollTo(anchor('requests')); },
+            },
+            {
                 title: 'Guía Completada',
                 content: 'Ya sabes cómo se conecta un canal con su carpeta de producción y por qué solo algunos canales ' +
                          'tienen la acción de backup: les falta declarar el vínculo. Repite esta guía con el botón morado.',
