@@ -48,6 +48,10 @@
   - Requirement: **Supuesto**: paridad con `GET /solicitud-puntual/control/exportar`; el usuario NO lo pidió explícitamente. Si no se confirma, T4 se marca `dropped`.
   - Acceptance: `GET /admin/backups/control/exportar` devuelve un `.txt` con el mismo contenido del reporte.
   - Check: harness: 200 + `Content-Type: text/plain; charset=UTF-8`.
+- **S11 — Las solicitudes son una PESTAÑA, no una tarjeta desplegable**
+  - Requirement: "Te paso referencia de cómo quería que quedara, ya que lo veo pero como una pestaña desplegable y no lo quería así, yo lo quería como sus ventanas, como la imagen de referencia." La referencia es el módulo de Solicitud Puntual (`/solicitud-puntual`), que tiene una barra de pestañas: "Medios (253) | Mis solicitudes (3) | Control por cliente".
+  - Acceptance: `/admin/backups` muestra una barra de pestañas con "Vínculos de backup" y "Solicitudes por cliente" (con su conteo). El reporte ocupa el panel de su pestaña, sin desplegable ni chevron. Los botones "Asignar carpeta" y "Escanear rutas rotas" solo existen en la pestaña de vínculos.
+  - Check: harness: la página trae `selectTab('links')`, `selectTab('requests')`, `x-show="tab === 'requests'"` y NO trae `toggleRequests()` ni `requestsOpen`. Verificación visual con captura del navegador.
 
 ## Tasks
 
@@ -67,6 +71,8 @@
   evidence: `npm run build` → `public/css/app.css` 87.8 KB; `php tests/tailwind_coverage_check.php` → "✓ Todas las clases estáticas del markup existen en el CSS compilado" (29884 clases) — risk: none
 - [x] **T8 — Documentar en `AGENTS.md` + este documento** (S1, S5) — inline — done — commit: d2923e0a —
   evidence: sección "Control de solicitudes de backup por cliente (change `solicitudes-backup-por-cliente`, 2026-11-20)" en `AGENTS.md` (endpoints, estado efectivo, solo lectura, verificación, rollback) + este documento — risk: none
+- [x] **T9 — Las solicitudes pasan de tarjeta desplegable a PESTAÑA** (S11) — inline — done — commit: 010222dc —
+  evidence: barra de pestañas "Vínculos de backup 140 | Solicitudes por cliente 27" (misma línea base que `/solicitud-puntual`); captura del navegador con la sesión de admin real: pestaña activa underlined, 27 solicitudes / 3 clientes / 4 vigentes / 20 expiradas / 3 revocadas / 0 sin material, detalle por cliente con el enlace "Ver" solo en las vigentes, 0 errores JS; `php tests/harness_backup_control_por_cliente.php` → 63 aserciones en verde (incluye las de la pestaña); `php tests/tailwind_coverage_check.php` → todas las clases en el CSS compilado — risk: none
 
 ## Acceptance Criteria
 
@@ -110,13 +116,15 @@ Verificación manual (admin):
 - Pendiente: T8 (documentación). No se hizo push ni PR.
 - T8 cerrado: la documentación está en `AGENTS.md` (commit d2923e0a). Todas las tareas quedan `done`.
 - Tamaño de la entrega: 7 unidades de trabajo, 1638 líneas modificadas (sin contar el CSS compilado, que va en su propio commit). La unidad de T1 (731 líneas) quedó por encima del presupuesto de ~400: el servicio de reporte y la delegación del estado efectivo son un solo comportamiento y separarlos dejaba el modelo sin la regla que el servicio usa.
-- TDD desactivado (`odd/config.yaml` → `tdd.mode: off`): la verificación fue funcional (harnesses + HTTP real), sin ciclo RED→GREEN.
+- TDD desactivado (`odd/config.yaml` → `tdd.mode: off`): la verificación fue funcional (harnesses + HTTP real + captura del navegador), sin ciclo RED→GREEN.
+- T9 (corrección de UX del usuario): el reporte de solicitudes dejó de ser una tarjeta desplegable y pasó a ser una PESTAÑA de la barra de pestañas de `/admin/backups`, igual que "Control por cliente" en `/solicitud-puntual`. Verificado con captura del navegador sobre el sitio real.
+- El docroot de `cloud.mediaserver.com.co` es este mismo repo (`app/public`), así que los cambios quedaron visibles en el sitio sin paso de deploy; las capturas se tomaron contra el sitio real con una sesión de admin temporal, ya eliminada (0 filas en `user_sessions`).
 
 ## Next Step
 
 ## Next Step
 
-Revisar en el navegador la sección "Solicitudes por cliente" de `/admin/backups` con la sesión de admin (27 solicitudes de 3 clientes) y decidir si se hace push de la branch.
+Revisado en el navegador contra el sitio real: la barra de pestañas y el reporte de solicitudes por cliente quedan como en la referencia. Falta decidir la entrega (push de la branch / PR) y, si el usuario quiere, aplicar el mismo patrón de pestañas al resto de la pantalla.
 
 ## Log
 
@@ -130,3 +138,5 @@ Revisar en el navegador la sección "Solicitudes por cliente" de `/admin/backups
 - **L8** — 2026-11-20 — Una sola fuente de verdad del estado: `BackupRequestService::effectiveStatus()` (privado) delegó en el nuevo `BackupRequest::effectiveStatus()` (público). La lógica es idéntica y `php tests/harness_backup_requests.php` sigue en verde ("OK: todas las aserciones pasan"). Con eso el historial del cliente y el reporte del admin cuentan lo mismo.
 - **L9** — 2026-11-20 — Verificaciones finales: `php tests/harness_backup_control_por_cliente.php` → exit 0 (57 aserciones); `php tests/harness_backup_requests.php` → OK; `php tests/harness_backup_mapping.php` → RESULTADO: OK; `php tests/harness_route_contract.php` → "OK: 320 rutas verificadas, 0 huerfanas"; `php tests/tailwind_coverage_check.php` → todas las clases en el CSS compilado. Sin filas residuales de fixtures en la BD.
 - **L10** — 2026-11-20 — Riesgo item 2 (T2): verificado de forma independiente en el harness — las tres rutas exigen `auth` + `admin` en el middleware y el controller repite la guarda (`Session::get('user_id')` + `User::isAdmin()`); un cliente recibe 403 en las tres y el reporte no expone datos de otros usuarios.
+- **L11** — 2026-11-20 — Corrección de UX del usuario (texto textual): "Te paso referencia de cómo quería que quedara, ya que lo veo pero como una pestaña desplegable y no lo quería así, yo lo quería como sus ventanas, como la imagen de referencia." La referencia es la barra de pestañas de `/solicitud-puntual` ("Medios | Mis solicitudes | Control por cliente"). Se rehízo la pantalla `/admin/backups` con pestañas (S11, T9): "Vínculos de backup" y "Solicitudes por cliente". El conteo de la pestaña sale de un `COUNT` en el servidor (`BackupRequest::count()`), no del reporte cargado.
+- **L12** — 2026-11-20 — Nota de entorno: `nginx` sirve `cloud.mediaserver.com.co` desde `Tcloud_v2/app/public`, o sea que este repo ES el docroot de producción. No hay route cache (`bootstrap/cache/` no tiene `routes.php`), así que las rutas nuevas quedaron activas sin `route:cache`. Los harnesses corren contra la misma base de datos de producción: por eso los fixtures usan tag y se limpian al terminar.
