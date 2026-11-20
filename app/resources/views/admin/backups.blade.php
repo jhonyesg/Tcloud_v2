@@ -112,6 +112,202 @@
         </div>
     </div>
 
+    <!-- Solicitudes de backup por cliente -->
+    <div data-backup-tour="requests" class="mb-6 bg-white rounded-xl shadow-sm border border-slate-200">
+        <button @click="toggleRequests()" class="w-full flex items-center justify-between px-5 py-4 text-left">
+            <div class="min-w-0">
+                <h2 class="text-sm font-semibold text-slate-800">Solicitudes de backup por cliente</h2>
+                <p class="text-xs text-slate-500 mt-0.5">
+                    Quién pidió qué material de producción. El enlace vive 2 días y lo revoca el cliente desde Mis Archivos.
+                </p>
+            </div>
+            <div class="flex items-center gap-3">
+                <span x-show="requests" x-cloak
+                      class="px-2 py-1 rounded-lg bg-slate-100 text-slate-600 text-xs font-medium"
+                      x-text="requests.totales.solicitudes + ' solicitudes · ' + requests.totales.clientes + ' clientes'"></span>
+                <i class="fas fa-chevron-down text-slate-400 transition-transform" :class="requestsOpen ? 'rotate-180' : ''"></i>
+            </div>
+        </button>
+
+        <div x-show="requestsOpen" x-cloak class="px-5 pb-5 border-t border-slate-100">
+            <div class="flex flex-wrap items-center gap-2 pt-4">
+                <input type="date" x-model="requestsFiltros.desde" @change="loadRequests()"
+                       class="px-3 py-2 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+                <span class="text-slate-400 text-xs">a</span>
+                <input type="date" x-model="requestsFiltros.hasta" @change="loadRequests()"
+                       class="px-3 py-2 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+                <select x-model="requestsFiltros.estado" @change="loadRequests()"
+                        class="px-3 py-2 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+                    <option value="todas">Todas</option>
+                    <option value="vigentes">Solo vigentes</option>
+                    <option value="expiradas">Solo expiradas</option>
+                    <option value="revocadas">Solo revocadas</option>
+                    <option value="sin_material">Sin material</option>
+                </select>
+                <select x-model="requestsFiltros.user_id" @change="loadRequests()"
+                        class="px-3 py-2 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+                    <option value="">Todos los clientes</option>
+                    <template x-for="c in requestsClientes" :key="c.id">
+                        <option :value="c.id" x-text="c.nombre + ' (' + c.username + ')'"></option>
+                    </template>
+                </select>
+                <button @click="loadRequests()"
+                        class="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-sm font-medium transition-colors">
+                    <i class="fas fa-rotate mr-1"></i>Actualizar
+                </button>
+                <button @click="exportarRequests()"
+                        class="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-xl text-sm font-medium transition-colors">
+                    <i class="fas fa-file-arrow-down mr-1"></i>Exportar TXT
+                </button>
+            </div>
+
+            <div x-show="requestsLoading" class="text-sm text-slate-400 py-8 text-center">
+                <i class="fas fa-spinner fa-spin mr-2"></i>Cargando solicitudes…
+            </div>
+
+            <div x-show="requestsError" x-cloak
+                 class="mt-3 px-4 py-3 rounded-xl bg-red-50 border border-red-200 text-red-700 text-sm">
+                <i class="fas fa-triangle-exclamation mr-1"></i><span x-text="requestsError"></span>
+            </div>
+
+            <template x-if="requests && !requestsLoading">
+                <div>
+                    <div class="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-3 my-4">
+                        <div class="bg-slate-50 rounded-xl border border-slate-200 p-4">
+                            <p class="text-2xl font-bold text-slate-800" x-text="requests.totales.solicitudes"></p>
+                            <p class="text-xs text-slate-500 mt-0.5">Solicitudes</p>
+                        </div>
+                        <div class="bg-slate-50 rounded-xl border border-slate-200 p-4">
+                            <p class="text-2xl font-bold text-slate-800" x-text="requests.totales.clientes"></p>
+                            <p class="text-xs text-slate-500 mt-0.5">Clientes</p>
+                        </div>
+                        <div class="bg-slate-50 rounded-xl border border-slate-200 p-4">
+                            <p class="text-2xl font-bold text-emerald-600" x-text="requests.totales.vigentes"></p>
+                            <p class="text-xs text-slate-500 mt-0.5">Vigentes</p>
+                        </div>
+                        <div class="bg-slate-50 rounded-xl border border-slate-200 p-4">
+                            <p class="text-2xl font-bold text-slate-600" x-text="requests.totales.expiradas"></p>
+                            <p class="text-xs text-slate-500 mt-0.5">Expiradas</p>
+                        </div>
+                        <div class="bg-slate-50 rounded-xl border border-slate-200 p-4">
+                            <p class="text-2xl font-bold text-red-600" x-text="requests.totales.revocadas"></p>
+                            <p class="text-xs text-slate-500 mt-0.5">Revocadas</p>
+                        </div>
+                        <div class="bg-slate-50 rounded-xl border border-slate-200 p-4">
+                            <p class="text-2xl font-bold text-slate-600" x-text="requests.totales.sin_material"></p>
+                            <p class="text-xs text-slate-500 mt-0.5">Sin material</p>
+                        </div>
+                    </div>
+
+                    <p x-show="requests.truncado" class="mb-3 text-xs text-amber-600">
+                        <i class="fas fa-triangle-exclamation mr-1"></i>El reporte se truncó: hay más solicitudes de las que se muestran.
+                    </p>
+
+                    <div class="space-y-4">
+                        <template x-for="c in requests.clientes" :key="c.user_id">
+                            <div class="border border-slate-200 rounded-xl overflow-hidden">
+                                <div class="px-4 py-3 bg-slate-50 border-b border-slate-100 flex items-start justify-between flex-wrap gap-2">
+                                    <div class="min-w-0">
+                                        <p class="font-semibold text-slate-800 text-sm">
+                                            <span x-text="c.nombre"></span>
+                                            <span class="text-slate-400 font-normal" x-text="'(' + c.username + ')'"></span>
+                                        </p>
+                                        <p class="text-xs text-slate-400" x-text="c.email"></p>
+                                    </div>
+                                    <div class="flex items-center gap-3 text-xs text-slate-600 flex-wrap">
+                                        <span><strong x-text="c.solicitudes"></strong> solicitudes</span>
+                                        <span class="text-slate-300">·</span>
+                                        <span class="text-emerald-700" x-text="c.vigentes + ' vigentes'"></span>
+                                        <span x-show="c.expiradas > 0" class="text-slate-500" x-text="'· ' + c.expiradas + ' expiradas'"></span>
+                                        <span x-show="c.revocadas > 0" class="text-red-600" x-text="'· ' + c.revocadas + ' revocadas'"></span>
+                                        <span x-show="c.sin_material > 0" class="text-slate-500" x-text="'· ' + c.sin_material + ' sin material'"></span>
+                                    </div>
+                                </div>
+                                <div class="overflow-x-auto">
+                                    <table class="w-full text-sm">
+                                        <thead class="bg-white text-xs uppercase tracking-wider text-slate-500">
+                                            <tr>
+                                                <th class="px-4 py-1.5 text-left font-semibold">Día</th>
+                                                <th class="px-4 py-1.5 text-left font-semibold">Canal</th>
+                                                <th class="px-4 py-1.5 text-left font-semibold">Estado</th>
+                                                <th class="px-4 py-1.5 text-left font-semibold">Enlace</th>
+                                                <th class="px-4 py-1.5 text-left font-semibold">Motivo</th>
+                                                <th class="px-4 py-1.5 text-right font-semibold">Pedida</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody class="divide-y divide-slate-100">
+                                            <template x-for="d in c.detalle" :key="d.id">
+                                                <tr>
+                                                    <td class="px-4 py-1.5 text-slate-700 whitespace-nowrap" x-text="d.fecha_legible"></td>
+                                                    <td class="px-4 py-1.5 text-slate-800" x-text="d.storage.nombre"></td>
+                                                    <td class="px-4 py-1.5">
+                                                        <span class="px-2 py-0.5 rounded-full text-xs font-semibold"
+                                                              :class="statusClass(d.status)"
+                                                              x-text="statusLabel(d.status)"></span>
+                                                    </td>
+                                                    <td class="px-4 py-1.5">
+                                                        <template x-if="d.link">
+                                                            <a :href="d.link.public_url" target="_blank" rel="noopener"
+                                                               class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-100 hover:bg-brand-50 text-slate-600 hover:text-brand-700 text-xs font-medium">
+                                                                <i class="fas fa-link text-[9px]"></i>Ver
+                                                            </a>
+                                                        </template>
+                                                        <span x-show="!d.link" class="text-xs text-slate-400">—</span>
+                                                    </td>
+                                                    <td class="px-4 py-1.5 text-slate-600 max-w-sm">
+                                                        <p class="truncate" :title="d.motivo" x-text="d.motivo"></p>
+                                                    </td>
+                                                    <td class="px-4 py-1.5 text-right text-slate-500 whitespace-nowrap"
+                                                        x-text="fechaLegible(d.created_at)"></td>
+                                                </tr>
+                                            </template>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </template>
+
+                        <div x-show="requests.clientes.length === 0" class="border border-slate-200 rounded-xl p-8 text-center">
+                            <i class="fas fa-inbox text-3xl text-slate-300 mb-3"></i>
+                            <p class="text-slate-500">No hay solicitudes en el período seleccionado.</p>
+                        </div>
+                    </div>
+
+                    <div x-show="requests.canales.length > 0" class="mt-6 border border-slate-200 rounded-xl overflow-hidden">
+                        <div class="px-4 py-3 bg-slate-50 border-b border-slate-100">
+                            <h3 class="text-sm font-semibold text-slate-800">Demanda por canal</h3>
+                            <p class="text-xs text-slate-500 mt-0.5">
+                                Qué storage de origen se está pidiendo: es lo que dice qué canal merece backup declarado.
+                            </p>
+                        </div>
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-sm">
+                                <thead class="bg-white text-xs uppercase tracking-wider text-slate-500">
+                                    <tr>
+                                        <th class="px-4 py-1.5 text-left font-semibold">Canal</th>
+                                        <th class="px-4 py-1.5 text-right font-semibold">Solicitudes</th>
+                                        <th class="px-4 py-1.5 text-right font-semibold">Clientes</th>
+                                        <th class="px-4 py-1.5 text-right font-semibold">Vigentes</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-slate-100">
+                                    <template x-for="c in requests.canales" :key="c.storage_id">
+                                        <tr>
+                                            <td class="px-4 py-1.5 text-slate-800" x-text="c.nombre"></td>
+                                            <td class="px-4 py-1.5 text-right text-slate-700" x-text="c.solicitudes"></td>
+                                            <td class="px-4 py-1.5 text-right text-slate-600" x-text="c.clientes"></td>
+                                            <td class="px-4 py-1.5 text-right text-emerald-700" x-text="c.vigentes"></td>
+                                        </tr>
+                                    </template>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </template>
+        </div>
+    </div>
+
     <!-- Listado de storages -->
     <div data-backup-tour="listing" class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
         <div class="px-5 py-4 border-b border-slate-100 flex flex-wrap items-center gap-3">
@@ -603,6 +799,14 @@ function backupAdmin() {
         error: '',
         form: { source_storage_id: '', backup_storage_id: '', backup_folder_name: '' },
 
+        // Control de solicitudes por cliente (change `solicitudes-backup-por-cliente`).
+        requests: null,
+        requestsLoading: false,
+        requestsError: '',
+        requestsOpen: false,
+        requestsClientes: [],
+        requestsFiltros: { desde: '', hasta: '', estado: 'todas', user_id: '' },
+
         init() {
             this.rootId = this.root ? this.root.id : '';
         },
@@ -816,6 +1020,110 @@ function backupAdmin() {
             } finally {
                 this.repairSaving = false;
             }
+        },
+
+        /**
+         * Abre el control de solicitudes por cliente. La primera apertura
+         * carga el reporte: la pantalla de Backup no lo pide de entrada para
+         * no pagar la consulta en cada visita del administrador.
+         */
+        toggleRequests() {
+            this.requestsOpen = !this.requestsOpen;
+
+            if (this.requestsOpen && !this.requests) {
+                this.loadRequests();
+            }
+        },
+
+        /**
+         * Reporte de solicitudes por cliente. Es de SOLO LECTURA: el
+         * administrador observa; la revocación sigue siendo del cliente.
+         */
+        async loadRequests() {
+            this.requestsLoading = true;
+            this.requestsError = '';
+
+            try {
+                if (this.requestsClientes.length === 0) {
+                    const rc = await apiFetch('/admin/backups/control/clientes', {
+                        method: 'GET',
+                        credentials: 'include',
+                        headers: { 'Accept': 'application/json' },
+                    });
+
+                    if (rc.ok) {
+                        const data = await rc.json();
+                        this.requestsClientes = data.clientes || [];
+                    }
+                }
+
+                const res = await apiFetch(`/admin/backups/control?${this.requestsParams()}`, {
+                    method: 'GET',
+                    credentials: 'include',
+                    headers: { 'Accept': 'application/json' },
+                });
+
+                if (!res.ok) {
+                    this.requestsError = 'No se pudo cargar el reporte de solicitudes.';
+                    return;
+                }
+
+                this.requests = await res.json();
+            } catch (e) {
+                this.requestsError = 'No se pudo cargar el reporte de solicitudes.';
+            } finally {
+                this.requestsLoading = false;
+            }
+        },
+
+        /**
+         * Descarga el reporte en texto plano con los filtros de la pantalla.
+         */
+        exportarRequests() {
+            window.location.href = `/admin/backups/control/exportar?${this.requestsParams()}`;
+        },
+
+        requestsParams() {
+            const params = new URLSearchParams();
+
+            if (this.requestsFiltros.desde) params.set('desde', this.requestsFiltros.desde);
+            if (this.requestsFiltros.hasta) params.set('hasta', this.requestsFiltros.hasta);
+            if (this.requestsFiltros.estado) params.set('estado', this.requestsFiltros.estado);
+            if (this.requestsFiltros.user_id) params.set('user_id', this.requestsFiltros.user_id);
+
+            return params.toString();
+        },
+
+        statusLabel(status) {
+            return {
+                ready: 'Vigente',
+                expired: 'Expirada',
+                revoked: 'Revocada',
+                unavailable: 'Sin material',
+            }[status] || status;
+        },
+
+        statusClass(status) {
+            return {
+                ready: 'bg-emerald-50 text-emerald-700',
+                expired: 'bg-slate-100 text-slate-600',
+                revoked: 'bg-red-50 text-red-700',
+                unavailable: 'bg-amber-50 text-amber-700',
+            }[status] || 'bg-slate-100 text-slate-600';
+        },
+
+        /**
+         * Fecha legible a partir del ISO del servidor. Se toma la parte de
+         * la fecha tal como la devuelve la API (hora de Bogotá), sin
+         * convertir de zona: convertirla al reloj del navegador corría el
+         * día en las solicitudes de la tarde.
+         */
+        fechaLegible(iso) {
+            if (!iso) return '—';
+
+            const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})/);
+
+            return m ? `${m[3]}/${m[2]}/${m[1]}` : String(iso).slice(0, 10);
         },
 
         filtered() {

@@ -51,9 +51,11 @@
 
 ## Tasks
 
-- [ ] **T1 — Servicio `BackupRequestReportService`** (S2, S3, S4, S8) — inline — pending — commit: - — evidence: - — risk: none
-- [ ] **T2 — Endpoint admin + rutas con `auth` + `admin`** (S5, S6, S7) — inline — pending — commit: - — evidence: - — risk: item 2 (expone datos de clientes y enlaces públicos; exige verificación independiente del guard de admin)
-- [ ] **T3 — Sección "Solicitudes por cliente" en `/admin/backups`** (S1, S2, S3, S8) — inline — pending — commit: - — evidence: - — risk: none
+- [x] **T1 — Servicio `BackupRequestReportService`** (S2, S3, S4, S8) — inline — done — commit: 862e1950 —
+  evidence: `php -r` contra `tcloudstorage` → totales `{solicitudes:27, clientes:3, vigentes:4, expiradas:20, revocadas:3, sin_material:0, canales:9}`; el estado efectivo pasa a vivir en `BackupRequest::effectiveStatus()` y `php tests/harness_backup_requests.php` → "OK: todas las aserciones pasan"
+- [x] **T2 — Endpoint admin + rutas con `auth` + `admin`** (S5, S6, S7) — inline — done — commit: b344b576 —
+  evidence: HTTP real con sesión de admin → `GET /admin/backups/control` 200 con `{solicitudes:27, clientes:3, vigentes:4, expiradas:20, revocadas:3, sin_material:0, canales:9}` y 9 canales; `GET /admin/backups/control/clientes` 200; `GET /admin/backups/control/exportar` 200 `text/plain; charset=UTF-8`. Con sesión de cliente: 403 en las TRES rutas. `php tests/harness_route_contract.php` → "OK: 320 rutas verificadas, 0 huerfanas" — risk: item 2 (expone datos de clientes y enlaces públicos; exige verificación independiente del guard de admin)
+- [ ] **T3 — Sección "Solicitudes por cliente" en `/admin/backups`** (S1, S2, S3, S8) — inline — in_progress — commit: - — evidence: - — risk: none
 - [ ] **T4 — Exportación TXT del reporte** (S10) — inline — pending — commit: - — evidence: - — risk: none
 - [ ] **T5 — Harness de regresión `harness_backup_control_por_cliente.php`** (S2, S3, S4, S6, S7) — inline — pending — commit: - — evidence: - — risk: none
 - [ ] **T6 — Extender la guía interactiva de `/admin/backups`** (S9) — inline — pending — commit: - — evidence: - — risk: none
