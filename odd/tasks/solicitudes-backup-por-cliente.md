@@ -124,7 +124,7 @@ Verificación manual (admin):
 
 ## Next Step
 
-Revisado en el navegador contra el sitio real: la barra de pestañas y el reporte de solicitudes por cliente quedan como en la referencia. Falta decidir la entrega (push de la branch / PR) y, si el usuario quiere, aplicar el mismo patrón de pestañas al resto de la pantalla.
+Push hecho: `feat/solicitudes-backup-por-cliente` está en GitHub (`origin/feat/solicitudes-backup-por-cliente` = `5fdb8607`, igual que el HEAD local), con tracking configurado. No se creó PR (el push fue lo pedido). Queda decidir si se abre PR contra `main` — ojo: la branch arrastra los commits heredados de `feat/dashboard-perf-backup-guide` (132 commits por delante de `origin/main`), así que un PR a `main` mostraría también ese trabajo.
 
 ## Log
 
@@ -140,3 +140,4 @@ Revisado en el navegador contra el sitio real: la barra de pestañas y el report
 - **L10** — 2026-11-20 — Riesgo item 2 (T2): verificado de forma independiente en el harness — las tres rutas exigen `auth` + `admin` en el middleware y el controller repite la guarda (`Session::get('user_id')` + `User::isAdmin()`); un cliente recibe 403 en las tres y el reporte no expone datos de otros usuarios.
 - **L11** — 2026-11-20 — Corrección de UX del usuario (texto textual): "Te paso referencia de cómo quería que quedara, ya que lo veo pero como una pestaña desplegable y no lo quería así, yo lo quería como sus ventanas, como la imagen de referencia." La referencia es la barra de pestañas de `/solicitud-puntual` ("Medios | Mis solicitudes | Control por cliente"). Se rehízo la pantalla `/admin/backups` con pestañas (S11, T9): "Vínculos de backup" y "Solicitudes por cliente". El conteo de la pestaña sale de un `COUNT` en el servidor (`BackupRequest::count()`), no del reporte cargado.
 - **L12** — 2026-11-20 — Nota de entorno: `nginx` sirve `cloud.mediaserver.com.co` desde `Tcloud_v2/app/public`, o sea que este repo ES el docroot de producción. No hay route cache (`bootstrap/cache/` no tiene `routes.php`), así que las rutas nuevas quedaron activas sin `route:cache`. Los harnesses corren contra la misma base de datos de producción: por eso los fixtures usan tag y se limpian al terminar.
+- **L13** — 2026-11-20 — Entrega: el usuario pidió el commit y el push ("puedes hacer el comic y el respectivo push para dejar esto autorizado en GitHub"). El árbol ya estaba limpio (todo commiteado), así que el push fue lo único que faltaba: `git push -u origin feat/solicitudes-backup-por-cliente` → rama nueva en GitHub, `origin/feat/solicitudes-backup-por-cliente` = `5fdb8607` = HEAD local. No se creó PR: el push fue lo pedido y la branch arrastra 132 commits heredados de `feat/dashboard-perf-backup-guide` (todavía sin mergear a `main`).
