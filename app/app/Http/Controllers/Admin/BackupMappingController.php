@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Models\BackupRequest;
 use App\Models\StorageProvider;
 use App\Services\MisArchivos\BackupMappingService;
 use App\Services\StoragePathRepairService;
@@ -120,6 +121,10 @@ class BackupMappingController extends Controller
             'tree' => $tree,
             'coverage' => $coverage,
             'rows' => $rows,
+            // Contador de la pestaña "Solicitudes por cliente". Es un COUNT
+            // sobre una tabla corta: da el número en la pestaña sin pagar el
+            // reporte completo en cada visita.
+            'solicitudesTotal' => BackupRequest::count(),
             'destinations' => $destinations->map(fn (StorageProvider $s) => [
                 'id' => (int) $s->id,
                 'name' => (string) $s->name,

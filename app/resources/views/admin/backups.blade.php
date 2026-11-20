@@ -3,7 +3,7 @@
 @section('title', 'Backup de produccion - Tcloud')
 
 @section('content')
-<div class="p-6" x-data="backupAdmin()" x-init="init()">
+<div class="p-6" x-data="backupAdmin()" x-init="init()" @backup-tab.window="tab = $event.detail">
 
     <div class="mb-6 flex items-center justify-between">
         <div>
@@ -18,13 +18,13 @@
                 <i class="fas fa-rotate" :class="loading ? 'fa-spin' : ''"></i>
                 <span>Actualizar</span>
             </button>
-            <button @click="openScan()" x-show="missingCount > 0"
+            <button @click="openScan()" x-show="missingCount > 0 && tab === 'links'"
                     class="flex items-center gap-2 px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-sm font-medium transition-colors">
                 <i class="fas fa-magnifying-glass-location"></i>
                 <span>Escanear rutas rotas</span>
                 <span class="px-1.5 py-0.5 rounded bg-white/25 text-xs font-semibold" x-text="missingCount"></span>
             </button>
-            <button @click="openCreate()" data-backup-tour="assign"
+            <button @click="openCreate()" data-backup-tour="assign" x-show="tab === 'links'"
                     class="flex items-center gap-2 px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-xl text-sm font-medium transition-colors">
                 <i class="fas fa-link"></i>
                 <span>Asignar carpeta</span>
@@ -54,6 +54,27 @@
             <p class="mt-0.5">No se puede leer el arbol ni verificar carpetas. El export NFS esta en modo <code>hard</code>: un acceso al disco bloquea las peticiones.</p>
         </div>
     </div>
+
+    <!-- Pestañas del módulo -->
+    <div class="border-b border-slate-200 mb-6 flex items-center gap-6 overflow-x-auto">
+        <button @click="selectTab('links')"
+                :class="tab === 'links' ? 'border-brand-600 text-brand-700' : 'border-transparent text-slate-500 hover:text-slate-700'"
+                class="flex items-center gap-2 px-1 pb-3 border-b-2 text-sm font-medium transition-colors whitespace-nowrap">
+            <i class="fas fa-link"></i>
+            <span>Vínculos de backup</span>
+            <span class="px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 text-xs font-semibold" x-text="rows.length"></span>
+        </button>
+        <button @click="selectTab('requests')" data-backup-tour="requests"
+                :class="tab === 'requests' ? 'border-brand-600 text-brand-700' : 'border-transparent text-slate-500 hover:text-slate-700'"
+                class="flex items-center gap-2 px-1 pb-3 border-b-2 text-sm font-medium transition-colors whitespace-nowrap">
+            <i class="fas fa-users"></i>
+            <span>Solicitudes por cliente</span>
+            <span class="px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 text-xs font-semibold" x-text="solicitudesTotal"></span>
+        </button>
+    </div>
+
+    <!-- Pestaña: vínculos de backup -->
+    <div x-show="tab === 'links'">
 
     <!-- Cobertura -->
     <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 mb-6">
@@ -112,24 +133,147 @@
         </div>
     </div>
 
-    <!-- Solicitudes de backup por cliente -->
-    <div data-backup-tour="requests" class="mb-6 bg-white rounded-xl shadow-sm border border-slate-200">
-        <button @click="toggleRequests()" class="w-full flex items-center justify-between px-5 py-4 text-left">
-            <div class="min-w-0">
+    <!-- Listado de storages -->
+    <div data-backup-tour="listing" class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+        <div class="px-5 py-4 border-b border-slate-100 flex flex-wrap items-center gap-3">
+            <div data-backup-tour="search" class="relative flex-1 min-w-[220px]">
+                <input type="text" x-model="search" placeholder="Buscar storage o ruta..."
+                       class="w-full border border-slate-300 rounded-lg pl-9 pr-4 py-2 text-sm focus:ring-2 focus:ring-brand-500 outline-none">
+                <i class="fas fa-search absolute left-3 top-2.5 text-slate-400 text-sm"></i>
+            </div>
+            <label class="flex items-center gap-2 text-sm text-slate-600 cursor-pointer">
+                <input type="checkbox" x-model="onlyUnmapped" class="rounded border-slate-300">
+                Solo sin mapear
+            </label>
+            <label class="flex items-center gap-2 text-sm text-slate-600 cursor-pointer">
+                <input type="checkbox" x-model="onlyContainers" class="rounded border-slate-300">
+                Solo los que listan el disco
+            </label>
+            <div class="flex items-center gap-2 text-xs">
+                <span class="px-2 py-1 rounded-lg bg-emerald-50 text-emerald-700 font-medium"
+                      x-text="mappedCount + ' mapeados'"></span>
+                <span x-show="brokenCount > 0" class="px-2 py-1 rounded-lg bg-red-50 text-red-700 font-medium"
+                      x-text="brokenCount + ' inválidos'"></span>
+                <span class="px-2 py-1 rounded-lg bg-indigo-50 text-indigo-700 font-medium"
+                      x-text="containerCount + ' listan el disco'"></span>
+                <span class="px-2 py-1 rounded-lg bg-slate-100 text-slate-500 font-medium"
+                      x-text="unmappedCount + ' sin mapear'"></span>
+            </div>
+            <span class="text-xs text-slate-400" x-text="filtered().length + ' de ' + rows.length"></span>
+        </div>
+
+        <div class="overflow-x-auto">
+            <table class="w-full">
+                <thead class="bg-slate-50 border-b border-slate-200">
+                    <tr>
+                        <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                            <button @click="toggleSort('name')" class="inline-flex items-center gap-1 hover:text-brand-600 transition-colors">
+                                Storage de origen
+                                <i class="fas fa-sort text-[10px]" :class="sortIcon('name')"></i>
+                            </button>
+                        </th>
+                        <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                            <button @click="toggleSort('folder')" class="inline-flex items-center gap-1 hover:text-brand-600 transition-colors">
+                                Carpeta de backup
+                                <i class="fas fa-sort text-[10px]" :class="sortIcon('folder')"></i>
+                            </button>
+                        </th>
+                        <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider hidden lg:table-cell">
+                            <button @click="toggleSort('destination')" class="inline-flex items-center gap-1 hover:text-brand-600 transition-colors">
+                                Árbol destino
+                                <i class="fas fa-sort text-[10px]" :class="sortIcon('destination')"></i>
+                            </button>
+                        </th>
+                        <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                            <button @click="toggleSort('state')" class="inline-flex items-center gap-1 hover:text-brand-600 transition-colors">
+                                Estado
+                                <i class="fas fa-sort text-[10px]" :class="sortIcon('state')"></i>
+                            </button>
+                        </th>
+                        <th class="px-4 py-3 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">Acciones</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-100">
+                    <template x-for="row in sorted()" :key="row.id">
+                        <tr class="hover:bg-slate-50">
+                            <td class="px-4 py-3">
+                                <p class="text-sm font-medium text-slate-800" x-text="row.name"></p>
+                                <p class="text-xs text-slate-400 truncate max-w-sm" x-text="row.base_path"></p>
+                                <p x-show="row.is_container" class="mt-1 inline-flex items-center gap-1 px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 text-[11px] font-medium">
+                                    <i class="fas fa-layer-group text-[10px]"></i>Lista el disco: su contenido son emisoras, no un canal
+                                </p>
+                                <p x-show="row.path_state === 'missing'" class="mt-1 inline-flex items-center gap-1 px-2 py-0.5 rounded bg-red-50 text-red-700 text-[11px] font-medium">
+                                    <i class="fas fa-triangle-exclamation text-[10px]"></i>La ruta base no existe en el disco
+                                </p>
+                                <p x-show="row.path_state === 'mount_down'" class="mt-0.5 text-[11px] text-amber-600">
+                                    <i class="fas fa-plug-circle-xmark mr-0.5"></i>Montaje de red caído
+                                </p>
+                            </td>
+                            <td class="px-4 py-3">
+                                <template x-if="row.folder">
+                                    <code class="text-xs bg-slate-100 text-slate-700 px-2 py-1 rounded" x-text="row.folder"></code>
+                                </template>
+                                <template x-if="!row.folder">
+                                    <span class="text-xs text-slate-400">— sin asignar —</span>
+                                </template>
+                                <template x-if="row.state === 'unmapped' && row.suggestion">
+                                    <p class="mt-1 text-[11px] text-slate-400" x-text="'sugerencia: ' + row.suggestion"></p>
+                                </template>
+                            </td>
+                            <td class="px-4 py-3 hidden lg:table-cell">
+                                <span class="text-xs text-slate-600" x-text="row.destination || '—'"></span>
+                            </td>
+                            <td class="px-4 py-3">
+                                <span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium"
+                                      :class="row.state === 'mapped' ? 'bg-emerald-50 text-emerald-700' : (row.state === 'broken' ? 'bg-red-50 text-red-700' : 'bg-slate-100 text-slate-500')">
+                                    <i class="fas text-[10px]"
+                                       :class="row.state === 'mapped' ? 'fa-check-circle' : (row.state === 'broken' ? 'fa-triangle-exclamation' : 'fa-minus-circle')"></i>
+                                    <span x-text="row.state === 'mapped' ? 'Mapeado' : (row.state === 'broken' ? 'Vínculo inválido' : 'Sin mapear')"></span>
+                                </span>
+                                <p x-show="row.state === 'broken' && row.reason" class="mt-1 text-[11px] text-red-600" x-text="row.reason"></p>
+                            </td>
+                            <td class="px-4 py-3 text-right whitespace-nowrap">
+                                <button @click="openEdit(row)"
+                                        class="px-3 py-1.5 bg-brand-50 hover:bg-brand-100 text-brand-700 text-xs font-medium rounded-lg transition-colors">
+                                    <i class="fas fa-pen mr-1"></i><span x-text="row.state === 'mapped' ? 'Cambiar' : 'Asignar'"></span>
+                                </button>
+                                <button @click="remove(row)"
+                                        x-show="row.state !== 'unmapped'"
+                                        class="ml-1 px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 text-xs font-medium rounded-lg transition-colors">
+                                    <i class="fas fa-unlink mr-1"></i>Quitar
+                                </button>
+                                <button @click="openRepair(row)"
+                                        x-show="row.path_state === 'missing'"
+                                        class="ml-1 px-3 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-700 text-xs font-medium rounded-lg transition-colors"
+                                        title="Buscar este material en los otros discos">
+                                    <i class="fas fa-magnifying-glass-location mr-1"></i>Buscar
+                                </button>
+                            </td>
+                        </tr>
+                    </template>
+                    <tr x-show="sorted().length === 0">
+                        <td colspan="5" class="px-4 py-10 text-center text-sm text-slate-400">
+                            Ningún storage coincide con el filtro.
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    </div>
+
+    <!-- Pestaña: solicitudes por cliente -->
+    <div x-show="tab === 'requests'" x-cloak>
+        <div class="bg-white rounded-xl shadow-sm border border-slate-200">
+            <div class="px-5 py-4 border-b border-slate-100">
                 <h2 class="text-sm font-semibold text-slate-800">Solicitudes de backup por cliente</h2>
                 <p class="text-xs text-slate-500 mt-0.5">
                     Quién pidió qué material de producción. El enlace vive 2 días y lo revoca el cliente desde Mis Archivos.
                 </p>
             </div>
-            <div class="flex items-center gap-3">
-                <span x-show="requests" x-cloak
-                      class="px-2 py-1 rounded-lg bg-slate-100 text-slate-600 text-xs font-medium"
-                      x-text="requests.totales.solicitudes + ' solicitudes · ' + requests.totales.clientes + ' clientes'"></span>
-                <i class="fas fa-chevron-down text-slate-400 transition-transform" :class="requestsOpen ? 'rotate-180' : ''"></i>
-            </div>
-        </button>
 
-        <div x-show="requestsOpen" x-cloak class="px-5 pb-5 border-t border-slate-100">
+            <div class="px-5 pb-5">
             <div class="flex flex-wrap items-center gap-2 pt-4">
                 <input type="date" x-model="requestsFiltros.desde" @change="loadRequests()"
                        class="px-3 py-2 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
@@ -305,134 +449,7 @@
                     </div>
                 </div>
             </template>
-        </div>
-    </div>
-
-    <!-- Listado de storages -->
-    <div data-backup-tour="listing" class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-        <div class="px-5 py-4 border-b border-slate-100 flex flex-wrap items-center gap-3">
-            <div data-backup-tour="search" class="relative flex-1 min-w-[220px]">
-                <input type="text" x-model="search" placeholder="Buscar storage o ruta..."
-                       class="w-full border border-slate-300 rounded-lg pl-9 pr-4 py-2 text-sm focus:ring-2 focus:ring-brand-500 outline-none">
-                <i class="fas fa-search absolute left-3 top-2.5 text-slate-400 text-sm"></i>
             </div>
-            <label class="flex items-center gap-2 text-sm text-slate-600 cursor-pointer">
-                <input type="checkbox" x-model="onlyUnmapped" class="rounded border-slate-300">
-                Solo sin mapear
-            </label>
-            <label class="flex items-center gap-2 text-sm text-slate-600 cursor-pointer">
-                <input type="checkbox" x-model="onlyContainers" class="rounded border-slate-300">
-                Solo los que listan el disco
-            </label>
-            <div class="flex items-center gap-2 text-xs">
-                <span class="px-2 py-1 rounded-lg bg-emerald-50 text-emerald-700 font-medium"
-                      x-text="mappedCount + ' mapeados'"></span>
-                <span x-show="brokenCount > 0" class="px-2 py-1 rounded-lg bg-red-50 text-red-700 font-medium"
-                      x-text="brokenCount + ' inválidos'"></span>
-                <span class="px-2 py-1 rounded-lg bg-indigo-50 text-indigo-700 font-medium"
-                      x-text="containerCount + ' listan el disco'"></span>
-                <span class="px-2 py-1 rounded-lg bg-slate-100 text-slate-500 font-medium"
-                      x-text="unmappedCount + ' sin mapear'"></span>
-            </div>
-            <span class="text-xs text-slate-400" x-text="filtered().length + ' de ' + rows.length"></span>
-        </div>
-
-        <div class="overflow-x-auto">
-            <table class="w-full">
-                <thead class="bg-slate-50 border-b border-slate-200">
-                    <tr>
-                        <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                            <button @click="toggleSort('name')" class="inline-flex items-center gap-1 hover:text-brand-600 transition-colors">
-                                Storage de origen
-                                <i class="fas fa-sort text-[10px]" :class="sortIcon('name')"></i>
-                            </button>
-                        </th>
-                        <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                            <button @click="toggleSort('folder')" class="inline-flex items-center gap-1 hover:text-brand-600 transition-colors">
-                                Carpeta de backup
-                                <i class="fas fa-sort text-[10px]" :class="sortIcon('folder')"></i>
-                            </button>
-                        </th>
-                        <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider hidden lg:table-cell">
-                            <button @click="toggleSort('destination')" class="inline-flex items-center gap-1 hover:text-brand-600 transition-colors">
-                                Árbol destino
-                                <i class="fas fa-sort text-[10px]" :class="sortIcon('destination')"></i>
-                            </button>
-                        </th>
-                        <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                            <button @click="toggleSort('state')" class="inline-flex items-center gap-1 hover:text-brand-600 transition-colors">
-                                Estado
-                                <i class="fas fa-sort text-[10px]" :class="sortIcon('state')"></i>
-                            </button>
-                        </th>
-                        <th class="px-4 py-3 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">Acciones</th>
-                    </tr>
-                </thead>
-                <tbody class="divide-y divide-slate-100">
-                    <template x-for="row in sorted()" :key="row.id">
-                        <tr class="hover:bg-slate-50">
-                            <td class="px-4 py-3">
-                                <p class="text-sm font-medium text-slate-800" x-text="row.name"></p>
-                                <p class="text-xs text-slate-400 truncate max-w-sm" x-text="row.base_path"></p>
-                                <p x-show="row.is_container" class="mt-1 inline-flex items-center gap-1 px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 text-[11px] font-medium">
-                                    <i class="fas fa-layer-group text-[10px]"></i>Lista el disco: su contenido son emisoras, no un canal
-                                </p>
-                                <p x-show="row.path_state === 'missing'" class="mt-1 inline-flex items-center gap-1 px-2 py-0.5 rounded bg-red-50 text-red-700 text-[11px] font-medium">
-                                    <i class="fas fa-triangle-exclamation text-[10px]"></i>La ruta base no existe en el disco
-                                </p>
-                                <p x-show="row.path_state === 'mount_down'" class="mt-0.5 text-[11px] text-amber-600">
-                                    <i class="fas fa-plug-circle-xmark mr-0.5"></i>Montaje de red caído
-                                </p>
-                            </td>
-                            <td class="px-4 py-3">
-                                <template x-if="row.folder">
-                                    <code class="text-xs bg-slate-100 text-slate-700 px-2 py-1 rounded" x-text="row.folder"></code>
-                                </template>
-                                <template x-if="!row.folder">
-                                    <span class="text-xs text-slate-400">— sin asignar —</span>
-                                </template>
-                                <template x-if="row.state === 'unmapped' && row.suggestion">
-                                    <p class="mt-1 text-[11px] text-slate-400" x-text="'sugerencia: ' + row.suggestion"></p>
-                                </template>
-                            </td>
-                            <td class="px-4 py-3 hidden lg:table-cell">
-                                <span class="text-xs text-slate-600" x-text="row.destination || '—'"></span>
-                            </td>
-                            <td class="px-4 py-3">
-                                <span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium"
-                                      :class="row.state === 'mapped' ? 'bg-emerald-50 text-emerald-700' : (row.state === 'broken' ? 'bg-red-50 text-red-700' : 'bg-slate-100 text-slate-500')">
-                                    <i class="fas text-[10px]"
-                                       :class="row.state === 'mapped' ? 'fa-check-circle' : (row.state === 'broken' ? 'fa-triangle-exclamation' : 'fa-minus-circle')"></i>
-                                    <span x-text="row.state === 'mapped' ? 'Mapeado' : (row.state === 'broken' ? 'Vínculo inválido' : 'Sin mapear')"></span>
-                                </span>
-                                <p x-show="row.state === 'broken' && row.reason" class="mt-1 text-[11px] text-red-600" x-text="row.reason"></p>
-                            </td>
-                            <td class="px-4 py-3 text-right whitespace-nowrap">
-                                <button @click="openEdit(row)"
-                                        class="px-3 py-1.5 bg-brand-50 hover:bg-brand-100 text-brand-700 text-xs font-medium rounded-lg transition-colors">
-                                    <i class="fas fa-pen mr-1"></i><span x-text="row.state === 'mapped' ? 'Cambiar' : 'Asignar'"></span>
-                                </button>
-                                <button @click="remove(row)"
-                                        x-show="row.state !== 'unmapped'"
-                                        class="ml-1 px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 text-xs font-medium rounded-lg transition-colors">
-                                    <i class="fas fa-unlink mr-1"></i>Quitar
-                                </button>
-                                <button @click="openRepair(row)"
-                                        x-show="row.path_state === 'missing'"
-                                        class="ml-1 px-3 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-700 text-xs font-medium rounded-lg transition-colors"
-                                        title="Buscar este material en los otros discos">
-                                    <i class="fas fa-magnifying-glass-location mr-1"></i>Buscar
-                                </button>
-                            </td>
-                        </tr>
-                    </template>
-                    <tr x-show="sorted().length === 0">
-                        <td colspan="5" class="px-4 py-10 text-center text-sm text-slate-400">
-                            Ningún storage coincide con el filtro.
-                        </td>
-                    </tr>
-                </tbody>
-            </table>
         </div>
     </div>
 
@@ -752,7 +769,7 @@ function startBackupTour() {
             },
             {
                 title: 'Quién pidió backup',
-                content: 'Esta sección es el otro lado del módulo: <strong>quién pidió qué material</strong> de producción. ' +
+                content: 'Esta pestaña es el otro lado del módulo: <strong>quién pidió qué material</strong> de producción. ' +
                          'Puedes filtrar por período, estado y cliente, y exportar el reporte en TXT. ' +
                          'Es de <strong>solo lectura</strong>: el enlace vive 2 días y lo revoca el cliente desde Mis Archivos, ' +
                          'aquí no se toca nada. Abajo, la <strong>demanda por canal</strong> dice qué storage de origen se está pidiendo: ' +
@@ -761,7 +778,15 @@ function startBackupTour() {
                 color: '#0891b2',
                 selector: function () { return anchor('requests'); },
                 position: 'bottom',
-                onShow: function () { scrollTo(anchor('requests')); },
+                onShow: function () {
+                    // La guía abre la pestaña antes de mirar el ancla: el paso
+                    // tiene que MOSTRAR el reporte, no solo la pestaña.
+                    var root = document.querySelector('[x-data="backupAdmin()"]');
+                    if (root) {
+                        root.dispatchEvent(new CustomEvent('backup-tab', { detail: 'requests' }));
+                    }
+                    setTimeout(function () { scrollTo(anchor('requests')); }, 120);
+                },
             },
             {
                 title: 'Guía Completada',
@@ -813,12 +838,13 @@ function backupAdmin() {
         form: { source_storage_id: '', backup_storage_id: '', backup_folder_name: '' },
 
         // Control de solicitudes por cliente (change `solicitudes-backup-por-cliente`).
+        tab: 'links',
         requests: null,
         requestsLoading: false,
         requestsError: '',
-        requestsOpen: false,
         requestsClientes: [],
         requestsFiltros: { desde: '', hasta: '', estado: 'todas', user_id: '' },
+        solicitudesTotal: @json($solicitudesTotal),
 
         init() {
             this.rootId = this.root ? this.root.id : '';
@@ -1036,14 +1062,14 @@ function backupAdmin() {
         },
 
         /**
-         * Abre el control de solicitudes por cliente. La primera apertura
+         * Cambia de pestaña. La primera vez que se abre la de solicitudes
          * carga el reporte: la pantalla de Backup no lo pide de entrada para
          * no pagar la consulta en cada visita del administrador.
          */
-        toggleRequests() {
-            this.requestsOpen = !this.requestsOpen;
+        selectTab(name) {
+            this.tab = name;
 
-            if (this.requestsOpen && !this.requests) {
+            if (name === 'requests' && !this.requests) {
                 this.loadRequests();
             }
         },

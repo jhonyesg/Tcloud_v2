@@ -345,13 +345,22 @@ try {
         h_check($response->getStatusCode() === 403, "un cliente recibe 403 en {$ruta}", 'respondió ' . $response->getStatusCode());
     }
 
-    // La pantalla de administración expone la sección.
+    // La pantalla de administración expone la sección como PESTAÑA (no como
+    // tarjeta desplegable): es el mismo patrón del módulo de Solicitud
+    // Puntual ("Medios | Mis solicitudes | Control por cliente").
     $response = $dispatch('/admin/backups', $adminCookie, 'text/html');
     h_check($response->getStatusCode() === 200, 'la pantalla de Backup responde 200');
     $html = (string) $response->getContent();
-    h_check(str_contains($html, 'Solicitudes de backup por cliente'), 'la pantalla muestra la sección de solicitudes');
-    h_check(str_contains($html, 'data-backup-tour="requests"'), 'la sección tiene el ancla de la guía');
+    h_check(str_contains($html, 'Solicitudes de backup por cliente'), 'la pantalla muestra las solicitudes por cliente');
+    h_check(str_contains($html, 'data-backup-tour="requests"'), 'la pestaña tiene el ancla de la guía');
     h_check(str_contains($html, 'Demanda por canal'), 'la pantalla muestra la demanda por canal');
+    h_check(str_contains($html, "selectTab('requests')"), 'la pestaña de solicitudes cambia con selectTab');
+    h_check(str_contains($html, "selectTab('links')"), 'la pestaña de vínculos cambia con selectTab');
+    h_check(str_contains($html, "x-show=\"tab === 'requests'\""), 'el reporte vive en una pestaña');
+    h_check(str_contains($html, 'Vínculos de backup'), 'la barra de pestañas declara los vínculos');
+    h_check(str_contains($html, 'solicitudesTotal'), 'la pestaña muestra el total de solicitudes');
+    h_check(! str_contains($html, 'toggleRequests()'), 'la tarjeta desplegable ya no existe');
+    h_check(! str_contains($html, 'requestsOpen'), 'el estado del desplegable ya no existe');
 
     // ------------------------------------------------------------------
     h_section('cleanup');
