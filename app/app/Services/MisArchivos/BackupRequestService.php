@@ -322,29 +322,13 @@ class BackupRequestService
     /**
      * Estado efectivo: una solicitud `ready` cuyo enlace ya no sirve (share
      * borrado en cascada o vigencia vencida) se reporta como no viva.
+     *
+     * La regla vive en el modelo (`BackupRequest::effectiveStatus()`) para
+     * que el historial del cliente y el reporte del admin cuenten lo mismo.
      */
     private function effectiveStatus(BackupRequest $request): string
     {
-        if ($request->status !== BackupRequest::STATUS_READY) {
-            return $request->status;
-        }
-
-        if ($request->link_expires_at !== null && $request->link_expires_at->isPast()) {
-            return BackupRequest::STATUS_EXPIRED;
-        }
-
-        if ($request->share_id === null) {
-            return BackupRequest::STATUS_UNAVAILABLE;
-        }
-
-        // El share_id apunta a una fila que ya no existe (borrada en cascada
-        // o desde el módulo de compartidos): el enlace no sirve.
-        $share = $request->relationLoaded('share') ? $request->share : $request->share()->first();
-        if ($share === null) {
-            return BackupRequest::STATUS_UNAVAILABLE;
-        }
-
-        return BackupRequest::STATUS_READY;
+        return $request->effectiveStatus();
     }
 
     private function statusMessage(BackupRequest $request): string

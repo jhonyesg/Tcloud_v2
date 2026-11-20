@@ -120,4 +120,38 @@ class BackupRequest extends Model
 
         return $this->share_id !== null;
     }
+
+    /**
+     * Estado EFECTIVO de la solicitud: el que ve el cliente y el que
+     * reporta el administrador.
+     *
+     * No es siempre el de la columna: una fila `ready` cuyo enlace ya no
+     * sirve (vigencia vencida o share borrado en cascada) se reporta
+     * `expired` / `unavailable`. Es la única fuente de verdad del estado
+     * mostrado: la usan el historial del cliente y el reporte por cliente.
+     */
+    public function effectiveStatus(): string
+    {
+        if ($this->status !== self::STATUS_READY) {
+            return $this->status;
+        }
+
+        if ($this->link_expires_at !== null && $this->link_expires_at->isPast()) {
+            return self::STATUS_EXPIRED;
+        }
+
+        if ($this->share_id === null) {
+            return self::STATUS_UNAVAILABLE;
+        }
+
+        // El share_id apunta a una fila que ya no existe (borrada en cascada
+        // o desde el módulo de compartidos): el enlace no sirve.
+        $share = $this->relationLoaded('share') ? $this->share : $this->share()->first();
+
+        if ($share === null) {
+            return self::STATUS_UNAVAILABLE;
+        }
+
+        return self::STATUS_READY;
+    }
 }
